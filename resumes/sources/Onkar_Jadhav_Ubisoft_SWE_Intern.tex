@@ -1,0 +1,177 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: Software Engineer Intern @ Ubisoft India (Pune) — CS fundamentals, C++/Java/Python, tooling, QA automation
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {Software Engineer Intern} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year Computer Science student (9.08 CGPA), Pune-based, with strong CS fundamentals and hands-on engineering in \textbf{C++, Java, and Python}. Built and shipped full-stack products end to end, from data pipelines to automated test harnesses. Comfortable reading unfamiliar codebases, debugging on Linux, and building tooling that removes manual work. Passionate gamer with hands-on \textbf{Godot} game-development experience, eager to contribute to Ubisoft Pune's mobile and console titles --- in gameplay/tools engineering or test automation --- and to learn from one of India's oldest game studios.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Data Structures \& Algorithms, Object-Oriented Programming, Operating Systems, Computer Networks, DBMS, Machine Learning}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Stride --- Adaptive Wellness Platform}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Built and shipped a full product solo, owning everything from backend services to UI --- demonstrating end-to-end ownership and fast iteration on real user feedback.}
+        \item {Designed a system that turns messy, unstructured input (text and voice) into clean structured data, handling edge cases and failure modes gracefully.}
+        \item {Integrated multiple external APIs with retries and error handling, keeping the app stable under real-world failures.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Lore Engine}{Full-Stack Content Pipeline with Automated Test Harness}
+      {Python, FastAPI, PostgreSQL, Celery, Redis, Next.js}
+      {2026 -- Present}
+      \resumeItemListStart
+        \item {Built a pipeline processing \textbf{6,000+ pages} of content into a searchable store --- validated end-to-end against a Harry Potter wiki dataset.}
+        \item {Engineered an \textbf{automated QA / regression harness} (50-question ground-truth suite) that gates every deploy and catches correctness regressions automatically --- the same test-automation mindset Ubisoft's QC teams rely on.}
+        \item {Owned the full stack (backend workers, database, frontend) and debugged across services on \textbf{Linux} using logs and process tooling.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Concurrent Async Job Processing Backend}
+      {Node.js, Express.js, BullMQ, Redis, Convex, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Built a \textbf{concurrent job-processing backend} (worker queue on Redis, retries, durable persistence) that runs many tasks reliably in parallel without losing work on failures.}
+        \item {Designed a versioned system comparing \textbf{latency, cost, and output quality} across providers --- practicing objective, measurement-driven engineering.}
+        \item {Wrote clean REST APIs and structured error handling for safe reprocessing of failed jobs.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: C++, Java, Python, JavaScript, TypeScript, SQL} \\
+     \textbf{CS Fundamentals}{: Data Structures \& Algorithms, Object-Oriented Programming, Operating Systems, Computer Networks, DBMS} \\
+     \textbf{Engineering}{: Full-stack development, REST APIs, concurrent/async job processing, automated testing \& QA harnesses, debugging} \\
+     \textbf{Linux \& Tools}{: Linux/Unix, Bash, Git, GitHub, log-driven debugging} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, Redis, BullMQ, Celery, WebSockets} \\
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML, CSS} \\
+     \textbf{Databases}{: PostgreSQL, MongoDB, SQL query design} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

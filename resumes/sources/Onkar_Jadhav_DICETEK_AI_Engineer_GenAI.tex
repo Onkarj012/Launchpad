@@ -1,0 +1,179 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: AI Engineer (Gen AI) @ DICETEK LLC (agentic frameworks / RAG / memory management)
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {AI / Full-Stack Software Engineer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year CS student (9.08 CGPA) specialising in generative AI, agentic frameworks, and RAG architectures with end-to-end production ownership. Shipped Stride (5--10 active users) --- a six-layer multi-agent platform with five domain agents sharing behavioral memory, tool calling, and multi-provider LLM routing --- demonstrating real-world memory management and agent coordination. Built Lore Engine, a production RAG platform with hybrid BM25 + pgvector retrieval, deploy-gated evaluation, and spoiler-aware context filtering over 6,000+ pages. Built PromptForge, a creator--critic--evaluator pipeline with cross-model benchmarking and context-optimised token management. Strong in Python, RAG, agentic AI, vector databases, prompt engineering, and AWS.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Stride --- AI-First Adaptive Wellness Platform}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Built and shipped Stride to production as sole engineer; running live with \textbf{5--10 active trial users} driving iterative product feedback.}
+        \item {Designed five autonomous domain agents with tool calling and a shared behavioral memory layer tracking preferences across sessions --- demonstrating stateful memory management in agentic systems at production scale.}
+        \item {Integrated multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini, enabling dynamic model selection and context-optimised routing to reduce token usage per agent type.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Lore Engine}{Production RAG Platform with Precision Context Management}
+      {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, OpenAI, Anthropic Claude}
+      {2026 -- Present}
+      \resumeItemListStart
+        \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} into a hybrid pipeline (BM25 + pgvector via reciprocal rank fusion) --- chosen over pure vector search for superior exact-entity retrieval, mirroring enterprise GenAI precision requirements.}
+        \item {Designed per-chunk spoiler-filtering metadata assigned at ingestion and applied at retrieval time --- fine-grained context management preventing unwanted information surfacing, analogous to access-controlled enterprise RAG.}
+        \item {Established a \textbf{50-question per-series eval harness} measuring retrieval MRR and end-to-end answer accuracy, gating every deployment --- the evaluation-in-the-loop discipline required in production GenAI systems.}
+        \item {Scaled to \textbf{$\sim$5M vectors per series} using pgvector over dedicated stores (Pinecone/Weaviate), eliminating infrastructure complexity and keeping retrieval in one network hop.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Creator--Critic--Evaluator Agentic Pipeline with Cross-Model Benchmarking}
+      {Node.js, Express.js, BullMQ, Convex, OpenRouter, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Architected a creator--critic--evaluator agentic pipeline with tool calling for iterative prompt improvement, scoring clarity, completeness, constraint coverage, and token efficiency across versioned revision trails.}
+        \item {Implemented cross-model LLM routing across OpenAI, Anthropic, Gemini, and open-source models via OpenRouter for quality, latency, and cost-per-output benchmarking with context-optimised model selection.}
+        \item {Built a fault-tolerant async backend (BullMQ workers, idempotent retries, Convex persistence) and emitted structured outputs with token budget, latency profile, and version changelog --- prompts deployed like code.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{AI / ML}{: Generative AI, Agentic Frameworks, RAG Pipelines, Tool Calling, Behavioral Memory, pgvector, BM25, Reciprocal Rank Fusion, Prompt Engineering, LLM Evaluation, Multi-Agent Systems, OpenRouter} \\
+     \textbf{LLM Providers}{: Anthropic Claude, OpenAI GPT, Gemini, Groq, Deepgram Nova-2} \\
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML, CSS} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub, async job pipelines} \\
+     \textbf{System Design}{: Agentic coordination, hybrid retrieval, memory management, context optimization, event-driven architecture} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

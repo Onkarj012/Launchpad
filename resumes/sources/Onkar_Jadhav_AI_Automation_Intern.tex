@@ -1,0 +1,180 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: AI & Automation Intern (GenAI / agents / workflow automation / chatbots / API integrations)
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {AI \& Automation Engineer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year CS student (9.08 CGPA) with hands-on experience building Generative AI applications, multi-agent systems, workflow automation pipelines, and chatbots. Shipped Stride to production, a multi-agent AI platform with voice input, NLU, and five specialised domain agents that automate personalised health coaching. Built Lore Engine, a full-stack RAG chatbot ingesting 6,000+ pages with streaming responses and automated evaluation harnesses. Built PromptForge, an agentic pipeline that automates iterative prompt engineering across OpenAI, Anthropic, Gemini, and open-source LLMs via REST API integration. Strong in Python, LLMs, prompt engineering, REST APIs, SQL, and Git.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Stride (AI-First Adaptive Wellness Platform)}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Architected and shipped a \textbf{multi-agent AI chatbot} with 5 domain agents (diet, workout, sleep, hydration, habits) that automates personalised health coaching via natural-language conversations, live with 5--10 active trial users.}
+        \item {Built an end-to-end \textbf{voice-to-structured-data automation pipeline} where Deepgram Nova-2 transcription feeds into an NLU extraction layer, converts free-text input into structured JSON, and routes it to the appropriate agent, eliminating all manual data entry for users.}
+        \item {Integrated \textbf{multiple REST APIs} (Deepgram, OpenAI, nutrition/fitness data APIs) with async job queues and idempotent retries, ensuring reliable automation under LLM provider failures and network timeouts.}
+        \item {Designed a \textbf{behavioral memory layer} shared across agents, enabling context-aware automated responses that adapt to each user's history without manual intervention.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Lore Engine}{RAG Chatbot Platform with Automated Knowledge Ingestion}
+      {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, OpenAI, Anthropic Claude}
+      {2026 -- Present}
+      \resumeItemListStart
+        \item {Built an \textbf{automated document ingestion pipeline} (Celery workers + Redis queue) processing \textbf{6,000+ MediaWiki pages} into a hybrid retrieval system (BM25 + pgvector), enabling a chatbot to answer precise contextual questions over large knowledge bases.}
+        \item {Implemented \textbf{SQL-backed metadata filtering} at retrieval time (per-chunk spoiler/access flags stored in PostgreSQL), demonstrating SQL fundamentals applied to production AI data pipelines.}
+        \item {Shipped a streaming \textbf{GenAI chatbot} with inline citations and source attribution, integrating OpenAI and Anthropic Claude APIs via REST.}
+        \item {Built an \textbf{automated evaluation harness} (50-question ground-truth test suite) measuring retrieval MRR and answer accuracy, which gates every deployment and removes manual QA from the release workflow.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Agentic Prompt Engineering \& LLM Workflow Automation Platform}
+      {Node.js, Express.js, BullMQ, Convex, OpenRouter, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Built a \textbf{creator-critic-evaluator agentic workflow} that automates iterative prompt improvement by scoring clarity, completeness, constraint coverage, and token efficiency across versioned revision trails without manual iteration.}
+        \item {Integrated \textbf{REST API routing} across OpenAI, Anthropic, Gemini, and open-source models via OpenRouter, automating multi-model evaluation for objective quality, latency, and cost comparisons.}
+        \item {Engineered a \textbf{fault-tolerant async automation backend} (BullMQ workers, idempotent retries, Convex persistence) sustaining reliable prompt regression workflows without job loss on LLM provider timeouts.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{AI / GenAI}{: LLMs, Generative AI, Conversational AI, RAG Pipelines, Prompt Engineering, AI Agents, Agentic Workflows, NLP, Embeddings, Behavioral Memory, Voice AI, LLM Evaluation, OpenRouter} \\
+     \textbf{LLM Providers}{: OpenAI GPT-4o, Anthropic Claude, Gemini, Groq, Deepgram Nova-2} \\
+     \textbf{Automation}{: Async job pipelines (BullMQ, Celery), event-driven workflows, REST API integrations, webhook-driven automation, structured data extraction from unstructured input} \\
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, REST APIs, WebSockets, Redis, JSON} \\
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex, SQL query design} \\
+     \textbf{DevOps \& Tools}{: Git, GitHub, AWS, Cloudflare R2, async pipeline architecture} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

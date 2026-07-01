@@ -1,0 +1,188 @@
+%-------------------------
+% Onkar Jadhav — BASE 2: Full-Stack / Product   (Slot 3 = Stride)
+% Reusable base. Per job, edit ONLY the three SWAP ZONES (Title, Summary, Skills).
+%------------------------
+
+\documentclass[a4paper,10.5pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{cfr-lm}
+\usepackage[T1]{fontenc}
+
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.2cm, top=0.6cm, right=1.0cm, bottom=0.6cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={},
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-2pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-4pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.8mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.0mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.8mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        {\large\textbf{#1}} & \footnotesize{#2} \\
+        \footnotesize{\textit{#3}} & \footnotesize{#4} \\
+    \end{tabular*}
+    \vspace{-2.0mm}
+}
+
+\renewcommand{\labelitemi}{\raisebox{0.15ex}{\normalsize\textbullet}}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0mm,label={}]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep, labelsep=1.2mm, itemsep=0.4mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+\fontfamily{cmr}\selectfont
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {\raisebox{0.0\height}{\footnotesize \faPhone}\ +91-\phone}\\
+  %% >>> SWAP ZONE 1: TITLE — match the JD (e.g. "Full-Stack Developer", "Software Engineer")
+  {AI Engineer \& Full-Stack Developer} &
+  \href{mailto:\emaila}{\raisebox{0.0\height}{\footnotesize \faEnvelope}\ {\emaila}} \\
+  {Pune, Maharashtra} &
+  \href{https://\github}{\raisebox{0.0\height}{\footnotesize \faGithub}\ {\github}} \\
+  {\href{https://leo4.dev}{\raisebox{0.0\height}{\footnotesize \faGlobe}\ Portfolio: leo4.dev}} &
+  \href{https://\linkedin}{\raisebox{0.0\height}{\footnotesize \faLinkedin}\ {\linkedin}}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+%% >>> SWAP ZONE 2: SUMMARY — keep 3-4 lines; swap 1-2 nouns to mirror the JD (only truthful claims)
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year CS student (9.08 CGPA, PCCOE) with hands-on experience building production AI systems: a hierarchical deep learning equity platform covering all 100 Nifty stocks, an open-source LLM governance benchmark evaluating bias across US, India, and EU legal frameworks, and an agentic wellness platform with multi-modal input and deterministic health analytics. Comfortable owning the full stack from model architecture to deployed UI. Looking for a role where I can ship systems that matter from day one.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Deep Learning, NLP, Data Structures \& Algorithms, Database Systems, Operating Systems}
+      \resumeItemListEnd
+\resumeSubHeadingListEnd
+\vspace{-6mm}
+
+%-----------ENGINEERING EXPERIENCE-----------------
+\section{\textbf{Engineering Experience}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {StockXpert}
+      {Nov 2025 -- Present}
+      {Independent Research Project $|$ Python, TensorFlow, FastAPI, Next.js, TypeScript, Tailwind CSS, Cloudflare R2}
+      {\href{https://github.com/Onkarj012/StockXpert}{\faGithub\ GitHub} \quad \href{https://stockxpert.vercel.app}{\faGlobe\ Live}}
+      \resumeItemListStart
+        \item {Architected a hierarchical deep learning system combining ResNet, GRU, Bi-LSTM, and multi-head attention to model cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}; ensemble design achieved a \textbf{12\% improvement in short-horizon return correlation} over single-architecture baselines, with reduced directional error on high-volatility stocks.}
+        \item {Constructed a leakage-free feature pipeline from raw OHLCV data incorporating RSI, MACD, ADX, Bollinger Bands, SMA/EMA distance, and volatility indicators with strict temporal train/validation/test splits --- enabling clean walk-forward validation with zero lookahead bias across the full 100-stock universe.}
+        \item {Designed a multi-objective Huber loss with directional regularisation and tail-event oversampling, improving signal quality on low-liquidity and high-volatility equities where standard MSE loss degrades.}
+        \item {Built a snapshot-first serving layer on Cloudflare R2 with market-aware TTL caching, delivering \textbf{sub-second API latency across all 100 Nifty stocks} during market hours while eliminating redundant inference cost.}
+        \item {Delivered a full-stack trading dashboard (Next.js + FastAPI) with live stock screener, real-time alerts, OHLCV candlestick charts, technical indicator overlays, and 1D--10D forecast tables with calibrated confidence scores --- serving as the primary interface for daily forecast consumption across the full Nifty universe.}
+      \resumeItemListEnd
+    \vspace{-1mm}
+
+    \resumeProject
+      {GovBench}
+      {Mar 2026 -- Present}
+      {AI Safety Research $|$ Python, LLM Evaluation Pipelines, Sentiment \& Hallucination Detection, Adversarial Testing}
+      {\href{https://github.com/Onkarj012/GovBench}{\faGithub\ GitHub} \quad \href{https://govbench.vercel.app}{\faGlobe\ Live}}
+      \resumeItemListStart
+        \item {Designed and open-sourced an LLM evaluation framework assessing model readiness for judicial and governmental deployment across \textbf{6 pillars}: demographic bias, procedural integrity, corruption resistance, jurisdictional awareness, transparency, and minority protection --- pillars chosen because MMLU-style benchmarks expose none of these failure modes.}
+        \item {Implemented controlled demographic isolation testing across \textbf{12 identity variants} per scenario with naturalistic prompting, measuring inherent bias in bail, sentencing, welfare, and immigration decisions across \textbf{US, India, and EU} legal systems.}
+        \item {Evaluated 4 production LLMs (Claude Sonnet, Gemini Flash, DeepSeek, GPT-4o) across baseline, pressure, and adversarial modes; top performers scored \textbf{90\%+} while exposing concrete failures --- minority protection (GPT-4o: \textbf{63\%}), jurisdictional awareness (DeepSeek: \textbf{56.7\%}).}
+        \item {Built an automated scoring pipeline combining sentiment variance analysis, position drift tracking, and hallucination detection to generate composite deployment-readiness grades, enabling unattended evaluation on new model releases.}
+      \resumeItemListEnd
+    \vspace{-1mm}
+
+    \resumeProject
+      {Stride}
+      {2026 -- Present}
+      {Product Engineering $|$ Next.js, Convex, OpenRouter, Agentic AI, Multi-modal LLM, Docker}
+      {\href{https://github.com/Onkarj012/Stride}{\faGithub\ GitHub} \quad \href{https://stride.leo4.dev}{\faGlobe\ Live}}
+      \resumeItemListStart
+        \item {Built natural-language workout parsing that converts free-text input (e.g.\ ``30 min run, 3x10 squats at 60kg'') into structured sets/reps/duration/MET values --- eliminating rigid input templates and enabling accurate calorie computation without LLM arithmetic.}
+        \item {Designed a four-component deterministic TDEE engine (BMR via Mifflin-St Jeor, MET-based NEAT from occupation and lifestyle, EAT from workouts, TEF) that handles all health computation while LLMs handle only intent extraction --- preventing opaque model arithmetic errors in production calorie and macro calculations.}
+        \item {Architected a multi-modal, multi-agent wellness platform with five specialised domain agents (diet, workout, sleep, hydration, habits) sharing persistent behavioral memory, adaptive analytics, and multi-modal input (text, voice, image, barcode).}
+        \item {Designed adaptive UX driven by behavioral signals: casual users see streamlined logging, advanced users see detailed analytics, overwhelmed users see simplified interfaces --- all from the same codebase without manual user-managed preferences.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-6mm}
+
+%-----------TECHNICAL SKILLS-----------------
+%% >>> SWAP ZONE 3: SKILLS — reorder lines so the JD's top keywords lead; add only truthful items
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML/CSS, Electron} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs} \\
+     \textbf{AI / ML}{: TensorFlow, PyTorch, RAG Pipelines, pgvector, BM25/RRF, LLM Evaluation, Agentic AI, Multi-modal AI, XGBoost, HuggingFace, OpenRouter} \\
+     \textbf{LLM Providers}{: Anthropic Claude, OpenAI GPT, Gemini, Groq, Deepgram, whisper.cpp} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Docker, Git, GitHub, GitHub Actions (CI/CD)} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

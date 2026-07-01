@@ -1,0 +1,174 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: AI Software Engineer @ Zyvora Innovations (agentic / multi-agent + RAG)
+% Slot 3 = PromptForge. ATS-friendly build: lmodern + text contacts (no icon font).
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {AI / Full-Stack Software Engineer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year Computer Science student (9.08 CGPA) who builds production-grade AI software end to end. Designed multi-agent LLM pipelines with prompt orchestration, guardrails, and cross-model routing, and a hybrid RAG retrieval system (BM25 + pgvector with reciprocal rank fusion) over 6,000+ pages. Strong in Python, React.js, FastAPI, and reliable, monitored AI systems built to operate at scale, not just in notebooks.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------PROJECTS-----------------
+\section{\textbf{Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {StockXpert}{AI-Powered Deep Learning Equity Prediction Platform}
+      {Python, TensorFlow, FastAPI, Next.js, TypeScript, Cloudflare R2, AWS}
+      {Nov 2025 -- Present}
+      \resumeItemListStart
+        \item {Built a leakage-free Python ML pipeline and hierarchical deep-learning model (ResNet, GRU, Bi-LSTM, multi-head attention) across all \textbf{100 Nifty NSE equities}, improving short-horizon return correlation \textbf{12\%} over baseline.}
+        \item {Engineered a multi-objective Huber loss with directional regularisation and tail-event oversampling, reducing directional error on high-volatility equities while preventing lookahead bias via strict temporal splits.}
+        \item {Shipped a monitored FastAPI serving layer with snapshot-first R2 caching, delivering \textbf{sub-second latency across all 100 stocks} during market hours and eliminating redundant inference cost.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {GovBench}{Open-Source LLM Governance, Reliability \& Guardrail Evaluation}
+      {Python, LLM Evaluation Pipelines, Adversarial Testing, Hallucination Detection, AI Safety}
+      {Mar 2026 -- Present}
+      \resumeItemListStart
+        \item {Open-sourced an LLM evaluation framework testing model reliability across \textbf{6 pillars} and \textbf{12 identity variants}, run in baseline, pressure, and adversarial stress modes to surface failures standard benchmarks miss.}
+        \item {Evaluated 4 production LLMs (Claude, Gemini, DeepSeek, GPT-OSS), exposing concrete guardrail gaps (minority protection \textbf{63\%}, jurisdictional awareness \textbf{56.7\%}) with top models scoring \textbf{90\%+}.}
+        \item {Automated a scoring pipeline (sentiment variance, position-drift tracking, hallucination detection) that emits deployment-readiness grades and runs unattended on each new model release.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Agentic Multi-Agent Prompt Engineering \& Orchestration Platform}
+      {Node.js, Express.js, BullMQ, Convex, OpenRouter, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Architected a creator--critic--evaluator \textbf{multi-agent} pipeline that iteratively improves prompts, scoring clarity, constraint coverage, and token efficiency across versioned, regression-tracked revision trails.}
+        \item {Implemented cross-model LLM orchestration and routing across OpenAI, Anthropic, Gemini, and open models via OpenRouter, enabling objective quality, latency, and cost-per-output benchmarking for model selection.}
+        \item {Built a fault-tolerant async backend (BullMQ workers, idempotent retries, Convex persistence) and a React.js review UI, sustaining reliable prompt regression testing without job loss on provider timeouts.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{AI / ML}{: Multi-Agent Systems, LLM Orchestration, Prompt Engineering, RAG Pipelines, Vector Search (pgvector, BM25, Reciprocal Rank Fusion), LLM Evaluation, Guardrails, Hallucination Detection, TensorFlow, XGBoost, OpenRouter} \\
+     \textbf{LLM Providers}{: Anthropic Claude, OpenAI GPT, Gemini, Groq} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets, Microservices} \\
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML, CSS} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
+     \textbf{Cloud \& Tooling}{: AWS, Cloudflare R2, Git, GitHub, CI-style eval gating, async job pipelines} \\
+     \textbf{System Design}{: Multi-agent coordination, hybrid retrieval, event-driven and async architectures, snapshot-first serving, monitoring and guardrails} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

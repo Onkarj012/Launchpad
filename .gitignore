@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# LaTeX build scratch + artifacts (regenerable — PDF-only invariant)
+resumes/sources/build/
+resumes/output/
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# scheduler lock
+.claude/scheduled_tasks.lock

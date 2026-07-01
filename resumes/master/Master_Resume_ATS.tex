@@ -1,0 +1,129 @@
+%-------------------------
+% MASTER RESUME (ATS-CLEAN) — Onkar Jadhav
+% Single-column, no icon fonts, no multicol, no tcolorbox, no two-column tabular.
+% Linear reading order so Greenhouse/Lever/Workday parsers extract every field.
+% Content is IDENTICAL to Master_Resume.tex — only layout changed for ATS parsing.
+%-------------------------
+
+\documentclass[a4paper,11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[left=1.6cm,right=1.6cm,top=1.2cm,bottom=1.2cm]{geometry}
+
+% No page numbers / headers / footers
+\pagestyle{empty}
+
+% URLs render in the same upright font as body text (ATS reads them as plain text)
+\urlstyle{same}
+
+% Tighten list spacing but keep STANDARD bullets and linear flow
+\setlist[itemize]{leftmargin=1.4em, itemsep=1pt, topsep=2pt, parsep=0pt}
+
+% Simple, parser-friendly section headers: bold, ruled, full width
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+
+% One job/project entry: title (bold) on the left, dates pushed right on the SAME
+% line via \hfill. Reading order stays linear left-to-right, so the parser keeps it.
+\newcommand{\entry}[2]{\noindent\textbf{#1}\hfill{#2}\par}
+\newcommand{\subentry}[2]{\noindent\textit{#1}\hfill{\textit{#2}}\par\vspace{2pt}}
+
+\begin{document}
+
+%----------HEADING (plain text — no icons, parser reads every field)-----------
+\begin{center}
+  {\LARGE \textbf{Onkar Jadhav}}\\[2pt]
+  AI / Full-Stack Software Engineer\\[2pt]
+  Pune, Maharashtra, India\\[2pt]
+  Phone: +91-7058604679 \quad|\quad Email: onkarj012@gmail.com\\[2pt]
+  GitHub: github.com/Onkarj012 \quad|\quad LinkedIn: linkedin.com/in/onkarj012 \quad|\quad Portfolio: leo4.dev
+\end{center}
+
+%----------SUMMARY-----------------
+\section{Summary}
+Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across production AI systems, systems programming, and full-stack product engineering. Shipped Vaani, a notarised macOS dictation product with native C++/Obj-C addons, from concept to distributable release independently. Built Lore Engine, a production RAG platform with hybrid BM25 + pgvector retrieval over 6,000+ wiki pages and deploy-gated evaluation harnesses. Designed StockXpert, a hierarchical deep learning prediction system achieving a 12\% improvement in short-horizon return correlation across all 100 Nifty NSE equities. Open-sourced GovBench, an LLM governance benchmark evaluated across US, India, and EU legal systems. Currently building Stride, an AI-first adaptive wellness platform with five domain agents and multi-modal input, and PromptForge, an agentic prompt-engineering pipeline with cross-model benchmarking. Proficient in Python, TypeScript, React, Next.js, FastAPI, Node.js, TensorFlow, RAG architectures, and agentic AI systems.
+
+%-----------EDUCATION-----------
+\section{Education}
+\entry{Bachelor of Technology in Computer Science}{Nov 2022 -- Jun 2026}
+\subentry{Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{CGPA: 9.08 (up to 7th semester)}
+\begin{itemize}
+  \item Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming.
+\end{itemize}
+\vspace{2pt}
+\entry{Higher Secondary Certificate}{Jun 2022}
+\subentry{Shri Mhalsakant Junior College, Maharashtra State Board}{Score: 89.17\%}
+
+%-----------EXPERIENCE-----------------
+\section{Experience}
+\entry{Stride --- AI-First Adaptive Wellness Platform}{April 2026 -- Present}
+\subentry{Founder \& Lead Engineer}{Remote}
+\begin{itemize}
+  \item Built and shipped Stride to production as sole engineer; running live with an early cohort of \textbf{5--10 active trial users} driving iterative product feedback.
+  \item Architected a six-layer AI-first system: multi-modal input capture (text, voice, image, barcode, nutrition labels), a behavioral memory layer tracking preferences and adherence, an NLU layer for structured extraction, five specialised domain agents (diet, workout, sleep, hydration, habits) sharing memory, an analytics layer, and an adaptive UX layer driven by behavioral signals.
+  \item Separated concerns by design: LLMs handle understanding and intent extraction while a deterministic four-component calculator (BMR, NEAT, EAT, TEF) handles computation --- eliminating opaque LLM arithmetic errors while retaining natural-language input.
+  \item Built natural-language workout parsing converting free text such as ``30 min run, 3x10 squats at 60kg'' into structured sets/reps/duration/MET values without rigid input templates.
+  \item Selected Convex for real-time reactive state over REST + WebSockets, and OpenRouter for multi-provider LLM routing to avoid vendor lock-in across five concurrent agent types.
+\end{itemize}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{Engineering Projects}
+
+\entry{Lore Engine --- RAG Platform for Fan Wiki Knowledge Bases}{2026 -- Present}
+\subentry{Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, S3, OpenAI, Anthropic Claude}{}
+\begin{itemize}
+  \item Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline combining BM25 lexical search and pgvector dense embeddings via reciprocal rank fusion (RRF) --- specifically chosen over pure vector search to handle proper-noun disambiguation and exact character-name matching that semantic models fail on.
+  \item Designed section-aware chunking at H2/H3 wiki boundaries (not naive fixed token windows) with enriched [Series][Page][Section] metadata per chunk; per-chunk first\_appearance\_order spoiler tags assigned at ingestion time and filtered at retrieval time, ensuring users never surface lore beyond their current story progress.
+  \item Chose pgvector on a single Postgres instance over dedicated vector stores (Pinecone, Weaviate, Qdrant) to scale to ~5M vectors per series while eliminating infrastructure complexity and keeping retrieval within one network hop.
+  \item Designed an async ingestion pipeline (Celery workers, Redis broker, Cloudflare R2/S3 object storage) that fetches pages from the MediaWiki API, converts wikitext to structured markdown, stores raw pages in R2/S3, and persists infobox metadata in PostgreSQL.
+  \item Established a \textbf{50-question per-series ground-truth eval harness} measuring retrieval MRR and end-to-end answer accuracy, gating every deploy; validated architecture against the Harry Potter wiki (~6,000 pages).
+  \item Shipped two distinct consumer surfaces on a single shared retriever: a streaming chat interface with inline citations (conversational) and a hierarchically generated lore book with aggressive per-series caching (reference).
+\end{itemize}
+
+\entry{StockXpert --- AI-Powered Deep Learning Equity Prediction Platform}{Nov 2025 -- Present}
+\subentry{Python, TensorFlow, FastAPI, Next.js, TypeScript, Tailwind CSS, Cloudflare R2, AWS}{}
+\begin{itemize}
+  \item Architected a hierarchical deep learning system combining ResNet, GRU, Bi-LSTM, and multi-head attention to model cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}, outperforming single-architecture baselines on directional accuracy.
+  \item Constructed a leakage-free feature pipeline from raw OHLCV data incorporating RSI, MACD, ADX, Bollinger Bands, SMA/EMA distance, and volatility indicators with strict temporal train/validation/test splits to prevent lookahead bias in feature engineering.
+  \item Designed a multi-objective Huber loss with directional regularisation and tail-event oversampling, achieving a \textbf{12\% improvement in short-horizon return correlation} over baseline and reducing directional error on high-volatility equities.
+  \item Built a snapshot-first serving layer on Cloudflare R2 with market-aware TTL caching, delivering \textbf{sub-second API latency across all 100 Nifty stocks} during market hours while eliminating redundant inference cost.
+  \item Delivered a full-stack trading dashboard (Next.js + FastAPI) with live stock screener, real-time alerts, OHLCV candlestick charts, technical indicator overlays, and 1D--10D forecast tables with calibrated confidence scores.
+\end{itemize}
+
+\entry{GovBench --- Open-Source LLM Governance \& Bias Evaluation Framework}{Mar 2026 -- Present}
+\subentry{Python, LLM Evaluation Pipelines, Sentiment Analysis, Hallucination Detection, Adversarial Testing, AI Safety}{github.com/Onkarj012}
+\begin{itemize}
+  \item Designed and open-sourced an LLM evaluation framework assessing model readiness for judicial and governmental deployment across \textbf{6 pillars}: demographic bias, procedural integrity, corruption resistance, jurisdictional awareness, transparency, and minority protection --- pillars chosen because MMLU-style benchmarks expose none of these failure modes.
+  \item Implemented controlled demographic isolation testing across \textbf{12 identity variants} per scenario with naturalistic (non-leading) prompting, measuring inherent bias in bail, sentencing, welfare, and immigration decisions across \textbf{US, India, and EU} legal systems.
+  \item Evaluated 4 production LLMs (Claude Sonnet 4.6, Gemini Flash Lite, DeepSeek V4, GPT-OSS 120B) across baseline, pressure, and adversarial stress modes; top performers scored \textbf{90\%+ overall} while revealing concrete failures in minority protection (GPT-OSS: \textbf{63\%}) and jurisdictional awareness (DeepSeek V4: \textbf{56.7\%}).
+  \item Built an automated scoring pipeline combining sentiment variance analysis, position drift tracking, and hallucination detection to emit composite deployment-readiness grades, enabling unattended evaluation on new model releases.
+\end{itemize}
+
+\entry{PromptForge --- Agentic Prompt Engineering \& Benchmarking Platform}{Jan 2026 -- Feb 2026}
+\subentry{Node.js, Express.js, BullMQ, Convex, OpenRouter, React.js}{}
+\begin{itemize}
+  \item Architected a creator--critic--evaluator agentic pipeline for iterative prompt improvement, scoring clarity, completeness, constraint coverage, and token efficiency across versioned revision trails --- treating prompts as testable, regression-tracked artifacts.
+  \item Implemented cross-model routing and benchmarking across OpenAI, Anthropic, Gemini, and open-source models via OpenRouter, enabling objective quality, latency, and cost-per-output comparisons for data-driven model selection.
+  \item Built a fault-tolerant async backend using BullMQ workers with idempotent retries and Convex persistence, supporting reliable prompt regression testing at scale without job loss on LLM provider timeouts.
+  \item Emitted structured prompt outputs with metadata: token budget, latency profile, expected output shape, and version changelog --- enabling prompts to be reviewed and deployed like code.
+\end{itemize}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{Technical Skills}
+\noindent
+\textbf{Languages}: Python, TypeScript, JavaScript, SQL, C++, Objective-C, Java\\
+\textbf{Frontend}: React.js, Next.js, Tailwind CSS, HTML, CSS, Electron\\
+\textbf{Backend}: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets\\
+\textbf{AI / ML}: TensorFlow, RAG Pipelines, pgvector, BM25, Reciprocal Rank Fusion, LLM Evaluation, Agentic Workflows, Behavioral Memory, Multi-modal AI, Hallucination Detection, XGBoost, OpenRouter\\
+\textbf{LLM Providers}: Anthropic Claude, OpenAI GPT, Gemini, Groq, Deepgram Nova-2, whisper.cpp (local)\\
+\textbf{Databases}: PostgreSQL (+ pgvector), MongoDB, Convex\\
+\textbf{Cloud \& DevOps}: AWS, Cloudflare R2, Git, GitHub, macOS Distribution (notarisation, code signing)\\
+\textbf{Native / Systems}: C++, Objective-C, Node-API (native addons), Electron, macOS Accessibility API\\
+\textbf{System Design}: Event-driven architecture, async job pipelines, snapshot-first serving, hybrid retrieval, multi-agent coordination, adaptive UX systems
+
+\end{document}
