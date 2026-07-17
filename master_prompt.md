@@ -2,7 +2,7 @@
 
 > Single source of truth for targeting, scoring, resume tailoring, and outreach.
 > Claude reads this file for every daily pull, every resume tailor, and every cold email.
-> Resume **content** comes from `resumes/master/Master_Resume_ATS.tex` (default) / `resumes/master/Master_Resume.tex` (pretty). This file holds the **rules**.
+> Resume **content** comes from `resumes/master/Master_Resume_ATS.tex`; **layout** comes from the frozen template `resumes/templates/Onkar_Template.tex`. This file holds the **rules**.
 
 ---
 
@@ -126,7 +126,7 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 - Retain the completed matrix with the tailored source or review notes so keyword coverage can be audited.
 
 ### Claim provenance and truthfulness
-- Every tailored achievement and capability claim must map to an approved bullet or skill in `resumes/master/Master_Resume_ATS.tex` or `resumes/master/Master_Resume.tex`.
+- Every tailored achievement and capability claim must map to an approved bullet or skill in `resumes/master/Master_Resume_ATS.tex`.
 - Reframe, reorder, shorten, or combine only when the resulting meaning remains equivalent to the source evidence.
 - Do not convert a target, design capacity, prototype, benchmark, planned feature, or tool familiarity into a shipped achievement or production result. This is **capability-to-achievement inflation** and is forbidden.
 - Never strengthen qualifiers or scope. Examples: `designed to scale to` cannot become `scales to`; `prototype` cannot become `production`; `supported` cannot become `owned`.
@@ -242,10 +242,9 @@ Onkar
 
 ## 7. Pointers
 
-- Resume content SoT: `resumes/master/Master_Resume_ATS.tex` (ATS-clean, default for portal applies) · `resumes/master/Master_Resume.tex` (pretty, for cold-email attachments)
-- Tailored `.tex` sources: `resumes/sources/` · compile scratch: `resumes/sources/build/`
-- Final PDFs (PDF-only): `resumes/output/Onkar_Jadhav_<Company>_<Role>.pdf`
-- Base variants: `resumes/bases/`
+- Resume content SoT: `resumes/master/Master_Resume_ATS.tex` · layout SoT (frozen, cp-then-edit-slots): `resumes/templates/Onkar_Template.tex`
+- Tailored `.tex` sources: `resumes/sources/<YYYY-MM-DD>/` · compile scratch: `resumes/sources/build/`
+- Final PDFs (PDF-only): `resumes/output/<YYYY-MM-DD>/Onkar_Jadhav_<Company>_<Role>.pdf`
 - Sourcing watchlist: `companies.json` (project root) — seed + auto-grow company/ATS/slug list for Layer 2 fetch
 - Discovery/hygiene engine (harvested from career-ops — library, **not** a tracker; `career-ops/data/*` is run cache only):
   - Config (user layer, survives `update-system.mjs`): `career-ops/portals.yml`, `career-ops/config/profile.yml`, `career-ops/cv.md` (stub — resume SoT stays the `.tex` masters)

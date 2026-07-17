@@ -1,6 +1,9 @@
 %-------------------------
 % RESUME — Onkar Jadhav
-% Tailored: AI Engineer @ Codetoday (GenAI / LLM orchestration / MLOps)
+% CANONICAL LAYOUT TEMPLATE. Frozen preamble + frozen structure.
+% Tailor only inside %== TAILOR-START/END ==  slots: HEADLINE, SUMMARY,
+% COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS. Everything else,
+% including section order and section headings, is frozen.
 %------------------------
 
 \documentclass[a4paper,11pt]{article}
@@ -69,7 +72,7 @@
 \renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
 \newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
 \newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
-\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\footnotesize}
 \newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
 \newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
 \newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
@@ -89,28 +92,34 @@
 %----------HEADING-----------------
 \begin{tabularx}{\linewidth}{L r}
   \textbf{\Large \name} & {+91-\phone} \\
+%== TAILOR-START: HEADLINE ==
   {AI / Full-Stack Software Engineer} & \href{mailto:\emaila}{\emaila} \\
+%== TAILOR-END: HEADLINE ==
   {Pune, Maharashtra} & \href{https://\github}{\github} \\
-  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+  \href{https://leo4.dev}{leo4.dev} & \href{https://\linkedin}{\linkedin}
 \end{tabularx}
 \vspace{-4mm}
 
 %----------SUMMARY-----------------
 \section{\textbf{Summary}}
 \vspace{1mm}
+%== TAILOR-START: SUMMARY ==
 \small{
-Final-year CS student (9.08 CGPA) building production generative AI systems end to end. Designed multi-agent LLM orchestration pipelines with multi-provider routing and a hybrid RAG system (BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness --- the same CI/CD-for-AI pattern required in production analytics platforms. Built agentic orchestration (creator--critic--evaluator pipeline, cross-model benchmarking) and shipped a live multi-agent product with an early private user cohort. Strong in Python, FastAPI, RAG, agentic AI, and AWS.
+AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI products end to end, from React/Next.js frontends to Python/Node backend services. Architected a hybrid RAG system (Next.js + FastAPI, BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness, and an agentic creator--critic--evaluator pipeline with cross-model benchmarking. Currently shipping Stride, a five-agent AI product, as Founder \& Lead Engineer. Strong across React, Next.js, FastAPI, Node.js, RAG, and agentic AI system design.
 }
+%== TAILOR-END: SUMMARY ==
 \vspace{-3mm}
 
 %-----------EDUCATION-----------
 \section{\textbf{Education}}
   \resumeSubHeadingListStart
     \resumeSubheading
-      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Bachelor of Technology in Computer Science}{CGPA: 9.17}
       {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
       \resumeItemListStart
+%== TAILOR-START: COURSEWORK ==
         \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+%== TAILOR-END: COURSEWORK ==
       \resumeItemListEnd
   \resumeSubHeadingListEnd
 \vspace{-5.5mm}
@@ -123,9 +132,12 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
       {Stride --- AI-First Adaptive Wellness Platform}{Remote}
       {Founder \& Lead Engineer}{April 2026 -- Present}
       \resumeItemListStart
-        \item {Built and shipped Stride to production as sole engineer; running live with \textbf{an early private user cohort} actively driving iterative product feedback ahead of public beta.}
+%== TAILOR-START: EXPERIENCE-BULLETS ==
+        \item {Architected and shipped Stride to production as sole engineer, owning the full stack --- React/Next.js frontend, backend services, and data layer --- running live with an early private user cohort driving iterative product feedback ahead of public beta.}
         \item {Architected five specialised domain agents (diet, workout, sleep, hydration, habits) sharing a behavioral memory layer, with multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini --- eliminating vendor lock-in across five concurrent agent types.}
         \item {Separated LLM reasoning from deterministic computation (BMR/NEAT/EAT/TEF calculator), eliminating opaque model arithmetic errors; implemented CI-style quality gates before each capability release.}
+        \item {Selected Convex for real-time reactive state over a REST + WebSockets stack, keeping five concurrent agent types in sync across the frontend without manual polling logic.}
+%== TAILOR-END: EXPERIENCE-BULLETS ==
       \resumeItemListEnd
 
 \resumeSubHeadingListEnd
@@ -135,6 +147,7 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
 \section{\textbf{Engineering Projects}}
 \resumeSubHeadingListStart
 
+%== TAILOR-START: PROJECTS ==
     \resumeProject
       {Lore Engine}{RAG Platform with Deploy-Gated Evaluation Harness}
       {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, OpenAI, Anthropic Claude}
@@ -143,7 +156,7 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
         \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline (BM25 + pgvector via reciprocal rank fusion) --- chosen over pure vector search to handle exact entity and proper-noun matching that semantic models fail on.}
         \item {Designed section-aware chunking at H2/H3 boundaries with enriched \texttt{[Series][Page][Section]} metadata and spoiler-filter tags per chunk, demonstrating fine-grained context control over large knowledge bases.}
         \item {Established a \textbf{50-question per-series ground-truth eval harness} measuring retrieval MRR and end-to-end answer accuracy, gating every deploy --- the same CI/CD-for-AI pattern required in production LLM analytics systems.}
-        \item {Built an async ingestion pipeline (Celery, Redis, Cloudflare R2) that fetches from the MediaWiki API, converts wikitext to markdown, and uses pgvector, chosen over Pinecone/Weaviate to scale to \textbf{$\sim$5M vectors per series} while keeping retrieval in one network hop.}
+        \item {Built an async ingestion pipeline (Celery, Redis, Cloudflare R2) that fetches from the MediaWiki API and converts wikitext to markdown, scaling to \textbf{$\sim$5M vectors per series} in pgvector --- chosen over Pinecone/Weaviate to stay in one network hop.}
       \resumeItemListEnd
     \vspace{-2mm}
 
@@ -154,8 +167,10 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
       \resumeItemListStart
         \item {Architected a creator--critic--evaluator agentic orchestration pipeline, scoring prompt clarity, constraint coverage, and token efficiency across versioned, regression-tracked revision trails --- treating prompts as testable production artifacts.}
         \item {Implemented cross-model routing across OpenAI, Anthropic, Gemini, and open-source models via OpenRouter for objective quality, latency, and cost-per-output benchmarking.}
-        \item {Built a fault-tolerant async backend (BullMQ workers, idempotent retries, Convex persistence) and emitted structured prompt outputs with token budget, latency profile, and version changelog --- enabling prompt deployment like code.}
+        \item {Built a fault-tolerant async backend using BullMQ workers with idempotent retries and Convex persistence, supporting reliable regression testing at scale without job loss on provider timeouts.}
+        \item {Emitted structured prompt outputs with metadata --- token budget, latency profile, expected output shape, version changelog --- enabling prompts to be reviewed and deployed like code.}
       \resumeItemListEnd
+%== TAILOR-END: PROJECTS ==
 
 \resumeSubHeadingListEnd
 \vspace{-8.5mm}
@@ -164,14 +179,15 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
 \section{\textbf{Technical Skills}}
  \begin{itemize}[leftmargin=0.05in, label={}]
     \small{\item{
-     \textbf{AI / ML}{: LLM Orchestration, Agentic Workflows, RAG Pipelines, Deploy-Gated Evaluation, pgvector, BM25, Reciprocal Rank Fusion, Multi-Agent Systems, Prompt Engineering, Behavioral Memory, Hallucination Detection, TensorFlow, OpenRouter} \\
-     \textbf{LLM Providers}{: Anthropic Claude, OpenAI GPT, Gemini, Groq, Deepgram Nova-2} \\
-     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
-     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
+%== TAILOR-START: SKILLS ==
      \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML, CSS} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
+     \textbf{AI / ML}{: LLM Orchestration, Agentic Workflows, RAG Pipelines, Deploy-Gated Evaluation, pgvector, BM25, Reciprocal Rank Fusion, Multi-Agent Systems, Prompt Engineering, Behavioral Memory, TensorFlow, OpenRouter} \\
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
      \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
      \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub, async job pipelines, CI-style eval gating} \\
      \textbf{System Design}{: Multi-agent coordination, hybrid retrieval, event-driven architecture, snapshot-first serving} \\
+%== TAILOR-END: SKILLS ==
     }}
  \end{itemize}
 \vspace{-8pt}

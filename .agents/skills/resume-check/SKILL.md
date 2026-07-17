@@ -9,9 +9,10 @@ Red-pen, recruiter-grade review. No flattery. Find the weaknesses before a recru
 
 ## Source of truth
 - Read `master_prompt.md` sections 2 through 4.
-- Review the target `.tex` source and, when a compiled tailored PDF exists, review the matching final PDF artifact too. Default source: `resumes/master/Master_Resume_ATS.tex`. Tailored sources live in `resumes/sources/` and final PDFs in `resumes/output/`.
-- Approved evidence comes only from `resumes/master/Master_Resume_ATS.tex` and `resumes/master/Master_Resume.tex`.
-- Preserve the visual template the user likes, but treat broken or non-linear ATS extraction as a failure regardless of appearance.
+- Review the target `.tex` source and, when a compiled tailored PDF exists, review the matching final PDF artifact too. Default source: `resumes/master/Master_Resume_ATS.tex`. Tailored sources live in `resumes/sources/<YYYY-MM-DD>/` and final PDFs in `resumes/output/<YYYY-MM-DD>/`.
+- Approved evidence comes only from `resumes/master/Master_Resume_ATS.tex`.
+- Layout truth is `resumes/templates/Onkar_Template.tex`. Any tailored `.tex` under review must be a copy of that template with edits confined to its `%== TAILOR-START/END ==` slots (HEADLINE, SUMMARY, COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS); flag any drift outside a slot as an artifact-gate failure regardless of how the PDF looks. Run `node tests/resume/verify.mjs <source.tex> <output.pdf>` to check this deterministically before the manual review.
+- Identity facts: CGPA is 9.17. Never "final-year student" / "graduate" / "graduated" wording. Portfolio `leo4.dev` must appear in the header.
 
 ## JD handling
 - **JD-specific is primary.** Review every section and the final artifact against that JD.
@@ -56,6 +57,7 @@ Default to Recruiter unless the user names another mode.
 
 ### 3. Artifact gate
 When the tailored PDF exists:
+- Run `node tests/resume/verify.mjs <source.tex> <output.pdf>` and report its result verbatim: template conformance (preamble and frozen zones byte-identical to `resumes/templates/Onkar_Template.tex` outside the tailor slots), exactly one page, and page fill ≥93%.
 - Confirm exactly one visually balanced page without padding, conspicuous dead space, overflow, crowding, or tiny type.
 - Render and inspect the PDF for spacing, clipping, collisions, detached bullets, stray glyphs, and broken links.
 - Extract all text and verify linear section order, contact details, JD coverage, and title/organization/date/location associations.
