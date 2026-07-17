@@ -1,4 +1,4 @@
-# Job Search OS — README
+# Launchpad — README
 
 Onkar Jadhav's job-search system: discover roles → score against targeting → tailor a resume → track in Notion. This file is the operator's guide — how to run it, how it's wired, and what's currently unreliable. For the rubric/targeting rules themselves, see `master_prompt.md`. For directory layout and identity, see `CLAUDE.md`.
 
@@ -20,7 +20,7 @@ One-off commands:
 - `/resume-check` — brutal review of the resume `.tex` against a JD.
 - `/application-agent` — full single-role workflow (research → fit → resume → optional cold email).
 
-## Pipeline — what `/morning` and `/pull-jobs` actually do
+## Pipeline — what `/morning` and `/daily-job-pull` actually do
 
 ```
 Tracked scan       career-ops scan.mjs --dry-run --json
@@ -72,7 +72,7 @@ Full schema (every property + option) is in `NOTION_V4_SETUP.md`.
 
 4. **Resume compilation is local-only.** `/make-applications` and `/resume-latex` need the Mac LaTeX toolchain (`pdflatex`) — they will not (and should not) run in a headless/cloud session.
 
-5. **`career-ops/` is a vendored discovery library.** Job Search OS uses `scan.mjs`, `scan-ats-full.mjs`, `check-liveness.mjs`, `fingerprint-core.mjs`, `detect-reposts.mjs`, follow-up tooling, and user-layer config. Generic JSON/liveness patches may be overwritten by a career-ops update, so root compatibility tests must pass after updates. `career-ops/data/*` remains engine state/cache; Notion is the tracker of record.
+5. **`career-ops/` is a vendored discovery library.** Launchpad uses `scan.mjs`, `scan-ats-full.mjs`, `check-liveness.mjs`, `fingerprint-core.mjs`, `detect-reposts.mjs`, follow-up tooling, and user-layer config. Generic JSON/liveness patches may be overwritten by a career-ops update, so root compatibility tests must pass after updates. `career-ops/data/*` remains engine state/cache; Notion is the tracker of record.
 
 ## Guardrails (non-negotiable — see `CLAUDE.md` for the full list)
 
@@ -85,7 +85,7 @@ Full schema (every property + option) is in `NOTION_V4_SETUP.md`.
 
 | Symptom | Likely cause |
 |---|---|
-| `/pull-jobs` returns very few results | Watchlist-bound gates killing everything — check the run summary's drop counts per gate/layer, not just the final count. |
+| `/daily-job-pull` returns very few results | Watchlist-bound gates killing everything — check the run summary's drop counts per gate/layer, not just the final count. |
 | `/followups` says "nothing due" but you know something's overdue | Query-tool limitation above — open the Follow-up Due view in Notion directly to confirm. |
 | A company 404s in `companies.json` | It's likely not on Greenhouse/Lever/Ashby. Don't hand-add a slug without curling the endpoint first (`.claude/skills/daily-job-pull/references/sourcing.md` § ATS endpoints) — the `_meta.verification` rule in `companies.json` exists because guessed slugs silently return nothing. |
 | `/make-applications` fails to compile | Confirm you're running locally (not cloud) and `pdflatex` is on `PATH`. |

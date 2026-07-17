@@ -1,4 +1,4 @@
-# Job Search OS — project map & contract
+# Launchpad — project map & contract
 
 This is Onkar Jadhav's job-search system: discover roles → score against targeting → tailor a one-page resume → track in Notion. Read this file on entry; you already know the layout, the source of truth, and who the user is. **Do not re-ask identity or project questions answered below.**
 

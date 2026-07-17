@@ -1,4 +1,4 @@
-# Job Search OS — project map & contract
+# Launchpad — project map & contract
 
 This is Onkar Jadhav's job-search system: discover roles → score against targeting → tailor a one-page resume → track in Notion. Read this file on entry; you already know the layout, the source of truth, and who the user is. **Do not re-ask identity or project questions answered below.**
 
@@ -23,7 +23,7 @@ Job Search/
   AGENTS.md            ← this file (map + identity + guardrails)
   master_prompt.md     ← source of truth (targeting, rubric, resume/email rules)
   companies.json       ← Layer-2 ATS watchlist for daily-job-pull
-  .Codex/skills/      ← all slash skills (project-scoped, single-slash invokable)
+  .agents/skills/     ← all slash skills (project-scoped, single-slash invokable)
   resumes/
     master/            Master_Resume_ATS.tex (default) + Master_Resume.tex (pretty)
     bases/             Base1-3 variants (+ previews)
