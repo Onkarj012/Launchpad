@@ -1,174 +1,112 @@
 %-------------------------
-% Onkar Jadhav — Single-Page Resume
-% Target: AI / Full-Stack / ML Engineer (fresher)
-% Slots: 1 StockXpert · 2 GovBench · 3 Lore Engine
+% CANONICAL BLANK ATS RESUME TEMPLATE — Onkar Jadhav
+% Usage rules:
+% - Start every tailored portal resume from this file.
+% - Keep the document single-column and preserve the linear \entry/\subentry flow.
+% - Fill only from approved evidence in resumes/master/Master_Resume_ATS.tex and
+%   resumes/master/Master_Resume.tex. Never invent experience, metrics, dates,
+%   salaries, contacts, or links.
+% - Keep exactly one Stride experience entry and exactly two project entries.
+% - Replace every %SLOT with truthful, JD-matched content before delivery.
+% - Compile locally and verify clean one-page PDF text extraction before promotion.
+% - Do not use em dashes in resume bullets or sentences.
+%
+% JD REQUIREMENT MATRIX (mandatory before drafting):
+% Exact JD phrase | Required/preferred | Category | Approved evidence source | Target section | Resume wording | Covered/Missing
+% ----------------|--------------------|----------|--------------------------|----------------|------------------|------------------
+%                  |                    |          |                          |                |                  |
+%                  |                    |          |                          |                |                  |
+%                  |                    |          |                          |                |                  |
 %-------------------------
 
 \documentclass[a4paper,11pt]{article}
-\usepackage{latexsym}
-\usepackage{xcolor}
-\usepackage{float}
-\usepackage{ragged2e}
-\usepackage[empty]{fullpage}
-\usepackage{tabularx}
-\usepackage{titlesec}
-\usepackage{geometry}
-\usepackage{marvosym}
-\usepackage{verbatim}
-\usepackage{enumitem}
-\usepackage[hidelinks]{hyperref}
-\usepackage{fancyhdr}
-\usepackage{fontawesome5}
-\usepackage{multicol}
-\usepackage{graphicx}
-\usepackage{cfr-lm}
+
 \usepackage[T1]{fontenc}
-\setlength{\multicolsep}{0pt}
-\pagestyle{fancy}
-\fancyhf{}
-\fancyfoot{}
-\renewcommand{\headrulewidth}{0pt}
-\renewcommand{\footrulewidth}{0pt}
-\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
-\usepackage[most]{tcolorbox}
-\tcbset{
-    frame code={}
-    center title,
-    left=0pt, right=0pt, top=0pt, bottom=0pt,
-    colback=gray!20, colframe=white,
-    width=\dimexpr\textwidth\relax,
-    enlarge left by=-2mm,
-    boxsep=4pt, arc=0pt, outer arc=0pt,
-}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[left=1.6cm,right=1.6cm,top=1.2cm,bottom=1.2cm]{geometry}
+
+% No page numbers / headers / footers
+\pagestyle{empty}
+
+% URLs render in the same upright font as body text (ATS reads them as plain text)
 \urlstyle{same}
-\raggedright
-\setlength{\tabcolsep}{0in}
 
-\titleformat{\section}{
-  \vspace{-4pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+% Tighten list spacing but keep STANDARD bullets and linear flow
+\setlist[itemize]{leftmargin=1.4em, itemsep=1pt, topsep=2pt, parsep=0pt}
 
-\newcommand{\resumeItem}[2]{
-  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
-}
-\newcommand{\resumeSubheading}[4]{
-\vspace{0.5mm}\item
-    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
-        \textbf{#1} & \textit{\footnotesize{#4}} \\
-        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
-    \end{tabular*}
-    \vspace{-2.4mm}
-}
-\newcommand{\resumeProject}[4]{
-\vspace{0.5mm}\item
-    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
-        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
-        \footnotesize{\textit{#3}} & \\
-    \end{tabular*}
-    \vspace{-2.4mm}
-}
+% Simple, parser-friendly section headers: bold, ruled, full width
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{8pt}{4pt}
 
-\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
-\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
-\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
-\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
-\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
-\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
-\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
-
-\newcolumntype{L}{>{\raggedright\arraybackslash}X}
-\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
-\newcolumntype{C}{>{\centering\arraybackslash}X}
-
-\newcommand{\name}{Onkar Jadhav}
-\newcommand{\phone}{7058604679}
-\newcommand{\emaila}{onkarj012@gmail.com}
-\newcommand{\github}{github.com/Onkarj012}
-\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+% One job/project entry: title (bold) on the left, dates pushed right on the SAME
+% line via \hfill. Reading order stays linear left-to-right, so the parser keeps it.
+\newcommand{\entry}[2]{\noindent\textbf{#1}\hfill{#2}\par}
+\newcommand{\subentry}[2]{\noindent\textit{#1}\hfill{\textit{#2}}\par\vspace{2pt}}
 
 \begin{document}
-\fontfamily{cmr}\selectfont
 
-%----------HEADING-----------------
-\begin{tabularx}{\linewidth}{L r}
-  \textbf{\Large \name} & {\raisebox{0.0\height}{\footnotesize \faPhone}\ +91-\phone}\\
-  {AI / Full-Stack Software Engineer} & \href{mailto:\emaila}{\raisebox{0.0\height}{\footnotesize \faEnvelope}\ {\emaila}} \\
-  {Pune, Maharashtra} & \href{https://\github}{\raisebox{0.0\height}{\footnotesize \faGithub}\ {\github}} \\
-  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\raisebox{0.0\height}{\footnotesize \faLinkedin}\ {\linkedin}}
-\end{tabularx}
-\vspace{-4mm}
+%----------HEADING (plain text — no icons, parser reads every field)-----------
+\begin{center}
+  {\LARGE \textbf{Onkar Jadhav}}\\[2pt]
+  AI / Full-Stack Software Engineer\\[2pt]
+  Pune, Maharashtra, India\\[2pt]
+  Phone: +91-7058604679 \quad|\quad Email: onkarj012@gmail.com\\[2pt]
+  GitHub: github.com/Onkarj012 \quad|\quad LinkedIn: linkedin.com/in/onkarj012 \quad|\quad Portfolio: leo4.dev
+\end{center}
 
 %----------SUMMARY-----------------
-\section{\textbf{Summary}}
-\vspace{1mm}
-\small{
-Final-year Computer Science student (9.08 CGPA) who ships production AI systems end to end. Built Lore Engine, a hybrid BM25 + pgvector RAG platform over 6,000+ wiki pages; StockXpert, a hierarchical deep-learning equity engine spanning all 100 Nifty NSE stocks; and GovBench, an open-source LLM governance benchmark evaluated across US, India, and EU legal systems. Proficient in Python, TypeScript, React, Next.js, FastAPI, RAG architectures, and agentic AI.
-}
-\vspace{-3mm}
+\section{Summary}
+%SLOT Summary
 
 %-----------EDUCATION-----------
-\section{\textbf{Education}}
-  \resumeSubHeadingListStart
-    \resumeSubheading
-      {Bachelor of Technology in Computer Science}{CGPA: 9.08 / 10}
-      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
-      \resumeItemListStart
-        \item {Coursework: Machine Learning, Data Structures \& Algorithms, DBMS, Operating Systems, Computer Networks, Object-Oriented Programming}
-      \resumeItemListEnd
-  \resumeSubHeadingListEnd
-\vspace{-5.5mm}
+\section{Education}
+\entry{Bachelor of Technology in Computer Science}{Nov 2022 -- Jun 2026}
+\subentry{Pimpri Chinchwad College of Engineering (PCCOE), Savitribai Phule Pune University}{CGPA: 9.08}
+%SLOT Education details
 
-%-----------PROJECTS-----------------
-\section{\textbf{Projects}}
-\resumeSubHeadingListStart
+%-----------EXPERIENCE-----------------
+\section{Experience}
+\entry{Stride}{April 2026 -- Present}
+\subentry{Founder \& Lead Engineer}{}
+\begin{itemize}
+  \item %SLOT Experience bullet 1
+  \item %SLOT Experience bullet 2
+  \item %SLOT Experience bullet 3
+  \item %SLOT Experience bullet 4
+  \item %SLOT Experience bullet 5
+\end{itemize}
 
-    \resumeProject
-      {StockXpert}{AI-Powered Deep Learning Equity Prediction Platform}
-      {Python, TensorFlow, FastAPI, Next.js, TypeScript, Cloudflare R2, AWS}
-      {Nov 2025 -- Present}
-      \resumeItemListStart
-        \item {Architected a hierarchical deep learning system (ResNet, GRU, Bi-LSTM, multi-head attention) modelling cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}, outperforming single-architecture baselines on directional accuracy.}
-        \item {Designed a multi-objective Huber loss with directional regularisation and tail-event oversampling, achieving a \textbf{12\% improvement in short-horizon return correlation} over baseline.}
-        \item {Built a snapshot-first serving layer on Cloudflare R2 with market-aware TTL caching for \textbf{sub-second latency across all 100 stocks}, plus a full Next.js + FastAPI dashboard with live screener, alerts, candlestick charts, and calibrated forecasts.}
-      \resumeItemListEnd
-    \vspace{-2mm}
+%-----------ENGINEERING PROJECTS-----------------
+\section{Engineering Projects}
 
-    \resumeProject
-      {GovBench}{Open-Source LLM Governance \& Bias Evaluation Framework}
-      {Python, LLM Evaluation, Adversarial Testing, Hallucination Detection, AI Safety}
-      {Mar 2026 -- Present --- \href{https://github.com/Onkarj012}{github.com/Onkarj012}}
-      \resumeItemListStart
-        \item {Open-sourced an LLM evaluation framework scoring deployment readiness across \textbf{6 governance pillars} (bias, procedural integrity, corruption resistance, jurisdictional awareness, transparency, minority protection) that MMLU-style benchmarks miss.}
-        \item {Ran controlled demographic isolation across \textbf{12 identity variants} over \textbf{US, India, and EU} legal systems for bail, sentencing, welfare, and immigration decisions.}
-        \item {Evaluated 4 production LLMs across baseline, pressure, and adversarial modes; top performers scored \textbf{90\%+} while surfacing concrete failures in minority protection (\textbf{63\%}) and jurisdictional awareness (\textbf{56.7\%}).}
-      \resumeItemListEnd
-    \vspace{-2mm}
+\entry{}{} %SLOT Project 1 heading
+\subentry{}{} %SLOT Project 1 technologies
+\begin{itemize}
+  \item %SLOT Project 1 bullet 1
+  \item %SLOT Project 1 bullet 2
+  \item %SLOT Project 1 bullet 3
+\end{itemize}
 
-    \resumeProject
-      {Lore Engine}{Hybrid-Retrieval RAG Platform}
-      {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2}
-      {2026 -- Present}
-      \resumeItemListStart
-        \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid BM25 + pgvector pipeline with reciprocal rank fusion, chosen over pure vector search for proper-noun disambiguation and exact name matching.}
-        \item {Designed section-aware chunking at H2/H3 boundaries with \texttt{[Series][Page][Section]} metadata and per-chunk spoiler tags filtered at retrieval; ran pgvector on a single Postgres instance scaling to \textbf{$\sim$5M vectors per series}.}
-        \item {Established a \textbf{50-question ground-truth eval harness} (retrieval MRR + answer accuracy) gating every deploy; shipped a streaming cited chat interface and a cached lore-book on one shared retriever.}
-      \resumeItemListEnd
-
-\resumeSubHeadingListEnd
-\vspace{-8.5mm}
+\entry{}{} %SLOT Project 2 heading
+\subentry{}{} %SLOT Project 2 technologies
+\begin{itemize}
+  \item %SLOT Project 2 bullet 1
+  \item %SLOT Project 2 bullet 2
+  \item %SLOT Project 2 bullet 3
+\end{itemize}
 
 %-----------TECHNICAL SKILLS-----------------
-\section{\textbf{Technical Skills}}
- \begin{itemize}[leftmargin=0.05in, label={}]
-    \small{\item{
-     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Objective-C, Java} \\
-     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, Electron, HTML, CSS} \\
-     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
-     \textbf{AI / ML}{: TensorFlow, RAG Pipelines, pgvector, BM25, Reciprocal Rank Fusion, LLM Evaluation, Agentic Workflows, Multi-modal AI, XGBoost; Anthropic Claude, OpenAI, Gemini, OpenRouter} \\
-     \textbf{Databases \& Cloud}{: PostgreSQL (+ pgvector), MongoDB, Convex, AWS, Cloudflare R2, Git, GitHub} \\
-     \textbf{System Design}{: Event-driven architecture, async job pipelines, snapshot-first serving, hybrid retrieval, multi-agent coordination} \\
-    }}
- \end{itemize}
-\vspace{-8pt}
+\section{Technical Skills}
+\noindent
+\textbf{Languages}: \\ %SLOT Languages
+\textbf{Frontend}: \\ %SLOT Frontend
+\textbf{Backend}: \\ %SLOT Backend
+\textbf{AI / ML}: \\ %SLOT AI / ML
+\textbf{Databases \& Cloud}: \\ %SLOT Databases \& Cloud
+\textbf{System Design}: \\ %SLOT System Design
 
 \end{document}
