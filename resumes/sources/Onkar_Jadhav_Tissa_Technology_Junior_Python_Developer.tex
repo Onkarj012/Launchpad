@@ -1,0 +1,178 @@
+%---------
+% RESUME - Onkar Jadhav
+% Tailored: Junior Python Developer @ Tissa Technology (Python / backend systems)
+%--------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{-} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----HEADING-------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {Junior Python Developer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----SUMMARY-------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year Computer Science student (9.08 CGPA) with strong Python programming fundamentals, backend systems experience, and hands-on data structures and algorithms.
+}
+\vspace{-3mm}
+
+%-----EDUCATION-----
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Data Structures \& Algorithms, Operating Systems, Computer Networks, Database Management Systems, Object-Oriented Programming, Machine Learning}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----EXPERIENCE-------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Stride - Adaptive Wellness Platform}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Designed and shipped a production backend as sole engineer - \textbf{Python} services, REST APIs, and async job processing - live with real trial users.}
+        \item {Built a \textbf{fault-tolerant integration layer} across multiple external APIs with async job queues and \textbf{idempotent retries}, keeping the system reliable under upstream failures and network timeouts.}
+        \item {Modeled and persisted a shared state layer across services, applying schema design and SQL fundamentals to keep data consistent under concurrent access.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----ENGINEERING PROJECTS-------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Lore Engine}{Distributed Data Ingestion \& Retrieval Backend}
+      {Python, FastAPI, PostgreSQL, Celery, Redis, Cloudflare R2, Next.js}
+      {2026 -- Present}
+      \resumeItemListStart
+        \item {Built a \textbf{distributed ingestion pipeline} (Celery workers + Redis queue) processing \textbf{6,000+ documents} concurrently into a Postgres-backed retrieval store, engineered for throughput and restartable, idempotent jobs.}
+        \item {Implemented \textbf{SQL-backed indexing and metadata filtering} in PostgreSQL, tuning queries and access flags at retrieval time - applied DBMS fundamentals to a real data-serving path.}
+        \item {Built an \textbf{automated evaluation/regression harness} (50-question ground-truth suite) that gates every deploy, catching correctness regressions before release without manual QA.}
+        \item {Developed and debugged the full stack on \textbf{Linux}, using shell tooling, process management, and log-driven debugging across workers and services.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Fault-Tolerant Async Job Processing Backend}
+      {Node.js, Express.js, BullMQ, Redis, Convex, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Engineered a \textbf{concurrent async backend} (BullMQ workers on Redis, idempotent retries, durable persistence) sustaining reliable job execution \textbf{without loss on upstream timeouts} - the reliability model trading systems demand.}
+        \item {Designed a versioned pipeline that routes requests across multiple external providers and compares \textbf{latency, cost, and correctness}, exposing objective performance data per run.}
+        \item {Built REST APIs and structured error handling so failed jobs surface cleanly and reprocess safely.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----TECHNICAL SKILLS-------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Java, Python, C++, SQL, JavaScript, TypeScript} \\
+     \textbf{CS Fundamentals}{: Data Structures \& Algorithms, Operating Systems, Computer Networks, DBMS, Object-Oriented Programming, System Design} \\
+     \textbf{Linux \& Tooling}{: Linux/Unix development, Bash, shell scripting, process \& log debugging, Git, GitHub} \\
+     \textbf{Backend}{: REST APIs, FastAPI, Node.js, Express.js, async job queues (BullMQ, Celery), Redis, WebSockets, concurrency, idempotent retries} \\
+     \textbf{Databases}{: PostgreSQL, SQL query design \& indexing, MongoDB} \\
+     \textbf{Reliability}{: Fault-tolerant pipelines, automated testing/regression harnesses, event-driven architecture} \\
+     \textbf{Cloud}{: AWS, Cloudflare R2} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

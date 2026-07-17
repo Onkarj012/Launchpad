@@ -1,0 +1,180 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: Staff Machine Learning Engineer @ BP
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{cfr-lm}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+\fontfamily{cmr}\selectfont
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone}\\
+  {AI / Machine Learning Engineer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year Computer Science student (9.08 CGPA) with hands-on machine learning experience across deep learning, feature engineering, model evaluation, and AI safety. Designed StockXpert, a hierarchical deep learning system using ResNet, GRU, Bi-LSTM, and multi-head attention across 100 Nifty NSE equities, improving short-horizon return correlation by 12\%. Built GovBench, an open-source LLM governance benchmark with controlled bias testing, adversarial evaluation, and hallucination detection across US, India, and EU legal systems. Also ship Stride to production as its sole engineer. Proficient in Python, TensorFlow, SQL, FastAPI, and LLM evaluation pipelines.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+      \resumeItemListEnd
+    \resumeSubheading
+      {Higher Secondary Certificate}{Score: 89.17\%}
+      {Shri Mhalsakant Junior College, Maharashtra State Board}{Jun 2022}
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+    \resumeSubheading
+      {Stride --- AI-First Adaptive Wellness Platform}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Architected and shipped Stride to production as sole engineer; running live with an early private user cohort actively driving iterative product feedback ahead of public beta.}
+        \item {Architected a six-layer AI-first system with multi-modal input capture, behavioral memory, natural-language understanding, five specialised domain agents, analytics, and adaptive UX.}
+        \item {Separated LLM understanding from a deterministic four-component calculator (BMR, NEAT, EAT, TEF) to eliminate opaque LLM arithmetic errors while retaining natural-language input.}
+        \item {Built natural-language workout parsing that converts free text into structured sets, reps, duration, and MET values without rigid input templates.}
+        \item {Selected Convex for real-time reactive state over REST + WebSockets and OpenRouter for multi-provider LLM routing across five concurrent agent types.}
+      \resumeItemListEnd
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+    \resumeProject
+      {StockXpert}{AI-Powered Deep Learning Equity Prediction Platform}
+      {Python, TensorFlow, FastAPI, Next.js, TypeScript, Cloudflare R2, AWS}
+      {Jan 2026 -- May 2026}
+      \resumeItemListStart
+        \item {Architected a hierarchical deep learning system combining ResNet, GRU, Bi-LSTM, and multi-head attention to model cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}.}
+        \item {Constructed a leakage-free feature pipeline from raw OHLCV data with RSI, MACD, ADX, Bollinger Bands, SMA/EMA distance, and volatility indicators using strict temporal train/validation/test splits.}
+        \item {Designed a multi-objective Huber loss with directional regularisation and tail-event oversampling, achieving a \textbf{12\% improvement in short-horizon return correlation} over baseline.}
+        \item {Built a snapshot-first serving layer with market-aware TTL caching, delivering \textbf{sub-second API latency} across all 100 Nifty stocks during market hours.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+    \resumeProject
+      {GovBench}{LLM Governance Evaluation}
+      {Python, LLM Evaluation Pipelines, Hallucination Detection, Adversarial Testing, AI Safety}
+      {Mar 2026 -- Present}
+      \resumeItemListStart
+        \item {Designed and open-sourced an LLM evaluation framework assessing model readiness for judicial and governmental deployment across 6 pillars including demographic bias, transparency, and minority protection.}
+        \item {Implemented controlled demographic isolation testing across \textbf{12 identity variants} per scenario with naturalistic prompting across \textbf{US, India, and EU} legal systems.}
+        \item {Evaluated 4 production LLMs across baseline, pressure, and adversarial stress modes, revealing concrete failures in minority protection and jurisdictional awareness.}
+        \item {Built an automated scoring pipeline combining sentiment variance analysis, position drift tracking, and hallucination detection to emit composite deployment-readiness grades.}
+      \resumeItemListEnd
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{AI / ML}{: TensorFlow, RAG Pipelines, pgvector, BM25, Reciprocal Rank Fusion, Agentic Workflows, Behavioral Memory, Multi-modal AI, XGBoost, OpenRouter} \\
+     \textbf{ML Evaluation}{: LLM Evaluation Pipelines, Sentiment Analysis, Hallucination Detection, Adversarial Testing, AI Safety} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

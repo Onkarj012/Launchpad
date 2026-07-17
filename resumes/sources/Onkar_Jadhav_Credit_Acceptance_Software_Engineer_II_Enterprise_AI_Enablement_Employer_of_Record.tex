@@ -1,0 +1,185 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: Software Engineer II, Enterprise AI Enablement @ Credit Acceptance
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{cfr-lm}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+\fontfamily{cmr}\selectfont
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {AI Engineer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year Computer Science student (9.08 CGPA) building full-stack software and AI systems. Shipped Stride to production as sole engineer, and built Lore Engine, a RAG platform with hybrid retrieval, async ingestion, and deploy-gated evaluation. Built PromptForge, an agentic prompt-engineering pipeline with cross-model benchmarking and reliable background workers. Proficient in Python, TypeScript, React, Next.js, FastAPI, Node.js, LLM evaluation, RAG architectures, and agentic workflows.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+      \resumeItemListEnd
+    \resumeSubheading
+      {Higher Secondary Certificate}{Score: 89.17\%}
+      {Shri Mhalsakant Junior College, Maharashtra State Board}{Jun 2022}
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Stride --- AI-First Adaptive Wellness Platform}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Architected and shipped Stride to production as sole engineer, running live with an early private user cohort and iterative product feedback.}
+        \item {Built REST APIs and business logic integrating third-party LLM providers via OpenRouter, separating deterministic BMR, NEAT, EAT, and TEF calculations from LLM reasoning.}
+        \item {Built natural-language workout parsing that converts free text into structured sets, reps, duration, and MET values without rigid input templates.}
+        \item {Selected Convex for real-time reactive state over REST + WebSockets, keeping frontend and backend in sync across concurrent agent types without manual polling.}
+        \item {Debugged and optimized application performance end to end across frontend, backend, and data layers with no dedicated QA or ops support.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Lore Engine}{RAG Platform for Fan Wiki Knowledge Bases}
+      {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, REST APIs}
+      {May 2026 -- Present}
+      \resumeItemListStart
+        \item {Built a full-stack web application with a Next.js frontend and FastAPI backend, ingesting 6,000+ MediaWiki pages into a hybrid BM25 and pgvector retrieval pipeline.}
+        \item {Designed section-aware chunking at H2/H3 wiki boundaries with enriched [Series][Page][Section] metadata for fine-grained context control over large knowledge bases.}
+        \item {Built an async ingestion pipeline with Celery, Redis, and Cloudflare R2 that fetches MediaWiki content, converts wikitext to markdown, and persists metadata in PostgreSQL.}
+        \item {Established a 50-question per-series ground-truth evaluation harness measuring retrieval accuracy end to end and gating every deploy.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Agentic Prompt Engineering \& Benchmarking Platform}
+      {Node.js, Express.js, BullMQ, Convex, OpenRouter, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Architected a creator, critic, and evaluator agentic pipeline for iterative prompt improvement across versioned revision trails.}
+        \item {Implemented cross-model routing and benchmarking across OpenAI, Anthropic, Gemini, and open-source models via OpenRouter, comparing quality, latency, and cost per output.}
+        \item {Built a fault-tolerant async backend using BullMQ workers with idempotent retries and Convex persistence for prompt regression testing without job loss on provider timeouts.}
+        \item {Emitted structured prompt outputs with token budget, latency profile, expected output shape, and version changelog metadata for review and deployment like code.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{Frontend}{: React.js, Next.js, HTML5, CSS3, Tailwind CSS} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, REST APIs, BullMQ, Celery, Redis, WebSockets} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, MySQL, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub, Agile/SDLC} \\
+     \textbf{AI / ML}{: TensorFlow, RAG Pipelines, Agentic Workflows, LLM Evaluation, OpenRouter} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

@@ -1,0 +1,183 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% Tailored: Full Stack Developer (Freshers) @ AVP Vigilant Technology
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\footnotesize}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+  {Full Stack Developer} & \href{mailto:\emaila}{\emaila} \\
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year CS student (9.08 CGPA) with full-stack project experience across responsive frontend interfaces, backend APIs, and database-backed systems. Built Lore Engine, a production RAG platform with a Next.js frontend, FastAPI backend, and PostgreSQL/pgvector data layer serving 6,000+ wiki pages over REST APIs. Delivered StockXpert, a full-stack Next.js and FastAPI trading dashboard with live screening and alerts across 100 Nifty NSE equities. Shipping Stride end to end as Founder \& Lead Engineer. Comfortable across the stack: HTML/CSS/JavaScript, React.js/Next.js, Node.js/FastAPI, SQL/NoSQL, REST APIs, and Git.
+}
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+      \resumeItemListEnd
+    \resumeSubheading
+      {Higher Secondary Certificate}{Score: 89.17\%}
+      {Shri Mhalsakant Junior College, Maharashtra State Board}{Jun 2022}
+  \resumeSubHeadingListEnd
+\vspace{-5.5mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Stride --- AI-First Adaptive Wellness Platform}{Remote}
+      {Founder \& Lead Engineer}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Architected and shipped Stride to production as sole engineer, owning the full stack --- responsive frontend, backend APIs and business logic, and a database-backed data layer --- running live with an early private user cohort driving iterative product feedback.}
+        \item {Built REST APIs and business logic integrating third-party LLM providers via OpenRouter, with a deterministic four-component calculator (BMR/NEAT/EAT/TEF) separated from LLM reasoning to eliminate opaque arithmetic errors.}
+        \item {Built natural-language workout parsing converting free text such as ``30 min run, 3x10 squats at 60kg'' into structured sets/reps/duration values, integrated with the frontend and backing database.}
+        \item {Selected Convex for real-time reactive state over a REST + WebSockets stack, keeping frontend and backend in sync across concurrent agent types without manual polling logic.}
+        \item {Debugged and optimized application performance end to end, iterating solo across frontend, backend, and data layer with no dedicated QA or ops support.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-5mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Lore Engine}{RAG Platform for Fan Wiki Knowledge Bases}
+      {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, REST APIs}
+      {May 2026 -- Present}
+      \resumeItemListStart
+        \item {Built a full-stack web application: a Next.js frontend consuming REST APIs served by a FastAPI backend, ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline (BM25 + pgvector via reciprocal rank fusion).}
+        \item {Designed section-aware chunking at H2/H3 wiki boundaries with enriched \texttt{[Series][Page][Section]} metadata per chunk, demonstrating fine-grained context control over large knowledge bases.}
+        \item {Built an async ingestion pipeline (Celery, Redis, Cloudflare R2) that fetches from the MediaWiki API, converts wikitext to markdown, and persists metadata in PostgreSQL via REST endpoints.}
+        \item {Established a \textbf{50-question per-series ground-truth eval harness} measuring retrieval accuracy end to end, gating every deploy.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {StockXpert}{AI-Powered Deep Learning Equity Prediction Platform}
+      {Python, TensorFlow, FastAPI, Next.js, TypeScript, Tailwind CSS, PostgreSQL, AWS}
+      {Jan 2026 -- May 2026}
+      \resumeItemListStart
+        \item {Delivered a full-stack trading dashboard (Next.js frontend, FastAPI backend, REST APIs) with a live stock screener, real-time alerts, and OHLCV candlestick charts across all \textbf{100 Nifty NSE equities}.}
+        \item {Constructed a leakage-free feature pipeline from raw OHLCV data with strict temporal train/validation/test splits to prevent lookahead bias, served through the backend to the frontend dashboard.}
+        \item {Built the deep learning prediction layer (ResNet, GRU, Bi-LSTM, attention), achieving a \textbf{12\% improvement in short-horizon return correlation} over baseline.}
+        \item {Built a snapshot-first serving layer with market-aware TTL caching, delivering \textbf{sub-second API latency} across all 100 Nifty stocks during market hours.}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{Frontend}{: React.js, Next.js, HTML5, CSS3, Tailwind CSS} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, REST APIs, BullMQ, Celery, Redis, WebSockets} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, MySQL, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub, Agile/SDLC} \\
+     \textbf{AI / ML}{: TensorFlow, RAG Pipelines, Agentic Workflows, LLM Evaluation} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}
