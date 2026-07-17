@@ -99,7 +99,7 @@
 \section{\textbf{Summary}}
 \vspace{1mm}
 \small{
-Final-year CS student (9.08 CGPA) specialising in generative AI, agentic frameworks, and RAG architectures with end-to-end production ownership. Shipped Stride (5--10 active users) --- a six-layer multi-agent platform with five domain agents sharing behavioral memory, tool calling, and multi-provider LLM routing --- demonstrating real-world memory management and agent coordination. Built Lore Engine, a production RAG platform with hybrid BM25 + pgvector retrieval, deploy-gated evaluation, and spoiler-aware context filtering over 6,000+ pages. Built PromptForge, a creator--critic--evaluator pipeline with cross-model benchmarking and context-optimised token management. Strong in Python, RAG, agentic AI, vector databases, prompt engineering, and AWS.
+Final-year CS student (9.08 CGPA) specialising in generative AI, agentic frameworks, and RAG architectures with end-to-end production ownership. Shipped Stride with an early private user cohort --- a six-layer multi-agent platform with five domain agents sharing behavioral memory, tool calling, and multi-provider LLM routing --- demonstrating real-world memory management and agent coordination. Built Lore Engine, a production RAG platform with hybrid BM25 + pgvector retrieval, deploy-gated evaluation, and spoiler-aware context filtering over 6,000+ pages. Built PromptForge, a creator--critic--evaluator pipeline with cross-model benchmarking and context-optimised token management. Strong in Python, RAG, agentic AI, vector databases, prompt engineering, and AWS.
 }
 \vspace{-3mm}
 
@@ -123,7 +123,7 @@ Final-year CS student (9.08 CGPA) specialising in generative AI, agentic framewo
       {Stride --- AI-First Adaptive Wellness Platform}{Remote}
       {Founder \& Lead Engineer}{April 2026 -- Present}
       \resumeItemListStart
-        \item {Built and shipped Stride to production as sole engineer; running live with \textbf{5--10 active trial users} driving iterative product feedback.}
+        \item {Built and shipped Stride to production as sole engineer; running live with \textbf{an early private user cohort} actively driving iterative product feedback ahead of public beta.}
         \item {Designed five autonomous domain agents with tool calling and a shared behavioral memory layer tracking preferences across sessions --- demonstrating stateful memory management in agentic systems at production scale.}
         \item {Integrated multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini, enabling dynamic model selection and context-optimised routing to reduce token usage per agent type.}
       \resumeItemListEnd
@@ -143,7 +143,7 @@ Final-year CS student (9.08 CGPA) specialising in generative AI, agentic framewo
         \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} into a hybrid pipeline (BM25 + pgvector via reciprocal rank fusion) --- chosen over pure vector search for superior exact-entity retrieval, mirroring enterprise GenAI precision requirements.}
         \item {Designed per-chunk spoiler-filtering metadata assigned at ingestion and applied at retrieval time --- fine-grained context management preventing unwanted information surfacing, analogous to access-controlled enterprise RAG.}
         \item {Established a \textbf{50-question per-series eval harness} measuring retrieval MRR and end-to-end answer accuracy, gating every deployment --- the evaluation-in-the-loop discipline required in production GenAI systems.}
-        \item {Scaled to \textbf{$\sim$5M vectors per series} using pgvector over dedicated stores (Pinecone/Weaviate), eliminating infrastructure complexity and keeping retrieval in one network hop.}
+        \item {Chose pgvector over dedicated stores (Pinecone/Weaviate) to scale to \textbf{$\sim$5M vectors per series} while eliminating infrastructure complexity and keeping retrieval in one network hop.}
       \resumeItemListEnd
     \vspace{-2mm}
 

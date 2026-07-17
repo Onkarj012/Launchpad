@@ -2,7 +2,6 @@
 % RESUME - Onkar Jadhav
 % Tailored: Full Stack Developer @ AVP Vigilant Technology (React / Node.js / REST APIs)
 %--------
-
 \documentclass[a4paper,11pt]{article}
 \usepackage{latexsym}
 \usepackage{xcolor}
@@ -41,11 +40,9 @@
 \urlstyle{same}
 \raggedright
 \setlength{\tabcolsep}{0in}
-
 \titleformat{\section}{
   \vspace{-4pt}\scshape\raggedright\large
 }{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
-
 \newcommand{\resumeItem}[2]{
   \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
 }
@@ -99,7 +96,7 @@
 \section{\textbf{Summary}}
 \vspace{1mm}
 \small{
-Final-year CS student (9.08 CGPA) building production generative AI systems end to end. Designed multi-agent LLM orchestration pipelines with multi-provider routing and a hybrid RAG system (BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness - the same CI/CD-for-AI pattern required in production analytics platforms. Built agentic orchestration (creator--critic--evaluator pipeline, cross-model benchmarking) and shipped a live multi-agent product with 5--10 active users. Strong in Python, FastAPI, RAG, agentic AI, and AWS.
+Final-year CS student (9.08 CGPA) building production generative AI systems end to end. Designed multi-agent LLM orchestration pipelines with multi-provider routing and a hybrid RAG system (BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness - the same CI/CD-for-AI pattern required in production analytics platforms. Built agentic orchestration (creator--critic--evaluator pipeline, cross-model benchmarking) and shipped a live multi-agent product with an early private user cohort. Strong in Python, FastAPI, RAG, agentic AI, and AWS.
 }
 \vspace{-3mm}
 
@@ -123,7 +120,7 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
       {Stride - AI-First Adaptive Wellness Platform}{Remote}
       {Founder \& Lead Engineer}{April 2026 -- Present}
       \resumeItemListStart
-        \item {Built and shipped Stride to production as sole engineer; running live with \textbf{5--10 active trial users} driving iterative product feedback.}
+        \item {Built and shipped Stride to production as sole engineer; running live with \textbf{an early private user cohort} actively driving iterative product feedback ahead of public beta.}
         \item {Architected five specialised domain agents (diet, workout, sleep, hydration, habits) sharing a behavioral memory layer, with multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini - eliminating vendor lock-in across five concurrent agent types.}
         \item {Separated LLM reasoning from deterministic computation (BMR/NEAT/EAT/TEF calculator), eliminating opaque model arithmetic errors; implemented CI-style quality gates before each capability release.}
       \resumeItemListEnd
@@ -143,7 +140,7 @@ Final-year CS student (9.08 CGPA) building production generative AI systems end 
         \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline (BM25 + pgvector via reciprocal rank fusion) - chosen over pure vector search to handle exact entity and proper-noun matching that semantic models fail on.}
         \item {Designed section-aware chunking at H2/H3 boundaries with enriched \texttt{[Series][Page][Section]} metadata and spoiler-filter tags per chunk, demonstrating fine-grained context control over large knowledge bases.}
         \item {Established a \textbf{50-question per-series ground-truth eval harness} measuring retrieval MRR and end-to-end answer accuracy, gating every deploy - the same CI/CD-for-AI pattern required in production LLM analytics systems.}
-        \item {Built an async ingestion pipeline (Celery, Redis, Cloudflare R2) that fetches from the MediaWiki API, converts wikitext to markdown, and indexes \textbf{$\sim$5M vectors per series} in pgvector - chosen over Pinecone/Weaviate to stay in one network hop.}
+        \item {Built an async ingestion pipeline (Celery, Redis, Cloudflare R2) that fetches from the MediaWiki API, converts wikitext to markdown, and uses pgvector, chosen over Pinecone/Weaviate to scale to \textbf{$\sim$5M vectors per series} while keeping retrieval in one network hop.}
       \resumeItemListEnd
     \vspace{-2mm}
 
