@@ -1,11 +1,14 @@
+# vendored / local state
+career-ops/
+logs/
+
 # macOS
 .DS_Store
 
-# LaTeX build scratch + artifacts (regenerable — PDF-only invariant)
+# LaTeX build scratch + artifacts (regenerable)
 resumes/sources/build/
-resumes/output/
-*.aux
 *.log
+*.aux
 *.out
 *.toc
 *.fls
