@@ -1,0 +1,90 @@
+{
+  "$schema": "./job-pull.schema.json",
+  "schemaVersion": "JobPullPolicyV1",
+  "timezone": "Asia/Kolkata",
+  "run": {
+    "cadence": "manual",
+    "onceDaily": true,
+    "minimumTotal": 15,
+    "maximumTotal": 20,
+    "strictTarget": 10,
+    "maximumPerCompany": 2,
+    "maximumFamilyShare": 0.4
+  },
+  "freshness": {
+    "primaryMaximumHours": 24,
+    "extendedMaximumHours": 72
+  },
+  "geo": {
+    "homeCountry": "India",
+    "puneMetroAliases": [
+      "pune",
+      "pune metro",
+      "pune metropolitan",
+      "pimpri-chinchwad",
+      "pimpri chinchwad",
+      "pcmc",
+      "hinjawadi",
+      "hinjewadi",
+      "wakad",
+      "baner",
+      "kharadi",
+      "viman nagar",
+      "magarpatta",
+      "talawade"
+    ],
+    "remoteAllowedScopes": [
+      "india",
+      "indian",
+      "apac",
+      "asia pacific",
+      "asia-pacific",
+      "worldwide",
+      "world wide",
+      "global",
+      "anywhere"
+    ],
+    "remoteDeniedScopes": [
+      "us only",
+      "usa only",
+      "united states only",
+      "canada only",
+      "eu only",
+      "europe only",
+      "uk only",
+      "united kingdom only",
+      "latam only",
+      "latin america only"
+    ]
+  },
+  "employment": {
+    "allowedTypes": ["full-time", "internship"],
+    "internshipRequiresExplicitPaid": true,
+    "rejectUnpaid": true
+  },
+  "experience": {
+    "strictMaximumYears": 1,
+    "relaxedMaximumYears": 2,
+    "hardRejectMinimumYears": 3
+  },
+  "roles": {
+    "families": [
+      "ai-llm-agentic",
+      "ml",
+      "backend-python",
+      "full-stack-ai",
+      "general-new-grad-swe",
+      "paid-internship",
+      "adjacent-engineering"
+    ],
+    "maximumFamilyShare": 0.4
+  },
+  "sources": {
+    "qualityOrder": ["ats-direct", "niche-public", "aggregator"],
+    "reverseAts": ["greenhouse", "lever", "ashby", "workday"]
+  },
+  "dedup": {
+    "simHashEnabled": true,
+    "simHashSimilarity": 0.93
+  }
+}

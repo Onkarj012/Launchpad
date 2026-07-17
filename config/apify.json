@@ -1,0 +1,95 @@
+{
+  "$schema": "https://apify.com (no local schema — see references/sourcing.md)",
+  "note": "Optional structured-board pull layer. Requires APIFY_TOKEN env var. Run: node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json, then feed RAW.json through the existing job-pull/public-search-prepare.mjs --in RAW --out PREPARED step. Actor input/output field names below were checked against each actor's public Apify Store page on 2026-07-15; verify against the live actor before relying on them for a run, since Apify Store listings can change without notice.",
+  "actors": [
+    {
+      "id": "cheap_scraper~linkedin-job-scraper",
+      "label": "linkedin",
+      "enabled": true,
+      "input": {
+        "keyword": ["software engineer", "AI engineer", "machine learning engineer", "backend developer", "new grad software engineer"],
+        "locations": ["Pune, Maharashtra, India", "India"],
+        "publishedAt": "r259200",
+        "jobType": ["full-time", "internship"],
+        "experienceLevel": ["internship", "entry-level"],
+        "workType": ["on-site", "hybrid", "remote"],
+        "maxItems": 150,
+        "saveOnlyUniqueItems": true
+      },
+      "fieldMap": {
+        "url": "jobUrl",
+        "company": "companyName",
+        "title": "jobTitle",
+        "postedAt": "publishedAt",
+        "location": "location",
+        "description": "jobDescription"
+      }
+    },
+    {
+      "id": "blackfalcondata~naukri-jobs-feed",
+      "label": "naukri",
+      "enabled": true,
+      "input": {
+        "searchQueries": [
+          { "keyword": "software engineer fresher", "location": "Pune" },
+          { "keyword": "AI engineer fresher", "location": "Pune" },
+          { "keyword": "machine learning engineer", "location": "Pune" },
+          { "keyword": "backend developer python", "location": "Pune" }
+        ],
+        "experience": "0-1",
+        "datePosted": "3d",
+        "fetchDetails": true,
+        "maxResults": 100,
+        "descriptionFormat": "text"
+      },
+      "fieldMap": {
+        "url": "portalUrl",
+        "company": "companyName",
+        "title": "title",
+        "postedAt": "createdDate",
+        "location": "location",
+        "description": "description"
+      }
+    },
+    {
+      "id": "blackfalcondata~wellfound-scraper",
+      "label": "wellfound",
+      "enabled": true,
+      "input": {
+        "roles": ["software-engineer", "data-scientist"],
+        "location": ["india"],
+        "jobType": "fulltime",
+        "experienceLevel": "entry",
+        "maxResults": 100
+      },
+      "fieldMap": {
+        "url": "portalUrl",
+        "company": "companyName",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "locationNames",
+        "description": "description"
+      }
+    },
+    {
+      "id": "parsebird~yc-jobs-scraper",
+      "label": "yc",
+      "enabled": true,
+      "input": {
+        "searchQuery": "",
+        "roleFilter": "software-engineer",
+        "locationFilter": "India, Remote, Pune",
+        "maxResults": 100,
+        "_TODO": "YC actor's public Store listing does not document a posted-date output field (no 'postedAt'/'createdAt' confirmed) — verify against a live run. fieldMap.postedAt points at 'postedAt' speculatively; if the actor never emits it, records stay undated (correct per the no-inferred-freshness rule — never map scrape time here)."
+      },
+      "fieldMap": {
+        "url": "url",
+        "company": "companyName",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "location",
+        "description": "description"
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  { "link": "https://www.linkedin.com/jobs/view/123", "org": "LinkedIn Co", "position": "AI Engineer", "posted": "2026-07-15T08:00:00.000Z", "snippet": "Build AI tools", "location": "Pune" },
+  { "jobUrl": "https://boards.greenhouse.io/acme/jobs/456", "company": "Acme", "title": "Software Engineer", "date": "2026-07-14T10:00:00.000Z", "description": "Ship product", "location": "Remote India" },
+  { "url": "https://jobs.example.test/3", "company": "Date Co", "title": "Data Analyst", "date": "2026-07-15", "location": "Pune" },
+  { "url": "https://jobs.example.test/4", "title": "Missing Company", "date": "2026-07-15" },
+  { "company": "Missing URL Co", "title": "Missing URL" },
+  { "url": "https://jobs.example.test/6", "company": "Clean Co", "title": "Product Engineer", "postedAt": null, "location": "Remote India", "description": "A clean record" }
+]
