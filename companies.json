@@ -61,6 +61,9 @@
     { "name": "Bland", "stage": "startup", "ats": "ashby", "slug": "bland", "source": "seed", "added": "2026-07-01", "last_seen_role": "" },
     { "name": "Decagon", "stage": "startup", "ats": "ashby", "slug": "decagon", "source": "seed", "added": "2026-07-01", "last_seen_role": "" },
     { "name": "Anyscale", "stage": "startup", "ats": "ashby", "slug": "anyscale", "source": "seed", "added": "2026-07-01", "last_seen_role": "" },
-    { "name": "Baseten", "stage": "startup", "ats": "ashby", "slug": "baseten", "source": "seed", "added": "2026-07-01", "last_seen_role": "" }
+    { "name": "Baseten", "stage": "startup", "ats": "ashby", "slug": "baseten", "source": "seed", "added": "2026-07-01", "last_seen_role": "" },
+
+    { "name": "Meesho", "stage": "mid", "ats": "lever", "slug": "meesho", "source": "manual-add", "added": "2026-07-09", "last_seen_role": "" },
+    { "name": "Zeta", "stage": "mid", "ats": "lever", "slug": "zeta", "source": "manual-add", "added": "2026-07-09", "last_seen_role": "" }
   ]
 }

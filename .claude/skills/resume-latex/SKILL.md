@@ -1,68 +1,115 @@
 ---
 name: resume-latex
-description: Build a single-page, compile-ready LaTeX resume tailored to a target role from Onkar's master resume, compile it locally, verify it is exactly one filled page, save the PDF-only output to resumes/output/, and delete build artifacts. Use whenever the user asks for a tailored resume, "tailor my CV/resume for [role]", "make my resume for this job", pastes a JD, or asks to re-angle resume bullets for a posting. Trigger on any resume-tailoring or resume-LaTeX request.
+description: Build a human-written, JD-matched, single-page LaTeX resume from Onkar's approved master evidence, compile and inspect it locally, and deliver a verified PDF-only output. Use whenever the user asks for a tailored resume, pastes a JD, or asks to re-angle resume bullets for a posting.
 ---
 
-# Resume → LaTeX
+# Resume to LaTeX
 
-Paste-JD entry point. Produce one compile-ready, **single-page, fully-filled** tailored resume: editable `.tex` kept in `resumes/sources/`, final **PDF only** in `resumes/output/` named `Onkar_Jadhav_<Company>_<Role>.pdf`. Build artifacts never survive.
+Paste-JD entry point. Produce one truthful, human-written, single-page resume: editable `.tex` in `resumes/sources/`, and the final verified **PDF** in `resumes/output/` named `Onkar_Jadhav_<Company>_<Role>.pdf`. A run is incomplete until the content, JD, and artifact gates all pass. Build artifacts never survive.
 
-## Source of truth
-- `resumes/master/Master_Resume_ATS.tex` — **default template for every output.** Single-column, parser-clean, no icon fonts; use its `\entry`/`\subentry` macros as-is. Content is identical to `resumes/master/Master_Resume.tex` — only switch to the pretty `Master_Resume.tex` + `references/template.tex` when the user explicitly asks for a non-portal version (cold-email attachment / leo4.dev). **Never invent experience.** Only reframe / reorder / select from the master.
-- `master_prompt.md` § 4 (project root) — the tailoring rules (authoritative). Read before tailoring.
-- The target JD (link or text) — for keyword mirroring + project selection.
+## Source of truth and template policy
+- Read `master_prompt.md` section 4 before tailoring. It is authoritative.
+- Approved evidence comes only from `resumes/master/Master_Resume_ATS.tex` and `resumes/master/Master_Resume.tex`. Never invent experience or strengthen the meaning of approved evidence.
+- Preserve the visual template the user likes, including its overall typography, spacing, and character. For portal applications, its implementation must still produce clean, linear ATS extraction. Styling may not detach titles, organizations, dates, locations, or bullets from their sections.
+- Use `Master_Resume_ATS.tex` as the parser-safe implementation baseline. Use the pretty master and `references/template.tex` when the user requests that presentation, while enforcing the same linear-extraction artifact gate.
+- Use the target JD, supplied as text or retrieved from its link, for requirement coverage and project selection.
 
-## Fixed structure (per master_prompt.md § 4)
-1. **Heading** — unchanged.
-2. **Summary** — rewritten to mirror the JD's top 3-4 keywords; lead with the scoring hook.
-3. **Experience** — **Stride ALWAYS here.** Founder & Lead Engineer, April 2026 – Present. Lead bullet = traction (production, 5-10 active trial users).
-4. **Projects** — **exactly 2**, picked from the pool {Lore Engine, StockXpert, GovBench, PromptForge} by best JD-keyword match. Vaani never appears.
-5. **Technical Skills** — reorder so JD-relevant categories surface first. Never add a skill not on the master.
+## Fixed structure
+1. Heading, unchanged.
+2. Summary, rewritten around the strongest truthful hook and highest-value JD language without becoming a keyword list.
+3. Experience, with Stride always present as Founder & Lead Engineer, April 2026 to Present. The lead bullet states approved traction evidence.
+4. Exactly two projects selected from Lore Engine, StockXpert, GovBench, and PromptForge. Vaani never appears.
+5. Technical Skills, reordered around the JD. Never add a skill not present in an approved master.
 
-Total on page = 3 blocks (Stride experience + 2 projects). Never more, never fewer.
+The page always contains three work blocks: Stride plus two projects.
+
+## Mandatory JD requirement matrix
+Build this before selecting projects or writing any resume line. Keep it with the tailored source or review notes.
+
+| Exact JD phrase | Required / preferred | Category | Approved evidence source | Target section | Resume wording | Covered / missing |
+|---|---|---|---|---|---|---|
+
+Requirements:
+- Give every distinct JD requirement a row. Categorize it as hard skill/tool, responsibility, domain language, qualification, outcome, or role/title language.
+- `Approved evidence source` identifies the exact master bullet or skill entry. A project name alone is not provenance.
+- Cover every truthfully supportable hard requirement. Place the highest-value required keywords in evidence-bearing Experience or Project bullets where supported; Technical Skills alone is not substantive evidence.
+- Use an exact JD phrase once when truthful and natural, then vary wording only when useful for clarity.
+- Mark unsupported or ambiguous requirements `Missing`, report them to the user, and never fabricate wording to close them.
 
 ## Project picker
-Rank the 4 pool projects by JD keyword overlap, take top 2:
-- RAG / retrieval / search → **Lore Engine**
-- ML / DL / quant / time-series → **StockXpert**
-- AI safety / eval / governance / bias → **GovBench**
-- agentic / prompt pipelines / LLM tooling → **PromptForge**
-Tie-break toward variety (avoid two near-identical projects).
+Rank all four projects by supported JD requirement coverage, not raw keyword frequency. Take the top two and break ties toward evidence strength and variety:
+- RAG, retrieval, search: Lore Engine
+- ML, deep learning, quantitative, time series: StockXpert
+- AI safety, evaluation, governance, bias: GovBench
+- Agentic systems, prompt pipelines, LLM tooling: PromptForge
 
-## Steps
-1. Select the 2 projects; rewrite the summary + bullets to mirror JD vocabulary where truthful (Google XYZ pattern, quantified).
-2. Assemble the `.tex` matching the master's macros exactly.
-3. **Save the source** to `resumes/sources/Onkar_Jadhav_<Company>_<Role>.tex` (the editable source stays here for manual edits + recompile).
-4. **Compile locally** into the scratch build dir (never the root, never `output/`):
-   ```
+## Claim provenance gate
+Before accepting any line:
+- Map every achievement and capability claim to an exact approved master bullet or skill entry.
+- Preserve qualifiers, scope, maturity, ownership, and tense. Reframing must retain the source meaning.
+- Never turn a target, design capacity, prototype, benchmark, planned feature, or tool familiarity into a shipped achievement or production result. Capability-to-achievement inflation is a hard failure.
+- If stronger JD-aligned wording lacks approved evidence, leave that requirement missing and report the gap.
+
+## Human-writing gate
+Run this pass after drafting and again after text extraction:
+- Perfect grammar, spelling, punctuation, tense, capitalization, and parallel structure.
+- Consistent US English throughout.
+- **No em dashes in any resume bullet point or sentence.** Rewrite with a period, comma, colon, semicolon, or parentheses. Reject both the Unicode em dash (`—`) and LaTeX triple hyphen (`---`) in resume prose.
+- Run lexical and semantic repetition checks across Summary, Experience, Projects, and Technical Skills. Remove duplicate ideas even when phrased differently.
+- Use the same opening verb no more than twice across all achievement bullets.
+- Do not repeat the same technology list across the Summary, multiple bullets, and Technical Skills. Put technologies in a bullet only when they prove the action.
+- Prefer one core achievement per bullet. Use concrete actions, engineering decisions, constraints, and outcomes.
+- Remove AI-writing habits: inflated verbs without evidence, adjective stacks, unnecessary explanatory tails, self-praise, commentary about JD fit, repeated `demonstrating`, `showcasing`, or `enabling` clauses, and mechanically uniform bullets.
+- Every sentence must be natural to say in an interview and defensible from the approved evidence.
+
+## Three mandatory gates
+
+### 1. Content gate
+- Claim provenance is complete and truthful.
+- Human-writing and grammar checks pass.
+- No capability-to-achievement inflation, em dashes, repeated claims, overused opening verbs, or repeated technology lists remain.
+
+### 2. JD gate
+- The requirement matrix is complete.
+- Every truthfully supportable hard requirement has natural, evidence-bearing coverage.
+- Unsupported requirements are explicitly reported as missing.
+
+### 3. Artifact gate
+- The PDF is exactly one visually balanced page, with no conspicuous dead zone, overflow, crowding, or tiny type. Never pad content solely to fill space.
+- The PDF has been rendered and visually inspected for spacing, clipping, collisions, detached bullets, stray glyphs, and broken links.
+- Extracted text follows a clean linear order and preserves section order, contact details, and title/organization/date/location associations.
+- Clickable links, fonts, glyphs, and compilation-log warnings have been checked. Unexplained extraction, font, glyph, or layout warnings are failures.
+- Grammar, repetition, JD coverage, and the Unicode `—` scan pass on extracted text. The LaTeX source also passes the `---` scan.
+- Only the verified PDF is promoted, and all scratch artifacts are removed.
+
+## Procedure
+1. Read the JD and approved masters. Build the requirement matrix and claim-provenance map.
+2. Select the two projects by supported requirement coverage.
+3. Draft Summary, Experience, Projects, and Skills. Run the content and JD gates before touching layout.
+4. Save the editable source to `resumes/sources/Onkar_Jadhav_<Company>_<Role>.tex`.
+5. Compile locally into `resumes/sources/build/`, never the project root or `resumes/output/`:
+   ```sh
    export PATH="/opt/homebrew/bin:$PATH"
    pdflatex -interaction=nonstopmode -halt-on-error \
      -output-directory=resumes/sources/build \
      resumes/sources/Onkar_Jadhav_<Company>_<Role>.tex
    ```
-5. **Verify page count == 1**: `pdfinfo resumes/sources/build/Onkar_Jadhav_<Company>_<Role>.pdf | grep Pages`.
-   - If **> 1 page**: trim the weakest bullet first (never shrink geometry).
-   - If **< 1 full page / whitespace at bottom**: lengthen bullets, add a relevant master bullet, or expand the summary until the page is full. **An underfilled page is a failure, same as overflow.**
-6. **Parse-verify guard** (hard gate, run before declaring done): `pdftotext resumes/sources/build/Onkar_Jadhav_<Company>_<Role>.pdf -` and assert the raw text stream contains email, phone, and at least N JD-matched skill keywords (N = the number mirrored into the summary/skills in Step 1). Catches layout that compiles fine but extracts garbled for an ATS parser. On failure fix the `.tex` (never the PDF) and recompile.
-7. **Promote PDF + clean up** (the PDF-only invariant): copy **only** the `.pdf` to `resumes/output/`, then delete every build artifact:
-   ```
-   cp resumes/sources/build/Onkar_Jadhav_<Company>_<Role>.pdf resumes/output/Onkar_Jadhav_<Company>_<Role>.pdf
-   rm -f resumes/sources/build/Onkar_Jadhav_<Company>_<Role>.{aux,log,out,pdf,toc,fls,fdb_latexmk,synctex.gz}
-   ```
-   After this step `resumes/output/` MUST contain only `.pdf` files (no `.tex/.aux/.log/.out`). The `.tex` lives only in `resumes/sources/`.
-8. If a Notion Applications row exists: set Resume Status = Tailored and paste the output PDF path/link into Resume PDF.
+6. Confirm one page with `pdfinfo`. If overfull, trim the weakest content first, never the geometry. If visually underfilled, improve content selection or spacing within the liked template; do not pad, repeat, or inflate claims.
+7. Render for visual inspection with `pdftoppm`, then inspect the image. Do not treat successful compilation as visual verification.
+8. Extract with `pdftotext` and inspect the complete stream for linear order, associations, contact details, and matrix coverage. Run grammar and repetition checks on the extracted text.
+9. Inspect clickable links, `pdffonts`, rendered glyphs, and the full LaTeX log. Resolve unexplained warnings before promotion.
+10. Scan the `.tex` for `---` and both `.tex` and extracted text for `—`. Any prose match fails the run.
+11. Copy only the verified PDF to `resumes/output/Onkar_Jadhav_<Company>_<Role>.pdf`, then remove that resume's `.aux`, `.log`, `.out`, scratch `.pdf`, `.toc`, `.fls`, `.fdb_latexmk`, and `.synctex.gz` files.
+12. Verify `resumes/output/` contains only PDF files. Report the final PDF path, covered requirements, and unsupported gaps. Update Notion only when the invoking workflow explicitly authorizes it.
 
-## Fill calibration (validated)
-Recipe that lands **exactly 1 filled page** with the master template:
-- Summary ~4 lines · Education = B.Tech line only (drop HSC + coursework) · Stride 3 bullets · each project 3 bullets · Technical Skills condensed to ~6 rows.
-- If a touch of whitespace remains at the bottom: add one more bullet to the strongest block (don't stretch geometry).
-- Render to inspect fill: `pdftoppm -png -r 100 resumes/sources/build/<name>.pdf /tmp/chk` then view. (TeX Live + poppler via Homebrew, no sudo.)
+## ATS reporting
+- Label any internal assessment **ATS readiness**, explain the evidence used, and do not present it as a numeric ATS score.
+- Report a numeric ATS score only when obtained from a named external parser such as Enhancv. Record the parser, target JD, date, and result for a valid comparison.
 
 ## Hard rules
-- **PDF-only in `output/`.** `.tex` source in `sources/`, scratch in `sources/build/`, artifacts deleted after every compile.
-- Filename convention (every file in `output/`): `Onkar_Jadhav_<Company>_<Role>.pdf`.
-- Exactly one page, **filled** — no empty space.
-- Stride always in Experience; exactly 2 projects from the 4-pool; Vaani never.
-- Truthful only — no invented metrics, employers, or dates. Only reframe/reorder/select from the master.
-- Tighten/expand bullets, never the geometry.
-- Local-only: needs `pdflatex` on PATH. If absent, stop and tell the user to run locally.
+- Final deliverable is PDF. `.tex` stays in `resumes/sources/`; only `.pdf` is allowed in `resumes/output/`.
+- Exactly one visually balanced page. No padding for page fill.
+- Stride plus exactly two approved projects. Vaani never appears.
+- Truthful, provenance-backed content only.
+- No em dashes in resume bullets or sentences.
+- Local compilation only. If `pdflatex` is absent, stop and tell the user local compilation is blocked.

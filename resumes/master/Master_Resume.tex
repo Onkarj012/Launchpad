@@ -129,7 +129,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
       {Stride --- AI-First Adaptive Wellness Platform}{Remote}
       {Founder \& Lead Engineer}{April 2026 -- Present}
       \resumeItemListStart
-        \item {Built and shipped Stride to production as sole engineer; running live with an early cohort of \textbf{5--10 active trial users} driving iterative product feedback.}
+        \item {Architected and shipped Stride to production as sole engineer; running live with an early private user cohort actively driving iterative product feedback ahead of public beta.}
         \item {Architected a six-layer AI-first system: multi-modal input capture (text, voice, image, barcode, nutrition labels), a behavioral memory layer tracking preferences and adherence, an NLU layer for structured extraction, five specialised domain agents (diet, workout, sleep, hydration, habits) sharing memory, an analytics layer, and an adaptive UX layer driven by behavioral signals.}
         \item {Separated concerns by design: LLMs handle understanding and intent extraction while a deterministic four-component calculator (BMR, NEAT, EAT, TEF) handles computation --- eliminating opaque LLM arithmetic errors while retaining natural-language input.}
         \item {Built natural-language workout parsing converting free text such as ``30 min run, 3x10 squats at 60kg'' into structured sets/reps/duration/MET values without rigid input templates.}
@@ -146,7 +146,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
     \resumeProject
       {Lore Engine}{RAG Platform for Fan Wiki Knowledge Bases}
       {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, S3, OpenAI, Anthropic Claude}
-      {2026 -- Present}
+      {May 2026 -- Present}
       \resumeItemListStart
         \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline combining BM25 lexical search and pgvector dense embeddings via reciprocal rank fusion (RRF) — specifically chosen over pure vector search to handle proper-noun disambiguation and exact character-name matching that semantic models fail on.}
         \item {Designed section-aware chunking at H2/H3 wiki boundaries (not naive fixed token windows) with enriched \texttt{[Series][Page][Section]} metadata per chunk; per-chunk \texttt{first\_appearance\_order} spoiler tags assigned at ingestion time and filtered at retrieval time, ensuring users never surface lore beyond their current story progress.}
@@ -160,7 +160,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
     \resumeProject
       {StockXpert}{AI-Powered Deep Learning Equity Prediction Platform}
       {Python, TensorFlow, FastAPI, Next.js, TypeScript, Tailwind CSS, Cloudflare R2, AWS}
-      {Nov 2025 -- Present}
+      {Jan 2026 -- May 2026}
       \resumeItemListStart
         \item {Architected a hierarchical deep learning system combining ResNet, GRU, Bi-LSTM, and multi-head attention to model cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}, outperforming single-architecture baselines on directional accuracy.}
         \item {Constructed a leakage-free feature pipeline from raw OHLCV data incorporating RSI, MACD, ADX, Bollinger Bands, SMA/EMA distance, and volatility indicators with strict temporal train/validation/test splits to prevent lookahead bias in feature engineering.}

@@ -12,17 +12,17 @@ Turn today's `Apply?`-checked rows into a ready-to-send apply queue: one tailore
 
 ## Steps
 
-1. **Query** the Applications **Resume Queue** view (`Apply? = true`), then filter client-side to `Resume Status = Not Started`. If empty, report "nothing queued" and stop.
-   *Done when:* you have the full list of rows to process, each with its JD Link/Text and Company/Role.
+1. **Get the queue.** This workspace's Notion plan blocks programmatic queries (`notion-query-data-sources` / `notion-query-database-view` both require Business plan) — do not attempt to auto-query the `Apply?` checkbox. Ask the user directly which rows from today's (or a named) pull they've checked `Apply?` on — they pick from the **To Apply** / **Today's Pull** view themselves and tell you the Company/Role list, or paste the rows. Pull each named row's JD Link/Text via `notion-search` or a direct page URL the user gives you.
+   *Done when:* you have the full list of rows to process, each with its JD Link/Text and Company/Role, confirmed by the user — not guessed from an unreliable query.
 
 2. **For each row**, invoke the `resume-latex` skill's Steps 1-6 (project picker → assemble `.tex` → compile → page-count + fill verify → parse-verify guard) using that row's JD as input.
    *Done when:* every row has produced either a compiled, parse-verified PDF, or a logged failure with reason (don't silently skip a row that failed to compile).
 
 3. **Save** each output per the `resume-latex` PDF-only contract: `.tex` source in `resumes/sources/`, final PDF-only in `resumes/output/Onkar_Jadhav_<Company>_<Role>.pdf`, build artifacts deleted. After the batch, `resumes/output/` contains only `.pdf` files.
 
-4. **Update** each processed row: `Resume Status = Tailored`, `Resume PDF` = the output PDF path/link.
+4. **Update** each processed row: `Resume Status = Ready` (on the current v3 DB use its existing "Tailored" option), `Resume PDF` = the output PDF path/link, `Last Activity` = today. Do **not** touch `Status`, `Applied Date`, or `Apply?` — this skill only prepares resumes; applying and the Applied stamp are manual user actions handled after the user actually submits.
 
-5. **Report** a checklist to the user: Company, Role, apply link (JD Link), resume path — the day's apply queue. List any rows that failed Step 2 separately with the reason, so nothing silently drops.
+5. **Report** a checklist to the user: Company, Role, apply link (JD Link), resume path — the day's apply queue. List any rows that failed Step 2 separately with the reason, so nothing silently drops. Close with the reminder: "After you apply on the portal, mark the row Applied (set Applied Date) so `/followups` can seed the follow-up cadence." Follow-up seeding is **not** automatic — it starts only once the user marks a row Applied.
 
 ## Rules
 - Local-only. If invoked in an environment without LaTeX (`pdflatex`) on `PATH`, stop and tell the user to run it locally instead of guessing or skipping the compile step.

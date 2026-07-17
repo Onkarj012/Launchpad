@@ -64,7 +64,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
 \entry{Stride --- AI-First Adaptive Wellness Platform}{April 2026 -- Present}
 \subentry{Founder \& Lead Engineer}{Remote}
 \begin{itemize}
-  \item Built and shipped Stride to production as sole engineer; running live with an early cohort of \textbf{5--10 active trial users} driving iterative product feedback.
+  \item Architected and shipped Stride to production as sole engineer; running live with an early private user cohort actively driving iterative product feedback ahead of public beta.
   \item Architected a six-layer AI-first system: multi-modal input capture (text, voice, image, barcode, nutrition labels), a behavioral memory layer tracking preferences and adherence, an NLU layer for structured extraction, five specialised domain agents (diet, workout, sleep, hydration, habits) sharing memory, an analytics layer, and an adaptive UX layer driven by behavioral signals.
   \item Separated concerns by design: LLMs handle understanding and intent extraction while a deterministic four-component calculator (BMR, NEAT, EAT, TEF) handles computation --- eliminating opaque LLM arithmetic errors while retaining natural-language input.
   \item Built natural-language workout parsing converting free text such as ``30 min run, 3x10 squats at 60kg'' into structured sets/reps/duration/MET values without rigid input templates.
@@ -74,7 +74,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
 %-----------ENGINEERING PROJECTS-----------------
 \section{Engineering Projects}
 
-\entry{Lore Engine --- RAG Platform for Fan Wiki Knowledge Bases}{2026 -- Present}
+\entry{Lore Engine --- RAG Platform for Fan Wiki Knowledge Bases}{May 2026 -- Present}
 \subentry{Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, S3, OpenAI, Anthropic Claude}{}
 \begin{itemize}
   \item Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline combining BM25 lexical search and pgvector dense embeddings via reciprocal rank fusion (RRF) --- specifically chosen over pure vector search to handle proper-noun disambiguation and exact character-name matching that semantic models fail on.
@@ -85,7 +85,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
   \item Shipped two distinct consumer surfaces on a single shared retriever: a streaming chat interface with inline citations (conversational) and a hierarchically generated lore book with aggressive per-series caching (reference).
 \end{itemize}
 
-\entry{StockXpert --- AI-Powered Deep Learning Equity Prediction Platform}{Nov 2025 -- Present}
+\entry{StockXpert --- AI-Powered Deep Learning Equity Prediction Platform}{Jan 2026 -- May 2026}
 \subentry{Python, TensorFlow, FastAPI, Next.js, TypeScript, Tailwind CSS, Cloudflare R2, AWS}{}
 \begin{itemize}
   \item Architected a hierarchical deep learning system combining ResNet, GRU, Bi-LSTM, and multi-head attention to model cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}, outperforming single-architecture baselines on directional accuracy.

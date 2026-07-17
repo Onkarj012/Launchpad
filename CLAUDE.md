@@ -35,8 +35,10 @@ Job Search/
 ```
 
 ## Skills (single-slash)
-- `/daily-job-pull` — 3-layer discovery → gate → score → log top 15-20 to Notion. **Discovery only.**
+- `/morning` — daily entry point: runs `daily-job-pull` end-to-end, presents Strict-first shortlist, surfaces due follow-ups. Skips if today's pull already ran, unless forced. **Discovery only.**
+- `/daily-job-pull` — full discovery engine (tracked boards, reverse Greenhouse/Lever/Ashby/Workday, public/startup feeds, broad WebSearch, watchlist, optional Indeed) → normalize → gate → score → diversify → log 15-20 to Notion. **Discovery only.** Usually invoked via `/morning`, not directly.
 - `/quick-add` — log one user-found role (gate → score → single row).
+- `/followups` — surface applications/cold-emails due a follow-up today (fixed cadence), draft on request. **Never sends.**
 - `/resume-latex` — paste a JD → tailored one-page PDF-only to `resumes/output/`.
 - `/make-applications` — batch-tailor every `Apply?`-checked Notion row (local-only).
 - `/resume-check` — brutal recruiter review of the `.tex` source vs a JD (or generic fallback).
