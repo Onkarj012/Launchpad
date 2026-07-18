@@ -9,7 +9,12 @@ function parseTimestamp(value) {
 }
 
 export function classifyFreshness(candidateOrPostedAt, options = {}) {
-  const postedAt = typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt?.postedAt : candidateOrPostedAt;
+  const candidate = candidateOrPostedAt && typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt : null;
+  const isWorkday = candidate?.provider?.toLowerCase?.() === 'workday';
+  const workdayHasVerifiedDate = candidate?.evidence?.freshness?.kind === 'workday-startDate';
+  const postedAt = isWorkday && !workdayHasVerifiedDate
+    ? null
+    : candidate ? candidate.postedAt : candidateOrPostedAt;
   const nowValue = options.now ?? new Date().toISOString();
   const nowMs = parseTimestamp(nowValue);
   const postedMs = parseTimestamp(postedAt);

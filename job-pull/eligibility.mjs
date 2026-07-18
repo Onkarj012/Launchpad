@@ -1,4 +1,4 @@
-import { normalizedKey } from './candidate.mjs';
+import { extractExperienceYears, normalizedKey } from './candidate.mjs';
 
 const TITLE_PATTERNS = [
   { family: 'ai-llm-agentic', strict: /\b(ai engineer|artificial intelligence engineer|llm engineer|gen(?:erative)?[ -]?ai engineer|agentic ai engineer|ai agent engineer|nlp engineer|prompt engineer|ai developer|genai|gen ai developer|ai\/ml)\b/i },
@@ -15,8 +15,6 @@ const HYBRID_PATTERN = /\bhybrid\b/i;
 const ONSITE_PATTERN = /\b(on[ -]?site|in[ -]?office|office[ -]?based|office-based)\b/i;
 const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only|volunteer)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
-const EXPERIENCE_PATTERN = /(?:minimum|required|at least|more than|over|\bexperience\b|\breq(?:uirements?)?\b)[^\d]{0,24}(\d+(?:\.\d+)?)\s*(\+|to|-)?\s*(\d+(?:\.\d+)?)?\s*(?:years?|yrs?)/i;
-
 function textFor(candidate) {
   return [candidate.title, candidate.location, candidate.workMode, candidate.description, candidate.employment?.evidence, candidate.experience?.evidence]
     .filter((value) => typeof value === 'string')
@@ -34,7 +32,10 @@ export function classifyWorkMode(candidate) {
   if (candidate.workMode === 'remote' || REMOTE_PATTERN.test(combined)) return { mode: 'remote', evidence: location || candidate.workMode || null };
   if (candidate.workMode === 'hybrid' || HYBRID_PATTERN.test(combined)) return { mode: 'hybrid', evidence: location || candidate.workMode || null };
   if (candidate.workMode === 'onsite' || ONSITE_PATTERN.test(combined)) return { mode: 'onsite', evidence: location || candidate.workMode || null };
-  if (lower && /\b(?:india|apac|asia[ -]?pacific|worldwide|global|anywhere)\b/.test(lower) && !ONSITE_PATTERN.test(combined) && !/\b(?:bangalore|bengaluru|mumbai|delhi|gurgaon|gurugram|hyderabad|chennai|kolkata|noida|ahmedabad)\b/.test(lower)) return { mode: 'remote', evidence: location };
+  // A location field containing ONLY a bare country/region token (no city/state)
+  // is an ATS convention for remote-within-that-scope (e.g. Ashby "India").
+  // Anything with additional text (a city, state, or SEZ) is a real office location.
+  if (/^(india|indian|apac|asia[ -]?pacific|worldwide|world wide|global|anywhere)$/i.test(location.trim())) return { mode: 'remote', evidence: location };
   if (lower) return { mode: 'onsite', evidence: location };
   return { mode: 'unknown', evidence: null };
 }
@@ -58,7 +59,7 @@ function remoteScopeStatus(text, policy) {
   if (denied.length && !hasIndia && !/worldwide|world wide|global|anywhere/.test(lower)) {
     return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: denied.join(', ') };
   }
-  if (!hasAllowed) return { pass: true, strict: false, code: 'GEO_REMOTE_SCOPE_NOT_VERIFIED', evidence: text || null };
+  if (!hasAllowed) return { pass: false, code: 'GEO_REMOTE_SCOPE_UNCLEAR', evidence: text || null };
   return { pass: true, code: 'GEO_REMOTE_INDIA_COMPATIBLE', evidence: text || null };
 }
 
@@ -118,12 +119,9 @@ function parsedExperience(candidate) {
   const knownMin = Number.isFinite(candidate.experience?.minYears) ? candidate.experience.minYears : null;
   const knownMax = Number.isFinite(candidate.experience?.maxYears) ? candidate.experience.maxYears : null;
   if (knownMin != null || knownMax != null) return { min: knownMin ?? knownMax, max: knownMax ?? knownMin, evidence: candidate.experience?.evidence || null };
-  const text = `${candidate.title || ''} ${candidate.description || ''}`;
-  const match = text.match(EXPERIENCE_PATTERN);
-  if (!match) return { min: null, max: null, evidence: null };
-  const min = Number(match[1]);
-  const max = match[3] == null ? (match[2] === '+' ? null : min) : Number(match[3]);
-  return { min, max, evidence: match[0] };
+  const parsed = extractExperienceYears(`${candidate.title || ''} ${candidate.description || ''}`);
+  if (!parsed) return { min: null, max: null, evidence: null };
+  return { min: parsed.minYears, max: parsed.maxYears, evidence: parsed.evidence };
 }
 
 export function classifyExperience(candidate, policy) {

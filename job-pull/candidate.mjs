@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { decodeEntities } from '../career-ops/providers/_html-entities.mjs';
 
 export const CANDIDATE_SCHEMA_VERSION = 'CandidateV1';
 
@@ -85,6 +86,62 @@ function finiteYears(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+const HARD_EXPERIENCE_CUE_RE = /\b(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)/i;
+const PREFERENCE_RE = /\b(?:preferred|nice\s+to\s+have|bonus|desirable|advantage)\b/i;
+const EXPERIENCE_NUMBER = String.raw`(?<lower>\d+(?:\.\d+)?)(?:\s*(?<plus>\+)|\s*(?<separator>to|-)\s*(?<upper>\d+(?:\.\d+)?))?`;
+
+/** Convert provider HTML/encoded text into the plain text used by parsers. */
+export function stripHtmlToText(value) {
+  if (typeof value !== 'string') return '';
+  return decodeEntities(value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function experienceMatch(match, text, hardCue = false) {
+  const groups = match.groups || {};
+  const lower = Number(groups.lower);
+  const upper = groups.upper == null ? (groups.plus ? null : lower) : Number(groups.upper);
+  const start = match.index ?? 0;
+  const end = start + match[0].length;
+  const surrounding = text.slice(Math.max(0, start - 30), Math.min(text.length, end + 30));
+  const nearbyHardCue = HARD_EXPERIENCE_CUE_RE.test(text.slice(Math.max(0, start - 40), start));
+  if (PREFERENCE_RE.test(surrounding) && !hardCue && !nearbyHardCue) return null;
+  return { minYears: lower, maxYears: upper, evidence: match[0].trim().replace(/\s+/g, ' ') };
+}
+
+/**
+ * Extract hard-requirement experience from job-description text. The strictest
+ * lower bound wins because a posting can mention multiple seniority levels.
+ */
+export function extractExperienceYears(text) {
+  const cleaned = stripHtmlToText(text);
+  if (!cleaned) return null;
+  const matches = [];
+  const forward = new RegExp(
+    String.raw`(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)[^\d]{0,40}?\b${EXPERIENCE_NUMBER}(?:\s*(?:years?|yrs?))?`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(forward)) {
+    const parsed = experienceMatch(match, cleaned, true);
+    if (parsed) matches.push(parsed);
+  }
+
+  const reverse = new RegExp(
+    String.raw`\b${EXPERIENCE_NUMBER}(?:\s+[A-Za-z][A-Za-z'/-]*){0,4}\s+(?:years?|yrs?)\b(?:\s+[A-Za-z][A-Za-z'/-]*){0,4}\s+experience\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(reverse)) {
+    const parsed = experienceMatch(match, cleaned);
+    if (parsed) matches.push(parsed);
+  }
+  if (!matches.length) return null;
+  return matches.reduce((best, current) => current.minYears > best.minYears ? current : best);
+}
+
 function parseExperienceString(value) {
   const text = nonEmptyString(value);
   if (!text) return { minYears: null, maxYears: null, evidence: null };
@@ -101,17 +158,22 @@ function normalizeExperience(raw) {
   const value = raw?.experience;
   if (typeof value === 'string') return parseExperienceString(value);
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return {
+    const explicit = {
       minYears: finiteYears(value.minYears ?? value.minimumYears ?? value.min),
       maxYears: finiteYears(value.maxYears ?? value.maximumYears ?? value.max),
       evidence: preserveText(value.evidence),
     };
+    if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return explicit;
+    return extractExperienceYears(raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body) || explicit;
   }
-  return {
+  const explicit = {
     minYears: finiteYears(raw?.minYears ?? raw?.minimumYears ?? raw?.experienceMinYears),
     maxYears: finiteYears(raw?.maxYears ?? raw?.maximumYears ?? raw?.experienceMaxYears),
     evidence: preserveText(raw?.experienceEvidence),
   };
+  if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return explicit;
+  return extractExperienceYears(raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body)
+    || { minYears: null, maxYears: null, evidence: null };
 }
 
 function normalizeEmployment(raw) {

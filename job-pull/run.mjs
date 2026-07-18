@@ -13,6 +13,7 @@ import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked
 import { runReverseAtsScan, reverseAtsCandidatesFromFixture } from './adapters/reverse-ats.mjs';
 import { importPublicSearchCandidates } from './adapters/public-search.mjs';
 import { importIndeedCandidates, indeedUnavailable } from './adapters/indeed.mjs';
+import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CAREER_OPS_DIR = path.resolve(MODULE_DIR, '../career-ops');
@@ -84,10 +85,17 @@ function withRunLock(lockPath, callback) {
   if (existsSync(lockPath)) throw new RunError(`run lock exists: ${lockPath}`);
   mkdirSync(path.dirname(lockPath), { recursive: true });
   writeFileSync(lockPath, `${process.pid}\n`, 'utf8');
-  try {
-    return callback();
-  } finally {
+  const release = () => {
     try { unlinkSync(lockPath); } catch { /* already removed */ }
+  };
+  try {
+    const result = callback();
+    if (result && typeof result.then === 'function') return result.finally(release);
+    release();
+    return result;
+  } catch (error) {
+    release();
+    throw error;
   }
 }
 
@@ -325,6 +333,12 @@ function discover(options) {
   return sources;
 }
 
+function hasNetworkAvailable(options) {
+  // Both ATS sources are fixture-backed in this mode, and the optional sources
+  // are also fixture-backed or absent, so enrichment must remain offline-safe.
+  return !(options.dryRun && options.trackedJson && options.reverseJson);
+}
+
 function outputResult(result, outputPath, manifestPath) {
   const text = `${JSON.stringify(result, null, 2)}\n`;
   if (outputPath) {
@@ -357,7 +371,7 @@ Manual, no-Notion discovery. Options:
 `);
 }
 
-export function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help) {
     printHelp();
@@ -371,8 +385,13 @@ export function main(argv = process.argv.slice(2)) {
   if (config.run.onceDaily && runState.lastRunDate === runDate && !options.force && !options.dryRun) {
     throw new RunError(`manual daily pull already ran on ${runDate}; use --force to override`);
   }
-  const execute = () => {
+  const execute = async () => {
     const sources = applyScores(discover(options), options.scoresJson);
+    if (hasNetworkAvailable(options)) {
+      await enrichWorkdayCandidates(sources.flatMap((source) => source.candidates || []), {
+        now: Date.parse(options.now),
+      });
+    }
     const result = runPipeline({ config, now: options.now, runId: options.runId, ledgerRows, sources, dryRun: options.dryRun });
     outputResult(result, options.outputPath, options.manifestPath);
     if (!options.dryRun) {
@@ -382,10 +401,10 @@ export function main(argv = process.argv.slice(2)) {
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     return 0;
   };
-  return withRunLock(options.lockPath, execute);
+  return await withRunLock(options.lockPath, execute);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try { process.exitCode = main(); }
+  try { process.exitCode = await main(); }
   catch (error) { console.error(`job-pull: ${error.message}`); process.exitCode = 1; }
 }
