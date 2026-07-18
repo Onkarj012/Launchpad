@@ -111,7 +111,7 @@
     {
       "id": "automation-lab~internshala-scraper",
       "label": "internshala",
-      "enabled": true,
+      "enabled": false,
       "_note": "Paid-internship lane only. Actor takes a single searchQuery string. stipend/applyBy live in fullDescription when fetchDetails is on.",
       "input": {
         "searchQuery": "python",
