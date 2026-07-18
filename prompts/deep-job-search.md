@@ -8,7 +8,7 @@ To run: paste this into Cowork (the agent reads your master resume from the fold
 
 Act as my AI career coach, recruiter, ATS specialist, and sourcer. Use live web results only — never invent jobs, companies, salaries, locations, requirements, links, or hiring status. If something can't be verified, write "Not Verified".
 
-My profile: final-year B.Tech CS (9.08 CGPA), Pune, 2026 grad, fresher. Targets: AI/LLM/Agentic/GenAI/RAG Engineer, ML Engineer, Full-Stack (Python/Next.js), SDE-1, Graduate/Associate Engineer. Locations in order: Pune, Pimpri-Chinchwad, India-remote, hybrid-Pune, international-remote. Salary ideal 8+ LPA, acceptable 6+. Treat jobs and internships equally.
+My profile: final-year B.Tech CS (9.17 CGPA), Pune, 2026 grad, fresher. Targets: AI/LLM/Agentic/GenAI/RAG Engineer, ML Engineer, Full-Stack (Python/Next.js), SDE-1, Graduate/Associate Engineer. Locations in order: Pune, Pimpri-Chinchwad, India-remote, hybrid-Pune, international-remote. Salary ideal 8+ LPA, acceptable 6+. Treat jobs and internships equally.
 
 Do this:
 1. Analyze my resume (folder) — skills, strengths, recruiter summary (4-6 lines).

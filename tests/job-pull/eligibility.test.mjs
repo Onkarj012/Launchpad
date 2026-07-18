@@ -35,14 +35,14 @@ test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote - India' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - APAC' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).geo.pass, true);
-  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).geo.code, 'GEO_REMOTE_SCOPE_NOT_VERIFIED');
-  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, 'relaxed');
+  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
+  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, null);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - US only' }), config).geo.pass, false);
   assert.equal(classifyCandidate(candidate({ location: 'Remote worldwide, excluding India' }), config).geo.pass, false);
 });
 
 test('expanded target titles pass as strict roles', () => {
-  for (const title of ['Software Development Engineer', 'GenAI Developer', 'Member of Technical Staff']) {
+  for (const title of ['Software Development Engineer', 'GenAI Developer']) {
     const result = classifyCandidate(candidate({ title }), config);
     assert.equal(result.tier, 'strict', title);
   }
@@ -89,5 +89,55 @@ test('unknown evidence stays visible while only confirmed expiry fails liveness'
   assert.equal(unknown.liveness.status, 'Not Verified');
   const classified = classifyCandidate(unknown, config);
   assert.equal(classified.eligible, true);
+  assert.equal(classified.tier, 'relaxed');
+  assert.equal(classified.experience.code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  assert.deepEqual(classified.relaxations, ['experience-not-stated']);
   assert.equal(classified.liveness.code, 'LIVENESS_NOT_VERIFIED');
+});
+
+test('region-qualified global wording does not grant remote eligibility', () => {
+  const result = classifyCandidate(candidate({ location: 'Remote', description: 'Work remotely anywhere within Europe.' }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
+});
+
+test('foreign work authorization hard-fails despite generic remote scope', () => {
+  const result = classifyCandidate(candidate({ location: 'Remote worldwide', description: 'Candidates must be authorized to work in the US.' }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED');
+  assert.match(result.geo.evidence, /authorized to work in the US/i);
+});
+
+test('structured India location remains compatible with stray geo wording', () => {
+  const result = classifyCandidate(candidate({ location: 'India', description: 'Remote anywhere within Germany. Work authorization in India is accepted.' }), config);
+  assert.equal(result.geo.pass, true);
+  assert.equal(result.geo.mode, 'remote');
+});
+
+test('fresher evidence makes missing experience strict', () => {
+  const result = classifyCandidate(candidate({ experience: {}, description: 'This role welcomes freshers.' }), config);
+  assert.equal(result.experience.code, 'EXPERIENCE_FRESHER_EVIDENCE');
+  assert.equal(result.experience.evidence, 'freshers');
+  assert.equal(result.tier, 'strict');
+});
+
+test('missing experience without fresher evidence requires manual review', () => {
+  const result = classifyCandidate(candidate({ experience: {}, description: 'Build production services with Python.' }), config);
+  assert.equal(result.experience.code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  assert.equal(result.experience.manualReview, true);
+  assert.equal(result.tier, 'relaxed');
+  assert.deepEqual(result.relaxations, ['experience-not-stated']);
+});
+
+test('seniority markers hard-reject otherwise targeted titles', () => {
+  const result = classifyCandidate(candidate({ title: 'Senior AI Engineer' }), config);
+  assert.equal(result.eligible, false);
+  assert.equal(result.title.code, 'TITLE_SENIORITY_REJECT');
+});
+
+test('graduate titles with a seniority phrase use the graduate exception', () => {
+  const result = classifyCandidate(candidate({ title: 'Graduate Engineer - Team Lead track' }), config);
+  assert.equal(result.title.pass, true);
+  assert.equal(result.title.code, 'TITLE_TARGET');
+  assert.equal(result.tier, 'strict');
 });

@@ -8,7 +8,7 @@ function selectionView(entry) {
     candidate: entry.candidate || entry,
     eligibility,
     freshness,
-    tier: (freshness.window === 'undated' ? 'relaxed' : entry.selectionTier || eligibility.tier || null),
+    tier: entry.selectionTier || eligibility.tier || null,
     window: entry.freshnessWindow || freshness.window || null,
     family: entry.roleFamily || eligibility.roleFamily || 'adjacent-engineering',
     company: entry.companyKey || eligibility.companyKey || normalizedKey((entry.candidate || entry).company),
@@ -132,11 +132,12 @@ export function selectCandidates(entries, config) {
   const selected = [];
   const exclusions = [];
   const phases = [
-    ['strict', 'Primary'],
-    ['strict', 'Extended'],
-    ['relaxed', 'Primary'],
-    ['relaxed', 'Extended'],
-    ['relaxed', 'undated'],
+    ['strict', 'Hot'],
+    ['strict', 'Active'],
+    ['strict', 'Backfill'],
+    ['relaxed', 'Hot'],
+    ['relaxed', 'Active'],
+    ['relaxed', 'Backfill'],
   ];
   for (const [tier, window] of phases) {
     if (selected.length >= targetCount) break;

@@ -37,6 +37,27 @@ test('run pipeline emits strict/fallback records, manifests, caps, and payload-s
   assert.deepEqual(result.sourceManifests[0].providers, ['greenhouse', 'lever', 'ashby', 'workday']);
 });
 
+test('undated candidates are surfaced in verifyQueue and never selected or rejected', () => {
+  const candidate = raw(100, { postedAt: null });
+  const result = runPipeline({
+    config,
+    now,
+    runId: 'verify-queue-fixture',
+    sources: [{ candidates: [candidate], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.deepEqual(result.verifyQueue, [{
+    company: candidate.company,
+    title: candidate.title,
+    canonicalUrl: candidate.canonicalUrl,
+    provider: candidate.provider,
+  }]);
+  assert.equal(result.counts.selected, 0);
+  assert.equal(result.counts.verifyQueue, 1);
+  assert.equal(result.selection.exclusions.length, 0);
+  assert.equal(result.exclusionAudit.gate.length, 0);
+  assert.equal(result.scoringCandidates.length, 0);
+});
+
 test('score merge preserves agent scoring and daily date uses India timezone', () => {
   const candidate = raw(99);
   const sources = applyScores([{ candidates: [candidate], manifest: {} }], [{

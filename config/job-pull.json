@@ -1,19 +1,20 @@
 {
   "$schema": "./job-pull.schema.json",
-  "schemaVersion": "JobPullPolicyV1",
+  "schemaVersion": "JobPullPolicyV2",
   "timezone": "Asia/Kolkata",
   "run": {
     "cadence": "manual",
     "onceDaily": true,
-    "minimumTotal": 15,
-    "maximumTotal": 20,
+    "minimumTotal": 25,
+    "maximumTotal": 35,
     "strictTarget": 10,
     "maximumPerCompany": 2,
     "maximumFamilyShare": 0.4
   },
   "freshness": {
-    "primaryMaximumHours": 24,
-    "extendedMaximumHours": 72
+    "hotMaximumHours": 72,
+    "activeMaximumDays": 7,
+    "backfillMaximumDays": 14
   },
   "geo": {
     "homeCountry": "India",

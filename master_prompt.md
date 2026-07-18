@@ -11,7 +11,7 @@
 - **Name:** Onkar Jadhav
 - **Title:** AI / Full-Stack Software Engineer
 - **Location:** Pune, Maharashtra, India
-- **Education:** B.Tech Computer Science, PCCOE (9.08 CGPA), graduating Jun 2026
+- **Education:** B.Tech Computer Science, PCCOE (9.17 CGPA), graduating Jun 2026
 - **Email:** onkarj012@gmail.com · **GitHub:** github.com/Onkarj012 · **LinkedIn:** linkedin.com/in/onkarj012
 - **Headline products:** Stride (shipped, in use), Lore Engine, StockXpert, GovBench, PromptForge
 
@@ -51,9 +51,10 @@
 1. **Location authorization** — onsite/hybrid must offer Pune metro; remote eligibility must explicitly include India/APAC/worldwide-with-India-ok.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
 3. **Employment / paid** — allow full-time or explicitly paid internship; disallowed/unknown-pay internships → drop.
-4. **Freshness evidence** — exact posting time must be ≤72h old. Undated or older roles do not enter the curated daily list.
-   - **Workday exception:** `*.myworkdayjobs.com` `postedOn` bumps on internal req refresh and does not reliably reflect true listing age. Workday-sourced `postedAt` never counts toward Primary/Extended tier on its own — treat Workday roles as `Liveness: Not Verified` for freshness purposes unless corroborated by another dated source (e.g. a company LinkedIn/blog post, or a second board listing the same req). Ashby/Lever/Greenhouse dates stay trusted as-is.
+4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
+   - **Workday exception:** `*.myworkdayjobs.com` `postedOn` bumps on internal req refresh and does not reliably reflect true listing age. Workday-sourced `postedAt` without a corroborated original date is treated as undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
 5. **Liveness** — confirmed dead/expired → drop. Inconclusive checks stay `Not Verified`, never invented as Active.
+6. **Cross-day suppression** (opportunity ledger, `career-ops/data/opportunity-ledger.tsv`) — applied/contacted/interviewing/rejected requisitions never resurface; surfaced-but-unactioned roles get a 7-day cooldown; a Workday refresh is the same requisition, not a new opportunity.
 
 Mechanical values and aliases live in `config/job-pull.json`; this section is the human-readable policy. Everything else (stack fit, role flavor, pure-frontend-ness, etc.) is **soft** — it lowers Skill match / Domain relevance in § 3, not a gate.
 
@@ -76,9 +77,9 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 
 **Soft-score-down signals (drag Domain/Skill, not a gate):** pure frontend-only / pixel-pushing roles, non-technical/sales/support roles, hard requirement of a stack with zero overlap to mine that dominates the role.
 
-- **Recency** is tracked separately: `Primary` ≤24h and `Extended` >24–72h. Primary wins ranking ties; Extended fills shortages. Older/undated roles fail the freshness gate.
+- **Recency** is tracked separately via freshness classes: `Hot` 0–72h · `Active` 3–7d · `Backfill` 8–14d. Fresher class wins ranking ties; older classes fill shortages. Undated roles go to the `VerifyQueue` for manual verification; >14d fails the gate.
 - Output per job: integer 0–100 + a one-line rationale + the **single strongest hook** to lead the resume/email with + an `Auto-Suggest` boolean (see rule below).
-- Target **15–20 curated roles**, with **at least 10 Strict when inventory supports it**. Selection order: Strict Primary → Strict Extended → Shortage Fallback Primary → Shortage Fallback Extended.
+- Target **25–35 curated roles** (sprint volume), with **at least 10 Strict when inventory supports it**. Selection order: Strict Hot → Strict Active → Strict Backfill → Shortage Fallback Hot → Fallback Active → Fallback Backfill.
 - Shortage fallback may relax only adjacent title and hard experience requirement up to 2 years. Display it separately with exact relaxation; never hide a strict shortfall.
 - Diversity after scoring: maximum 2 roles per company; balance role families, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist.
 - **No auto-apply.** Present ranked list; Onkar reviews and picks ~7–8/day. `Apply?` checkbox is manual — never auto-checked.
@@ -89,7 +90,7 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 - 50–64: stretch, only if low day-volume.
 - <50: skip unless special reason.
 
-**Auto-Suggest rule:** `score ≥ 80 AND Freshness Window ∈ {Primary, Extended} AND Selection Tier = Strict AND Response-Likelihood sub-score ≥ 14/20`. This sets the `Auto-Suggest` checkbox (cloud's pick opinion) — it never sets `Apply?`; the user always confirms manually.
+**Auto-Suggest rule:** `score ≥ 80 AND Freshness Window ∈ {Hot, Active} AND Selection Tier = Strict AND Response-Likelihood sub-score ≥ 14/20`. This sets the `Auto-Suggest` checkbox (cloud's pick opinion) — it never sets `Apply?`; the user always confirms manually.
 
 ---
 
@@ -224,7 +225,7 @@ Onkar
 | Say | Claude does |
 |---|---|
 | "morning" / `/morning` | Manual once-daily routine: high-recall pull → Strict shortlist + clearly separate shortage fallback → remind to pick 7–8 + `/make-applications` → surface due follow-ups. Discovery + surfacing only, never applies |
-| "pull today's jobs" / `/pull-jobs` | Tracked providers + full reverse Greenhouse/Lever/Ashby/Workday + startup/public feeds + broad WebSearch + watchlist + optional Indeed → API/feed liveness → deterministic dedup → hard gates → Primary/Extended freshness → score + diversity selection → write 15–20 curated rows when supply supports it |
+| "pull today's jobs" / `/pull-jobs` | Tracked providers + full reverse Greenhouse/Lever/Ashby/Workday + startup/public feeds + broad WebSearch + watchlist + optional Indeed → API/feed liveness → deterministic dedup → hard gates → Hot/Active/Backfill freshness classes + opportunity-ledger suppression → score + diversity selection → write 25–35 curated rows when supply supports it |
 | "follow-ups?" / `/followups` | Read tracker vs cadence (applied day 7 → +7, max 2; responded +1/+3; thank-you +1) → list what's due today → draft on request only, never send |
 | "make applications" / `/make-applications` | Local-only: batch-tailor resumes for every `Apply?`-checked row → compile + parse-verify → PDF-only to `resumes/output/` → update Resume Status |
 | "tailor for <row/company>" / `/resume-latex` | Read JD → pick 2 projects → tailor `.tex` in `resumes/sources/` → compile → verify 1 page → PDF-only to `resumes/output/` → update row |

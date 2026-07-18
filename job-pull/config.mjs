@@ -24,7 +24,7 @@ function sameArray(actual, expected) {
 export function validateConfig(config) {
   const errors = [];
   if (!config || typeof config !== 'object' || Array.isArray(config)) return ['policy must be an object'];
-  if (config.schemaVersion !== 'JobPullPolicyV1') errors.push('schemaVersion must be JobPullPolicyV1');
+  if (config.schemaVersion !== 'JobPullPolicyV2') errors.push('schemaVersion must be JobPullPolicyV2');
   if (config.timezone !== 'Asia/Kolkata') errors.push('timezone must remain Asia/Kolkata');
 
   const run = config.run;
@@ -32,15 +32,15 @@ export function validateConfig(config) {
   else {
     if (run.cadence !== 'manual') errors.push('run.cadence must remain manual');
     if (run.onceDaily !== true) errors.push('run.onceDaily must remain true');
-    if (run.minimumTotal !== 15 || run.maximumTotal !== 20) errors.push('run total target must remain 15-20');
+    if (run.minimumTotal !== 25 || run.maximumTotal !== 35) errors.push('run total target must remain 25-35');
     if (run.strictTarget !== 10) errors.push('run.strictTarget must remain 10');
     if (run.maximumPerCompany !== 2) errors.push('run.maximumPerCompany must remain 2');
     if (run.maximumFamilyShare !== 0.4) errors.push('run.maximumFamilyShare must remain 0.4');
   }
 
   const freshness = config.freshness;
-  if (!freshness || freshness.primaryMaximumHours !== 24 || freshness.extendedMaximumHours !== 72) {
-    errors.push('freshness boundaries must remain 24 and 72 hours');
+  if (!freshness || freshness.hotMaximumHours !== 72 || freshness.activeMaximumDays !== 7 || freshness.backfillMaximumDays !== 14) {
+    errors.push('freshness boundaries must remain 72 hours, 7 days, and 14 days');
   }
 
   const geo = config.geo;

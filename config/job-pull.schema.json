@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://job-search.local/schema/job-pull-policy-v1.json",
-  "title": "Job Pull Policy V1",
+  "$id": "https://job-search.local/schema/job-pull-policy-v2.json",
+  "title": "Job Pull Policy V2",
   "type": "object",
   "required": ["schemaVersion", "timezone", "run", "freshness", "geo", "employment", "experience", "roles", "sources", "dedup"],
   "properties": {
     "$schema": { "type": "string" },
-    "schemaVersion": { "const": "JobPullPolicyV1" },
+    "schemaVersion": { "const": "JobPullPolicyV2" },
     "timezone": { "const": "Asia/Kolkata" },
     "run": {
       "type": "object",
@@ -14,8 +14,8 @@
       "properties": {
         "cadence": { "const": "manual" },
         "onceDaily": { "const": true },
-        "minimumTotal": { "const": 15 },
-        "maximumTotal": { "const": 20 },
+        "minimumTotal": { "const": 25 },
+        "maximumTotal": { "const": 35 },
         "strictTarget": { "const": 10 },
         "maximumPerCompany": { "const": 2 },
         "maximumFamilyShare": { "const": 0.4 }
@@ -24,10 +24,11 @@
     },
     "freshness": {
       "type": "object",
-      "required": ["primaryMaximumHours", "extendedMaximumHours"],
+      "required": ["hotMaximumHours", "activeMaximumDays", "backfillMaximumDays"],
       "properties": {
-        "primaryMaximumHours": { "const": 24 },
-        "extendedMaximumHours": { "const": 72 }
+        "hotMaximumHours": { "const": 72 },
+        "activeMaximumDays": { "const": 7 },
+        "backfillMaximumDays": { "const": 14 }
       },
       "additionalProperties": false
     },

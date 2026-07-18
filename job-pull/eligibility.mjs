@@ -15,6 +15,11 @@ const HYBRID_PATTERN = /\bhybrid\b/i;
 const ONSITE_PATTERN = /\b(on[ -]?site|in[ -]?office|office[ -]?based|office-based)\b/i;
 const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only|volunteer)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
+const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada)|(?:u\.?s\.?|united states|u\.?k\.?|eu|canada|australia)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada))(?=$|[^a-z])/i;
+const GLOBAL_SCOPE_PATTERN = /\b(worldwide|world\s+wide|global|anywhere)\b/gi;
+const FRESHER_EXPERIENCE_PATTERN = /\b(freshers?|new[- ]grad|recent graduate|graduate engineer|graduate trainee|campus|entry[- ]level|junior|associate|trainee|0\s*[-–]\s*1\s+years?|0\s+to\s+1\s+years?)\b/i;
+const SENIORITY_PATTERN = /\b(senior|sr\.?|staff|lead|principal|architect|director|head of|vp|vice president|manager)\b/i;
+const FRESHER_TITLE_PATTERN = /\b(freshers?|new[- ]grad(?:uate)?|recent graduate|graduate|entry[- ]level|junior|trainee|campus)\b/i;
 function textFor(candidate) {
   return [candidate.title, candidate.location, candidate.workMode, candidate.description, candidate.employment?.evidence, candidate.experience?.evidence]
     .filter((value) => typeof value === 'string')
@@ -49,14 +54,43 @@ function hasAlias(text, aliases) {
   });
 }
 
-function remoteScopeStatus(text, policy) {
+function isIndiaCompatibleRegion(value, policy) {
+  const normalized = value.toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+  if (/^(?:india|indian|pune)\b/.test(normalized)) return true;
+  return policy.geo.remoteAllowedScopes.some((scope) => {
+    const allowed = scope.toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+    return normalized === allowed || normalized.startsWith(`${allowed} `);
+  });
+}
+
+function isRegionQualifiedGlobalToken(text, match, policy) {
+  const after = text.slice(match.index + match[0].length);
+  const followingRegion = after.match(/^\s+(?:in|within)\s+(?:the\s+)?([a-z][a-z.'-]*(?:\s+[a-z][a-z.'-]*){0,3})/i);
+  if (followingRegion) return !isIndiaCompatibleRegion(followingRegion[1], policy);
+  const precedingRegion = text.slice(0, match.index).match(/\(\s*([^()]{1,40})\s*\)\s*$/);
+  if (precedingRegion) return !isIndiaCompatibleRegion(precedingRegion[1], policy);
+  const trailingRegion = after.match(/^\s*\(\s*([^()]{1,40})\s*\)/);
+  if (trailingRegion) return !isIndiaCompatibleRegion(trailingRegion[1], policy);
+  return false;
+}
+
+function hasAllowedGlobalScope(text, policy) {
+  return [...text.matchAll(GLOBAL_SCOPE_PATTERN)].some((match) => !isRegionQualifiedGlobalToken(text, match, policy));
+}
+
+function remoteScopeStatus(text, location, policy) {
   const lower = text.toLowerCase();
   const denied = policy.geo.remoteDeniedScopes.filter((scope) => lower.includes(scope.toLowerCase()));
-  const hasIndia = /\bindia\b|\bindian\b/.test(lower);
-  const hasAllowed = policy.geo.remoteAllowedScopes.some((scope) => lower.includes(scope.toLowerCase())) || hasIndia;
+  const hasIndia = /\bindia\b|\bindian\b/.test(lower) || /\b(?:india|indian|pune)\b/i.test(location);
+  const hasAllowed = policy.geo.remoteAllowedScopes.some((scope) => {
+    if (/^(worldwide|world wide|global|anywhere)$/i.test(scope.trim())) return hasAllowedGlobalScope(text, policy);
+    return lower.includes(scope.toLowerCase());
+  }) || hasIndia;
+  const foreignMatch = text.match(FOREIGN_REMOTE_REGION_PATTERN);
   const excludesIndia = /excluding\s+india|not\s+(?:open|available)\s+to\s+india|india\s+excluded/.test(lower);
+  if (foreignMatch) return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: foreignMatch[0].trim() };
   if (excludesIndia) return { pass: false, code: 'GEO_REMOTE_EXCLUDES_INDIA', evidence: text };
-  if (denied.length && !hasIndia && !/worldwide|world wide|global|anywhere/.test(lower)) {
+  if (denied.length && !hasIndia && !hasAllowed) {
     return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: denied.join(', ') };
   }
   if (!hasAllowed) return { pass: false, code: 'GEO_REMOTE_SCOPE_UNCLEAR', evidence: text || null };
@@ -66,8 +100,11 @@ function remoteScopeStatus(text, policy) {
 export function classifyGeo(candidate, policy) {
   const workMode = classifyWorkMode(candidate);
   const location = evidence(candidate.location) || '';
-  const geoText = `${location} ${candidate.description || ''}`.trim();
-  if (workMode.mode === 'remote') return { ...remoteScopeStatus(geoText, policy), mode: 'remote' };
+  const geoText = [candidate.title, location, candidate.workMode, candidate.description]
+    .filter((value) => typeof value === 'string')
+    .join(' ')
+    .trim();
+  if (workMode.mode === 'remote') return { ...remoteScopeStatus(geoText, location, policy), mode: 'remote' };
   if (workMode.mode === 'hybrid' || workMode.mode === 'onsite') {
     if (hasAlias(location, policy.geo.puneMetroAliases)) {
       return { pass: true, code: 'GEO_PUNE_METRO', evidence: location, mode: workMode.mode };
@@ -132,12 +169,36 @@ export function classifyExperience(candidate, policy) {
   if (parsed.min != null && parsed.min > policy.experience.relaxedMaximumYears) {
     return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_ABOVE_RELAXED_LIMIT', evidence: parsed.evidence, minYears: parsed.min, maxYears: parsed.max };
   }
-  if (parsed.min == null || parsed.min <= policy.experience.strictMaximumYears) {
+  if (parsed.min == null) {
+    const fresherMatch = `${candidate.title || ''} ${candidate.description || ''}`.match(FRESHER_EXPERIENCE_PATTERN);
+    if (fresherMatch) {
+      return {
+        pass: true,
+        strict: true,
+        relaxed: false,
+        code: 'EXPERIENCE_FRESHER_EVIDENCE',
+        evidence: fresherMatch[0],
+        minYears: null,
+        maxYears: null,
+      };
+    }
+    return {
+      pass: true,
+      strict: false,
+      relaxed: true,
+      manualReview: true,
+      code: 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW',
+      evidence: null,
+      minYears: null,
+      maxYears: null,
+    };
+  }
+  if (parsed.min <= policy.experience.strictMaximumYears) {
     return {
       pass: true,
       strict: true,
       relaxed: false,
-      code: parsed.min == null ? 'EXPERIENCE_NOT_STATED' : 'EXPERIENCE_STRICT_0_1',
+      code: 'EXPERIENCE_STRICT_0_1',
       evidence: parsed.evidence,
       minYears: parsed.min,
       maxYears: parsed.max,
@@ -156,6 +217,9 @@ export function classifyExperience(candidate, policy) {
 
 export function classifyTitle(candidate) {
   const title = candidate.title || '';
+  if (SENIORITY_PATTERN.test(title) && !FRESHER_TITLE_PATTERN.test(title)) {
+    return { pass: false, strict: false, relaxed: false, family: null, code: 'TITLE_SENIORITY_REJECT', evidence: title };
+  }
   if (INTERNSHIP_PATTERN.test(title)) {
     if (/\b(ai|artificial intelligence|llm|machine learning|ml|backend|python|software|full[ -]?stack|swe)\b/i.test(title)) {
       return { pass: true, strict: true, relaxed: false, family: 'paid-internship', code: 'TITLE_PAID_INTERNSHIP', evidence: title };
@@ -203,7 +267,8 @@ export function classifyCandidate(candidate, policy) {
   const evidenceCodes = [geo.code, employment.code, experience.code, title.code, liveness.code];
   const relaxations = [];
   if (hardPass && !title.strict) relaxations.push('adjacent-title');
-  if (hardPass && !experience.strict) relaxations.push('experience-up-to-2-years');
+  if (hardPass && experience.manualReview) relaxations.push('experience-not-stated');
+  if (hardPass && !experience.strict && !experience.manualReview) relaxations.push('experience-up-to-2-years');
   const roleFamily = classifyRoleFamily(candidate, title);
   return {
     eligible: strict || relaxed,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://apify.com (no local schema — see references/sourcing.md)",
-  "note": "Optional structured-board pull layer. Requires APIFY_TOKEN env var. Run: node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json, then feed RAW.json through the existing job-pull/public-search-prepare.mjs --in RAW --out PREPARED step. Actor input/output field names below were checked against each actor's public Apify Store page on 2026-07-15; verify against the live actor before relying on them for a run, since Apify Store listings can change without notice.",
+  "note": "Optional structured-board pull layer. Requires APIFY_TOKEN env var. Run: node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json, then feed RAW.json through the existing job-pull/public-search-prepare.mjs --in RAW --out PREPARED step. LinkedIn/Naukri/Wellfound/YC field names checked against Apify Store pages 2026-07-15; Foundit/Internshala/Hirist input+output field names verified against live actor schemas via Apify MCP on 2026-07-18.",
   "actors": [
     {
       "id": "cheap_scraper~linkedin-job-scraper",
@@ -9,7 +9,7 @@
       "input": {
         "keyword": ["software engineer", "AI engineer", "machine learning engineer", "backend developer", "new grad software engineer"],
         "locations": ["Pune, Maharashtra, India", "India"],
-        "publishedAt": "r259200",
+        "publishedAt": "r604800",
         "jobType": ["full-time", "internship"],
         "experienceLevel": ["internship", "entry-level"],
         "workType": ["on-site", "hybrid", "remote"],
@@ -27,17 +27,19 @@
     },
     {
       "id": "blackfalcondata~naukri-jobs-feed",
-      "label": "naukri",
+      "label": "naukri-0-1",
       "enabled": true,
       "input": {
         "searchQueries": [
-          { "keyword": "software engineer fresher", "location": "Pune" },
-          { "keyword": "AI engineer fresher", "location": "Pune" },
-          { "keyword": "machine learning engineer", "location": "Pune" },
-          { "keyword": "backend developer python", "location": "Pune" }
+          "software engineer fresher Pune",
+          "AI engineer fresher Pune",
+          "machine learning engineer Pune",
+          "backend developer python Pune",
+          "graduate engineer trainee Pune",
+          "associate software engineer Pune"
         ],
         "experience": "0-1",
-        "datePosted": "3d",
+        "datePosted": "7d",
         "fetchDetails": true,
         "maxResults": 100,
         "descriptionFormat": "text"
@@ -52,9 +54,107 @@
       }
     },
     {
+      "id": "blackfalcondata~naukri-jobs-feed",
+      "label": "naukri-0-2",
+      "enabled": true,
+      "input": {
+        "searchQueries": [
+          "junior software developer Pune",
+          "GenAI engineer Pune",
+          "python FastAPI developer Pune",
+          "Django developer Pune",
+          "junior backend developer Pune"
+        ],
+        "experience": "0-2",
+        "datePosted": "7d",
+        "fetchDetails": true,
+        "maxResults": 100,
+        "descriptionFormat": "text"
+      },
+      "fieldMap": {
+        "url": "portalUrl",
+        "company": "companyName",
+        "title": "title",
+        "postedAt": "createdDate",
+        "location": "location",
+        "description": "description"
+      }
+    },
+    {
+      "id": "scrapesage~foundit-scraper",
+      "label": "foundit",
+      "enabled": true,
+      "input": {
+        "searchQueries": [
+          "software engineer fresher",
+          "AI engineer",
+          "machine learning engineer fresher",
+          "python developer fresher",
+          "backend developer fresher"
+        ],
+        "region": "india",
+        "locations": ["Pune"],
+        "sortBy": "date",
+        "freshnessDays": 7,
+        "includeDescription": true,
+        "maxResults": 100
+      },
+      "fieldMap": {
+        "url": "jobUrl",
+        "company": "company",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "location",
+        "description": "description"
+      }
+    },
+    {
+      "id": "automation-lab~internshala-scraper",
+      "label": "internshala",
+      "enabled": true,
+      "_note": "Paid-internship lane only. Actor takes a single searchQuery string. stipend/applyBy live in fullDescription when fetchDetails is on.",
+      "input": {
+        "searchQuery": "python",
+        "searchMode": "internships",
+        "fetchDetails": true,
+        "maxResults": 50
+      },
+      "fieldMap": {
+        "url": "url",
+        "company": "company",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "location",
+        "description": "fullDescription"
+      }
+    },
+    {
+      "id": "logiover~hirist-tech-scraper",
+      "label": "hirist",
+      "enabled": true,
+      "_note": "scrapeDetails must stay true — with it off the actor emits description: null and every record fails downstream gates.",
+      "input": {
+        "keywords": ["python", "machine-learning", "node-js"],
+        "cities": ["pune", "remote", "anywhere in india"],
+        "experience": "0-2",
+        "maxJobs": 60,
+        "maxPages": 5,
+        "scrapeDetails": true
+      },
+      "fieldMap": {
+        "url": "url",
+        "company": "company",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "location",
+        "description": "description"
+      }
+    },
+    {
       "id": "blackfalcondata~wellfound-scraper",
       "label": "wellfound",
       "enabled": true,
+      "_note": "Sprint cadence: run ~2x/week, not daily — pass --actor to skip on off days.",
       "input": {
         "roles": ["software-engineer", "data-scientist"],
         "location": ["india"],
@@ -80,7 +180,7 @@
         "roleFilter": "software-engineer",
         "locationFilter": "India, Remote, Pune",
         "maxResults": 100,
-        "_TODO": "YC actor's public Store listing does not document a posted-date output field (no 'postedAt'/'createdAt' confirmed) — verify against a live run. fieldMap.postedAt points at 'postedAt' speculatively; if the actor never emits it, records stay undated (correct per the no-inferred-freshness rule — never map scrape time here)."
+        "_TODO": "YC actor's public Store listing does not document a posted-date output field (no 'postedAt'/'createdAt' confirmed) — verify against a live run. fieldMap.postedAt points at 'postedAt' speculatively; if the actor never emits it, records stay undated (correct per the no-inferred-freshness rule — never map scrape time here). Sprint policy: undated YC records land in the VerifyQueue → treat as founder-outreach leads, not dated inventory."
       },
       "fieldMap": {
         "url": "url",

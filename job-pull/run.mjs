@@ -3,12 +3,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config.mjs';
-import { assertCandidate, buildPayloadRecord, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
+import { assertCandidate, buildPayloadRecord, candidateDedupKey, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
 import { classifyCandidate } from './eligibility.mjs';
 import { annotateFreshness } from './freshness.mjs';
 import { deduplicateCandidates } from './dedup.mjs';
 import { selectCandidates } from './select.mjs';
 import { readLedger } from './ledger.mjs';
+import { readOpportunityLedger, recordSurfaced, suppressionFor } from './opportunity-ledger.mjs';
 import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked.mjs';
 import { runReverseAtsScan, reverseAtsCandidatesFromFixture } from './adapters/reverse-ats.mjs';
 import { importPublicSearchCandidates } from './adapters/public-search.mjs';
@@ -43,6 +44,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     runId: parseValue(argv, '--run-id', randomUUID()),
     configPath: parseValue(argv, '--config', DEFAULT_CONFIG_PATH),
     ledgerPath: parseValue(argv, '--ledger', null),
+    opportunityLedgerPath: parseValue(argv, '--opportunity-ledger', null),
     statePath: parseValue(argv, '--state', DEFAULT_STATE_PATH),
     lockPath: parseValue(argv, '--lock', DEFAULT_LOCK_PATH),
     careerOpsDir: parseValue(argv, '--career-ops-dir', DEFAULT_CAREER_OPS_DIR),
@@ -174,7 +176,7 @@ export function applyScores(sources, scoreInput) {
   }));
 }
 
-export function runPipeline({ config, now, runId, ledgerRows = [], sources = [], dryRun = true }) {
+export function runPipeline({ config, now, runId, ledgerRows = [], opportunityLedgerRows = null, opportunityRows = null, opportunityLedgerPath, sources = [], dryRun = true }) {
   const allCandidates = sources.flatMap((source) => source.candidates || []);
   const manifests = sources.map((source) => ({ ...source.manifest }));
   for (const manifest of manifests) {
@@ -193,8 +195,9 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
   const classified = deduped.kept.map((candidate) => {
     const freshness = annotateFreshness(candidate, {
       now,
-      primaryMaximumHours: config.freshness.primaryMaximumHours,
-      extendedMaximumHours: config.freshness.extendedMaximumHours,
+      hotMaximumHours: config.freshness.hotMaximumHours,
+      activeMaximumDays: config.freshness.activeMaximumDays,
+      backfillMaximumDays: config.freshness.backfillMaximumDays,
     }).freshness;
     const eligibility = classifyCandidate(candidate, config);
     const entry = {
@@ -215,9 +218,36 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
     return entry;
   });
   const scoringCandidates = classified.filter((entry) => entry.eligibility.eligible && entry.freshness.eligible);
-  const selection = selectCandidates(classified, config);
+  const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
+  const suppressionCounts = {
+    SUPPRESSED_ACTIONED: 0,
+    SUPPRESSED_REJECTED: 0,
+    SUPPRESSED_COOLDOWN_7D: 0,
+    SUPPRESSED_BACKFILL_ALREADY_SEEN: 0,
+  };
+  const selectionPool = [];
+  for (const entry of classified) {
+    if (!entry.eligibility.eligible || !entry.freshness.eligible) continue;
+    const key = candidateDedupKey(entry.candidate);
+    const row = opportunityRowsForRun.find((candidate) => candidate.dedup_key === key);
+    const suppression = entry.freshness.backfill && row
+      ? { suppressed: true, code: 'SUPPRESSED_BACKFILL_ALREADY_SEEN' }
+      : row ? suppressionFor(row, now) : { suppressed: false, code: '' };
+    if (suppression.suppressed) suppressionCounts[suppression.code]++;
+    else selectionPool.push(entry);
+  }
+  const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
+  const selection = selectCandidates(selectionPool, config);
+  const verifyQueue = classified
+    .filter((entry) => entry.freshness.verifyQueue)
+    .map((entry) => ({
+      company: entry.candidate.company,
+      title: entry.candidate.title,
+      canonicalUrl: entry.candidate.canonicalUrl,
+      provider: entry.candidate.provider,
+    }));
   const gateExclusions = classified
-    .filter((entry) => !entry.eligibility.eligible || !entry.freshness.eligible)
+    .filter((entry) => !entry.freshness.verifyQueue && (!entry.eligibility.eligible || !entry.freshness.eligible))
     .map((entry) => ({
       url: entry.candidate.canonicalUrl,
       code: !entry.freshness.eligible ? entry.freshness.code : entry.eligibility.reasons[0] || 'GATE_REJECTED',
@@ -243,6 +273,9 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
     if (!validation.valid) throw new RunError(`payload validation failed for ${candidate.canonicalUrl}: ${validation.errors.join(', ')}`);
     return { candidate, payload };
   });
+  if (!dryRun) {
+    recordSurfaced(records.map((record) => record.candidate), { path: opportunityLedgerPath, now });
+  }
   const sourceCounts = manifests.map((manifest) => ({ ...manifest }));
   return {
     schemaVersion: 'JobPullRunV1',
@@ -261,6 +294,9 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
       selected: records.length,
       strictSelected: strictCandidates.length,
       relaxedSelected: relaxedCandidates.length,
+      verifyQueue: verifyQueue.length,
+      suppressed,
+      suppressedByCode: suppressionCounts,
     },
     strictShortfall: selection.strictShortfall,
     strictTarget: config.run.strictTarget,
@@ -270,6 +306,8 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
       companyCounts: selection.companyCounts,
       exclusions: selection.exclusions,
     },
+    suppression: { count: suppressed, byCode: suppressionCounts },
+    verifyQueue,
     exclusionAudit: {
       gate: gateExclusions,
       duplicate: deduped.duplicates.map((duplicate) => ({ url: duplicate.candidate.canonicalUrl, code: duplicate.code, evidence: duplicate.evidence })),
@@ -347,7 +385,7 @@ function outputResult(result, outputPath, manifestPath) {
   }
   if (manifestPath) {
     mkdirSync(path.dirname(manifestPath), { recursive: true });
-    writeFileSync(manifestPath, JSON.stringify({ runId: result.runId, runAt: result.runAt, sourceManifests: result.sourceManifests, counts: result.counts }, null, 2) + '\n', 'utf8');
+    writeFileSync(manifestPath, JSON.stringify({ runId: result.runId, runAt: result.runAt, sourceManifests: result.sourceManifests, counts: result.counts, verifyQueue: result.verifyQueue }, null, 2) + '\n', 'utf8');
   }
   return text;
 }
@@ -367,7 +405,7 @@ Manual, no-Notion discovery. Options:
   --now ISO                   injected run clock
   --output FILE               write the complete local result JSON
   --manifest-out FILE         write source telemetry JSON
-  --config FILE --ledger FILE --state FILE --force
+  --config FILE --ledger FILE --opportunity-ledger FILE --state FILE --force
 `);
 }
 
@@ -392,7 +430,8 @@ export async function main(argv = process.argv.slice(2)) {
         now: Date.parse(options.now),
       });
     }
-    const result = runPipeline({ config, now: options.now, runId: options.runId, ledgerRows, sources, dryRun: options.dryRun });
+    const opportunityLedgerPath = options.opportunityLedgerPath || undefined;
+    const result = runPipeline({ config, now: options.now, runId: options.runId, ledgerRows, opportunityLedgerPath, sources, dryRun: options.dryRun });
     outputResult(result, options.outputPath, options.manifestPath);
     if (!options.dryRun) {
       mkdirSync(path.dirname(options.statePath), { recursive: true });
