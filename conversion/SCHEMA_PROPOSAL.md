@@ -1,6 +1,6 @@
-# Proposed Notion additions — approval required
+# Notion additions — applied 2026-07-21
 
-Do not mutate the live tracker from this document. The local TSV templates are the operating record until Onkar explicitly approves a Notion schema migration.
+Approved by Onkar and applied to the live tracker on 2026-07-21. Additive only — no existing property was renamed, retyped, or removed. Referrals is now a dedicated database (`collection://346c1a15-3808-4e4a-bcb7-8d24f0ea597a`), dual-related from Applications v4's new `Referrals` relation property. This document is now a historical record of what was proposed, not a pending request.
 
 ## Applications
 
