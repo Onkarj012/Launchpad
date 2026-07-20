@@ -9,6 +9,7 @@ function selectionView(entry) {
     eligibility,
     freshness,
     tier: entry.selectionTier || eligibility.tier || null,
+    conversionTier: entry.conversionTier || (entry.candidate || entry).conversionTier || null,
     window: entry.freshnessWindow || freshness.window || null,
     family: entry.roleFamily || eligibility.roleFamily || 'adjacent-engineering',
     company: entry.companyKey || eligibility.companyKey || normalizedKey((entry.candidate || entry).company),
@@ -20,8 +21,11 @@ export function rankCandidate(entry) {
   const candidate = view.candidate;
   const score = Number(entry.conversionScore ?? candidate.conversionScore ?? entry.score ?? candidate.score ?? candidate.matchScore ?? 0);
   const age = Number.isFinite(view.freshness.ageHours) ? view.freshness.ageHours : Number.POSITIVE_INFINITY;
+  const conversionTierRank = { strong: 2, inspect: 1, skip: 0 }[view.conversionTier] ?? -1;
   return {
     score,
+    conversionTier: view.conversionTier,
+    conversionTierRank,
     quality: sourceQuality(candidate),
     age,
     postedAt: candidate.postedAt || '',
@@ -33,6 +37,7 @@ function compareRank(a, b) {
   const left = rankCandidate(a);
   const right = rankCandidate(b);
   if (right.score !== left.score) return right.score - left.score;
+  if (right.conversionTierRank !== left.conversionTierRank) return right.conversionTierRank - left.conversionTierRank;
   if (right.quality !== left.quality) return right.quality - left.quality;
   if (left.age !== right.age) return left.age - right.age;
   if (right.postedAt !== left.postedAt) return right.postedAt.localeCompare(left.postedAt);
@@ -172,6 +177,7 @@ export function selectCandidates(entries, config) {
       roleFamily: entry.family,
       companyKey: entry.company,
       score: Number(entry.score ?? entry.candidate.score ?? entry.candidate.matchScore ?? 0),
+      conversionTier: entry.conversionTier,
     })),
     strictSelected,
     strictEligible,
@@ -261,6 +267,7 @@ export function selectApplicationShortlist(entries, config) {
     selected: selected.map((entry) => ({
       ...selectionView(entry).candidate,
       applicationShortlistRoleGroup: shortlistRoleGroup(entry),
+      conversionTier: selectionView(entry).conversionTier,
     })),
     counts,
     shortfalls,

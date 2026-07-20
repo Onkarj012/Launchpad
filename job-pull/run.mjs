@@ -211,11 +211,12 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       activeMaximumDays: config.freshness.activeMaximumDays,
       backfillMaximumDays: config.freshness.backfillMaximumDays,
     }).freshness;
-    const eligibility = classifyCandidate(candidate, config);
+    const eligibility = classifyCandidate(candidate, { ...config, salaryFloorLpa: conversionPlan.salaryFloorLpa });
     const conversion = scoreConversion(candidate, { freshnessWindow: freshness.window, eligibility, policy: conversionPlan.conversionScore });
     const scoredCandidate = assertCandidate({
       ...candidate,
       conversionScore: conversion.score,
+      conversionTier: conversion.tier,
       conversionFactors: conversion.factors,
       applicationReady: conversion.applicationReady,
       applicationReadiness: conversion.applicationReadiness,
@@ -225,6 +226,7 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       freshness,
       eligibility,
       selectionTier: eligibility.tier,
+      conversionTier: conversion.tier,
       freshnessWindow: freshness.window,
       roleFamily: eligibility.roleFamily,
       companyKey: eligibility.companyKey,

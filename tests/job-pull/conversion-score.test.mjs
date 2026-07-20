@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConversionPlan, validateConversionPlan } from '../../job-pull/config.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
-import { scoreConversion } from '../../job-pull/conversion-score.mjs';
+import { conversionTier, scoreConversion } from '../../job-pull/conversion-score.mjs';
 
 const conversionPlan = loadConversionPlan();
 
@@ -34,7 +34,29 @@ test('conversion score exposes the seven plan factors and never implies auto-app
     directOrVcSource: 10, humanContact: 10, postingFreshness: 5,
   });
   assert.equal(scored.score, 100);
+  assert.equal(scored.tier, 'strong');
   assert.equal(scored.applicationReady, true);
+});
+
+test('conversion tier bands are inclusive and preserve the default fallback', () => {
+  assert.equal(conversionTier(75, conversionPlan.conversionScore.bands), 'strong');
+  assert.equal(conversionTier(65, conversionPlan.conversionScore.bands), 'inspect');
+  assert.equal(conversionTier(64, conversionPlan.conversionScore.bands), 'skip');
+  assert.equal(conversionTier(64), 'skip');
+});
+
+test('score conversion wires policy bands to the returned tier', () => {
+  const scored = scoreConversion(candidate({ matchScore: 70, sourceKind: 'aggregator', sourceCategory: 'aggregator', conversionSignals: {} }), {
+    policy: {
+      weights: {
+        responsibilitiesAndStack: 100, experienceEligibility: 0, indiaLocationEligibility: 0,
+        projectConnection: 0, directOrVcSource: 0, humanContact: 0, postingFreshness: 0,
+      },
+      bands: conversionPlan.conversionScore.bands,
+    },
+  });
+  assert.equal(scored.score, 70);
+  assert.equal(scored.tier, 'inspect');
 });
 
 test('unverified unresolved aggregators receive no readiness points and are not apply-ready', () => {

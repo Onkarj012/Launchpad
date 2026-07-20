@@ -5,7 +5,7 @@ import { selectApplicationShortlist, selectCandidates } from '../../job-pull/sel
 
 const config = loadConfig();
 
-function entry(index, { tier = 'strict', window = 'Hot', family = 'ai-llm-agentic', company = `Company ${index}` } = {}) {
+function entry(index, { tier = 'strict', conversionTier = null, window = 'Hot', family = 'ai-llm-agentic', company = `Company ${index}` } = {}) {
   return {
     canonicalUrl: `https://example.test/${index}`,
     company,
@@ -13,6 +13,7 @@ function entry(index, { tier = 'strict', window = 'Hot', family = 'ai-llm-agenti
     postedAt: '2026-07-14T10:00:00.000Z',
     sourceKind: 'ats-direct',
     selectionTier: tier,
+    conversionTier,
     freshnessWindow: window,
     roleFamily: family,
     companyKey: company.toLowerCase(),
@@ -104,4 +105,23 @@ test('application shortlist reports missing quota inventory without using unreso
   assert.equal(result.shortfalls.targetCount, 9);
   assert.equal(result.shortfalls.directOrVc, 3);
   assert.equal(result.shortfalls.roles.ai, 4);
+});
+
+test('conversion tier breaks equal-score selection ties and is exposed in output', () => {
+  const entries = ['strong', 'inspect', 'skip'].map((conversionTier, index) => ({
+    ...entry(index, { conversionTier }),
+    score: 100,
+    conversionScore: 80,
+  }));
+  const result = selectCandidates(entries, config);
+  assert.deepEqual(result.selected.map((candidate) => candidate.conversionTier), ['strong', 'inspect', 'skip']);
+});
+
+test('skip conversion tier still fills an application shortlist shortfall', () => {
+  const result = selectApplicationShortlist([
+    { ...entry(1, { conversionTier: 'skip' }), sourceCategory: 'direct-company', applicationReady: true },
+  ], config);
+  assert.equal(result.selected.length, 1);
+  assert.equal(result.selected[0].conversionTier, 'skip');
+  assert.equal(result.shortfalls.targetCount, 9);
 });

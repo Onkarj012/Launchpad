@@ -1,11 +1,11 @@
 import { extractExperienceYears, normalizedKey } from './candidate.mjs';
 
 const TITLE_PATTERNS = [
-  { family: 'ai-llm-agentic', strict: /\b(ai engineer|artificial intelligence engineer|llm engineer|gen(?:erative)?[ -]?ai engineer|agentic ai engineer|ai agent engineer|nlp engineer|prompt engineer|ai developer|genai|gen ai developer|ai\/ml)\b/i },
+  { family: 'ai-llm-agentic', strict: /\b(ai product engineer|applied ai engineer|ai software engineer|llm application engineer|ai automation engineer|ai integration engineer|junior ai engineer|ai solutions engineer|ai engineer|artificial intelligence engineer|llm engineer|gen(?:erative)?[ -]?ai engineer|agentic ai engineer|ai agent engineer|nlp engineer|prompt engineer|ai developer|genai|gen ai developer|ai\/ml)\b/i },
   { family: 'ml', strict: /\b(machine learning engineer|ml engineer|applied ml engineer|deep learning engineer|computer vision engineer|data scientist|ml developer|machine learning developer)\b/i },
   { family: 'backend-python', strict: /\b(backend|back-end|python engineer|python developer|backend developer|back-end developer|api engineer)\b/i },
-  { family: 'full-stack-ai', strict: /\b(full[ -]?stack|full[ -]?stack engineer|full[ -]?stack developer)\b/i },
-  { family: 'general-new-grad-swe', strict: /\b(software engineer|software developer|software development engineer|swe|developer engineer|member of technical staff|junior (?:software )?(?:developer|engineer)|associate (?:software )?(?:engineer|developer)|graduate engineer)\b/i },
+  { family: 'full-stack-ai', strict: /\b(ai[- ]native full[ -]?stack engineer|full[ -]?stack|full[ -]?stack engineer|full[ -]?stack developer)\b/i },
+  { family: 'general-new-grad-swe', strict: /\b(software engineer i|software engineer|software developer|software development engineer|sde[ -]?i|swe|developer engineer|member of technical staff|junior (?:software )?(?:developer|engineer)|associate (?:software )?(?:engineer|developer)|graduate engineer|founding engineer|product engineer)\b/i },
 ];
 
 const ADJACENT_PATTERN = /\b(data engineer|platform engineer|application engineer|implementation engineer|solutions engineer|forward[ -]?deployed engineer|research engineer|automation engineer)\b/i;
@@ -14,12 +14,16 @@ const REMOTE_PATTERN = /\b(remote|work from home|distributed|anywhere)\b/i;
 const HYBRID_PATTERN = /\bhybrid\b/i;
 const ONSITE_PATTERN = /\b(on[ -]?site|in[ -]?office|office[ -]?based|office-based)\b/i;
 const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only|volunteer)\b/i;
+const TRAINING_FEE_OR_BOND_PATTERN = /\b(training\s+fees?|registration\s+fees?|joining\s+fees?|security\s+deposits?|(?:non[- ]?refundable|refundable)(?:\s+security)?\s+deposits?(?=[^.!?]{0,80}\bjoining\b)|(?:service|employment)(?:\s+agreement)?\s+bond|bond\s+(?:of|for)\s+\d+\s+years?|bond\s+period|genuine\s+payment\s+required\s+before)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
 const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada)|(?:u\.?s\.?|united states|u\.?k\.?|eu|canada|australia)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada))(?=$|[^a-z])/i;
 const GLOBAL_SCOPE_PATTERN = /\b(worldwide|world\s+wide|global|anywhere)\b/gi;
 const FRESHER_EXPERIENCE_PATTERN = /\b(freshers?|new[- ]grad|recent graduate|graduate engineer|graduate trainee|campus|entry[- ]level|junior|associate|trainee|0\s*[-–]\s*1\s+years?|0\s+to\s+1\s+years?)\b/i;
 const SENIORITY_PATTERN = /\b(senior|sr\.?|staff|lead|principal|architect|director|head of|vp|vice president|manager)\b/i;
 const FRESHER_TITLE_PATTERN = /\b(freshers?|new[- ]grad(?:uate)?|recent graduate|graduate|entry[- ]level|junior|trainee|campus)\b/i;
+const INR_CURRENCY_PATTERN = /^(?:inr|₹)$/i;
+const ANNUAL_PERIOD_PATTERN = /^(?:annual|annually|year|yearly|per year|per annum)$/i;
+
 function textFor(candidate) {
   return [candidate.title, candidate.location, candidate.workMode, candidate.description, candidate.employment?.evidence, candidate.experience?.evidence]
     .filter((value) => typeof value === 'string')
@@ -28,6 +32,21 @@ function textFor(candidate) {
 
 function evidence(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+export function classifySalary(candidate, policy = {}) {
+  const salary = candidate.salary || {};
+  const usable = Number.isFinite(salary.maximum) ? salary.maximum : Number.isFinite(salary.minimum) ? salary.minimum : null;
+  const currency = evidence(salary.currency);
+  const period = evidence(salary.period);
+  const floorLpa = Number(policy.salaryFloorLpa);
+  if (usable == null || (currency && !INR_CURRENCY_PATTERN.test(currency)) || !period || !ANNUAL_PERIOD_PATTERN.test(period) || !Number.isFinite(floorLpa)) {
+    return { pass: true, code: 'SALARY_NOT_VERIFIED', evidence: null };
+  }
+  if (usable < floorLpa * 100000) {
+    return { pass: false, code: 'SALARY_BELOW_FLOOR', evidence: salary.evidence || `${usable} ${currency || 'INR'} ${period}` };
+  }
+  return { pass: true, code: 'SALARY_FLOOR_MET', evidence: salary.evidence || null };
 }
 
 export function classifyWorkMode(candidate) {
@@ -125,7 +144,8 @@ function employmentFromText(candidate) {
   const fullTime = /\bfull[ -]?time\b|permanent/i.test(text);
   const unpaid = UNPAID_PATTERN.test(text);
   const paid = PAID_PATTERN.test(text) && !unpaid;
-  return { internship, fullTime, unpaid, paid, text };
+  const trainingFeeOrBond = text.match(TRAINING_FEE_OR_BOND_PATTERN);
+  return { internship, fullTime, unpaid, paid, trainingFeeOrBond, text };
 }
 
 export function classifyEmployment(candidate, policy) {
@@ -135,6 +155,9 @@ export function classifyEmployment(candidate, policy) {
   const explicitUnpaid = candidate.employment?.paid === false || raw.unpaid;
   if (explicitUnpaid && policy.employment.rejectUnpaid) {
     return { pass: false, code: 'EMPLOYMENT_UNPAID', evidence: candidate.employment?.evidence || raw.text };
+  }
+  if (raw.trainingFeeOrBond) {
+    return { pass: false, code: 'EMPLOYMENT_TRAINING_FEE_OR_BOND', evidence: raw.trainingFeeOrBond[0] };
   }
   if (type && !policy.employment.allowedTypes.includes(type)) {
     return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: candidate.employment?.evidence || type };
@@ -244,6 +267,10 @@ export function classifyRoleFamily(candidate, titleResult = classifyTitle(candid
     if (/\b(ai|llm|ml|machine learning|agentic|gen\s*ai|rag)\b/i.test(body)) return 'full-stack-ai';
     return 'general-new-grad-swe';
   }
+  if (titleResult.family === 'general-new-grad-swe' && /\b(founding engineer|product engineer)\b/i.test(candidate.title || '')) {
+    const body = `${candidate.title || ''} ${candidate.description || ''}`;
+    if (/\b(ai|llm|machine learning|ml|agentic|gen\s*ai|rag)\b/i.test(body)) return 'ai-llm-agentic';
+  }
   if (titleResult.family) return titleResult.family;
   const body = `${candidate.title || ''} ${candidate.description || ''}`;
   if (/\b(ai|llm|machine learning|ml|agentic|gen\s*ai)\b/i.test(body)) return 'ai-llm-agentic';
@@ -262,14 +289,15 @@ export function classifyLiveness(candidate) {
 export function classifyCandidate(candidate, policy) {
   const geo = classifyGeo(candidate, policy);
   const employment = classifyEmployment(candidate, policy);
+  const salary = classifySalary(candidate, policy);
   const experience = classifyExperience(candidate, policy);
   const title = classifyTitle(candidate);
   const liveness = classifyLiveness(candidate);
-  const hardPass = geo.pass && employment.pass && experience.pass && title.pass && liveness.pass;
+  const hardPass = geo.pass && employment.pass && salary.pass && experience.pass && title.pass && liveness.pass;
   const strict = hardPass && geo.strict !== false && title.strict && experience.strict;
   const relaxed = hardPass && !strict && (geo.strict === false || title.relaxed || experience.relaxed);
-  const reasons = [geo, employment, experience, title, liveness].filter((result) => !result.pass).map((result) => result.code);
-  const evidenceCodes = [geo.code, employment.code, experience.code, title.code, liveness.code];
+  const reasons = [geo, employment, salary, experience, title, liveness].filter((result) => !result.pass).map((result) => result.code);
+  const evidenceCodes = [geo.code, employment.code, salary.code, experience.code, title.code, liveness.code];
   const relaxations = [];
   if (hardPass && !title.strict) relaxations.push('adjacent-title');
   if (hardPass && experience.manualReview) relaxations.push('experience-not-stated');
@@ -284,6 +312,7 @@ export function classifyCandidate(candidate, policy) {
     workMode: geo.mode,
     geo,
     employment,
+    salary,
     experience,
     title,
     liveness,

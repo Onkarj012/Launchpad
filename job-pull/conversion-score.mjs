@@ -8,12 +8,28 @@ const DEFAULT_WEIGHTS = {
   postingFreshness: 5,
 };
 
+const DEFAULT_BANDS = {
+  readyForManualReview: 75,
+  manualInspect: 65,
+};
+
 function bounded(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
 function weightSet(policy = {}) {
   return { ...DEFAULT_WEIGHTS, ...(policy.weights || {}) };
+}
+
+function bandSet(policy = {}) {
+  return { ...DEFAULT_BANDS, ...(policy.bands || {}) };
+}
+
+export function conversionTier(score, bands = DEFAULT_BANDS) {
+  const thresholds = { ...DEFAULT_BANDS, ...(bands || {}) };
+  if (Number.isFinite(score) && score >= thresholds.readyForManualReview) return 'strong';
+  if (Number.isFinite(score) && score >= thresholds.manualInspect) return 'inspect';
+  return 'skip';
 }
 
 function directOrVcPoints(category, weights) {
@@ -41,6 +57,7 @@ function geographyPoints(eligibility, weights) {
  */
 export function scoreConversion(candidate, { freshnessWindow = null, eligibility = null, policy = {} } = {}) {
   const weights = weightSet(policy);
+  const bands = bandSet(policy);
   const matchScore = Number.isFinite(candidate.matchScore) ? candidate.matchScore : 0;
   const signals = candidate.conversionSignals || {};
   const originalResolved = Boolean(candidate.originalApplicationUrl)
@@ -60,8 +77,10 @@ export function scoreConversion(candidate, { freshnessWindow = null, eligibility
     postingFreshness: freshnessPoints(freshnessWindow, weights),
   };
   const score = Object.values(factors).reduce((total, value) => total + value, 0);
+  const boundedScore = bounded(score, 0, 100);
   return {
-    score: bounded(score, 0, 100),
+    score: boundedScore,
+    tier: conversionTier(boundedScore, bands),
     factors,
     applicationReady,
     applicationReadiness: applicationReady ? 'Ready' : originalResolved ? 'Liveness Unverified' : 'Original Application Unresolved',

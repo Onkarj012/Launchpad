@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig } from '../../job-pull/config.mjs';
+import { loadConfig, loadConversionPlan } from '../../job-pull/config.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 
 const config = loadConfig();
+const conversionPolicy = { ...config, salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
 
 function candidate(overrides = {}) {
   return normalizeCandidate({
@@ -148,4 +149,72 @@ test('graduate titles with a seniority phrase use the graduate exception', () =>
   assert.equal(result.title.pass, true);
   assert.equal(result.title.code, 'TITLE_TARGET');
   assert.equal(result.tier, 'strict');
+});
+
+test('annual INR salary below the configured floor is a hard rejection with evidence', () => {
+  const result = classifyCandidate(candidate({ salary: { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' } }), conversionPolicy);
+  assert.equal(result.salary.pass, false);
+  assert.equal(result.salary.code, 'SALARY_BELOW_FLOOR');
+  assert.equal(result.salary.evidence, '₹6-7 lakh per annum');
+  assert.ok(result.reasons.includes('SALARY_BELOW_FLOOR'));
+});
+
+test('missing or ambiguous salary data passes through without invented evidence', () => {
+  const missing = classifyCandidate(candidate({ salary: {} }), conversionPolicy);
+  const ambiguous = classifyCandidate(candidate({ salary: { maximum: 700000, currency: 'USD', period: 'annual' } }), conversionPolicy);
+  assert.equal(missing.salary.pass, true);
+  assert.equal(missing.salary.evidence, null);
+  assert.equal(ambiguous.salary.pass, true);
+  assert.equal(ambiguous.salary.evidence, null);
+});
+
+test('explicit training fee or employment bond language is rejected with the matched evidence', () => {
+  const result = classifyCandidate(candidate({ description: 'Genuine payment required before joining and a service agreement bond of 2 years.' }), config);
+  assert.equal(result.employment.pass, false);
+  assert.equal(result.employment.code, 'EMPLOYMENT_TRAINING_FEE_OR_BOND');
+  assert.match(result.employment.evidence, /payment required before/i);
+  assert.ok(result.evidenceCodes.includes('EMPLOYMENT_TRAINING_FEE_OR_BOND'));
+});
+
+test('ordinary verification and notice language does not trigger the fee or bond filter', () => {
+  const result = classifyCandidate(candidate({ description: 'A background check may be completed during the notice period.' }), config);
+  assert.equal(result.employment.pass, true);
+  assert.notEqual(result.employment.code, 'EMPLOYMENT_TRAINING_FEE_OR_BOND');
+});
+
+test('new AI title families classify as strict AI roles', () => {
+  for (const title of [
+    'AI Product Engineer', 'Applied AI Engineer', 'AI Software Engineer', 'LLM Application Engineer',
+    'AI Automation Engineer', 'AI Integration Engineer', 'Junior AI Engineer', 'AI Solutions Engineer',
+  ]) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.tier, 'strict', title);
+    assert.equal(result.roleFamily, 'ai-llm-agentic', title);
+  }
+  const fullStack = classifyCandidate(candidate({ title: 'AI-Native Full Stack Engineer' }), config);
+  assert.equal(fullStack.tier, 'strict');
+  assert.equal(fullStack.roleFamily, 'full-stack-ai');
+});
+
+test('SDE I variants and Software Engineer I classify as general new-grad SWE', () => {
+  for (const title of ['SDE I', 'SDE-I', 'Software Engineer I']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.tier, 'strict', title);
+    assert.equal(result.roleFamily, 'general-new-grad-swe', title);
+  }
+});
+
+test('Founding Engineer and Product Engineer use AI context for family bucketing', () => {
+  for (const title of ['Founding Engineer', 'Product Engineer']) {
+    assert.equal(classifyCandidate(candidate({ title }), config).roleFamily, 'general-new-grad-swe', title);
+    assert.equal(classifyCandidate(candidate({ title, description: 'Build an LLM product for customers.' }), config).roleFamily, 'ai-llm-agentic', title);
+  }
+});
+
+test('seniority still rejects contextual new title families', () => {
+  for (const title of ['Senior Product Engineer', 'Founding Engineer - Lead']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.eligible, false, title);
+    assert.equal(result.title.code, 'TITLE_SENIORITY_REJECT', title);
+  }
 });
