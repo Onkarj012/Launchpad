@@ -87,24 +87,17 @@ Excluded: `internshala.com` — stale/unreliable postings.
 
 ### VC portfolio boards
 
-No Apify actor exists for these; they're portfolio-listing pages, not job feeds, so use WebSearch/direct-browse and then resolve each lead to the company's own ATS page before treating it as apply-ready.
+No Apify actor exists for these. Verified 2026-07-21: Peak XV, Accel, Blume, and Khosla all run the same "Powered by Consider" board platform, and Lightspeed confirms the same `?locations=` filter pattern — fetch these URLs directly instead of a `site:` WebSearch. Direct fetch avoids the SPA-indexing-lag problem `site:` search has on these boards (see the freshness note below): fewer missed listings, no snippet-only dates.
 
-- `careers.peakxv.com`
-- Accel India portfolio careers page
-- Blume Ventures portfolio careers page
-- Lightspeed India portfolio careers page
-- `khosla ventures portfolio careers`
-- `ycombinator.com/jobs` (India filter)
-- `indianstartups.work`
+- `https://careers.peakxv.com/jobs?q=<role term>&locations=India`
+- `https://jobs.accel.com/jobs?q=<role term>&locations=India`
+- `https://jobs.blume.vc/jobs?q=<role term>`
+- `https://jobs.lsvp.com/jobs?q=<role term>&locations=India` (confirmed pattern via a live `Gurgaon, India` filter)
+- `https://jobs.khoslaventures.com/jobs?q=<role term>`
+- `https://www.ycombinator.com/jobs/role/<role-slug>/india` — YC uses per-role path segments, not a `?q=` param; e.g. `/jobs/role/software-engineer/india`
+- `https://indianstartups.work` — real aggregator, organized by VC fund and company, not query-searchable; browse and scan for role matches instead of templating a query
 
-Templates:
-
-```text
-site:careers.peakxv.com "<role term>"
-"Accel" OR "Blume Ventures" OR "Lightspeed" portfolio careers "<role term>" India
-site:ycombinator.com/jobs "<role term>" India
-site:indianstartups.work "<role term>"
-```
+Fetch each URL directly (WebFetch or equivalent), not a WebSearch `site:` query — these are client-rendered boards a search engine may not have freshly indexed.
 
 A VC-board hit is a lead, not an apply-ready source: always resolve to the portfolio company's own career page/ATS link before it enters the shortlist, same as any other aggregator-tier discovery.
 
