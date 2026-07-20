@@ -78,7 +78,7 @@ function hasAllowedGlobalScope(text, policy) {
   return [...text.matchAll(GLOBAL_SCOPE_PATTERN)].some((match) => !isRegionQualifiedGlobalToken(text, match, policy));
 }
 
-function remoteScopeStatus(text, location, policy) {
+function remoteScopeStatus(text, location, policy, remoteEligibility = null) {
   const lower = text.toLowerCase();
   const denied = policy.geo.remoteDeniedScopes.filter((scope) => lower.includes(scope.toLowerCase()));
   const hasIndia = /\bindia\b|\bindian\b/.test(lower) || /\b(?:india|indian|pune)\b/i.test(location);
@@ -93,6 +93,9 @@ function remoteScopeStatus(text, location, policy) {
   if (denied.length && !hasIndia && !hasAllowed) {
     return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: denied.join(', ') };
   }
+  if (remoteEligibility?.status === 'India Eligible') {
+    return { pass: true, code: 'GEO_REMOTE_INDIA_COMPATIBLE', evidence: remoteEligibility.evidence || 'structured remote eligibility' };
+  }
   if (!hasAllowed) return { pass: false, code: 'GEO_REMOTE_SCOPE_UNCLEAR', evidence: text || null };
   return { pass: true, code: 'GEO_REMOTE_INDIA_COMPATIBLE', evidence: text || null };
 }
@@ -104,14 +107,16 @@ export function classifyGeo(candidate, policy) {
     .filter((value) => typeof value === 'string')
     .join(' ')
     .trim();
-  if (workMode.mode === 'remote') return { ...remoteScopeStatus(geoText, location, policy), mode: 'remote' };
+  if (workMode.mode === 'remote') return { ...remoteScopeStatus(geoText, location, policy, candidate.remoteEligibility), mode: 'remote' };
   if (workMode.mode === 'hybrid' || workMode.mode === 'onsite') {
     if (hasAlias(location, policy.geo.puneMetroAliases)) {
       return { pass: true, code: 'GEO_PUNE_METRO', evidence: location, mode: workMode.mode };
     }
     return { pass: false, code: workMode.mode === 'hybrid' ? 'GEO_HYBRID_NOT_PUNE' : 'GEO_ONSITE_NOT_PUNE', evidence: location || null, mode: workMode.mode };
   }
-  return { pass: true, strict: false, code: 'GEO_NOT_VERIFIED', evidence: 'Not Verified', mode: 'unknown' };
+  // A listing without an explicit work mode or eligible geography cannot be
+  // actioned safely. Keep the evidence observable and reject it at the gate.
+  return { pass: false, strict: false, code: 'GEO_NOT_VERIFIED', evidence: 'Not Verified', mode: 'unknown' };
 }
 
 function employmentFromText(candidate) {

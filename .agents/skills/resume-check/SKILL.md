@@ -1,101 +1,25 @@
 ---
 name: resume-check
-description: Brutal recruiter-grade review of Onkar's resume and final PDF against a target JD, with auditable requirement coverage, provenance, human-writing, grammar, repetition, and ATS artifact checks. Use for resume checks, reviews, red-pen feedback, or pre-application validation.
+description: Review a resume against a JD before application, with evidence provenance, requirement coverage, and final-PDF artifact checks.
 ---
 
-# Resume Check
+# Resume check
 
-Red-pen, recruiter-grade review. No flattery. Find the weaknesses before a recruiter or parser does, then give truthful fixes.
+Run a red review that separates unsupported content, uncovered JD requirements, and artifact defects. `master_prompt.md` §4 is the review policy; `resumes/evidence/README.md` defines the required audit record.
 
-## Source of truth
-- Read `master_prompt.md` sections 2 through 4.
-- Review the target `.tex` source and, when a compiled tailored PDF exists, review the matching final PDF artifact too. Default source: `resumes/master/Master_Resume_ATS.tex`. Tailored sources live in `resumes/sources/<YYYY-MM-DD>/` and final PDFs in `resumes/output/<YYYY-MM-DD>/`.
-- Approved evidence comes only from `resumes/master/Master_Resume_ATS.tex`.
-- Layout truth is `resumes/templates/Onkar_Template.tex`. Any tailored `.tex` under review must be a copy of that template with edits confined to its `%== TAILOR-START/END ==` slots (HEADLINE, SUMMARY, COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS); flag any drift outside a slot as an artifact-gate failure regardless of how the PDF looks. Run `node tests/resume/verify.mjs <source.tex> <output.pdf>` to check this deterministically before the manual review.
-- Identity facts: CGPA is 9.17. Never "final-year student" / "graduate" / "graduated" wording. Portfolio `leo4.dev` must appear in the header.
+## Steps
 
-## JD handling
-- **JD-specific is primary.** Review every section and the final artifact against that JD.
-- **Generic fallback:** if no JD is supplied, use the common requirements for the target families in `master_prompt.md` and state that the result is a generic readiness pass, not a precise keyword-match review.
+1. **Load.** Read the target source, matching PDF when present, JD, approved master, evidence sidecars, and selected base profile.
+   *Done when:* every review input is identified, or its absence is stated as `Not verified`.
 
-## Mandatory requirement matrix
-For a JD-specific review, produce one row per distinct requirement:
+2. **Trace.** Check the complete requirement matrix and provenance table against `resumes/evidence/approved-evidence.md` and the master anchors.
+   *Done when:* every JD requirement is `Covered` or `Missing`, and every factual resume claim has a valid source locator or is flagged.
 
-| Exact JD phrase | Required / preferred | Category | Approved evidence source | Target section | Resume wording | Covered / missing |
-|---|---|---|---|---|---|---|
+3. **Read.** Review Summary, Stride, both projects, Skills, and Education for truth, scope, grammar, US English, readability, repetition, opening verbs, and interview defensibility.
+   *Done when:* each section has an evidence-backed verdict and every proposed rewrite preserves approved meaning.
 
-- Categories: hard skill/tool, responsibility, domain language, qualification, outcome, and role/title language.
-- Provenance must name the exact approved master bullet or skill entry.
-- Require complete coverage of every truthfully supportable hard requirement, with high-value required keywords in evidence-bearing bullets when supported.
-- Technical Skills alone does not prove a responsibility or achievement.
-- Mark unsupported or ambiguous requirements `Missing`. Never invent content to close a gap.
+4. **Inspect artifact.** When a PDF exists, run `node tests/resume/verify.mjs <source.tex> <output.pdf>` and perform the manual visual, extraction-order, and log checks in `../resume-latex/references/artifact-gate.md`.
+   *Done when:* artifact status is `Pass`, `Fail`, or `Not verified`; source review alone never clears submission readiness.
 
-## Four lenses
-Default to Recruiter unless the user names another mode.
-- **Diagnoser:** clinical matrix-led gap analysis for every JD requirement.
-- **Recruiter:** six-second scan plus the full report structure below.
-- **Rewriter:** concrete, provenance-backed rewrites for weak sections.
-- **Hiring Manager:** substance, ownership, evidence, and interview credibility over raw keyword count.
-
-## Three review gates
-
-### 1. Content gate
-- Map every claim to an exact approved master bullet or skill entry.
-- Flag capability-to-achievement inflation: a target, design capacity, prototype, benchmark, planned feature, or tool familiarity presented as a shipped achievement or production result.
-- Check perfect grammar, spelling, punctuation, tense, capitalization, parallel structure, and consistent US English.
-- **No em dashes in any resume bullet point or sentence.** Scan for the Unicode em dash (`—`) and LaTeX triple hyphen (`---`). Rewrite matches with a period, comma, colon, semicolon, or parentheses.
-- Run lexical and semantic repetition checks across all sections. Flag duplicated claims even when paraphrased.
-- The same opening verb may appear no more than twice across achievement bullets.
-- Flag repeated technology lists, overloaded bullets, promotional commentary, self-praise, adjective stacks, JD-fit explanations, repeated `demonstrating`/`showcasing`/`enabling` tails, and mechanically uniform bullet structures.
-- Prefer one interview-defensible achievement per bullet.
-
-### 2. JD gate
-- Complete the requirement matrix before judging sections.
-- Confirm every truthfully supportable hard requirement has natural, evidence-bearing coverage.
-- Distinguish exact phrase coverage from substantive evidence.
-- Report every unsupported requirement as a genuine gap rather than proposing fabricated wording.
-
-### 3. Artifact gate
-When the tailored PDF exists:
-- Run `node tests/resume/verify.mjs <source.tex> <output.pdf>` and report its result verbatim: template conformance (preamble and frozen zones byte-identical to `resumes/templates/Onkar_Template.tex` outside the tailor slots), exactly one page, and page fill ≥93%.
-- Confirm exactly one visually balanced page without padding, conspicuous dead space, overflow, crowding, or tiny type.
-- Render and inspect the PDF for spacing, clipping, collisions, detached bullets, stray glyphs, and broken links.
-- Extract all text and verify linear section order, contact details, JD coverage, and title/organization/date/location associations.
-- Check clickable links, embedded or substituted fonts, glyph rendering, and compilation-log warnings when the log is available.
-- Run grammar, lexical repetition, semantic repetition, and Unicode `—` checks on extracted text; scan the source for `---`.
-- Treat unexplained extraction, font, glyph, link, layout, or log warnings as failures.
-- Verify final output is a PDF and scratch artifacts have been cleaned up.
-
-If no PDF exists, mark the artifact gate `Not verified`; source review alone cannot clear the resume for submission.
-
-## Recruiter report structure
-For Summary, Experience/Stride, each Project, Technical Skills, and Education:
-- **What the JD demands:** concrete requirement or signal.
-- **What the resume says:** current evidence.
-- **Provenance:** exact approved master source, or `Unsupported`.
-- **Gap diagnosis:** missing keyword, weak evidence, inflated claim, grammar issue, repetition, buried lede, or artifact defect.
-- **Verdict:** red critical, orange weak, green strong, or blue over-engineered/cut.
-- **Rewritten version:** truthful, provenance-backed wording with no em dash.
-
-Then report:
-- Requirement matrix and unsupported gaps.
-- Content gate, JD gate, and artifact gate results separately.
-- **ATS readiness:** an evidence-based internal assessment with limitations, not a numeric ATS score.
-- **External ATS score:** include a number only if supplied by a named parser such as Enhancv, with parser, JD, date, and result. Never relabel an internal estimate as an external score.
-- Six-second impression.
-- Top three critical fixes and top three quick wins.
-- Honest call on whether the current PDF is ready to submit.
-
-## Tone and rewrite rules
-- No warm-up, compliment sandwich, or praise without evidence.
-- Every critical or weak finding includes a concrete fix.
-- Rewrites may reframe, reorder, select, shorten, or combine approved evidence only when meaning remains equivalent.
-- Never strengthen scope, ownership, maturity, metrics, or outcomes. If the evidence cannot support a requirement, say so plainly.
-
-## Procedure
-1. Read the target `.tex`, matching PDF if present, approved masters, and target JD.
-2. Build the requirement matrix and claim-provenance map.
-3. Run content and JD gates section by section.
-4. Run the artifact gate on the rendered and extracted final PDF when present.
-5. Produce the requested lens report and separate gate verdicts.
-6. Offer to hand approved rewrites to `resume-latex` for regeneration. Do not claim submission readiness until a final PDF passes all three gates.
+5. **Report.** Use `references/report-shape.md`. Label the internal result **ATS readiness**, never an ATS score; quote an external ATS number only with its named parser, target JD, date, and result.
+   *Done when:* the user receives a clear submit/no-submit call, real gaps, and provenance-safe fixes.

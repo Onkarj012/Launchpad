@@ -34,6 +34,8 @@ test('run pipeline emits strict/fallback records, manifests, caps, and payload-s
   assert.equal(result.strictShortfall, 0);
   assert.equal(result.records.every((record) => record.payload['Apply?'] === false), true);
   assert.equal(result.records.every((record) => record.payload.Status === 'Discovered'), true);
+  assert.equal(result.applicationShortlist.selected.every((candidate) => candidate.applicationReady), true);
+  assert.equal(result.applicationShortlist.selected.length, 10);
   assert.deepEqual(result.sourceManifests[0].providers, ['greenhouse', 'lever', 'ashby', 'workday']);
 });
 
@@ -67,9 +69,14 @@ test('score merge preserves agent scoring and daily date uses India timezone', (
     hook: 'Lead with shipped agent systems',
     responseLikelihood: 16,
     autoSuggest: true,
+    originalApplicationUrl: 'https://jobs.example.test/99/apply',
+    humanContact: true,
+    projectConnection: true,
   }]);
   assert.equal(sources[0].candidates[0].matchScore, 87);
   assert.equal(sources[0].candidates[0].autoSuggest, true);
+  assert.equal(sources[0].candidates[0].applicationResolution.status, 'Resolved Original');
+  assert.equal(sources[0].candidates[0].conversionSignals.humanContact, true);
   assert.equal(localRunDate('2026-07-14T20:00:00.000Z', config.timezone), '2026-07-15');
 });
 

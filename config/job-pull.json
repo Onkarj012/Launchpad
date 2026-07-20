@@ -11,10 +11,25 @@
     "maximumPerCompany": 2,
     "maximumFamilyShare": 0.4
   },
+  "applicationShortlist": {
+    "targetCount": 10,
+    "roleTargets": {
+      "ai": 4,
+      "backendFullStack": 2,
+      "newGrad": 2,
+      "adjacent": 1
+    },
+    "maximumStretch": 1,
+    "sourceTargets": {
+      "directOrVcMinimum": 4,
+      "indiaNicheMinimum": 3,
+      "broadRemoteMaximum": 2
+    }
+  },
   "freshness": {
     "hotMaximumHours": 72,
     "activeMaximumDays": 7,
-    "backfillMaximumDays": 14
+    "backfillMaximumDays": 7
   },
   "geo": {
     "homeCountry": "India",
@@ -65,7 +80,7 @@
   },
   "experience": {
     "strictMaximumYears": 1,
-    "relaxedMaximumYears": 2,
+    "relaxedMaximumYears": 1,
     "hardRejectMinimumYears": 3
   },
   "roles": {
@@ -82,7 +97,8 @@
   },
   "sources": {
     "qualityOrder": ["ats-direct", "niche-public", "aggregator"],
-    "reverseAts": ["greenhouse", "lever", "ashby", "workday"]
+    "reverseAts": ["greenhouse", "lever", "ashby", "workday"],
+    "knownAts": ["greenhouse", "lever", "ashby", "workday", "workable", "smartrecruiters", "breezy", "recruitee"]
   },
   "dedup": {
     "simHashEnabled": true,

@@ -18,7 +18,7 @@ function selectionView(entry) {
 export function rankCandidate(entry) {
   const view = selectionView(entry);
   const candidate = view.candidate;
-  const score = Number(entry.score ?? candidate.score ?? candidate.matchScore ?? 0);
+  const score = Number(entry.conversionScore ?? candidate.conversionScore ?? entry.score ?? candidate.score ?? candidate.matchScore ?? 0);
   const age = Number.isFinite(view.freshness.ageHours) ? view.freshness.ageHours : Number.POSITIVE_INFINITY;
   return {
     score,
@@ -181,6 +181,90 @@ export function selectCandidates(entries, config) {
     familyCounts,
     companyCounts,
     exclusions,
+  };
+}
+
+function shortlistRoleGroup(entry) {
+  const family = selectionView(entry).family;
+  if (family === 'ai-llm-agentic' || family === 'ml') return 'ai';
+  if (family === 'backend-python' || family === 'full-stack-ai') return 'backendFullStack';
+  if (family === 'general-new-grad-swe' || family === 'paid-internship') return 'newGrad';
+  return 'adjacent';
+}
+
+function directOrVc(entry) {
+  return ['direct-company', 'vc-portfolio'].includes(selectionView(entry).candidate.sourceCategory);
+}
+
+function indiaNiche(entry) {
+  return selectionView(entry).candidate.sourceCategory === 'india-niche';
+}
+
+function broadRemote(entry) {
+  return selectionView(entry).candidate.sourceCategory === 'broad-remote';
+}
+
+/**
+ * Produce a separate, apply-ready list from the 25-35 discovery pool. Quotas
+ * are attempted in priority order and every unmet target is reported instead
+ * of filling the list with unresolved or unverified aggregator postings.
+ */
+export function selectApplicationShortlist(entries, config) {
+  const policy = config.applicationShortlist;
+  const ready = entries
+    .filter((entry) => selectionView(entry).candidate.applicationReady === true)
+    .sort(compareRank);
+  const selected = [];
+  const counts = { roles: { ai: 0, backendFullStack: 0, newGrad: 0, adjacent: 0 }, directOrVc: 0, indiaNiche: 0, broadRemote: 0, stretch: 0 };
+  const companyCounts = new Map();
+  const canSelect = (entry) => {
+    if (selected.includes(entry)) return false;
+    const view = selectionView(entry);
+    if ((companyCounts.get(view.company) || 0) >= config.run.maximumPerCompany) return false;
+    if (broadRemote(entry) && counts.broadRemote >= policy.sourceTargets.broadRemoteMaximum) return false;
+    if (view.tier === 'relaxed' && counts.stretch >= policy.maximumStretch) return false;
+    return true;
+  };
+  const add = (entry) => {
+    const view = selectionView(entry);
+    selected.push(entry);
+    companyCounts.set(view.company, (companyCounts.get(view.company) || 0) + 1);
+    counts.roles[shortlistRoleGroup(entry)]++;
+    if (directOrVc(entry)) counts.directOrVc++;
+    if (indiaNiche(entry)) counts.indiaNiche++;
+    if (broadRemote(entry)) counts.broadRemote++;
+    if (view.tier === 'relaxed') counts.stretch++;
+  };
+  const pick = (predicate, amount) => {
+    for (const entry of ready) {
+      if (selected.length >= policy.targetCount || amount <= 0) break;
+      if (canSelect(entry) && predicate(entry)) {
+        add(entry);
+        amount--;
+      }
+    }
+  };
+
+  pick(directOrVc, policy.sourceTargets.directOrVcMinimum);
+  pick(indiaNiche, policy.sourceTargets.indiaNicheMinimum);
+  for (const [group, target] of Object.entries(policy.roleTargets)) pick((entry) => shortlistRoleGroup(entry) === group, Math.max(0, target - counts.roles[group]));
+  pick(() => true, policy.targetCount - selected.length);
+
+  const shortfalls = {
+    targetCount: Math.max(0, policy.targetCount - selected.length),
+    roles: Object.fromEntries(Object.entries(policy.roleTargets).map(([group, target]) => [group, Math.max(0, target - counts.roles[group])])),
+    directOrVc: Math.max(0, policy.sourceTargets.directOrVcMinimum - counts.directOrVc),
+    indiaNiche: Math.max(0, policy.sourceTargets.indiaNicheMinimum - counts.indiaNiche),
+  };
+  return {
+    targetCount: policy.targetCount,
+    selected: selected.map((entry) => ({
+      ...selectionView(entry).candidate,
+      applicationShortlistRoleGroup: shortlistRoleGroup(entry),
+    })),
+    counts,
+    shortfalls,
+    readyPoolCount: ready.length,
   };
 }
 

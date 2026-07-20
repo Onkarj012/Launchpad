@@ -2,12 +2,14 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { loadConfig, DEFAULT_CONFIG_PATH } from './config.mjs';
+import { loadConfig, loadConversionPlan, DEFAULT_CONFIG_PATH } from './config.mjs';
 import { assertCandidate, buildPayloadRecord, candidateDedupKey, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
 import { classifyCandidate } from './eligibility.mjs';
 import { annotateFreshness } from './freshness.mjs';
 import { deduplicateCandidates } from './dedup.mjs';
 import { selectCandidates } from './select.mjs';
+import { selectApplicationShortlist } from './select.mjs';
+import { scoreConversion } from './conversion-score.mjs';
 import { readLedger } from './ledger.mjs';
 import { readOpportunityLedger, recordSurfaced, suppressionFor } from './opportunity-ledger.mjs';
 import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked.mjs';
@@ -169,6 +171,16 @@ export function applyScores(sources, scoreInput) {
         rationale: typeof score.rationale === 'string' ? score.rationale : candidate.rationale,
         hook: typeof score.hook === 'string' ? score.hook : candidate.hook,
         responseLikelihood: Number.isFinite(Number(score.responseLikelihood)) ? Number(score.responseLikelihood) : candidate.responseLikelihood,
+        originalApplicationUrl: score.originalApplicationUrl ?? score.originalApplyUrl ?? candidate.originalApplicationUrl,
+        originalApplicationEvidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence,
+        applicationResolution: (score.originalApplicationUrl ?? score.originalApplyUrl)
+          ? { status: 'Resolved Original', evidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence ?? null }
+          : candidate.applicationResolution,
+        conversionSignals: {
+          ...(candidate.conversionSignals || {}),
+          humanContact: score.humanContact === true || candidate.conversionSignals?.humanContact === true,
+          projectConnection: score.projectConnection === true || candidate.conversionSignals?.projectConnection === true,
+        },
         autoSuggest: score.autoSuggest === true,
       };
       return assertCandidate(updated);
@@ -176,7 +188,7 @@ export function applyScores(sources, scoreInput) {
   }));
 }
 
-export function runPipeline({ config, now, runId, ledgerRows = [], opportunityLedgerRows = null, opportunityRows = null, opportunityLedgerPath, sources = [], dryRun = true }) {
+export function runPipeline({ config, conversionPlan = loadConversionPlan(), now, runId, ledgerRows = [], opportunityLedgerRows = null, opportunityRows = null, opportunityLedgerPath, sources = [], dryRun = true }) {
   const allCandidates = sources.flatMap((source) => source.candidates || []);
   const manifests = sources.map((source) => ({ ...source.manifest }));
   for (const manifest of manifests) {
@@ -200,8 +212,16 @@ export function runPipeline({ config, now, runId, ledgerRows = [], opportunityLe
       backfillMaximumDays: config.freshness.backfillMaximumDays,
     }).freshness;
     const eligibility = classifyCandidate(candidate, config);
+    const conversion = scoreConversion(candidate, { freshnessWindow: freshness.window, eligibility, policy: conversionPlan.conversionScore });
+    const scoredCandidate = assertCandidate({
+      ...candidate,
+      conversionScore: conversion.score,
+      conversionFactors: conversion.factors,
+      applicationReady: conversion.applicationReady,
+      applicationReadiness: conversion.applicationReadiness,
+    });
     const entry = {
-      candidate,
+      candidate: scoredCandidate,
       freshness,
       eligibility,
       selectionTier: eligibility.tier,
@@ -238,6 +258,7 @@ export function runPipeline({ config, now, runId, ledgerRows = [], opportunityLe
   }
   const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
   const selection = selectCandidates(selectionPool, config);
+  const applicationShortlist = selectApplicationShortlist(selection.selected, config);
   const verifyQueue = classified
     .filter((entry) => entry.freshness.verifyQueue)
     .map((entry) => ({
@@ -295,6 +316,7 @@ export function runPipeline({ config, now, runId, ledgerRows = [], opportunityLe
       strictSelected: strictCandidates.length,
       relaxedSelected: relaxedCandidates.length,
       verifyQueue: verifyQueue.length,
+      applicationShortlist: applicationShortlist.selected.length,
       suppressed,
       suppressedByCode: suppressionCounts,
     },
@@ -306,6 +328,7 @@ export function runPipeline({ config, now, runId, ledgerRows = [], opportunityLe
       companyCounts: selection.companyCounts,
       exclusions: selection.exclusions,
     },
+    applicationShortlist,
     suppression: { count: suppressed, byCode: suppressionCounts },
     verifyQueue,
     exclusionAudit: {
@@ -416,6 +439,7 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   const config = loadConfig(options.configPath);
+  const conversionPlan = loadConversionPlan();
   const ledgerPath = options.ledgerPath || undefined;
   const ledgerRows = readLedger(ledgerPath).rows;
   const runState = readState(options.statePath);
@@ -431,7 +455,7 @@ export async function main(argv = process.argv.slice(2)) {
       });
     }
     const opportunityLedgerPath = options.opportunityLedgerPath || undefined;
-    const result = runPipeline({ config, now: options.now, runId: options.runId, ledgerRows, opportunityLedgerPath, sources, dryRun: options.dryRun });
+    const result = runPipeline({ config, conversionPlan, now: options.now, runId: options.runId, ledgerRows, opportunityLedgerPath, sources, dryRun: options.dryRun });
     outputResult(result, options.outputPath, options.manifestPath);
     if (!options.dryRun) {
       mkdirSync(path.dirname(options.statePath), { recursive: true });

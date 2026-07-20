@@ -1,32 +1,28 @@
 ---
 name: quick-add
-description: Log a single job the user found themselves into the Notion Applications database — score it, position it, and fill only verified fields. Use when the user says "quick add", "/quick-add", "log this job", "add this role", "throw this in the tracker", or pastes one JD they want tracked without running a full pull. Discovery/logging only — never applies, never checks Apply?.
+description: One verified job lead.
+disable-model-invocation: true
 ---
 
 # Quick Add
 
-Log **one** job into the Notion Applications database, fast. For a role the user found themselves and just wants tracked. Not a sourcing sweep — for that use `daily-job-pull`.
+Log one user-supplied role as a **lead**. This workflow does not apply, check `Apply?`, or treat an aggregator as an original application page.
 
-## Source of truth
-Read `master_prompt.md` (project root) for Targeting, Hard gates, and the Scoring Rubric (§ 2-3). Score the same way `daily-job-pull` does — this skill is the single-row version of the same engine.
-
-## Input
-A pasted JD, or the fields:
-```
-Role: [title]
-Company: [company]
-Location: [location]
-JD link: [url]
-```
+Read `master_prompt.md` for hard gates and matching. Read `config/conversion-plan.json` for conversion score and composition labels. Read `references/lead-fields.md` only when the role passes the initial gate.
 
 ## Steps
-1. **Gate** — run `master_prompt.md` § 2 Hard gates (location-auth, seniority, paid). If it fails a gate, tell the user which and ask whether to log anyway (don't silently drop a user-supplied role).
-2. **Dedup** — compute the `Dedup Key` (company|title|location, normalized) and check the Applications DB. If it already exists, say so and stop rather than creating a duplicate.
-3. **Score** — run the § 3 rubric: integer 0-100, one-line rationale, single strongest hook (→ Positioning), `Auto-Suggest` boolean.
-4. **Write one row** to Applications: Role, Company (relation — create Companies row if new), Location, Source, Source Rarity, Job ID, Dedup Key, JD Link, JD Text, Posted Date (or "Not Verified"), Date Pulled = today, Match Score, Response Likelihood, Freshness, Company Stage, Auth-Friendly?, Auto-Suggest, Positioning, Status = Researching, Apply? = **unchecked**, Resume Status = Not Started.
-5. **Confirm** — echo back the row: Role @ Company, score, one-line rationale, apply link.
 
-## Rules
-- **Never invent** anything missing — leave the field blank or "Not Verified".
-- `Apply?` stays **unchecked**. This skill discovers and logs only — no apply, no email.
-- One row only. Multiple roles → tell the user to run `daily-job-pull` instead.
+1. **Capture** — collect company, role, source URL, location/work mode, JD, and visible posting date. State missing fields as `Not Verified`.
+   *Done when:* one candidate record is sufficiently identified to deduplicate.
+
+2. **Gate and deduplicate** — apply the master hard gates and check the tracker evidence supplied by the user. If ineligible, explain why and ask whether they want a research-only record; if duplicate, stop.
+   *Done when:* the lead has one explicit eligibility/dedup result.
+
+3. **Score** — produce Match Score per master policy and Conversion Score per `conversion-plan.json`, with evidence for each conversion dimension. `75+` means ready for manual review, never automatic application.
+   *Done when:* both scores, source category, and one truthful hook/gap are recorded.
+
+4. **Log** — propose the new tracker record and create a local lead/application record only from verified values. Mark application readiness `unverified` until `/application-readiness` succeeds.
+   *Done when:* the user receives a complete field list with original ATS status visibly unresolved or verified.
+
+5. **Confirm** — show role, company, scores, link, and the next safe step: `/application-readiness` before tailoring or applying.
+   *Done when:* no discovery record is represented as an application.

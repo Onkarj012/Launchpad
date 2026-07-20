@@ -1,11 +1,11 @@
 ---
 name: daily-job-pull
-description: Run the manual once-daily high-recall job discovery pipeline: tracked career-ops boards, full reverse Greenhouse/Lever/Ashby/Workday scan, free public job feeds and startup ecosystems, broad LinkedIn/Naukri/Wellfound/Instahyre/company-career WebSearch, the companies.json watchlist, and optional Indeed MCP when connected. Normalize, verify, dedup, gate, score, diversify, and write 15-20 curated roles to Notion with Strict matches separated from shortage fallback. Discovery only — never applies, checks Apply?, reads email, or uses computer-use browsing.
+description: Run manual daily job discovery when the user asks for fresh roles or a job pull. Produces a verified local shortlist and never applies, sends, or mutates Notion.
 ---
 
 # Daily Job Pull
 
-Manual once-daily discovery. Target 15-20 curated roles so Onkar can choose ~7-8 applications. Aim for at least 10 Strict roles when inventory supports it; state any shortfall. **No auto-apply, email ingestion, computer use, or auto-checked `Apply?`.**
+Manual once-daily discovery. Target 25-35 curated leads, with at least 10 Strict when inventory supports it; state every shortfall. The separate ten-role application shortlist contains only original-ATS-ready roles. **No auto-apply, email ingestion, computer use, auto-checked `Apply?`, or Notion mutation.**
 
 ## Source of truth
 
@@ -38,13 +38,12 @@ Run each source once and record success/failure plus fetched/dated/eligible coun
 4. **Liveness.** Use current ATS/feed membership or `check-liveness.mjs --api-only --json`. Drop confirmed expired. Keep inconclusive as `Not Verified`; no Playwright/browser fallback.
 5. **Dedup.** In order: canonical URL → provider+Job ID → normalized company/title/location → ledger → description fingerprint where available. Prefer ATS-direct > niche/public board > aggregator. Use `fingerprint-core.mjs`; `detect-reposts.mjs` is not universal SimHash clustering.
 6. **Hard gates.** Apply all `master_prompt.md` gates. Never relax location authorization, paid status, liveness, or freshness.
-7. **Freshness.** `Primary` ≤24h; `Extended` >24–72h. Reject older or undated candidates from curated output.
+7. **Freshness.** `Hot` ≤72h; `Active` >72h–7d; `Backfill` >7d–14d only when never surfaced; undated candidates enter `VerifyQueue`; older postings are rejected.
 8. **Classify selection tier.** `Strict` = target role family and no hard requirement above 1 year. `Shortage Fallback` may use only approved adjacent title and/or hard requirement up to 2 years. A 3+ year hard minimum is rejected.
 9. **Score all eligible candidates before final selection.** First run emits `scoringCandidates`. Apply `master_prompt.md` §3 to every one; write a temporary JSON array keyed by canonical URL with `matchScore`, `rationale`, `hook`, `responseLikelihood`, and `autoSuggest`. Re-run with `--scores-json <file>`. Never rank an unscored candidate above a scored candidate; if scoring fails, report degraded mode explicitly.
-10. **Select deterministically.** Strict Primary → Strict Extended → Fallback Primary → Fallback Extended. Target 15-20 total, at least 10 Strict when inventory supports it. Max 2/company. Balance role families; aim for at least 4 families and no family above 40% when alternatives exist; relax only family-share cap when needed to reach volume, never company/hard gates.
-11. **Preview.** Show selected rows and exact fallback reasons before live writes. Do not change live Notion schema without separate explicit approval.
-12. **Write safely.** Reserve each row in transactional ledger → create Notion row → commit page URL; abort and report failed writes. `Apply? = unchecked`, `Status = Discovered`, `Resume Status = Not Started`.
-13. **Summarize.** Report per-source counts, failures, freshness split, Strict count/target, fallback reasons, diversity counts, and fetched → dated → live/not-verified → gate-passing → deduped → selected → written.
+10. **Select deterministically.** Strict Hot → Strict Active → Strict Backfill → Fallback Hot → Fallback Active → Fallback Backfill. Target 25-35 leads, at least 10 Strict when inventory supports it. Max 2/company. Balance role families; aim for at least 4 families and no family above 40% when alternatives exist; relax only family-share cap when needed to reach volume, never company/hard gates.
+11. **Preview.** Show selected rows and exact fallback reasons. Build the separate ten-role application shortlist only from roles with a verified original ATS URL and active liveness. Report every source and role quota shortfall rather than filling it with unresolved leads.
+12. **Summarize.** Report per-source counts, failures, freshness split, Strict count/target, fallback reasons, diversity counts, application-shortlist readiness/shortfalls, and fetched → dated → live/not-verified → gate-passing → deduped → selected.
 
 ## Presentation
 

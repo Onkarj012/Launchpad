@@ -1,0 +1,61 @@
+{
+  "$schema": "./conversion-plan.schema.json",
+  "version": 1,
+  "owner": "conversion-ops",
+  "manualSafety": {
+    "apply": "user_confirmation_required",
+    "send": "user_confirmation_required",
+    "notionMutation": "proposal_only_until_approved"
+  },
+  "conversionScore": {
+    "weights": {
+      "responsibilitiesAndStack": 25,
+      "experienceEligibility": 20,
+      "indiaLocationEligibility": 15,
+      "projectConnection": 15,
+      "directOrVcSource": 10,
+      "humanContact": 10,
+      "postingFreshness": 5
+    },
+    "bands": {
+      "readyForManualReview": 75,
+      "manualInspect": 65
+    }
+  },
+  "composition": {
+    "dailySelected": 10,
+    "roleFamilies": {
+      "aiProductAppliedAi": 4,
+      "fullStackBackend": 2,
+      "entrySoftware": 2,
+      "technicalSolutionsImplementation": 1,
+      "stretch": 1
+    },
+    "sources": {
+      "minimumDirectOrVc": 4,
+      "minimumIndianNiche": 3,
+      "maximumBroadRemote": 2,
+      "maximumStretch": 1
+    }
+  },
+  "cadence": {
+    "applicationDays": [3, 7],
+    "coldOutreachDays": [4],
+    "conversationDays": [1, 3],
+    "maxApplicationFollowUps": 2,
+    "maxColdOutreachFollowUps": 1,
+    "silenceClosureDays": 14
+  },
+  "dailyTargets": {
+    "humanContactsForTopApplications": 5,
+    "referralAttempts": 3,
+    "proofOfFitAssets": 2,
+    "mockInterviewsAcrossSprint": 3
+  },
+  "checkpoints": {
+    "first": 50,
+    "secondMin": 70,
+    "secondMax": 100
+  },
+  "salaryFloorLpa": 8
+}

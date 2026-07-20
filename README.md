@@ -8,9 +8,10 @@ Everything is **manual-trigger only** right now (no cron is configured — see K
 
 ```
 /morning              → pull fresh jobs, present shortlist, surface due follow-ups
-[you check Apply? on the rows you want, in Notion]
+[you select roles manually and verify each original ATS with /application-readiness]
 /make-applications     → tailors + compiles resumes for every Apply?-checked row (local only)
-[you apply on the portal/email, then set Applied Date + Status=Applied in Notion]
+[you apply manually on the original ATS, then confirm exact facts in conversion/]
+/conversion-ops        → scorecard, human-contact/referral queue, outcomes, weekly report
 /followups             → run later in the day / next day to see who needs a nudge
 ```
 
@@ -19,12 +20,16 @@ One-off commands:
 - `/resume-latex` — tailor one resume against a pasted JD.
 - `/resume-check` — brutal review of the resume `.tex` against a JD.
 - `/application-agent` — full single-role workflow (research → fit → resume → optional cold email).
+- `/application-readiness` — resolve and verify the original ATS before application work.
+- `/conversion-ops` — scorecards, human-contact/referral queue, outcomes, and checkpoints.
+- `/proof-of-fit` — small evidence-backed artifact for a top application.
+- `/interview-loop` — truthful project answer bank and practice loop.
 
 ## Pipeline — what `/morning` and `/daily-job-pull` actually do
 
 ```
 Tracked scan       career-ops scan.mjs --dry-run --json
-Reverse ATS        all public Greenhouse / Lever / Ashby / Workday directories, last 72h
+Reverse ATS        productive Greenhouse / Lever / Ashby / Workday warm set daily; full directory weekly/on demand
 Startup/public     YC + a16z seeds and dated remote/APAC feeds
 Broad search       ATS domains + LinkedIn/Naukri/Wellfound/Instahyre/company careers
 Watchlist          companies.json direct ATS JSON
@@ -34,16 +39,16 @@ Normalize CandidateV1 with exact posting/source/geo/employment/experience eviden
                          ↓
 API/feed liveness → URL/Job ID/Dedup Key/ledger/fingerprint dedup
                          ↓
-Hard gates: Pune-metro onsite/hybrid; explicit India/APAC/global remote; paid; ≤72h
+Hard gates: Pune-metro onsite/hybrid; explicit India/APAC/global remote; paid; ≤2 years; known geography
                          ↓
 Strict (target title + 0–1 yr) vs shortage fallback (adjacent title and/or ≤2 yrs)
                          ↓
 Score → max 2/company + role-family balancing
                          ↓
-Strict Primary/Extended first, fallback separate → 15–20 curated when supply supports it
+Strict Hot/Active/Backfill first, fallback separate → 25–35 curated leads when supply supports it
 ```
 
-Full mechanical detail (dork templates, ATS endpoint URLs, dedup hash) lives in `.claude/skills/daily-job-pull/references/sourcing.md` — don't duplicate it here.
+Full mechanical detail (dork templates, ATS endpoint URLs, dedup hash) lives in `.agents/skills/daily-job-pull/references/sourcing.md` — don't duplicate it here.
 
 The low-level career-ops scanners run without an API key. `job-pull/` adds machine-readable normalization, strict geo/freshness policy, shortage fallback, diversity selection, source telemetry, and durable dedup. Full reverse ATS can be long-running and may degrade when public datasets or boards rate-limit; every run reports those gaps.
 
@@ -58,6 +63,21 @@ The low-level career-ops scanners run without an API key. `job-pull/` adds machi
 - v3 DB (`d8d525b0-e436-44b7-ae65-28c08a358684`) is archived read-only history — all open rows migrated into v4.
 
 Full schema (every property + option) is in `NOTION_V4_SETUP.md`.
+
+## Conversion operations
+
+The human-conversion layer is local and confirmation-based. [config/conversion-plan.json](config/conversion-plan.json) owns Conversion Score, daily composition targets, 3/7-day application follow-ups, and diagnostic checkpoints. [conversion/](conversion/) contains TSV templates for exact submitted answers, contacts, referrals, and outcomes plus a proposal for future Notion fields. It does not mutate Notion until a schema change is approved.
+
+Create dated copies of the templates as actions are confirmed, then produce a weekly report locally:
+
+```
+node conversion/report.mjs \
+  --applications conversion/<dated>-application-submission.tsv \
+  --outcomes conversion/<dated>-outcomes.tsv \
+  --referrals conversion/<dated>-referrals.tsv \
+  --since YYYY-MM-DD --until YYYY-MM-DD \
+  --out conversion/reports/YYYY-MM-DD.md
+```
 
 ## Known limitations (read this before trusting a run)
 
@@ -87,6 +107,6 @@ Full schema (every property + option) is in `NOTION_V4_SETUP.md`.
 |---|---|
 | `/daily-job-pull` returns very few results | Watchlist-bound gates killing everything — check the run summary's drop counts per gate/layer, not just the final count. |
 | `/followups` says "nothing due" but you know something's overdue | Query-tool limitation above — open the Follow-up Due view in Notion directly to confirm. |
-| A company 404s in `companies.json` | It's likely not on Greenhouse/Lever/Ashby. Don't hand-add a slug without curling the endpoint first (`.claude/skills/daily-job-pull/references/sourcing.md` § ATS endpoints) — the `_meta.verification` rule in `companies.json` exists because guessed slugs silently return nothing. |
+| A company 404s in `companies.json` | It's likely not on Greenhouse/Lever/Ashby. Don't hand-add a slug without curling the endpoint first (`.agents/skills/daily-job-pull/references/sourcing.md` § ATS endpoints) — the `_meta.verification` rule in `companies.json` exists because guessed slugs silently return nothing. |
 | `/make-applications` fails to compile | Confirm you're running locally (not cloud) and `pdflatex` is on `PATH`. |
 | Notion write fails on a field | Check `NOTION_V4_SETUP.md` for the live schema — don't assume a v3 field (e.g. `Company Stage`, `Auth-Friendly?`) still exists in v4. |

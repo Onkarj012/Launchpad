@@ -64,7 +64,7 @@ export function readPath(obj, dotPath) {
 /** Map one Apify dataset item through an actor's fieldMap into a RAW record. */
 export function mapItem(item, fieldMap, label) {
   if (!item || typeof item !== 'object' || !fieldMap) return null;
-  return {
+  const record = {
     url: readPath(item, fieldMap.url) ?? null,
     company: readPath(item, fieldMap.company) ?? null,
     title: readPath(item, fieldMap.title) ?? null,
@@ -74,6 +74,15 @@ export function mapItem(item, fieldMap, label) {
     sourceKind: 'aggregator',
     source: `apify-${label || 'actor'}`,
   };
+  for (const field of [
+    'discoveredAt', 'crawledAt', 'originalApplicationUrl', 'remoteEligibility',
+    'salary', 'timezoneOverlap', 'eor', 'equipment', 'humanContact', 'projectConnection',
+  ]) {
+    if (fieldMap[field]) record[field] = readPath(item, fieldMap[field]);
+  }
+  if (fieldMap.sourceKind) record.sourceKind = readPath(item, fieldMap.sourceKind) ?? record.sourceKind;
+  if (fieldMap.sourceCategory) record.sourceCategory = readPath(item, fieldMap.sourceCategory) ?? null;
+  return record;
 }
 
 /** Validate the shape of config/apify.json; throws RunError on structural issues. */
@@ -148,7 +157,13 @@ export async function pullAll(config, token, { actorFilter = null, fetchImpl = f
     const label = actor.label || actor.id;
     try {
       const items = await runActor(actor, token, fetchImpl);
-      const mapped = items.map((item) => mapItem(item, actor.fieldMap, label)).filter(Boolean);
+      const mapped = items.map((item) => {
+        const record = mapItem(item, actor.fieldMap, label);
+        if (!record) return null;
+        record.sourceKind = actor.sourceKind ?? record.sourceKind;
+        record.sourceCategory = actor.sourceCategory ?? record.sourceCategory;
+        return record;
+      }).filter(Boolean);
       records.push(...mapped);
       summary[label] = { fetched: mapped.length, failed: false };
     } catch (error) {

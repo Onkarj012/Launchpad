@@ -6,6 +6,7 @@
       "id": "cheap_scraper~linkedin-job-scraper",
       "label": "linkedin",
       "enabled": true,
+      "sourceCategory": "broad-remote",
       "input": {
         "keyword": ["software engineer", "AI engineer", "machine learning engineer", "backend developer", "new grad software engineer"],
         "locations": ["Pune, Maharashtra, India", "India"],
@@ -29,6 +30,8 @@
       "id": "blackfalcondata~naukri-jobs-feed",
       "label": "naukri-0-1",
       "enabled": true,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "input": {
         "searchQueries": [
           "software engineer fresher Pune",
@@ -57,6 +60,8 @@
       "id": "blackfalcondata~naukri-jobs-feed",
       "label": "naukri-0-2",
       "enabled": true,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "input": {
         "searchQueries": [
           "junior software developer Pune",
@@ -84,6 +89,8 @@
       "id": "scrapesage~foundit-scraper",
       "label": "foundit",
       "enabled": true,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "input": {
         "searchQueries": [
           "software engineer fresher",
@@ -112,6 +119,8 @@
       "id": "automation-lab~internshala-scraper",
       "label": "internshala",
       "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "_note": "Paid-internship lane only. Actor takes a single searchQuery string. stipend/applyBy live in fullDescription when fetchDetails is on.",
       "input": {
         "searchQuery": "python",
@@ -132,6 +141,8 @@
       "id": "logiover~hirist-tech-scraper",
       "label": "hirist",
       "enabled": true,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "_note": "scrapeDetails must stay true — with it off the actor emits description: null and every record fails downstream gates.",
       "input": {
         "keywords": ["python", "machine-learning", "node-js"],
@@ -154,6 +165,8 @@
       "id": "blackfalcondata~wellfound-scraper",
       "label": "wellfound",
       "enabled": true,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "_note": "Sprint cadence: run ~2x/week, not daily — pass --actor to skip on off days.",
       "input": {
         "roles": ["software-engineer", "data-scientist"],
@@ -175,6 +188,8 @@
       "id": "parsebird~yc-jobs-scraper",
       "label": "yc",
       "enabled": true,
+      "sourceKind": "niche-public",
+      "sourceCategory": "vc-portfolio",
       "input": {
         "searchQuery": "",
         "roleFilter": "software-engineer",

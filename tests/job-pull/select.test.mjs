@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../../job-pull/config.mjs';
-import { selectCandidates } from '../../job-pull/select.mjs';
+import { selectApplicationShortlist, selectCandidates } from '../../job-pull/select.mjs';
 
 const config = loadConfig();
 
@@ -72,4 +72,36 @@ test('strict shortfall reports shortage instead of inventing fallback', () => {
   assert.equal(result.strictSelected, 2);
   assert.equal(result.strictShortfall, 1);
   assert.equal(result.selected.length, 3);
+});
+
+test('application shortlist applies role/source targets only to verified original application URLs', () => {
+  const entries = [];
+  const groups = [
+    ['ai-llm-agentic', 'direct-company'], ['ml', 'vc-portfolio'], ['ai-llm-agentic', 'india-niche'], ['ml', 'india-niche'],
+    ['backend-python', 'direct-company'], ['full-stack-ai', 'india-niche'], ['general-new-grad-swe', 'direct-company'],
+    ['paid-internship', 'direct-company'], ['adjacent-engineering', 'broad-remote'], ['backend-python', 'broad-remote'],
+  ];
+  groups.forEach(([family, sourceCategory], index) => entries.push({
+    ...entry(index, { family, company: `Ready ${index}` }), sourceCategory, applicationReady: true,
+    conversionScore: 100 - index,
+  }));
+  entries.push({ ...entry(99, { family: 'ai-llm-agentic', company: 'Unverified' }), sourceCategory: 'aggregator', applicationReady: false, conversionScore: 100 });
+  const result = selectApplicationShortlist(entries, config);
+  assert.equal(result.selected.length, 10);
+  assert.equal(result.counts.directOrVc >= 4, true);
+  assert.equal(result.counts.indiaNiche >= 3, true);
+  assert.equal(result.counts.broadRemote, 2);
+  assert.equal(result.selected.some((candidate) => candidate.company === 'Unverified'), false);
+  assert.deepEqual(result.shortfalls, { targetCount: 0, roles: { ai: 0, backendFullStack: 0, newGrad: 0, adjacent: 0 }, directOrVc: 0, indiaNiche: 0 });
+});
+
+test('application shortlist reports missing quota inventory without using unresolved leads', () => {
+  const result = selectApplicationShortlist([
+    { ...entry(1, { family: 'ai-llm-agentic' }), sourceCategory: 'aggregator', applicationReady: false },
+    { ...entry(2, { family: 'backend-python' }), sourceCategory: 'direct-company', applicationReady: true },
+  ], config);
+  assert.equal(result.selected.length, 1);
+  assert.equal(result.shortfalls.targetCount, 9);
+  assert.equal(result.shortfalls.directOrVc, 3);
+  assert.equal(result.shortfalls.roles.ai, 4);
 });

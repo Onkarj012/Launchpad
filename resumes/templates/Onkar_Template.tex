@@ -4,6 +4,8 @@
 % Tailor only inside %== TAILOR-START/END ==  slots: HEADLINE, SUMMARY,
 % COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS. Everything else,
 % including section order and section headings, is frozen.
+% RESUME_EVIDENCE_V1: each new tailored source requires same-directory
+% <stem>.matrix.md and <stem>.provenance.md sidecars. See resumes/evidence/README.md.
 %------------------------
 
 \documentclass[a4paper,11pt]{article}
@@ -105,7 +107,7 @@
 \vspace{1mm}
 %== TAILOR-START: SUMMARY ==
 \small{
-AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI products end to end, from React/Next.js frontends to Python/Node backend services. Architected a hybrid RAG system (Next.js + FastAPI, BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness, and an agentic creator--critic--evaluator pipeline with cross-model benchmarking. Currently shipping Stride, a five-agent AI product, as Founder \& Lead Engineer. Strong across React, Next.js, FastAPI, Node.js, RAG, and agentic AI system design.
+AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI products end to end, from React/Next.js frontends to Python/Node backend services. Architected a hybrid RAG system (Next.js + FastAPI, BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness, and an agentic creator--critic--evaluator pipeline with cross-model benchmarking. Currently shipping Stride, a five-agent AI product, as Lead Engineer. Strong across React, Next.js, FastAPI, Node.js, RAG, and agentic AI system design.
 }
 %== TAILOR-END: SUMMARY ==
 \vspace{-3mm}
@@ -130,7 +132,7 @@ AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI prod
 
     \resumeSubheading
       {Stride --- AI-First Adaptive Wellness Platform}{Remote}
-      {Founder \& Lead Engineer}{April 2026 -- Present}
+      {Lead Engineer}{April 2026 -- Present}
       \resumeItemListStart
 %== TAILOR-START: EXPERIENCE-BULLETS ==
         \item {Architected and shipped Stride to production as sole engineer, owning the full stack --- React/Next.js frontend, backend services, and data layer --- running live with an early private user cohort driving iterative product feedback ahead of public beta.}

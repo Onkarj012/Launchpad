@@ -4,6 +4,7 @@ import { trackedCandidatesFromJson, runTrackedScan } from '../../job-pull/adapte
 import { reverseAtsCandidatesFromJson, REVERSE_ATS } from '../../job-pull/adapters/reverse-ats.mjs';
 import { importPublicSearchCandidates } from '../../job-pull/adapters/public-search.mjs';
 import { importIndeedCandidates } from '../../job-pull/adapters/indeed.mjs';
+import { deriveProvider, normalizeSourceRecords } from '../../job-pull/adapters/common.mjs';
 
 const record = {
   url: 'https://jobs.example.test/1', source: 'greenhouse-api', company: 'Example', title: 'AI Engineer', location: 'Pune', id: '1',
@@ -37,4 +38,17 @@ test('public search keeps Not Verified and Indeed is honestly unavailable', () =
 
 test('scanner wrappers fail clearly when --json is not implemented', () => {
   assert.throws(() => runTrackedScan({ careerOpsDir: '/tmp', execute: () => 'human scanner output' }), /contract error.*expected JSON/);
+});
+
+test('known public ATS URLs classify as direct metadata without claiming a new scanner', () => {
+  assert.equal(deriveProvider({ url: 'https://apply.workable.com/acme/j/1' }), 'workable');
+  assert.equal(deriveProvider({ url: 'https://jobs.smartrecruiters.com/acme/1' }), 'smartrecruiters');
+  assert.equal(deriveProvider({ url: 'https://acme.breezy.hr/p/1' }), 'breezy');
+  assert.equal(deriveProvider({ url: 'https://acme.recruitee.com/o/1' }), 'recruitee');
+  const [candidate] = normalizeSourceRecords([{ ...record, url: 'https://apply.workable.com/acme/j/1', source: 'public-search' }], {
+    source: 'public-search', sourceKind: 'aggregator', runAt: '2026-07-14T09:00:00.000Z', currentFeedIsLive: false,
+  });
+  assert.equal(candidate.provider, 'workable');
+  assert.equal(candidate.sourceKind, 'ats-direct');
+  assert.equal(candidate.applicationResolution.status, 'Direct ATS');
 });

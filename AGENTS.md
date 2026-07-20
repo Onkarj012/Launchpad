@@ -15,7 +15,7 @@ This is Onkar Jadhav's job-search system: discover roles → score against targe
 - **Education:** B.Tech Computer Science, PCCOE (SPPU) — 9.17 CGPA — graduating Jun 2026
 - **Status:** final-year student / new-grad, fresher (0–1 yr)
 - **Target titles:** AI/LLM Engineer, Agentic AI Engineer, ML Engineer, Full-Stack (AI-leaning), Backend (Python), New-grad SWE
-- **Headline work:** Stride (shipped, in use — always in Experience as Founder & Lead Engineer), Lore Engine (RAG), StockXpert (DL equity), GovBench (LLM governance), PromptForge (agentic). Vaani exists but is never put on tailored resumes.
+- **Headline work:** Stride (shipped, in use — always in Experience as Lead Engineer), Lore Engine (RAG), StockXpert (DL equity), GovBench (LLM governance), PromptForge (agentic). Vaani exists but is never put on tailored resumes.
 - Full targeting/gates/rubric live in `master_prompt.md` §§ 2–4.
 
 ## Directory map

@@ -30,6 +30,7 @@ const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SOURCE_DIR = join(PROJECT_ROOT, 'resumes', 'sources');
 const OUTPUT_DIR = join(PROJECT_ROOT, 'resumes', 'output');
 const TEMPLATE_PATH = join(PROJECT_ROOT, 'resumes', 'templates', 'Onkar_Template.tex');
+const EVIDENCE_CATALOGUE_PATH = join(PROJECT_ROOT, 'resumes', 'evidence', 'approved-evidence.md');
 const MIN_PAGE_FILL = 0.93;
 const SLOT_MARKER = /%==\s*TAILOR-(START|END):\s*([A-Z0-9-]+)\s*==\s*\r?\n/g;
 
@@ -57,6 +58,136 @@ function claimReasons(source) {
     const match = pattern.exec(source);
     return match ? [`claim pattern "${label}" at source line ${sourceLineAt(source, match.index)}`] : [];
   });
+}
+
+function slotContents(source) {
+  const marker = '\\begin{document}';
+  const start = source.indexOf(marker);
+  if (start < 0) return '';
+  const { segments } = splitSlots(source.slice(start + marker.length));
+  return segments.filter((segment) => segment.type === 'slot').map((segment) => segment.text).join('\n');
+}
+
+function proseReasons(source) {
+  const prose = slotContents(source);
+  const reasons = [];
+  if (prose.includes('—')) reasons.push('Unicode em dash in tailored prose');
+  if (prose.includes('---')) reasons.push('LaTeX triple hyphen in tailored prose');
+  return reasons;
+}
+
+function evidenceCatalogue() {
+  if (!existsSync(EVIDENCE_CATALOGUE_PATH)) return { ids: new Map(), reasons: [`evidence catalogue not found: ${EVIDENCE_CATALOGUE_PATH}`] };
+  const text = readFileSync(EVIDENCE_CATALOGUE_PATH, 'utf8');
+  const ids = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\|\s*`([^`]+)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|/);
+    if (match) ids.set(match[1], match[2]);
+  }
+  return { ids, reasons: ids.size ? [] : ['evidence catalogue has no locator rows'] };
+}
+
+function sidecarMetadata(text) {
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+  if (!match) return null;
+  const values = new Map();
+  for (const line of match[1].split(/\r?\n/)) {
+    const pair = line.match(/^([a-z-]+):\s*(.+?)\s*$/);
+    if (pair) values.set(pair[1], pair[2]);
+  }
+  return values;
+}
+
+function tableRows(text, expectedHeader) {
+  const lines = text.split(/\r?\n/);
+  const index = lines.findIndex((line) => line.trim() === expectedHeader);
+  if (index < 0 || !/^\|\s*---/.test(lines[index + 1] || '')) return [];
+  const rows = [];
+  for (let i = index + 2; i < lines.length && lines[i].startsWith('|'); i += 1) {
+    const cells = lines[i].split('|').slice(1, -1).map((cell) => cell.trim());
+    if (cells.length) rows.push(cells);
+  }
+  return rows;
+}
+
+function evidenceSidecarReasons(sourcePath, source) {
+  // Legacy tailored sources predate the evidence contract. New sources copied from
+  // the current template opt in via this frozen marker and must include both sidecars.
+  if (!source.includes('% RESUME_EVIDENCE_V1')) return [];
+  const stem = basename(sourcePath, extname(sourcePath));
+  const directory = dirname(sourcePath);
+  const expected = [
+    { suffix: '.matrix.md', kind: 'resume-requirement-matrix' },
+    { suffix: '.provenance.md', kind: 'resume-claim-provenance' },
+  ];
+  const { ids, reasons } = evidenceCatalogue();
+  const failures = [...reasons];
+  const master = existsSync(join(PROJECT_ROOT, 'resumes', 'master', 'Master_Resume_ATS.tex'))
+    ? readFileSync(join(PROJECT_ROOT, 'resumes', 'master', 'Master_Resume_ATS.tex'), 'utf8')
+    : '';
+  const profileIds = new Set(['ai-product-full-stack', 'full-stack-backend', 'applied-ml-ai']);
+
+  for (const { suffix, kind } of expected) {
+    const path = join(directory, `${stem}${suffix}`);
+    if (!existsSync(path)) {
+      failures.push(`missing evidence sidecar ${basename(path)}`);
+      continue;
+    }
+    const text = readFileSync(path, 'utf8');
+    const metadata = sidecarMetadata(text);
+    if (!metadata) {
+      failures.push(`${basename(path)} missing YAML metadata`);
+      continue;
+    }
+    if (metadata.get('kind') !== kind) failures.push(`${basename(path)} has wrong kind metadata`);
+    if (metadata.get('source') !== basename(sourcePath)) failures.push(`${basename(path)} source metadata must equal ${basename(sourcePath)}`);
+    if (!profileIds.has(metadata.get('profile'))) failures.push(`${basename(path)} has an unknown profile`);
+    if (metadata.get('approved-evidence') !== 'resumes/evidence/approved-evidence.md') failures.push(`${basename(path)} has wrong approved-evidence metadata`);
+
+    if (kind === 'resume-requirement-matrix') {
+      const rows = tableRows(text, '| Exact JD phrase | Required / preferred | Category | Approved evidence locator | Target section | Resume wording | Covered / missing |');
+      if (!rows.length) failures.push(`${basename(path)} has no requirement rows`);
+      for (const [phrase, , category, locator, , wording, state] of rows) {
+        if (!phrase || !category || !wording || !state) failures.push(`${basename(path)} has an incomplete requirement row`);
+        const missing = /^Missing\b/i.test(state || '');
+        if (!missing && !/^Covered\b/i.test(state || '')) failures.push(`${basename(path)} row for ${JSON.stringify(phrase)} lacks Covered or Missing state`);
+        if (missing && !/^(Unsupported|Not Verified)$/i.test(locator || '')) failures.push(`${basename(path)} missing row for ${JSON.stringify(phrase)} must use Unsupported or Not Verified`);
+        if (!missing && !ids.has(locator)) failures.push(`${basename(path)} covered row for ${JSON.stringify(phrase)} has invalid locator ${JSON.stringify(locator)}`);
+      }
+    } else {
+      const rows = tableRows(text, '| Claim ID | Tailored claim | Resume section | Approved evidence locator | Equivalence note |');
+      const claimIds = new Set();
+      if (!rows.length) failures.push(`${basename(path)} has no provenance rows`);
+      for (const [claimId, claim, section, locator, note] of rows) {
+        if (!claimId || !claim || !section || !locator || !note) failures.push(`${basename(path)} has an incomplete provenance row`);
+        if (claimIds.has(claimId)) failures.push(`${basename(path)} repeats Claim ID ${JSON.stringify(claimId)}`);
+        claimIds.add(claimId);
+        if (!ids.has(locator)) failures.push(`${basename(path)} claim ${JSON.stringify(claimId)} has invalid locator ${JSON.stringify(locator)}`);
+      }
+    }
+  }
+
+  for (const [id, anchor] of ids) {
+    if (!master.includes(anchor)) failures.push(`evidence catalogue locator ${id} anchor is absent from Master_Resume_ATS.tex`);
+  }
+  return failures;
+}
+
+function fontReasons(pdfPath) {
+  const fonts = runCommand('pdffonts', [pdfPath]);
+  if (fonts.error) return [`pdffonts: ${oneLine(fonts.error.message)}`];
+  if (fonts.status !== 0) return [`pdffonts exit ${fonts.status ?? 'unknown'}`];
+  const entries = fonts.stdout.split(/\r?\n/).filter((line) => /\s(?:yes|no)\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$/.test(line));
+  if (!entries.length) return ['pdffonts reported no embedded font entries'];
+  return entries.filter((line) => !/\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$/.test(line)).map((line) => `font is not embedded: ${oneLine(line)}`);
+}
+
+function linkReasons(pdfPath) {
+  const urls = runCommand('pdfinfo', ['-url', pdfPath]);
+  if (urls.error) return [`pdfinfo -url: ${oneLine(urls.error.message)}`];
+  if (urls.status !== 0) return [`pdfinfo -url exit ${urls.status ?? 'unknown'}`];
+  const expected = ['mailto:onkarj012@gmail.com', 'https://github.com/Onkarj012', 'https://leo4.dev', 'https://linkedin.com/in/onkarj012'];
+  return expected.filter((url) => !urls.stdout.includes(url)).map((url) => `PDF link missing ${url}`);
 }
 
 function overfullReasons(log) {
@@ -249,6 +380,8 @@ export function verifyFile(inputPath, pdfPathArg) {
 
     const source = readFileSync(sourcePath, 'utf8');
     failures.push(...claimReasons(source));
+    failures.push(...proseReasons(source));
+    failures.push(...evidenceSidecarReasons(sourcePath, source));
 
     if (existsSync(TEMPLATE_PATH)) {
       const templateSource = readFileSync(TEMPLATE_PATH, 'utf8');
@@ -309,9 +442,14 @@ export function verifyFile(inputPath, pdfPathArg) {
       const text = runCommand('pdftotext', ['-layout', pdfForChecks, '-']);
       if (text.error) failures.push(`pdftotext: ${oneLine(text.error.message)}`);
       if (text.status !== 0) failures.push(`pdftotext exit ${text.status ?? 'unknown'}`);
-      if (text.status === 0) failures.push(...readingOrderReasons(text.stdout));
+      if (text.status === 0) {
+        failures.push(...readingOrderReasons(text.stdout));
+        if (/[\uFFFD\u0000]/.test(text.stdout)) failures.push('extracted text contains replacement or NUL glyphs');
+      }
 
       failures.push(...pageFillReasons(pdfForChecks));
+      failures.push(...fontReasons(pdfForChecks));
+      failures.push(...linkReasons(pdfForChecks));
     }
 
     const outputPath = pdfPathArg ? resolve(pdfPathArg) : findOutputPdf(stem);

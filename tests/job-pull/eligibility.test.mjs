@@ -39,6 +39,14 @@ test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, null);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - US only' }), config).geo.pass, false);
   assert.equal(classifyCandidate(candidate({ location: 'Remote worldwide, excluding India' }), config).geo.pass, false);
+  assert.equal(classifyCandidate(candidate({ location: 'Remote', remoteEligibility: { status: 'eligible', evidence: 'India permitted' } }), config).geo.pass, true);
+});
+
+test('missing work mode and location never pass the India eligibility gate', () => {
+  const result = classifyCandidate(candidate({ location: null, workMode: null, description: 'Build reliable AI systems.' }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_NOT_VERIFIED');
+  assert.equal(result.eligible, false);
 });
 
 test('expanded target titles pass as strict roles', () => {

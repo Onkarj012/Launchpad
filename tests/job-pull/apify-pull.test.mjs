@@ -41,6 +41,17 @@ test('mapItem shapes a raw dataset item into the RAW record contract', () => {
   assert.equal(mapItem(item, null, 'linkedin'), null);
 });
 
+test('mapItem preserves optional application and work-condition fields only when mapped', () => {
+  const record = mapItem({
+    url: 'https://example.test/1', company: 'Acme', title: 'AI Engineer', original: 'https://jobs.acme.test/1', salary: '₹10 LPA',
+  }, {
+    url: 'url', company: 'company', title: 'title', originalApplicationUrl: 'original', salary: 'salary',
+  }, 'naukri');
+  assert.equal(record.originalApplicationUrl, 'https://jobs.acme.test/1');
+  assert.equal(record.salary, '₹10 LPA');
+  assert.equal(record.equipment, undefined);
+});
+
 test('validateConfig rejects malformed actor entries and accepts a well-formed config', () => {
   assert.throws(() => validateConfig(null), RunError);
   assert.throws(() => validateConfig({ actors: 'nope' }), RunError);

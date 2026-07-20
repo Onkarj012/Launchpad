@@ -105,13 +105,18 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 1. **Heading** — unchanged.
 2. **Summary** — rewritten per JD to lead with the strongest truthful hook and the role's highest-value language without becoming a keyword list.
 3. **Experience** — **Stride is ALWAYS here** (it's a shipped product in use):
-   - Title: **Founder & Lead Engineer**
+   - Title: **Lead Engineer**
    - Dates: **April 2026 – Present**
    - Lead bullet states traction (production, active trial users) — see content rules.
 4. **Projects** — **exactly 2**, picked from the pool by best JD-keyword match:
    - Pool: **Lore Engine, StockXpert, GovBench, PromptForge**
    - (Vaani excluded — too little owned detail.)
 5. **Technical Skills** — reorder so JD-relevant categories surface first; never invent skills not on the master.
+
+### Role-family base profile
+- Select one structured starting profile from `resumes/profiles/` before drafting: `ai-product-full-stack`, `full-stack-backend`, or `applied-ml-ai`.
+- Profiles govern selection and ordering only. They are not resume templates, do not override the JD matrix, and never authorize a claim outside `resumes/master/Master_Resume_ATS.tex`.
+- Record the selected profile in the requirement-matrix and claim-provenance sidecars described in `resumes/evidence/README.md`.
 
 ### JD requirement matrix (mandatory and dominant)
 Before selecting projects or rewriting any line, build an auditable matrix with one row per distinct JD requirement:
@@ -124,7 +129,7 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 - Cover **every truthfully supportable hard requirement**. Put the highest-value required keywords in evidence-bearing Experience or Project bullets when the master supports them; listing a keyword only in Technical Skills is not substantive coverage.
 - Use the JD's exact phrase once when truthful and natural, then use clear variants only when useful. Keyword matching never overrides readability or truth.
 - Mark unsupported or ambiguous requirements `Missing`, report them as real gaps, and never fabricate a skill, achievement, metric, responsibility, qualification, or keyword to close them.
-- Retain the completed matrix with the tailored source or review notes so keyword coverage can be audited.
+- Retain the completed matrix beside the tailored source as `<stem>.matrix.md`, using the exact contract in `resumes/evidence/README.md`. The matrix is complete only when every distinct requirement has a `Covered` or `Missing` decision.
 
 ### Claim provenance and truthfulness
 - Every tailored achievement and capability claim must map to an approved bullet or skill in `resumes/master/Master_Resume_ATS.tex`.
@@ -132,6 +137,7 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 - Do not convert a target, design capacity, prototype, benchmark, planned feature, or tool familiarity into a shipped achievement or production result. This is **capability-to-achievement inflation** and is forbidden.
 - Never strengthen qualifiers or scope. Examples: `designed to scale to` cannot become `scales to`; `prototype` cannot become `production`; `supported` cannot become `owned`.
 - If a stronger JD-aligned statement lacks approved evidence, leave the requirement missing and report it.
+- Retain `<stem>.provenance.md` beside the tailored source. It maps each factual summary sentence, bullet, and skills claim to the stable evidence locator in `resumes/evidence/approved-evidence.md`; the locator's master anchor must still exist at verification time.
 
 ### Human writing and language pass (mandatory)
 - Write like a precise engineer describing work they personally understand. Prefer concrete actions, decisions, constraints, and outcomes over promotional commentary.
@@ -156,15 +162,15 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 
 ### Quality gates (all mandatory)
 1. **Content gate**
-   - Every claim has approved master-bullet or skill provenance and no capability-to-achievement inflation.
+   - Every claim has approved master-bullet or skill provenance in a complete provenance sidecar, and no capability-to-achievement inflation.
    - Human-writing, perfect-grammar, consistent-US-English, no-em-dash, lexical-repetition, and semantic-repetition passes succeed.
    - Opening verbs and repeated technology lists satisfy the rules above.
 2. **JD gate**
-   - The requirement matrix is complete.
+   - The requirement-matrix sidecar is complete and records its selected role-family profile.
    - Every truthfully supportable hard requirement is covered in natural, evidence-bearing wording.
    - Unsupported requirements are explicitly reported as missing rather than inserted.
 3. **Artifact gate**
-   - Compile locally and confirm exactly one visually balanced page.
+   - Compile locally and pass `node tests/resume/verify.mjs <source.tex> <output.pdf>`, which checks template conformance, evidence-sidecar shape and locators, source/PDF freshness, exact page count, page fill, text extraction, expected links, embedded fonts, and glyph anomalies.
    - Render the PDF and inspect it visually for spacing, clipping, collisions, detached bullets, stray glyphs, and broken links.
    - Extract the PDF text and verify clean linear reading order, section order, contact details, title/organization/date/location association, and JD coverage.
    - Check clickable links, embedded/substituted fonts, glyph rendering, and compilation-log warnings. Treat text-extraction, font, glyph, or layout warnings as failures until explained and resolved.
@@ -176,8 +182,8 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 - Report a numeric ATS score only when it comes from a named external parser such as Enhancv. Record the tool, target JD, date, and result so comparisons use the same conditions.
 
 ### Output
-- Editable source: `resumes/sources/Onkar_Jadhav_<Company>_<Role>.tex`
-- Final PDF (PDF-only folder): `resumes/output/Onkar_Jadhav_<Company>_<Role>.pdf`
+- Editable source: `resumes/sources/<YYYY-MM-DD>/Onkar_Jadhav_<Company>_<Role>.tex`, with same-directory `.matrix.md` and `.provenance.md` audit sidecars.
+- Final PDF (PDF-only folder): `resumes/output/<YYYY-MM-DD>/Onkar_Jadhav_<Company>_<Role>.pdf`
 - Compile locally (BasicTeX) into `resumes/sources/build/` scratch, pass the content, JD, and artifact gates before declaring done, copy only the final `.pdf` to `resumes/output/`, then delete all build artifacts (`.aux/.log/.out` and the scratch PDF). `resumes/output/` holds `.pdf` only.
 
 ---
@@ -224,20 +230,20 @@ Onkar
 
 | Say | Claude does |
 |---|---|
-| "morning" / `/morning` | Manual once-daily routine: high-recall pull → Strict shortlist + clearly separate shortage fallback → remind to pick 7–8 + `/make-applications` → surface due follow-ups. Discovery + surfacing only, never applies |
-| "pull today's jobs" / `/pull-jobs` | Tracked providers + full reverse Greenhouse/Lever/Ashby/Workday + startup/public feeds + broad WebSearch + watchlist + optional Indeed → API/feed liveness → deterministic dedup → hard gates → Hot/Active/Backfill freshness classes + opportunity-ledger suppression → score + diversity selection → write 25–35 curated rows when supply supports it |
-| "follow-ups?" / `/followups` | Read tracker vs cadence (applied day 7 → +7, max 2; responded +1/+3; thank-you +1) → list what's due today → draft on request only, never send |
-| "make applications" / `/make-applications` | Local-only: batch-tailor resumes for every `Apply?`-checked row → compile + parse-verify → PDF-only to `resumes/output/` → update Resume Status |
-| "tailor for <row/company>" / `/resume-latex` | Read JD → pick 2 projects → tailor `.tex` in `resumes/sources/` → compile → verify 1 page → PDF-only to `resumes/output/` → update row |
+| "morning" / `/morning` | Manual once-daily routine: discovery leads → Strict and fallback sections → readiness/composition handoff → due-follow-up evidence. Discovery and surfacing only, never applies |
+| "pull today's jobs" / `/pull-jobs` | Tracked + warm reverse ATS + public sources + optional Indeed → normalize → gate → freshness/dedup → Match and Conversion Score → 25–35 local leads plus a verified-original-ATS ten-role shortlist when inventory supports it |
+| "follow-ups?" / `/followups` | Read user-supplied tracker/ledger evidence against the 3/7-day application, 4-day outreach, and 1/3-day conversation cadence → draft only on request, never send |
+| "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each manually selected JD; leave application state and tracker changes to the user |
+| "tailor for <row/company>" / `/resume-latex` | Read JD → select profile and two supported projects → create matrix/provenance sidecars → compile and verify one-page PDF |
 | "check my resume" / `/resume-check` | Brutal recruiter review of the `.tex` source vs a pasted JD (or generic fallback) → per-section gaps + rewrites + overall verdict |
-| "quick add this job" / `/quick-add` | Gate → dedup → score one user-supplied role → write a single Applications row (never checks `Apply?`) |
-| "draft cold email for <company/contact>" | Build email from template → Gmail draft → log Outreach row |
+| "quick add this job" / `/quick-add` | Capture → gate/dedup → Match and Conversion Score → propose a local lead record with explicit readiness status |
+| "draft cold email for <company/contact>" | Draft one evidence-backed human message only when requested; never send or claim contact |
 
 - **Pull sources:** tracked `career-ops/scan.mjs`; full reverse `scan-ats-full.mjs` across Greenhouse/Lever/Ashby/Workday; YC/a16z and dated public feeds; WebSearch across ATS domains, LinkedIn, Naukri, Wellfound, Instahyre, and company careers; every `companies.json` slug; Indeed MCP when connected. Unavailable sources are reported, never assumed.
 - **Trigger:** manual once daily — run `/morning` or `/pull-jobs`. No cron is configured. Add automation only when Onkar asks later.
 - **Discovery restrictions:** no email ingestion, logged-in/computer-use portal browsing, application submission, or outreach action.
 - **Dedup:** canonical URL → provider+Job ID → normalized company/title/location → local write ledger → JD fingerprint where description exists. `fingerprint-core.mjs` supplies SimHash; `detect-reposts.mjs` is a separate repost-pattern report.
-- **Watchlist auto-grow:** when a row is `Apply?`-checked, resolve its ATS+slug from the JD URL and append to `companies.json` (`source: "auto-grow"`) if not already present.
+- **Watchlist growth:** propose a verified ATS+slug addition for manual approval; never alter `companies.json` as a side effect of a lead or application state.
 
 ---
 
@@ -246,7 +252,7 @@ Onkar
 - Resume content SoT: `resumes/master/Master_Resume_ATS.tex` · layout SoT (frozen, cp-then-edit-slots): `resumes/templates/Onkar_Template.tex`
 - Tailored `.tex` sources: `resumes/sources/<YYYY-MM-DD>/` · compile scratch: `resumes/sources/build/`
 - Final PDFs (PDF-only): `resumes/output/<YYYY-MM-DD>/Onkar_Jadhav_<Company>_<Role>.pdf`
-- Sourcing watchlist: `companies.json` (project root) — seed + auto-grow company/ATS/slug list for Layer 2 fetch
+- Sourcing watchlist: `companies.json` (project root) — manually approved company/ATS/slug list for Layer 2 fetch
 - Discovery/hygiene engine (harvested from career-ops — library, **not** a tracker; `career-ops/data/*` is run cache only):
   - Config (user layer, survives `update-system.mjs`): `career-ops/portals.yml`, `career-ops/config/profile.yml`, `career-ops/cv.md` (stub — resume SoT stays the `.tex` masters)
   - Tracked scan: from `career-ops/`, `node scan.mjs --dry-run --json`
@@ -264,6 +270,6 @@ Onkar
     - Activity data source: `76a31def-a145-45db-9b82-0c263b80ab1b` (DB page: https://app.notion.com/p/abe8d58130844fd480c24b4edb285dee)
     - Adds vs v3: `Fingerprint`, `Liveness`, `Liveness Checked`, `Freshness`, `Next Follow-up`, `Follow-up Count`, `Last Activity`, `Hook`, `Rationale`, `Experience Asked`, `CTC/Salary`, `Work Mode`, richer `Status`/`Resume Status`; `Activity` DB replaces ad-hoc follow-up tracking with a dual-relation log.
     - Views: Today's Pull, To Apply, Follow-up Due, Pipeline (board), Archive (Applications v4); Due (Activity).
-- Skills (project-scoped, single-slash): `.claude/skills/morning`, `.claude/skills/daily-job-pull`, `.claude/skills/make-applications`, `.claude/skills/followups`, `.claude/skills/application-agent`, `.claude/skills/resume-latex`, `.claude/skills/resume-check`, `.claude/skills/quick-add`
+- Skills (project-scoped, single-slash): `.agents/skills/morning`, `.agents/skills/daily-job-pull`, `.agents/skills/application-readiness`, `.agents/skills/make-applications`, `.agents/skills/conversion-ops`, `.agents/skills/proof-of-fit`, `.agents/skills/interview-loop`, `.agents/skills/followups`, `.agents/skills/application-agent`, `.agents/skills/resume-latex`, `.agents/skills/resume-check`, `.agents/skills/quick-add`
 - Integration plan: `PLAN_career_ops_integration.md` (why harvest-not-migrate + build phases)
 - Reference prompt (not a skill): `prompts/deep-job-search.md`
