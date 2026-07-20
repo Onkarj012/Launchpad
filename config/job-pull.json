@@ -29,7 +29,7 @@
   "freshness": {
     "hotMaximumHours": 72,
     "activeMaximumDays": 7,
-    "backfillMaximumDays": 7
+    "backfillMaximumDays": 14
   },
   "geo": {
     "homeCountry": "India",
@@ -80,7 +80,7 @@
   },
   "experience": {
     "strictMaximumYears": 1,
-    "relaxedMaximumYears": 1,
+    "relaxedMaximumYears": 2,
     "hardRejectMinimumYears": 3
   },
   "roles": {

@@ -68,6 +68,9 @@ site:<ats-domain> "<role term>" ("remote India" OR "India remote" OR APAC OR wor
 - `naukri.com`
 - `wellfound.com`
 - `instahyre.com`
+- `cutshort.io` (also covered structurally via the `cutshort` Apify actor below — WebSearch is the fallback when `APIFY_TOKEN` is unset)
+- `peerlist.io/jobs` — no Apify actor exists for this; WebSearch/direct-browse only
+- `hirist.tech` (also covered via the `hirist` Apify actor)
 - untracked company career pages: `"careers" OR "we're hiring"`
 
 Templates:
@@ -81,6 +84,29 @@ site:<board> "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR i
 Internship queries must include `(paid OR stipend OR salary)`; the actual JD must still provide pay evidence.
 
 Excluded: `internshala.com` — stale/unreliable postings.
+
+### VC portfolio boards
+
+No Apify actor exists for these; they're portfolio-listing pages, not job feeds, so use WebSearch/direct-browse and then resolve each lead to the company's own ATS page before treating it as apply-ready.
+
+- `careers.peakxv.com`
+- Accel India portfolio careers page
+- Blume Ventures portfolio careers page
+- Lightspeed India portfolio careers page
+- `khosla ventures portfolio careers`
+- `ycombinator.com/jobs` (India filter)
+- `indianstartups.work`
+
+Templates:
+
+```text
+site:careers.peakxv.com "<role term>"
+"Accel" OR "Blume Ventures" OR "Lightspeed" portfolio careers "<role term>" India
+site:ycombinator.com/jobs "<role term>" India
+site:indianstartups.work "<role term>"
+```
+
+A VC-board hit is a lead, not an apply-ready source: always resolve to the portfolio company's own career page/ATS link before it enters the shortlist, same as any other aggregator-tier discovery.
 
 ## Geo evidence
 
@@ -122,7 +148,9 @@ A 404/empty slug is logged and skipped. Flag repeated failures for manual prunin
 
 ## Public feeds
 
-Prioritize providers with usable dates and explicit geo: Jobicy, We Work Remotely, The Muse, JobStreet/SEEK, Glints, Remotive, Himalayas, EchoJobs, Hacker News. RemoteOK/Working Nomads results lacking exact dates cannot enter curated output until date enrichment succeeds.
+Prioritize providers with usable dates and explicit geo: Jobicy, We Work Remotely, The Muse, JobStreet/SEEK, Glints, Remotive, Himalayas, EchoJobs, Hacker News. RemoteOK/Working Nomads results lacking exact dates cannot enter curated output until date enrichment succeeds. We Work Remotely, Remotive, and Himalayas are also available structurally via Apify (see below) — prefer the Apify path when `APIFY_TOKEN` is set, WebSearch as fallback.
+
+No Apify actor exists for Arc (`arc.dev`), Uplers, or Contra — WebSearch/direct-browse only. Arc and Uplers apply the same explicit-India-eligibility check as any remote board; Contra is contract/independent work, not full-time — tag and score accordingly, it does not count toward the full-time application shortlist.
 
 ## Indeed
 
@@ -130,7 +158,7 @@ Indeed is optional until MCP is connected. Probe availability; if missing, repor
 
 ## Apify structured board pull (optional)
 
-Optional layer for LinkedIn/Naukri/Wellfound/YC via `config/apify.json`-configured Apify actors — a structured alternative to WebSearch for boards that don't expose a public feed. Requires `APIFY_TOKEN` in the environment; skip entirely and report `source unavailable` when unset.
+Optional layer for LinkedIn/Naukri/Wellfound/YC/Foundit/Internshala/Hirist/Cutshort/Himalayas/Remotive/We Work Remotely via `config/apify.json`-configured Apify actors — a structured alternative to WebSearch for boards that don't expose a public feed. Requires `APIFY_TOKEN` in the environment; skip entirely and report `source unavailable` when unset.
 
 ```bash
 node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json

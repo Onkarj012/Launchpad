@@ -39,11 +39,19 @@ function isInRange(value, since, until) {
   return (!since || date >= since) && (!until || date <= until);
 }
 
+function defaultSince(referenceDate) {
+  const since = new Date(referenceDate.getTime());
+  since.setDate(since.getDate() - 7);
+  return since.toISOString().slice(0, 10);
+}
+
 const options = argumentsMap(process.argv.slice(2));
 if (!options.applications || !options.outcomes) {
-  console.error('Usage: node conversion/report.mjs --applications PATH --outcomes PATH [--referrals PATH] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out PATH]');
+  console.error('Usage: node conversion/report.mjs --applications PATH --outcomes PATH [--referrals PATH] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out PATH] [--now YYYY-MM-DD]');
   process.exitCode = 2;
 } else {
+  const now = options.now ? new Date(`${options.now}T00:00:00Z`) : new Date();
+  if (!options.since) options.since = defaultSince(now);
   const applications = readTsv(options.applications).filter((row) => row.applied_at && isInRange(row.applied_at, options.since, options.until));
   const outcomes = readTsv(options.outcomes).filter((row) => isInRange(row.event_at, options.since, options.until));
   const referrals = readTsv(options.referrals).filter((row) => isInRange(row.requested_at, options.since, options.until));
