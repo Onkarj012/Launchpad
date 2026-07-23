@@ -1,0 +1,16 @@
+{
+  "query": "hiring \"ML Engineer\"",
+  "postUrl": "https://www.linkedin.com/posts/dataacademy-webinar-789",
+  "author": {
+    "name": "Data Academy",
+    "profileUrl": "https://www.linkedin.com/company/data-academy",
+    "relationship": "Training provider"
+  },
+  "timestampEvidence": "1d",
+  "postedAt": "2026-07-22T06:30:00.000Z",
+  "observedAt": "2026-07-23T06:30:00.000Z",
+  "rawHiringContext": "Join our machine learning bootcamp webinar this week. Subscribe for the launch discount and book a demo.",
+  "company": "Data Academy",
+  "title": "Machine Learning Bootcamp",
+  "location": "Online"
+}

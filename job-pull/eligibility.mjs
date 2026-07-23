@@ -5,7 +5,7 @@ const TITLE_PATTERNS = [
   { family: 'ml', strict: /\b(machine learning engineer|ml engineer|applied ml engineer|deep learning engineer|computer vision engineer|data scientist|ml developer|machine learning developer)\b/i },
   { family: 'backend-python', strict: /\b(backend|back-end|python engineer|python developer|backend developer|back-end developer|api engineer)\b/i },
   { family: 'full-stack-ai', strict: /\b(ai[- ]native full[ -]?stack engineer|full[ -]?stack|full[ -]?stack engineer|full[ -]?stack developer)\b/i },
-  { family: 'general-new-grad-swe', strict: /\b(software engineer i|software engineer|software developer|software development engineer|sde[ -]?i|swe|developer engineer|member of technical staff|junior (?:software )?(?:developer|engineer)|associate (?:software )?(?:engineer|developer)|graduate engineer|founding engineer|product engineer)\b/i },
+  { family: 'general-new-grad-swe', strict: /\b(software engineer i|software engineer|software developer|software development engineer|sde[ -]?i|swe|developer engineer|member of technical staff|junior (?:software (?:developer|engineer)|developer)|associate (?:software (?:engineer|developer)|developer)|graduate engineer|founding engineer|product engineer|java developer|c\+\+ developer|node(?:\.js)? developer)\b/i },
 ];
 
 const ADJACENT_PATTERN = /\b(data engineer|platform engineer|application engineer|implementation engineer|solutions engineer|forward[ -]?deployed engineer|research engineer|automation engineer)\b/i;
@@ -17,6 +17,8 @@ const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only|vo
 const TRAINING_FEE_OR_BOND_PATTERN = /\b(training\s+fees?|registration\s+fees?|joining\s+fees?|security\s+deposits?|(?:non[- ]?refundable|refundable)(?:\s+security)?\s+deposits?(?=[^.!?]{0,80}\bjoining\b)|(?:service|employment)(?:\s+agreement)?\s+bond|bond\s+(?:of|for)\s+\d+\s+years?|bond\s+period|genuine\s+payment\s+required\s+before)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
 const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada)|(?:u\.?s\.?|united states|u\.?k\.?|eu|canada|australia)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada))(?=$|[^a-z])/i;
+const EXPLICIT_FOREIGN_REMOTE_LOCATION_PATTERN = /\b(?:north america|u\.?s\.?a?|united states|canada|united kingdom|u\.?k\.?|europe|european union|e\.?u\.?|austria|poland|germany|france|spain|italy|netherlands|australia|new zealand|latin america|latam|united arab emirates|u\.?a\.?e\.?)\b/i;
+const FOREIGN_COUNTRY_CODE_REMOTE_LOCATION_PATTERN = /^(?!IN\b|IND\b|APAC\b)[A-Z]{2,3}(?:[\s,;/_-].*)?\bremote\b/i;
 const GLOBAL_SCOPE_PATTERN = /\b(worldwide|world\s+wide|global|anywhere)\b/gi;
 const FRESHER_EXPERIENCE_PATTERN = /\b(freshers?|new[- ]grad|recent graduate|graduate engineer|graduate trainee|campus|entry[- ]level|junior|associate|trainee|0\s*[-–]\s*1\s+years?|0\s+to\s+1\s+years?)\b/i;
 const SENIORITY_PATTERN = /\b(senior|sr\.?|staff|lead|principal|architect|director|head of|vp|vice president|manager)\b/i;
@@ -99,10 +101,27 @@ function hasAllowedGlobalScope(text, policy) {
 
 function remoteScopeStatus(text, location, policy, remoteEligibility = null) {
   const lower = text.toLowerCase();
+  const locationLower = location.toLowerCase();
+  const locationHasAllowedScope = /\bindia\b|\bindian\b|\bpune\b/i.test(location)
+    || policy.geo.remoteAllowedScopes.some((scope) => locationLower.includes(scope.toLowerCase()));
+  const explicitForeignRequirement = text.match(/\b(?:must|should|need to)\s+be\s+(?:based|located)\s+in\s+(?:the\s+)?(austria|poland|germany|france|spain|italy|netherlands|australia|new zealand|united states|u\.?s\.?a?|canada|united kingdom|u\.?k\.?|european union|e\.?u\.?)\b/i);
+  if (explicitForeignRequirement && remoteEligibility?.status !== 'India Eligible') {
+    return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: explicitForeignRequirement[0] };
+  }
+  if ((EXPLICIT_FOREIGN_REMOTE_LOCATION_PATTERN.test(location) || FOREIGN_COUNTRY_CODE_REMOTE_LOCATION_PATTERN.test(location))
+    && !locationHasAllowedScope && remoteEligibility?.status !== 'India Eligible') {
+    return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: location };
+  }
   const denied = policy.geo.remoteDeniedScopes.filter((scope) => lower.includes(scope.toLowerCase()));
-  const hasIndia = /\bindia\b|\bindian\b/.test(lower) || /\b(?:india|indian|pune)\b/i.test(location);
+  const hasIndia = /\b(?:india|indian|pune)\b/i.test(location)
+    || /\b(?:work|working|hire|hiring|role|position|candidate|applicant|based|located|reside|residing|available|open|eligible|payroll|employment|employer of record|eor)\b[^.!?\n]{0,80}\b(?:india|indian)\b/i.test(text)
+    || /\b(?:india|indian)\b[^.!?\n]{0,80}\b(?:remote|work|working|hire|hiring|role|position|candidate|applicant|based|located|reside|residing|available|open|eligible|payroll|employment|employer of record|eor)\b/i.test(text);
   const hasAllowed = policy.geo.remoteAllowedScopes.some((scope) => {
-    if (/^(worldwide|world wide|global|anywhere)$/i.test(scope.trim())) return hasAllowedGlobalScope(text, policy);
+    if (/^(worldwide|world wide|global|anywhere)$/i.test(scope.trim())) {
+      if (locationLower.includes(scope.toLowerCase())) return true;
+      return hasAllowedGlobalScope(text, policy)
+        && /\b(?:remote(?:ly)?\s+(?:worldwide|globally)|(?:worldwide|globally)\s+remote|work(?:ing)?\s+(?:remotely\s+)?(?:from\s+)?anywhere|(?:hire|hiring|open|available|eligible)\s+(?:to\s+)?(?:candidates?\s+)?(?:worldwide|globally))\b/i.test(text);
+    }
     return lower.includes(scope.toLowerCase());
   }) || hasIndia;
   const foreignMatch = text.match(FOREIGN_REMOTE_REGION_PATTERN);

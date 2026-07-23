@@ -43,6 +43,32 @@ test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote', remoteEligibility: { status: 'eligible', evidence: 'India permitted' } }), config).geo.pass, true);
 });
 
+test('explicit foreign remote locations cannot borrow India or global wording from the description', () => {
+  for (const location of ['USA, TN, Chattanooga, Remote', 'Remote - Lesser Poland, Poland', 'United Arab Emirates Remote', 'TR Remote', 'Remote: North America - East']) {
+    const result = classifyCandidate(candidate({
+      location,
+      description: 'Our global company also has teams in India.',
+    }), config);
+    assert.equal(result.geo.pass, false, location);
+    assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED', location);
+  }
+  assert.equal(classifyCandidate(candidate({
+    location: 'Remote',
+    description: 'Backed by Tiger Global; serving customers around the world.',
+  }), config).geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
+});
+
+test('a global location cannot override an explicit foreign residency requirement', () => {
+  const result = classifyCandidate(candidate({
+    title: 'Applied AI Engineer (Austria)',
+    location: 'Global',
+    description: 'This role is remote, but candidates must be based in Austria.',
+  }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED');
+  assert.match(result.geo.evidence, /must be based in Austria/i);
+});
+
 test('missing work mode and location never pass the India eligibility gate', () => {
   const result = classifyCandidate(candidate({ location: null, workMode: null, description: 'Build reliable AI systems.' }), config);
   assert.equal(result.geo.pass, false);
@@ -78,6 +104,17 @@ test('adjacent engineering stays fallback and off-target roles stay rejected', (
   assert.equal(classifyCandidate(candidate({ title: 'QA Engineer' }), config).eligible, false);
 });
 
+test('generic maintenance junior engineers are off-target while software and language developers remain targeted', () => {
+  for (const title of ['Junior Engineer II, SMT & THT Maintenance', 'Maintenance Junior Engineer - M/F/D']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.eligible, false, title);
+    assert.equal(result.title.code, 'TITLE_OFF_TARGET', title);
+  }
+  for (const title of ['Junior Software Engineer', 'Associate Software Engineer', 'Java Developer']) {
+    assert.equal(classifyCandidate(candidate({ title }), config).title.pass, true, title);
+  }
+});
+
 test('experience separates strict, relaxed, and hard rejection', () => {
   const strict = classifyCandidate(candidate({ experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' } }), config);
   const relaxed = classifyCandidate(candidate({ experience: { minYears: 2, maxYears: 2, evidence: '2 years' } }), config);
@@ -87,6 +124,28 @@ test('experience separates strict, relaxed, and hard rejection', () => {
   assert.deepEqual(relaxed.relaxations, ['experience-up-to-2-years']);
   assert.equal(rejected.eligible, false);
   assert.equal(rejected.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+});
+
+test('activity-worded experience requirements cannot bypass the hard minimum gate', () => {
+  for (const description of [
+    'What You Bring: 5-8 years building backend systems in Java.',
+    'Requirements: 3+ years developing production software.',
+  ]) {
+    const result = classifyCandidate(candidate({ experience: {}, description }), config);
+    assert.equal(result.eligible, false, description);
+    assert.equal(result.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+  }
+  const relaxed = classifyCandidate(candidate({
+    experience: {},
+    description: 'What experiences will help: 2-5 years of backend development with Python.',
+  }), config);
+  assert.equal(relaxed.experience.minYears, 2);
+  assert.equal(relaxed.experience.code, 'EXPERIENCE_RELAXED_UP_TO_2');
+  const unrelatedNumber = classifyCandidate(candidate({
+    experience: {},
+    description: 'Requirements: support at least 720p video output. Freshers welcome.',
+  }), config);
+  assert.equal(unrelatedNumber.experience.code, 'EXPERIENCE_FRESHER_EVIDENCE');
 });
 
 test('unknown evidence stays visible while only confirmed expiry fails liveness', () => {

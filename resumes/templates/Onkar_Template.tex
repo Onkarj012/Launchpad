@@ -2,8 +2,10 @@
 % RESUME — Onkar Jadhav
 % CANONICAL LAYOUT TEMPLATE. Frozen preamble + frozen structure.
 % Tailor only inside %== TAILOR-START/END ==  slots: HEADLINE, SUMMARY,
-% COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS. Everything else,
-% including section order and section headings, is frozen.
+% COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, PUBLICATIONS, SKILLS. Everything
+% else, including section order and section headings, is frozen.
+% PUBLICATIONS is optional: fill only for research/ML-research JDs; otherwise
+% empty the slot so its \section header does not print.
 % RESUME_EVIDENCE_V1: each new tailored source requires same-directory
 % <stem>.matrix.md and <stem>.provenance.md sidecars. See resumes/evidence/README.md.
 %------------------------
@@ -176,6 +178,18 @@ AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI prod
 
 \resumeSubHeadingListEnd
 \vspace{-8.5mm}
+
+%-----------PUBLICATIONS (research JDs only)-----------------
+% OPTIONAL SECTION. Include ONLY for research / ML-research / applied-science JDs.
+% For every other JD, leave the slot below EMPTY so no \section header prints.
+%== TAILOR-START: PUBLICATIONS ==
+\section{\textbf{Publications}}
+\resumeSubHeadingListStart
+  \resumeItem{HybridSwingNet for Explainable Swing Trading Using Multi-Encoder Deep Learning and Confidence-Calibrated Signal Execution.}{\textit{Scientific Reports} (Nature Portfolio) --- co-author; accepted, in press, 2026.}
+  \resumeItem{Stock Recommendations Leveraging AI/ML for Informed Long-Term Investment Decisions.}{Sambare, Deore, Itkar, \textbf{Jadhav}, Joshi --- \textit{ICT4SD 2025} (Intl. Conf. on ICT for Sustainable Development), Scopus-indexed (Springer).}
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+%== TAILOR-END: PUBLICATIONS ==
 
 %-----------TECHNICAL SKILLS-----------------
 \section{\textbf{Technical Skills}}

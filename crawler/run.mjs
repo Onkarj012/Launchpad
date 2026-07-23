@@ -1,0 +1,457 @@
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+
+const SCHEMA_VERSION = 2;
+const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
+const STAGES = ['fetch', 'commit'];
+
+const SCHEMA = `
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS crawler_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS crawler_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+  source_id TEXT PRIMARY KEY,
+  lane TEXT NOT NULL,
+  trust_class TEXT NOT NULL DEFAULT 'unknown',
+  capabilities_json TEXT NOT NULL DEFAULT '{}',
+  rate_policy_json TEXT NOT NULL DEFAULT '{}',
+  cursor_json TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS crawl_runs (
+  run_id TEXT PRIMARY KEY,
+  schedule TEXT NOT NULL DEFAULT 'manual',
+  status TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT,
+  counts_json TEXT NOT NULL DEFAULT '{}',
+  telemetry_json TEXT NOT NULL DEFAULT '{}',
+  config_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS crawl_run_stages (
+  run_id TEXT NOT NULL REFERENCES crawl_runs(run_id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  error TEXT,
+  PRIMARY KEY (run_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS source_failures (
+  failure_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES crawl_runs(run_id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  stage TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  retry_class TEXT NOT NULL,
+  host TEXT,
+  status_code INTEGER,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS companies (
+  company_key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  domain TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS company_boards (
+  board_key TEXT PRIMARY KEY,
+  company_key TEXT NOT NULL REFERENCES companies(company_key),
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  provider TEXT,
+  board_url TEXT,
+  board_identity TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  UNIQUE(source_id, company_key, board_identity)
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  job_key TEXT PRIMARY KEY,
+  company_key TEXT REFERENCES companies(company_key),
+  provider TEXT,
+  provider_job_id TEXT,
+  canonical_url TEXT,
+  company TEXT,
+  title TEXT,
+  location TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  original_posted_at TEXT,
+  latest_updated_at TEXT,
+  inferred_repost_at TEXT,
+  closed_at TEXT,
+  latest_fingerprint TEXT
+);
+
+CREATE TABLE IF NOT EXISTS job_descriptions (
+  fingerprint TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS job_observations (
+  observation_key TEXT PRIMARY KEY,
+  job_key TEXT NOT NULL REFERENCES jobs(job_key),
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  run_id TEXT NOT NULL REFERENCES crawl_runs(run_id),
+  source_record_key TEXT,
+  canonical_url TEXT,
+  posted_at TEXT,
+  updated_at TEXT,
+  observed_at TEXT NOT NULL,
+  fingerprint TEXT,
+  classification TEXT NOT NULL DEFAULT 'lead',
+  raw_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_telemetry (
+  run_id TEXT NOT NULL REFERENCES crawl_runs(run_id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  fetched INTEGER NOT NULL DEFAULT 0,
+  changed INTEGER NOT NULL DEFAULT 0,
+  observations INTEGER NOT NULL DEFAULT 0,
+  duplicates INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  PRIMARY KEY (run_id, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_observations_run ON job_observations(run_id);
+CREATE INDEX IF NOT EXISTS idx_source_failures_run ON source_failures(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_provider_id ON jobs(provider, provider_job_id) WHERE provider_job_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url) WHERE canonical_url IS NOT NULL;
+`;
+
+function ensureColumn(db, table, name, definition) {
+  const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  if (!columns.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+}
+
+export function openCrawlerStore(path = ':memory:') {
+  const db = new DatabaseSync(path);
+  db.exec(SCHEMA);
+  ensureColumn(db, 'jobs', 'company_key', 'TEXT REFERENCES companies(company_key)');
+  ensureColumn(db, 'jobs', 'original_posted_at', 'TEXT');
+  ensureColumn(db, 'jobs', 'latest_updated_at', 'TEXT');
+  ensureColumn(db, 'jobs', 'inferred_repost_at', 'TEXT');
+  ensureColumn(db, 'jobs', 'closed_at', 'TEXT');
+  db.prepare(`INSERT INTO crawler_meta(key, value) VALUES ('schema_version', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
+  for (let version = 1; version <= SCHEMA_VERSION; version += 1) {
+    db.prepare('INSERT OR IGNORE INTO crawler_migrations(version, applied_at) VALUES (?, ?)').run(version, new Date().toISOString());
+  }
+  return db;
+}
+
+const json = (value, fallback) => {
+  if (value == null || value === '') return fallback;
+  try { return JSON.parse(value); } catch { return fallback; }
+};
+
+const text = (value) => value == null ? null : String(value);
+const nowFrom = (clock) => {
+  const value = typeof clock?.now === 'function' ? clock.now() : new Date();
+  return value instanceof Date ? value.toISOString() : String(value);
+};
+const hash = (value) => createHash('sha256').update(value).digest('hex');
+const normalized = (value) => String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+function clockSleep(clock, milliseconds) {
+  if (typeof clock?.sleep === 'function') return clock.sleep(milliseconds);
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function sourceHost(url) {
+  try { return new URL(url).host; } catch { return null; }
+}
+
+function runRow(db, runId) {
+  const row = db.prepare('SELECT * FROM crawl_runs WHERE run_id = ?').get(runId);
+  if (!row) return null;
+  return {
+    runId: row.run_id,
+    schedule: row.schedule,
+    status: row.status,
+    stage: row.stage,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    error: row.error,
+    counts: json(row.counts_json, {}),
+    telemetry: json(row.telemetry_json, {}),
+    config: json(row.config_json, {}),
+  };
+}
+
+function stagesFor(db, runId) {
+  return Object.fromEntries(db.prepare('SELECT * FROM crawl_run_stages WHERE run_id = ? ORDER BY rowid').all(runId).map((row) => [row.stage, {
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    error: row.error,
+  }]));
+}
+
+function telemetryFor(db, runId) {
+  return Object.fromEntries(db.prepare('SELECT * FROM source_telemetry WHERE run_id = ? ORDER BY source_id').all(runId).map((row) => [row.source_id, {
+    status: row.status,
+    attempts: row.attempts,
+    observations: row.observations,
+    changed: row.changed,
+    duplicates: row.duplicates,
+    ...(row.fetched == null ? {} : { fetched: row.fetched }),
+    ...(row.error ? { error: row.error } : {}),
+  }]));
+}
+
+function snapshot(db, runId) {
+  const run = runRow(db, runId);
+  return { run, stages: stagesFor(db, runId), telemetry: { sources: telemetryFor(db, runId) }, failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, message: row.message })) };
+}
+
+function beginStage(db, runId, stage, at) {
+  db.prepare(`INSERT INTO crawl_run_stages(run_id, stage, status, started_at) VALUES (?, ?, 'running', ?)
+    ON CONFLICT(run_id, stage) DO UPDATE SET status = CASE WHEN crawl_run_stages.status = 'committed' THEN 'committed' ELSE 'running' END,
+    started_at = COALESCE(crawl_run_stages.started_at, excluded.started_at)`).run(runId, stage, at);
+  db.prepare('UPDATE crawl_runs SET stage = ? WHERE run_id = ?').run(stage, runId);
+}
+
+function finishStage(db, runId, stage, status, at, error = null) {
+  db.prepare('UPDATE crawl_run_stages SET status = ?, finished_at = ?, error = ? WHERE run_id = ? AND stage = ?').run(status, at, error, runId, stage);
+}
+
+export function startCrawlRun(store, { runId, schedule = 'manual', config = {}, clock } = {}) {
+  const at = nowFrom(clock);
+  const existing = runRow(store, runId);
+  if (existing) return { run: existing, idempotent: TERMINAL_RUN_STATES.has(existing.status) };
+  store.exec('BEGIN');
+  try {
+    store.prepare(`INSERT INTO crawl_runs(run_id, schedule, status, stage, started_at, counts_json, telemetry_json, config_json)
+      VALUES (?, ?, 'running', 'fetch', ?, '{}', '{}', ?)`).run(runId, schedule, at, JSON.stringify(config));
+    for (const stage of STAGES) store.prepare('INSERT INTO crawl_run_stages(run_id, stage, status) VALUES (?, ?, ?)' ).run(runId, stage, stage === 'fetch' ? 'running' : 'pending');
+    store.exec('COMMIT');
+  } catch (error) {
+    store.exec('ROLLBACK');
+    throw error;
+  }
+  return { run: runRow(store, runId), idempotent: false };
+}
+
+export function transitionStage(store, runId, stage, status, { clock, error = null } = {}) {
+  const at = nowFrom(clock);
+  if (status === 'running') beginStage(store, runId, stage, at);
+  else finishStage(store, runId, stage, status, at, error);
+  return stagesFor(store, runId)[stage];
+}
+
+export function finishCrawlRun(store, runId, { status = 'completed', counts = {}, telemetry = {}, clock, error = null } = {}) {
+  const at = nowFrom(clock);
+  store.prepare('UPDATE crawl_runs SET status = ?, stage = ?, finished_at = ?, error = ?, counts_json = ?, telemetry_json = ? WHERE run_id = ?').run(status, 'complete', at, error, JSON.stringify(counts), JSON.stringify(telemetry), runId);
+  return runRow(store, runId);
+}
+
+export function failCrawlRun(store, runId, error, { clock } = {}) {
+  const message = error instanceof Error ? error.message : String(error);
+  const current = runRow(store, runId);
+  if (current?.stage && current.stage !== 'complete') finishStage(store, runId, current.stage, 'failed', nowFrom(clock), message);
+  return finishCrawlRun(store, runId, { status: 'failed', counts: {}, clock, error: message });
+}
+
+function sourceRecordKey(observation) {
+  return text(observation.sourceRecordKey ?? observation.providerJobId ?? observation.canonicalUrl) ?? hash(JSON.stringify(observation));
+}
+
+function fingerprint(observation) {
+  return text(observation.fingerprint) ?? hash(normalized(observation.description));
+}
+
+function findJob(db, source, observation) {
+  const provider = observation.provider ?? source.provider ?? source.id;
+  const providerJobId = observation.providerJobId ?? observation.jobId;
+  if (providerJobId) {
+    const row = db.prepare('SELECT job_key FROM jobs WHERE provider = ? AND provider_job_id = ?').get(provider, String(providerJobId));
+    if (row) return row.job_key;
+  }
+  if (observation.canonicalUrl) {
+    const row = db.prepare('SELECT job_key FROM jobs WHERE canonical_url = ?').get(observation.canonicalUrl);
+    if (row) return row.job_key;
+  }
+  const row = db.prepare('SELECT job_key FROM jobs WHERE company = ? AND title = ? AND location = ?').get(normalized(observation.company), normalized(observation.title), normalized(observation.location));
+  return row?.job_key ?? null;
+}
+
+function persistObservation(store, source, runId, observation, observedAt) {
+  const sourceKey = sourceRecordKey(observation);
+  const observationKey = hash(`${runId}|${source.id}|${sourceKey}`);
+  const existingObservation = store.prepare('SELECT observation_key FROM job_observations WHERE observation_key = ?').get(observationKey);
+  if (existingObservation) return { duplicate: true, jobKey: null };
+  const providerJobId = observation.providerJobId ?? observation.jobId;
+  const provider = observation.provider ?? source.provider ?? source.id;
+  const jobKey = findJob(store, source, observation) ?? hash(`${provider}|${providerJobId ?? ''}|${observation.canonicalUrl ?? ''}|${normalized(observation.company)}|${normalized(observation.title)}|${normalized(observation.location)}`);
+  const fp = fingerprint(observation);
+  const companyName = normalized(observation.company) || 'unknown company';
+  const companyDomain = text(observation.companyDomain ?? observation.company_domain);
+  const companyKey = hash(`${companyName}|${normalized(companyDomain)}`);
+  store.prepare(`INSERT INTO companies(company_key, name, domain, first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(company_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
+      domain = COALESCE(companies.domain, excluded.domain)`).run(companyKey, companyName, companyDomain, observedAt, observedAt);
+  const boardIdentity = text(source.boardId ?? source.board ?? observation.boardId ?? observation.board_id ?? source.id);
+  const boardUrl = text(source.boardUrl ?? source.url ?? observation.boardUrl ?? observation.board_url);
+  const boardKey = hash(`${source.id}|${companyKey}|${boardIdentity ?? ''}`);
+  store.prepare(`INSERT INTO company_boards(board_key, company_key, source_id, provider, board_url, board_identity, first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(board_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
+      board_url = COALESCE(company_boards.board_url, excluded.board_url)`).run(boardKey, companyKey, source.id, provider, boardUrl, boardIdentity, observedAt, observedAt);
+  const closedAt = ['closed', 'inactive', 'expired', 'removed', 'filled'].includes(normalized(observation.status ?? observation.liveness?.status)) ? observedAt : null;
+  store.prepare(`INSERT INTO jobs(job_key, company_key, provider, provider_job_id, canonical_url, company, title, location, first_seen_at, last_seen_at, original_posted_at, latest_updated_at, inferred_repost_at, closed_at, latest_fingerprint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(job_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
+      latest_updated_at = COALESCE(excluded.latest_updated_at, jobs.latest_updated_at),
+      inferred_repost_at = COALESCE(excluded.inferred_repost_at, jobs.inferred_repost_at),
+      closed_at = COALESCE(excluded.closed_at, jobs.closed_at),
+      latest_fingerprint = excluded.latest_fingerprint`).run(jobKey, companyKey, provider, text(providerJobId), text(observation.canonicalUrl), companyName, normalized(observation.title), normalized(observation.location), observedAt, observedAt, text(observation.postedAt), text(observation.updatedAt), text(observation.inferredRepostAt), closedAt, fp);
+  if (observation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(observation.description), observedAt);
+  store.prepare(`INSERT INTO job_observations(observation_key, job_key, source_id, run_id, source_record_key, canonical_url, posted_at, updated_at, observed_at, fingerprint, classification, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp, observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation));
+  return { duplicate: false, jobKey };
+}
+
+async function fetchSource(store, source, runId, priorState, config, clock) {
+  const retry = { maxAttempts: 1, baseDelayMs: 250, ...(config.retry ?? {}) };
+  const sourceRow = store.prepare('SELECT * FROM sources WHERE source_id = ?').get(source.id);
+  const cursor = json(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
+  const telemetry = { status: 'running', attempts: 0, fetched: 0, changed: 0, observations: 0 };
+  let lastError;
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
+    telemetry.attempts = attempt;
+    try {
+      const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock });
+      const observations = Array.isArray(result?.observations) ? result.observations : [];
+      let duplicates = 0;
+      for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
+      telemetry.status = 'succeeded';
+      telemetry.observations = observations.length;
+      telemetry.duplicates = duplicates;
+      telemetry.fetched = Number(result?.manifest?.fetched ?? observations.length);
+      telemetry.changed = Number(result?.manifest?.changed ?? observations.length - duplicates);
+      store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(result?.cursor == null ? sourceRow?.cursor_json : JSON.stringify(result.cursor), nowFrom(clock), source.id);
+      return { telemetry, duplicates };
+    } catch (error) {
+      lastError = error;
+      if (!error?.retryable || attempt >= retry.maxAttempts) break;
+      await clockSleep(clock, retry.baseDelayMs * (2 ** (attempt - 1)));
+    }
+  }
+  const retryClass = lastError?.retryable ? 'retryable_exhausted' : 'terminal';
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+    VALUES (?, ?, 'fetch', ?, ?, ?, ?, ?, ?)`).run(runId, source.id, telemetry.attempts, retryClass, sourceHost(source.url), lastError?.statusCode ?? null, message, nowFrom(clock));
+  telemetry.status = 'failed';
+  telemetry.error = message;
+  return { telemetry, duplicates: 0 };
+}
+
+export async function crawlRun({ store, sourcePlans = [], priorState = {}, config = {}, clock = {} , runId, schedule = 'manual' } = {}) {
+  if (!store) throw new TypeError('crawlRun requires an open crawler store');
+  if (!runId) throw new TypeError('crawlRun requires runId for durable idempotency');
+  const started = startCrawlRun(store, { runId, schedule, config, clock });
+  if (started.idempotent) return { ...snapshot(store, runId), idempotent: true };
+  try {
+    const at = nowFrom(clock);
+    for (const source of sourcePlans) {
+      if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
+      store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), priorState.sources?.[source.id]?.cursor == null ? null : JSON.stringify(priorState.sources[source.id].cursor), at);
+      if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
+        const result = await fetchSource(store, source, runId, priorState, config, clock);
+        const t = result.telemetry;
+        store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, error)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, t.error ?? null);
+      }
+    }
+    const telemetry = telemetryFor(store, runId);
+    const counts = Object.values(telemetry).reduce((total, source) => ({
+      fetched: total.fetched + source.fetched,
+      changed: total.changed + source.changed,
+      observations: total.observations + source.observations,
+      duplicates: total.duplicates + source.duplicates,
+      failed: total.failed + (source.status === 'failed' ? 1 : 0),
+    }), { fetched: 0, changed: 0, observations: 0, duplicates: 0, failed: 0 });
+    transitionStage(store, runId, 'fetch', 'committed', { clock });
+    transitionStage(store, runId, 'commit', 'running', { clock });
+    finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
+    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry }, clock });
+    return { ...snapshot(store, runId), idempotent: false };
+  } catch (error) {
+    failCrawlRun(store, runId, error, { clock });
+    throw error;
+  }
+}
+
+export function readCrawlerState(store) {
+  return {
+    schemaVersion: Number(store.prepare("SELECT value FROM crawler_meta WHERE key = 'schema_version'").get()?.value ?? 0),
+    sources: store.prepare('SELECT * FROM sources ORDER BY source_id').all().map((row) => ({ sourceId: row.source_id, lane: row.lane, trustClass: row.trust_class, cursor: json(row.cursor_json, null) })),
+    companies: store.prepare('SELECT * FROM companies ORDER BY company_key').all().map((row) => ({ companyKey: row.company_key, name: row.name, domain: row.domain })),
+    companyBoards: store.prepare('SELECT * FROM company_boards ORDER BY board_key').all().map((row) => ({ boardKey: row.board_key, companyKey: row.company_key, sourceId: row.source_id, provider: row.provider, boardUrl: row.board_url, boardIdentity: row.board_identity })),
+    jobs: store.prepare('SELECT * FROM jobs ORDER BY job_key').all().map((row) => ({ jobKey: row.job_key, provider: row.provider, providerJobId: row.provider_job_id, canonicalUrl: row.canonical_url })),
+    observations: store.prepare('SELECT * FROM job_observations ORDER BY observation_key').all().map((row) => ({ observationKey: row.observation_key, jobKey: row.job_key, sourceId: row.source_id, runId: row.run_id, classification: row.classification })),
+    failures: store.prepare('SELECT * FROM source_failures ORDER BY failure_id').all().map((row) => ({ sourceId: row.source_id, runId: row.run_id, message: row.message })),
+  };
+}
+
+/** Read the durable detail needed to reconstruct a serialization-safe workflow result. */
+export function readCrawlerRunData(store, runId) {
+  return {
+    jobs: store.prepare('SELECT * FROM jobs ORDER BY job_key').all().map((row) => ({
+      jobKey: row.job_key,
+      provider: row.provider,
+      providerJobId: row.provider_job_id,
+      canonicalUrl: row.canonical_url,
+      company: row.company,
+      title: row.title,
+      location: row.location,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAt: row.last_seen_at,
+      fingerprint: row.latest_fingerprint,
+    })),
+    observations: store.prepare(`SELECT * FROM job_observations
+      WHERE run_id = ? ORDER BY observation_key`).all(runId).map((row) => ({
+      observationKey: row.observation_key,
+      jobKey: row.job_key,
+      sourceId: row.source_id,
+      runId: row.run_id,
+      sourceRecordKey: row.source_record_key,
+      canonicalUrl: row.canonical_url,
+      postedAt: row.posted_at,
+      updatedAt: row.updated_at,
+      observedAt: row.observed_at,
+      fingerprint: row.fingerprint,
+      classification: row.classification,
+      raw: json(row.raw_json, {}),
+    })),
+  };
+}

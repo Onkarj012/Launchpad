@@ -1,12 +1,19 @@
 {
   "$schema": "https://apify.com (no local schema — see references/sourcing.md)",
-  "note": "Optional structured-board pull layer. Requires APIFY_TOKEN env var. Run: node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json, then feed RAW.json through the existing job-pull/public-search-prepare.mjs --in RAW --out PREPARED step. LinkedIn/Naukri/Wellfound/YC field names checked against Apify Store pages 2026-07-15; Foundit/Internshala/Hirist input+output field names verified against live actor schemas via Apify MCP on 2026-07-18; Cutshort/Himalayas/Remotive/We Work Remotely input+output field names verified against live actor schemas via Apify MCP on 2026-07-20.",
+  "note": "Manual rescue only. Profiles are disabled by default and never selected without --profile. No profile is part of Normal, Startup, or Remote daily discovery. Run: node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json --config config/apify.json.",
+  "rescue": {
+    "defaultEnabled": false,
+    "maxProfilesPerRun": 3,
+    "runTimeoutSeconds": 600
+  },
   "actors": [
     {
+      "profile": "linkedin-jobs",
       "id": "cheap_scraper~linkedin-job-scraper",
       "label": "linkedin",
-      "enabled": true,
-      "sourceCategory": "broad-remote",
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "input": {
         "keyword": ["software engineer", "AI engineer", "machine learning engineer", "backend developer", "new grad software engineer"],
         "locations": ["Pune, Maharashtra, India", "India"],
@@ -19,6 +26,7 @@
       },
       "fieldMap": {
         "url": "jobUrl",
+        "discoveryUrl": "jobUrl",
         "company": "companyName",
         "title": "jobTitle",
         "postedAt": "publishedAt",
@@ -27,9 +35,10 @@
       }
     },
     {
+      "profile": "naukri-fresher",
       "id": "blackfalcondata~naukri-jobs-feed",
-      "label": "naukri-0-1",
-      "enabled": true,
+      "label": "naukri",
+      "enabled": false,
       "sourceKind": "niche-public",
       "sourceCategory": "india-niche",
       "input": {
@@ -39,31 +48,7 @@
           "machine learning engineer Pune",
           "backend developer python Pune",
           "graduate engineer trainee Pune",
-          "associate software engineer Pune"
-        ],
-        "experience": "0-1",
-        "datePosted": "7d",
-        "fetchDetails": true,
-        "maxResults": 100,
-        "descriptionFormat": "text"
-      },
-      "fieldMap": {
-        "url": "portalUrl",
-        "company": "companyName",
-        "title": "title",
-        "postedAt": "createdDate",
-        "location": "location",
-        "description": "description"
-      }
-    },
-    {
-      "id": "blackfalcondata~naukri-jobs-feed",
-      "label": "naukri-0-2",
-      "enabled": true,
-      "sourceKind": "niche-public",
-      "sourceCategory": "india-niche",
-      "input": {
-        "searchQueries": [
+          "associate software engineer Pune",
           "junior software developer Pune",
           "GenAI engineer Pune",
           "python FastAPI developer Pune",
@@ -78,6 +63,7 @@
       },
       "fieldMap": {
         "url": "portalUrl",
+        "discoveryUrl": "portalUrl",
         "company": "companyName",
         "title": "title",
         "postedAt": "createdDate",
@@ -86,19 +72,14 @@
       }
     },
     {
+      "profile": "foundit-fresher",
       "id": "scrapesage~foundit-scraper",
       "label": "foundit",
-      "enabled": true,
+      "enabled": false,
       "sourceKind": "niche-public",
       "sourceCategory": "india-niche",
       "input": {
-        "searchQueries": [
-          "software engineer fresher",
-          "AI engineer",
-          "machine learning engineer fresher",
-          "python developer fresher",
-          "backend developer fresher"
-        ],
+        "searchQueries": ["software engineer fresher", "AI engineer", "machine learning engineer fresher", "python developer fresher", "backend developer fresher"],
         "region": "india",
         "locations": ["Pune"],
         "sortBy": "date",
@@ -108,6 +89,7 @@
       },
       "fieldMap": {
         "url": "jobUrl",
+        "discoveryUrl": "jobUrl",
         "company": "company",
         "title": "title",
         "postedAt": "postedAt",
@@ -116,31 +98,10 @@
       }
     },
     {
-      "id": "automation-lab~internshala-scraper",
-      "label": "internshala",
-      "enabled": false,
-      "sourceKind": "niche-public",
-      "sourceCategory": "india-niche",
-      "_note": "Paid-internship lane only. Actor takes a single searchQuery string. stipend/applyBy live in fullDescription when fetchDetails is on.",
-      "input": {
-        "searchQuery": "python",
-        "searchMode": "internships",
-        "fetchDetails": true,
-        "maxResults": 50
-      },
-      "fieldMap": {
-        "url": "url",
-        "company": "company",
-        "title": "title",
-        "postedAt": "postedAt",
-        "location": "location",
-        "description": "fullDescription"
-      }
-    },
-    {
+      "profile": "hirist-fresher",
       "id": "logiover~hirist-tech-scraper",
       "label": "hirist",
-      "enabled": true,
+      "enabled": false,
       "sourceKind": "niche-public",
       "sourceCategory": "india-niche",
       "_note": "scrapeDetails must stay true — with it off the actor emits description: null and every record fails downstream gates.",
@@ -154,6 +115,7 @@
       },
       "fieldMap": {
         "url": "url",
+        "discoveryUrl": "url",
         "company": "company",
         "title": "title",
         "postedAt": "postedAt",
@@ -162,12 +124,13 @@
       }
     },
     {
+      "profile": "wellfound-india",
       "id": "blackfalcondata~wellfound-scraper",
       "label": "wellfound",
-      "enabled": true,
+      "enabled": false,
       "sourceKind": "niche-public",
       "sourceCategory": "india-niche",
-      "_note": "Sprint cadence: run ~2x/week, not daily — pass --actor to skip on off days.",
+      "_note": "Manual rescue profile; never part of daily discovery.",
       "input": {
         "roles": ["software-engineer", "data-scientist"],
         "location": ["india"],
@@ -177,6 +140,7 @@
       },
       "fieldMap": {
         "url": "portalUrl",
+        "discoveryUrl": "portalUrl",
         "company": "companyName",
         "title": "title",
         "postedAt": "postedAt",
@@ -185,110 +149,24 @@
       }
     },
     {
-      "id": "parsebird~yc-jobs-scraper",
-      "label": "yc",
-      "enabled": true,
-      "sourceKind": "niche-public",
-      "sourceCategory": "vc-portfolio",
-      "input": {
-        "searchQuery": "",
-        "roleFilter": "software-engineer",
-        "locationFilter": "India, Remote, Pune",
-        "maxResults": 100,
-        "_TODO": "YC actor's public Store listing does not document a posted-date output field (no 'postedAt'/'createdAt' confirmed) — verify against a live run. fieldMap.postedAt points at 'postedAt' speculatively; if the actor never emits it, records stay undated (correct per the no-inferred-freshness rule — never map scrape time here). Sprint policy: undated YC records land in the VerifyQueue → treat as founder-outreach leads, not dated inventory."
-      },
-      "fieldMap": {
-        "url": "url",
-        "company": "companyName",
-        "title": "title",
-        "postedAt": "postedAt",
-        "location": "location",
-        "description": "description"
-      }
-    },
-    {
+      "profile": "cutshort-india",
       "id": "thirdwatch~cutshort-jobs-scraper",
       "label": "cutshort",
-      "enabled": true,
+      "enabled": false,
       "sourceKind": "niche-public",
       "sourceCategory": "india-niche",
-      "_note": "No posting-date output field confirmed on this actor (same undated situation as the yc entry above) — records land in VerifyQueue as undated, never mapped from scrapedAt.",
+      "_note": "No posting-date output field is confirmed; undated records remain verification-only downstream.",
       "input": {
         "skills": ["python", "machine-learning", "backend", "full-stack", "react", "node-js"],
         "maxResults": 60
       },
       "fieldMap": {
         "url": "apply_url",
+        "discoveryUrl": "apply_url",
         "company": "company_name",
         "title": "title",
         "location": "location",
         "description": "description"
-      }
-    },
-    {
-      "id": "inlifeprojects~himalayas-jobs-scraper",
-      "label": "himalayas",
-      "enabled": true,
-      "sourceCategory": "broad-remote",
-      "input": {
-        "keywords": ["software engineer", "AI engineer", "machine learning engineer", "backend developer", "full stack developer"],
-        "seniority": ["Entry-level"],
-        "employmentType": "Full Time",
-        "worldwide": true,
-        "sortBy": "recent",
-        "maxResultsPerKeyword": 50,
-        "filterNonTech": true
-      },
-      "fieldMap": {
-        "url": "apply_url",
-        "company": "company_name",
-        "title": "title",
-        "postedAt": "posted_at",
-        "location": "location",
-        "description": "description"
-      }
-    },
-    {
-      "id": "canadesk~remotive-jobs",
-      "label": "remotive",
-      "enabled": true,
-      "sourceCategory": "broad-remote",
-      "_note": "discovered_on is this actor's own crawl-discovery timestamp, not a confirmed posting date — left unmapped so it never fakes freshness; records land in VerifyQueue as undated.",
-      "input": {
-        "query": "",
-        "locations": ["Worldwide"],
-        "jobTypes": ["full-time"],
-        "categories": ["Software Development", "Artificial Intelligence", "Devops", "Engineering"],
-        "seniority": ["entry-level", "junior", "internship"],
-        "maxPages": 5,
-        "fetchDetails": true
-      },
-      "fieldMap": {
-        "url": "apply_url",
-        "company": "company_name",
-        "title": "title",
-        "location": "locations",
-        "description": "description"
-      }
-    },
-    {
-      "id": "crawlerbros~weworkremotely-job-scraper",
-      "label": "we-work-remotely",
-      "enabled": true,
-      "sourceCategory": "broad-remote",
-      "input": {
-        "categoryUrls": ["https://weworkremotely.com/categories/remote-programming-jobs"],
-        "maxItems": 80,
-        "includeDescription": true,
-        "cleanHtml": true
-      },
-      "fieldMap": {
-        "url": "applyUrl",
-        "company": "company",
-        "title": "title",
-        "postedAt": "postedAt",
-        "location": "location",
-        "description": "descriptionText"
       }
     }
   ]

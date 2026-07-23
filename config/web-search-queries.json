@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "mode": "normal",
+  "freshnessDays": 7,
+  "queries": [
+    "\"AI Engineer\" (fresher OR \"0-1 years\" OR \"0-2 years\") (Pune OR \"Remote India\")",
+    "\"Generative AI Engineer\" (junior OR fresher OR graduate) India",
+    "\"LLM Engineer\" (junior OR fresher OR graduate) India remote",
+    "\"Agentic AI Engineer\" (junior OR fresher OR graduate) India",
+    "\"Machine Learning Engineer\" (fresher OR \"0-2 years\") (Pune OR India remote)",
+    "\"Applied ML Engineer\" (junior OR graduate) India",
+    "\"Backend Engineer\" Python (fresher OR \"0-2 years\") (Pune OR India remote)",
+    "\"FastAPI Developer\" (junior OR fresher) (Pune OR India remote)",
+    "\"Django Developer\" (junior OR fresher) Pune",
+    "\"Associate Software Engineer\" Pune",
+    "\"Graduate Software Engineer\" (Pune OR India remote)",
+    "\"Software Engineer I\" Pune",
+    "\"Junior Software Engineer\" (Pune OR India remote)",
+    "\"SDE 1\" Pune software",
+    "\"Member of Technical Staff\" (Pune OR India) software entry level",
+    "site:jobs.lever.co India (\"software engineer\" OR \"AI engineer\" OR \"backend engineer\")",
+    "site:job-boards.greenhouse.io India (\"software engineer\" OR \"machine learning engineer\")",
+    "site:jobs.ashbyhq.com India (\"software engineer\" OR \"AI engineer\")",
+    "site:myworkdayjobs.com Pune (\"software engineer\" OR \"AI engineer\")",
+    "site:careers.* Pune (\"fresher\" OR \"graduate\") (software OR AI OR backend)"
+  ]
+}

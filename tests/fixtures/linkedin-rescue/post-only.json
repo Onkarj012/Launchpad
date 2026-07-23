@@ -1,0 +1,19 @@
+{
+  "query": "hiring \"New Grad Software Engineer\"",
+  "postUrl": "https://www.linkedin.com/posts/brightlabs-hiring-456",
+  "author": {
+    "name": "Arjun Mehta",
+    "profileUrl": "https://www.linkedin.com/in/arjun-mehta",
+    "relationship": "Founder at BrightLabs"
+  },
+  "timestampEvidence": "5h",
+  "postedAt": "2026-07-23T01:30:00.000Z",
+  "observedAt": "2026-07-23T06:30:00.000Z",
+  "rawHiringContext": "We are hiring a Software Engineer in Pune for a new grad-friendly team. Interested candidates can share a profile in the comments.",
+  "company": "BrightLabs",
+  "title": "Software Engineer",
+  "location": "Pune, India",
+  "employment": { "type": "full-time", "evidence": "team role" },
+  "experience": { "minYears": 0, "maxYears": 1, "evidence": "new grad-friendly" },
+  "scoring": { "matchScore": 78, "rationale": "New-grad software role in Pune.", "projectConnection": true }
+}

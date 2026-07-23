@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../../job-pull/config.mjs';
@@ -12,6 +12,7 @@ import {
   recordSurfaced,
   suppressionFor,
 } from '../../job-pull/opportunity-ledger.mjs';
+import { collectHistory, surfacedCandidates } from '../../job-pull/seed-opportunity-history.mjs';
 
 const NOW = '2026-07-18T12:00:00.000Z';
 
@@ -62,6 +63,20 @@ test('recordSurfaced upserts by dedup key and bumps the last time only', () => {
   assert.equal(rows[0].first_surfaced_at, NOW);
   assert.equal(rows[0].last_surfaced_at, '2026-07-19T12:00:00.000Z');
   assert.equal(rows[0].times_surfaced, '2');
+});
+
+test('historical run collection extracts only surfaced selections and deduplicates them', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'job-pull-history-'));
+  const item = candidate();
+  writeFileSync(path.join(directory, 'run.json'), JSON.stringify({
+    shortlist: [item, item],
+    verificationQueue: [candidate('https://example.test/verify', { company: 'Verify' })],
+  }));
+  assert.equal(surfacedCandidates({ shortlist: [item, item] }).length, 1);
+  const result = collectHistory([directory]);
+  assert.equal(result.parsedFiles, 1);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].canonicalUrl, item.canonicalUrl);
 });
 
 test('actioned and rejected rows are suppressed forever', () => {

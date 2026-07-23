@@ -1,0 +1,127 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { runNormalMode } from '../../job-pull/normal-mode.mjs';
+import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
+import { selectNormalApplications } from '../../job-pull/normal-selection.mjs';
+import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
+import { loadConfig } from '../../job-pull/config.mjs';
+
+const NOW = '2026-07-23T06:30:00.000Z';
+const config = loadConfig();
+
+function raw(index, overrides = {}) {
+  return {
+    url: `https://portal.example.test/job/${index}`, company: `Company ${index}`, title: 'AI Engineer', location: 'Pune, India',
+    postedAt: NOW, employment: { type: 'full-time', evidence: 'full-time' }, experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' },
+    liveness: { status: 'Active', checkedAt: NOW, evidence: 'employer page checked' }, matchScore: 80 - index,
+    ...overrides,
+  };
+}
+
+function sourceFunction(lane, records) { return () => ({ records: records.map((record) => ({ ...record, source: lane.id, sourceCategory: lane.category, provider: lane.provider })) }); }
+
+function allFunctions(recordsByLane = {}) {
+  return Object.fromEntries(NORMAL_SOURCE_LANES.map((lane) => [lane.id, sourceFunction(lane, recordsByLane[lane.id] || [])]));
+}
+
+test('Normal attempts every lane independently, records optional/unavailable/failure, and never performs live access', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('live access must not occur'); };
+  try {
+    const result = await runNormalMode({
+      clock: () => NOW, runId: 'telemetry-run',
+      sourceFunctions: {
+        'tracked-ats': sourceFunction(NORMAL_SOURCE_LANES[0], [raw(1, { url: 'https://jobs.example.test/1', sourceKind: 'ats-direct' })]),
+        'portal-naukri': () => { throw new Error('naukri fixture failed'); },
+      },
+    });
+    assert.deepEqual(result.sourceManifests.map((manifest) => manifest.sourceId), NORMAL_SOURCE_LANES.map((lane) => lane.id));
+    assert.equal(result.sourceManifests.find((manifest) => manifest.sourceId === 'portal-naukri').status, 'failed');
+    assert.equal(result.sourceManifests.find((manifest) => manifest.sourceId === 'indeed').status, 'unavailable');
+    assert.equal(result.outcome.status, 'degraded');
+    assert.equal(result.sourceManifests.length, 12);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('normalizes and preserves discovery/original evidence, while the readiness gate rejects unresolved portal leads', async () => {
+  const result = await runNormalMode({
+    clock: () => NOW, sourceFunctions: allFunctions({
+      'portal-naukri': [raw(1, { discoveryUrl: 'https://naukri.example/job/1', originalApplicationUrl: 'https://acme.example/careers/1', originalApplicationEvidence: 'Acme ATS resolved from employer careers page', applicationResolution: { status: 'Resolved Original', evidence: 'Acme ATS resolved from employer careers page' }, evidence: { feesBonds: null, requirements: 'Python, FastAPI' } })],
+      'portal-foundit': [raw(2, { discoveryUrl: 'https://foundit.example/job/2' })],
+    }), notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.shortlist.length, 1);
+  assert.equal(result.shortlist[0].discoveryUrl, 'https://naukri.example/job/1');
+  assert.equal(result.shortlist[0].originalApplicationEvidence, 'Acme ATS resolved from employer careers page');
+  assert.equal(result.verificationQueue.length, 1);
+  assert.equal(result.verificationQueue[0].company, 'Company 2');
+  assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
+});
+
+test('selection follows 24h, 72h, 3-7d, relaxed-fit, and relaxed-backfill waterfall without family quotas', () => {
+  const posted = (hours) => new Date(Date.parse(NOW) - hours * 3600000).toISOString();
+  const entries = [
+    raw(1, { postedAt: posted(120), matchScore: 99, title: 'AI Engineer' }),
+    raw(2, { postedAt: posted(12), matchScore: 60, title: 'AI Engineer' }),
+    raw(3, { postedAt: posted(48), matchScore: 70, title: 'AI Engineer' }),
+    raw(4, { postedAt: posted(12), matchScore: 95, title: 'AI Engineer', experience: { minYears: 2, maxYears: 2, evidence: '2 years' } }),
+    raw(5, { postedAt: posted(12), matchScore: 90, title: 'Data Engineer' }),
+  ].map((candidate) => normalizeCandidate(candidate, { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true }));
+  const enriched = entries.map((candidate) => ({ candidate, eligibility: { eligible: true, strict: candidate.title === 'AI Engineer' && candidate.experience.minYears !== 2, relaxed: true, experience: { relaxed: candidate.experience.minYears === 2 }, title: { relaxed: candidate.title === 'Data Engineer' }, relaxations: [] }, freshness: { eligible: true, ageHours: (Date.parse(NOW) - Date.parse(candidate.postedAt)) / 3600000, window: 'Active' } }));
+  const result = selectNormalApplications(enriched, { maximumPerCompany: 10 });
+  assert.deepEqual(result.selected.map((candidate) => candidate.canonicalUrl), [entries[1], entries[2], entries[0], entries[3], entries[4]].map((candidate) => candidate.canonicalUrl));
+  assert.equal(result.selected[0].waterfallBand, 'strict-0-24h');
+  assert.equal(result.selected[1].waterfallBand, 'strict-24-72h');
+  assert.equal(result.familyCounts.unknown, 5);
+});
+
+test('10/12/20 volume contract has truthful bounds and no hard role-family quota', () => {
+  const records = Object.fromEntries(NORMAL_SOURCE_LANES.slice(0, 1).map((lane) => [lane.id, Array.from({ length: 20 }, (_, i) => raw(i + 1))]));
+  return runNormalMode({ clock: () => NOW, sourceFunctions: allFunctions(records), notionGateway: { planWrites: ({ operations }) => ({ operations }) } }).then((result) => {
+    assert.equal(result.shortlist.length, 20);
+    assert.equal(result.shortfall.missing, 0);
+    assert.equal(result.counts.minimum, 10);
+    assert.equal(result.counts.preferred, 12);
+    assert.equal(result.counts.maximum, 20);
+    assert.equal(Object.keys(result.counts.familyCounts).length, 1);
+  });
+});
+
+test('shortfall is exact, includes failed and empty lanes, and suggests but never invokes LinkedIn rescue at five short', async () => {
+  const result = await runNormalMode({
+    clock: () => NOW, sourceFunctions: {
+      'tracked-ats': sourceFunction(NORMAL_SOURCE_LANES[0], [raw(1)]),
+      'portal-naukri': sourceFunction(NORMAL_SOURCE_LANES[2], []),
+      'portal-foundit': () => { throw new Error('broken fixture'); },
+    }, notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.shortlist.length, 1);
+  assert.equal(result.shortfall.missing, 9);
+  assert.ok(result.shortfall.failedLanes.includes('portal-foundit'));
+  assert.ok(result.shortfall.emptyLanes.includes('portal-naukri'));
+  assert.equal(result.shortfall.linkedinRescueSuggestion.suggested, true);
+  assert.equal(result.shortfall.linkedinRescueSuggestion.invoked, false);
+});
+
+test('fake gateway proves reserve-write-verify-commit, partial abort, and idempotency', async () => {
+  const operations = [1, 2].map((index) => ({ operation: 'create', resource: 'application', dedupKey: `key-${index}`, payload: { 'Dedup Key': `key-${index}` } }));
+  const gateway = createFakeTransactionalGateway({ failOn: 'key-2' });
+  const planned = gateway.planWrites({ operations });
+  const first = await gateway.executeWrites({ operations: planned.operations });
+  assert.equal(first.status, 'partial');
+  assert.deepEqual(gateway.events.map((event) => event.stage), ['reserve', 'write', 'verify', 'write', 'abort', 'commit']);
+  assert.deepEqual([...gateway.committed.keys()], ['key-1']);
+  const second = await gateway.executeWrites({ operations: [operations[0]] });
+  assert.equal(second.status, 'noop');
+  assert.deepEqual(gateway.events.map((event) => event.stage), ['reserve', 'write', 'verify', 'write', 'abort', 'commit', 'reserve']);
+});
+
+test('fatal core failure occurs before planning or transactional execution', async () => {
+  const gateway = createFakeTransactionalGateway();
+  const result = await runNormalMode({ clock: () => NOW, config: { schemaVersion: 'bad' }, notionGateway: gateway, sourceFunctions: {} });
+  assert.equal(result.outcome.fatal, true);
+  assert.equal(result.plannedNotionOperations.length, 0);
+  assert.equal(gateway.plans.length, 0);
+  assert.equal(gateway.events.length, 0);
+});

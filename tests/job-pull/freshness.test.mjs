@@ -44,3 +44,13 @@ test('Workday without verified startDate evidence is VerifyQueue', () => {
   assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
   assert.equal(result.verifyQueue, true);
 });
+
+test('Workday source provenance cannot masquerade as a non-Workday provider', () => {
+  const result = classifyFreshness({
+    provider: 'workday',
+    postedAt: '2026-07-14T08:00:00.000Z',
+    evidence: null,
+  }, { now });
+  assert.equal(result.window, 'VerifyQueue');
+  assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
+});

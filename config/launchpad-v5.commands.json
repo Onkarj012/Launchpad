@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "LaunchpadV5CommandSurfaceV1",
+  "defaultMode": "normal",
+  "modes": ["normal", "startup", "remote"],
+  "commands": {
+    "morning": { "invocation": "/morning", "module": "job-pull/normal-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
+    "morning-startup": { "invocation": "/morning startup", "module": "job-pull/startup-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
+    "morning-remote": { "invocation": "/morning remote", "module": "job-pull/remote-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
+    "make-applications": { "invocation": "/make-applications", "module": "resume-v5/resume-queue.mjs", "writes": "v5-application-resume-state-only", "manualAction": "Make Resume remains user-owned" },
+    "outreach": { "invocation": "/outreach", "module": "outreach-v5/workflow.mjs", "writes": "v5-outreach-after-explicit-draft-or-confirmation", "manualAction": "send remains manual" },
+    "linkedin-leads": { "invocation": "/linkedin-leads", "module": "job-pull/linkedin-rescue-mode.mjs", "writes": "none", "manualAction": "read-only browser rescue" },
+    "followups": { "invocation": "/followups", "module": "outreach-v5/cadence.mjs", "writes": "none-until-user-confirms", "manualAction": "draft/send remains manual" },
+    "sync": { "invocation": "/sync", "module": "resume-v5/application-sync.mjs", "writes": "v5-application-and-activity-only", "manualAction": "Applied? and outcomes remain user-confirmed" },
+    "crawler-validate": { "invocation": "node crawler/cli.mjs validate", "module": "crawler/cli.mjs", "writes": "none", "manualAction": "configure public sources locally" },
+    "crawler-run": { "invocation": "node crawler/cli.mjs run morning --run-id <unique-id>", "module": "crawler/cli.mjs", "writes": "local-crawler-sqlite-only", "manualAction": "production scheduling and downstream writes remain explicit" },
+    "apify-rescue": { "invocation": "node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json", "module": "job-pull/apify-pull.mjs", "writes": "none-until-v5-write-is-explicitly-enabled", "manualAction": "profile selection is explicit" }
+  },
+  "safety": {
+    "autoApply": false,
+    "autoSend": false,
+    "autoLinkedIn": false,
+    "legacyFallback": false,
+    "resumeCompilation": "local-only",
+    "output": "resumes/output contains PDFs only"
+  }
+}

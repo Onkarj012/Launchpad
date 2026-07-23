@@ -1,112 +1,103 @@
-# Launchpad — README
+# Launchpad v5
 
-Onkar Jadhav's job-search system: discover roles → score against targeting → tailor a resume → track in Notion. This file is the operator's guide — how to run it, how it's wired, and what's currently unreliable. For the rubric/targeting rules themselves, see `master_prompt.md`. For directory layout and identity, see `CLAUDE.md`.
+Onkar Jadhav's job-search system: discover roles → score against targeting → prepare a truthful resume → track the application lifecycle. The local v5 operator contract is in [docs/SYSTEM-REFERENCE.md](docs/SYSTEM-REFERENCE.md); the handoff is [docs/launchpad-v5-operator-handoff.md](docs/launchpad-v5-operator-handoff.md).
 
 ## Quick start
 
-Everything is **manual-trigger only** right now (no cron is configured — see Known limitations). Typical day:
-
-```
-/morning              → pull fresh jobs, present shortlist, surface due follow-ups
-[you select roles manually and verify each original ATS with /application-readiness]
-/make-applications     → tailors + compiles resumes for every Apply?-checked row (local only)
-[you apply manually on the original ATS, then confirm exact facts in conversion/]
-/conversion-ops        → scorecard, human-contact/referral queue, outcomes, weekly report
-/followups             → run later in the day / next day to see who needs a nudge
+```sh
+node launchpad-v5.mjs help
+node launchpad-v5.mjs validate
+node launchpad-v5.mjs rehearse
+node crawler/cli.mjs help
+node crawler/cli.mjs validate
 ```
 
-One-off commands:
-- `/quick-add` — you found a role yourself, just log it.
-- `/resume-latex` — tailor one resume against a pasted JD.
-- `/resume-check` — brutal review of the resume `.tex` against a JD.
-- `/application-agent` — full single-role workflow (research → fit → resume → optional cold email).
-- `/application-readiness` — resolve and verify the original ATS before application work.
-- `/conversion-ops` — scorecards, human-contact/referral queue, outcomes, and checkpoints.
-- `/proof-of-fit` — small evidence-backed artifact for a top application.
-- `/interview-loop` — truthful project answer bank and practice loop.
+## Launchpad Crawler v2
 
-## Pipeline — what `/morning` and `/daily-job-pull` actually do
+Crawler v2 is the durable, discovery-only morning crawler. It stores crawl
+history in SQLite, suppresses previously observed jobs across run IDs, honors
+discovered `robots.txt` rules, uses shared per-host limits, and returns a
+planning-only shortlist handoff.
 
-```
-Tracked scan       career-ops scan.mjs --dry-run --json
-Reverse ATS        productive Greenhouse / Lever / Ashby / Workday warm set daily; full directory weekly/on demand
-Startup/public     YC + a16z seeds and dated remote/APAC feeds
-Broad search       ATS domains + LinkedIn/Naukri/Wellfound/Instahyre/company careers
-Watchlist          companies.json direct ATS JSON
-Indeed             optional MCP adapter when connected; unavailable is reported
-                         ↓
-Normalize CandidateV1 with exact posting/source/geo/employment/experience evidence
-                         ↓
-API/feed liveness → URL/Job ID/Dedup Key/ledger/fingerprint dedup
-                         ↓
-Hard gates: Pune-metro onsite/hybrid; explicit India/APAC/global remote; paid; ≤2 years; known geography
-                         ↓
-Strict (target title + 0–1 yr) vs shortage fallback (adjacent title and/or ≤2 yrs)
-                         ↓
-Score → max 2/company + role-family balancing
-                         ↓
-Strict Hot/Active/Backfill first, fallback separate → 25–35 curated leads when supply supports it
-```
+Configure [config/crawler-v2.json](config/crawler-v2.json) before the first run:
 
-Full mechanical detail (dork templates, ATS endpoint URLs, dedup hash) lives in `.agents/skills/daily-job-pull/references/sourcing.md` — don't duplicate it here.
+- Add public ATS boards to `atsBatch1.boards`, `atsBatch2.boards`, or
+  `enterprise.boards`.
+- Add `{ "company": "...", "websiteUrl": "https://..." }` entries to
+  `careerSites`.
+- Enable Brave only after setting `BRAVE_SEARCH_API_KEY`; queries remain leads
+  until an original employer listing is resolved.
+- Enable the Indeed inbox only after placing a dated `IndeedConnectorV1` export
+  under `connector-inbox/indeed/`.
+- Keep commercial rescue disabled until a profile and cost limit are explicitly
+  approved.
 
-The low-level career-ops scanners run without an API key. `job-pull/` adds machine-readable normalization, strict geo/freshness policy, shortage fallback, diversity selection, source telemetry, and durable dedup. Full reverse ATS can be long-running and may degrade when public datasets or boards rate-limit; every run reports those gaps.
+Operator commands:
 
-## Notion structure
+```sh
+# Validate configuration without crawling
+node crawler/cli.mjs validate
 
-- **Applications v4** (data source `7bc3de3a-91d9-4391-8b22-9e68b264e8d2`) — the tracker of record. Views: Today's Pull, To Apply, Follow-up Due, Pipeline (board), Archive.
-  - **Today's Pull** is the one to open daily: filtered to `Date Pulled = today` (native Notion relative filter, self-refreshes — no manual reset needed), trimmed to 10 columns (Role, Company, Match Score, Freshness, Auto-Suggest, Hook, Location, Work Mode, JD Link, Apply?), sorted by Match Score. Only ever shows the latest pull, never stale rows.
-  - **Default view** keeps all 35 properties but reordered decision-first (Role/Company/Score/Freshness/Status/Apply?/Hook.../JD Link) then progress fields, then sourcing/audit metadata last; first 2 columns frozen so Role/Company stay visible on scroll.
-- **Companies** (`9cb28730-1c2e-4e81-bb54-4cb1ac4b3a1d`) — Name, Website, Size, Industry, relations to Applications/Outreach. No "stage" field (bigtech/mid/startup lives only in `companies.json`, not mirrored to Notion).
-- **Activity** (`76a31def-a145-45db-9b82-0c263b80ab1b`) — dual-relation follow-up/interview/reply log, replaces ad-hoc tracking.
-- **Outreach** (`bf40caf6-8b07-4c55-9d21-787b8033f454`) — cold-email log.
-- v3 DB (`d8d525b0-e436-44b7-ae65-28c08a358684`) is archived read-only history — all open rows migrated into v4.
+# Inspect the intended stage order
+node crawler/cli.mjs plan morning
+node crawler/cli.mjs plan midday
 
-Full schema (every property + option) is in `NOTION_V4_SETUP.md`.
+# Run discovery. Use a unique run ID for each real run.
+node crawler/cli.mjs run morning --run-id 2026-07-23-morning
+node crawler/cli.mjs run midday --run-id 2026-07-23-midday
 
-## Conversion operations
-
-The human-conversion layer is local and confirmation-based. [config/conversion-plan.json](config/conversion-plan.json) owns Conversion Score, daily composition targets, 3/7-day application follow-ups, and diagnostic checkpoints. [conversion/](conversion/) contains TSV templates for exact submitted answers, contacts, referrals, and outcomes plus a proposal for future Notion fields. It does not mutate Notion until a schema change is approved.
-
-Create dated copies of the templates as actions are confirmed, then produce a weekly report locally:
-
-```
-node conversion/report.mjs \
-  --applications conversion/<dated>-application-submission.tsv \
-  --outcomes conversion/<dated>-outcomes.tsv \
-  --referrals conversion/<dated>-referrals.tsv \
-  --since YYYY-MM-DD --until YYYY-MM-DD \
-  --out conversion/reports/YYYY-MM-DD.md
+# Generate an honest local readiness result
+node crawler/cli.mjs readiness --run-tests
 ```
 
-## Known limitations (read this before trusting a run)
+The default SQLite path is `.local/launchpad-crawler/crawler.sqlite`, which is
+ignored by Git. The morning command runs every configured discovery lane;
+midday omits broad expanded ATS, Brave, and startup discovery. Scheduling is
+owned by the local operator: invoke these commands from `launchd`, cron, or
+another scheduler only after a bounded live smoke run succeeds.
 
-1. **Notion can't be queried programmatically — confirmed, not guessable.** `notion-query-data-sources` (SQL + view mode) and `notion-query-database-view` both hard-fail with `This tool requires a Business plan or higher with Notion AI` on this workspace. This is a plan limit, not a bug — the only complete fix is upgrading to Notion Business with Notion AI. Until then, two things are already in place to route around it:
-   - **Daily-pull dedup uses a local transaction ledger.** `career-ops/data/notion-written.tsv` is checked before writes; the new ledger helper migrates old rows and tracks pending/committed/aborted states so partial Notion failures remain visible. Because Notion cannot be queried comprehensively, stale pending records still require manual reconciliation.
-   - **`/followups` and `/make-applications` now ask you directly** instead of pretending to query. `/followups` has you open the **Follow-up Due** view (it already carries the right filter natively when *you* open it — the block only applies to Claude's API access) and read off / paste what's listed. `/make-applications` has you name the rows you checked `Apply?` on from **To Apply** / **Today's Pull**. Neither will report "nothing due" / "nothing queued" from a guess anymore — only from what you confirm.
-   - Cross-check anything that matters (e.g. before writing off follow-ups as clear) by looking at the Notion view yourself — Claude's view into Applied/Follow-up/Apply? state is only as current as what you've told it.
+Crawler output never submits an application, checks `Apply?`, writes a sent
+message, or performs authenticated LinkedIn crawling.
 
-2. **No cron is configured.** `CronList` returns none — every pull so far has been manual, despite older docs implying a daily 07:00 IST cloud run. If you want automatic daily pulls, set one up via the `schedule` skill; it is not running today without that.
+Daily agent surface:
 
-3. **No single source has complete recall.** The 57-company watchlist remains Greenhouse/Lever/Ashby-biased, but daily discovery now also attempts full reverse Greenhouse/Lever/Ashby/Workday directories, public/startup feeds, and broad India-board search. Darwinbox/Keka/custom portals may still depend on search-engine indexing. Indeed remains optional until its MCP is connected. Weekly five-link missed-alert audits measure the remaining gap. `internshala.com` stays excluded as stale/unreliable.
+- `/morning` runs Normal by default; `/morning startup` and `/morning remote` are focused modes.
+- `/make-applications` reads the user-controlled v5 `Make Resume` queue and compiles locally.
+- `/outreach` prepares free-first drafts and never sends.
+- `/linkedin-leads` is an explicit read-only rescue, never part of morning.
+- `/followups` surfaces or drafts v5 cadence actions; `/sync` synchronizes observed `Applied?` and confirmed outcomes.
+- Apify is an explicit, default-off rescue profile only (`node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json`).
 
-4. **Resume compilation is local-only.** `/make-applications` and `/resume-latex` need the Mac LaTeX toolchain (`pdflatex`) — they will not (and should not) run in a headless/cloud session.
+## Daily contract
 
-5. **`career-ops/` is a vendored discovery library.** Launchpad uses `scan.mjs`, `scan-ats-full.mjs`, `check-liveness.mjs`, `fingerprint-core.mjs`, `detect-reposts.mjs`, follow-up tooling, and user-layer config. Generic JSON/liveness patches may be overwritten by a career-ops update, so root compatibility tests must pass after updates. `career-ops/data/*` remains engine state/cache; Notion is the tracker of record.
+All modes share original-application resolution, active liveness, geography, employment, experience, fee/bond, freshness, scoring, and deduplication gates. Normal emphasizes India-first discovery. Startup adds company-stage and funding/hiring evidence. Remote emphasizes India-compatible remote, stable EOR, and full-time-equivalent contractor roles. Internships are separate, with INR 30,000+ Preferred and INR 25,000–29,999 Lower-Stipend tiers.
 
-## Guardrails (non-negotiable — see `CLAUDE.md` for the full list)
+The shortlist targets minimum 10, preferred 12, maximum 20. Unresolved roles remain in Needs Verification and never count. Source failures are reported; core integrity failures stop before writes. A shortfall may suggest `/linkedin-leads`, but it never launches the rescue automatically.
 
-- No skill ever auto-checks `Apply?` or sends anything. `Auto-Suggest` is an opinion, not a command.
-- Scheduled/cloud runs are discovery-only.
-- Never fabricate experience, dates, salaries, or contacts — unknown fields stay blank or "Not Verified".
-- `resumes/output/` holds PDFs only; `.tex` stays in `resumes/sources/`.
+## v5 stores and state
 
-## Troubleshooting
+The fixed manifest scopes the gateway to Applications v5, Companies v5, Outreach v5, Activity v5, and Referrals v5. Applications owns the role lifecycle and user-owned `Make Resume` / `Applied?` inputs. Outreach owns application × person × channel sequences. Activity owns idempotent dated events.
 
-| Symptom | Likely cause |
-|---|---|
-| `/daily-job-pull` returns very few results | Watchlist-bound gates killing everything — check the run summary's drop counts per gate/layer, not just the final count. |
-| `/followups` says "nothing due" but you know something's overdue | Query-tool limitation above — open the Follow-up Due view in Notion directly to confirm. |
-| A company 404s in `companies.json` | It's likely not on Greenhouse/Lever/Ashby. Don't hand-add a slug without curling the endpoint first (`.agents/skills/daily-job-pull/references/sourcing.md` § ATS endpoints) — the `_meta.verification` rule in `companies.json` exists because guessed slugs silently return nothing. |
-| `/make-applications` fails to compile | Confirm you're running locally (not cloud) and `pdflatex` is on `PATH`. |
-| Notion write fails on a field | Check `NOTION_V4_SETUP.md` for the live schema — don't assume a v3 field (e.g. `Company Stage`, `Auth-Friendly?`) still exists in v4. |
+Live writes require explicit operator authorization, an external protected credential, an external transaction journal, and reserve → write → verify → commit. There is no legacy fallback. Historical systems remain untouched; no migration, archive, or delete action is part of this release.
+
+## Resume and outreach guardrails
+
+- Resume compilation is local-only. Use the frozen `resumes/templates/Onkar_Template.tex` and approved `resumes/master/Master_Resume_ATS.tex` evidence.
+- Keep `.tex`, matrix, and provenance sidecars under `resumes/sources/<date>/`; `resumes/output/<date>/` contains PDFs only.
+- Never check `Make Resume` or `Applied?`, infer an application submission, invent a fact/contact, auto-apply, send email, or send a LinkedIn message.
+- Outreach cadence is Day 0, 3, 10, 17 and stops on reply, rejection, opt-out, withdrawal, closure, or offer.
+
+## Verification suites
+
+```sh
+node --test tests/job-pull/*.test.mjs
+node --test tests/crawler/*.test.mjs
+node --test tests/notion-v5/*.test.mjs
+node --test tests/resume-v5/*.test.mjs
+node --test tests/outreach-v5/*.test.mjs
+node --test tests/v5/*.test.mjs
+node tests/resume/verify.mjs
+git diff --check
+```
+
+The local rehearsal and deterministic suites do not prove a live Notion write, credentialed smoke, authenticated browser smoke, or production morning run. Those remain explicit live gates.

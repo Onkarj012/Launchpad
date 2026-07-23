@@ -36,12 +36,15 @@ Job Search/
 ```
 
 ## Skills (single-slash)
-- `/morning` — daily entry point: runs `daily-job-pull` end-to-end, presents Strict-first shortlist, surfaces due follow-ups. Skips if today's pull already ran, unless forced. **Discovery only.**
-- `/daily-job-pull` — full discovery engine (tracked boards, reverse Greenhouse/Lever/Ashby/Workday, public/startup feeds, broad WebSearch, watchlist, optional Indeed) → normalize → gate → score → diversify → log 15-20 to Notion. **Discovery only.** Usually invoked via `/morning`, not directly.
+- `/morning` — daily v5 entry point; no argument means Normal, with `/morning startup` and `/morning remote` as focused modes. Presents the verified shortlist and follow-up handoff.
+- `/daily-job-pull` — v5 discovery engine (ATS, India-first, startup, remote, optional Indeed, and explicit Apify rescue) → normalize → gate → score → select 10–20. **Discovery only.** Usually invoked via `/morning`.
 - `/quick-add` — log one user-found role (gate → score → single row).
-- `/followups` — surface applications/cold-emails due a follow-up today (fixed cadence), draft on request. **Never sends.**
-- `/resume-latex` — paste a JD → tailored one-page PDF-only to `resumes/output/<date>/`, built from `resumes/templates/Onkar_Template.tex`.
-- `/make-applications` — batch-tailor every `Apply?`-checked Notion row (local-only).
+- `/followups` — surface v5 Applications/Outreach/Activity due items (fixed cadence), draft on request. **Never sends.**
+- `/resume-latex` — paste a JD → tailored one-page PDF-only to `resumes/output/<date>/`, built from the frozen template.
+- `/make-applications` — batch-tailor every user-checked `Make Resume` v5 row (local-only).
+- `/outreach` — research contacts and prepare v5 drafts; user confirmation is required for any sent-state record. **Never sends.**
+- `/linkedin-leads` — explicit, read-only LinkedIn hiring-post rescue; never called automatically.
+- `/sync` — synchronize observed `Applied?` and confirmed outcomes through v5 Activity idempotently.
 - `/resume-check` — brutal recruiter review of the `.tex` source vs a JD (or generic fallback).
 - `/application-agent` — full single-role workflow (research → fit → resume → optional cold email).
 
@@ -52,5 +55,6 @@ Job Search/
 - **PDF-only output** — `resumes/output/<date>/` contains only `.pdf`; `.tex` stays in `resumes/sources/<date>/`; build artifacts are deleted after every compile.
 - **Never fabricate** experience, metrics, dates, salaries, contacts, or links. Unknown → blank or "Not Verified".
 - **Notion is the tracker of record** — propose any schema change and get approval before touching live data.
+- **Launchpad v5 is the sole active runtime contract** — v3/v4 are read-only historical systems; no migration, fallback, archive, or delete action is permitted in this scope.
 
 ## Imported Claude Cowork project instructions

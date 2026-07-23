@@ -7,6 +7,8 @@ logs/
 node_modules/
 job-pull/scratch/
 job-pull/run-state.json
+connector-inbox/
+config/crawler-v2-live-test.json
 
 # macOS
 .DS_Store
@@ -19,3 +21,5 @@ job-pull/run-state.json
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+.local/
+.scratch/

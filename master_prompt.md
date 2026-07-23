@@ -82,7 +82,7 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 - Target **25–35 curated roles** (sprint volume), with **at least 10 Strict when inventory supports it**. Selection order: Strict Hot → Strict Active → Strict Backfill → Shortage Fallback Hot → Fallback Active → Fallback Backfill.
 - Shortage fallback may relax only adjacent title and hard experience requirement up to 2 years. Display it separately with exact relaxation; never hide a strict shortfall.
 - Diversity after scoring: maximum 2 roles per company; balance role families, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist.
-- **No auto-apply.** Present ranked list; Onkar reviews and picks ~7–8/day. `Apply?` checkbox is manual — never auto-checked.
+- **No auto-apply.** Present ranked list; Onkar reviews and picks ~7–8/day. `Make Resume` (build-selection) and `Applied?` (progress tally) checkboxes are manual — never auto-checked.
 
 **Score bands (guidance, not gates):**
 - 80–100: strong fit, tailor immediately.
@@ -90,7 +90,7 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 - 50–64: stretch, only if low day-volume.
 - <50: skip unless special reason.
 
-**Auto-Suggest rule:** `score ≥ 80 AND Freshness Window ∈ {Hot, Active} AND Selection Tier = Strict AND Response-Likelihood sub-score ≥ 14/20`. This sets the `Auto-Suggest` checkbox (cloud's pick opinion) — it never sets `Apply?`; the user always confirms manually.
+**Auto-Suggest rule:** `score ≥ 80 AND Freshness Window ∈ {Hot, Active} AND Selection Tier = Strict AND Response-Likelihood sub-score ≥ 14/20`. This sets the `Auto-Suggest` checkbox (cloud's pick opinion) — it never sets `Make Resume` or `Applied?`; the user always confirms manually.
 
 ---
 
@@ -152,6 +152,7 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 ### Hard constraints
 - **Exactly ONE visually balanced page.** No conspicuous dead zone, overflow, crowding, or tiny type. Never lengthen a bullet, add a weak claim, repeat a keyword, or pad the summary solely to occupy space. If overfull, trim the weakest content first; if underfilled, improve selection and spacing within the liked template without inventing or padding content.
 - Total project slots on page = **3** (1 Stride experience block + 2 projects). Never more, never fewer.
+- **Publications** (`PUBLICATIONS` slot): include **only** for research / ML-research / applied-science / quant JDs, or when a JD names publications/papers as a plus. For all other JDs, empty the slot so no `\section{Publications}` header prints. When included it competes for the one-page budget: tighten spacing or trim the weakest project bullet to stay at exactly one page — never drop a mandatory project slot or pad to fit. Two approved papers, both stock/trading deep-learning work (co-author): (1) *HybridSwingNet…* — Scientific Reports (Nature Portfolio), accepted/in press 2026; (2) *Stock Recommendations Leveraging AI/ML…* — ICT4SD 2025 (Scopus-indexed, Springer). Print exactly as in the master source; do not upgrade "accepted, in press" to "published", claim first authorship, or invent a DOI.
 - Never fabricate. Only reframe / reorder / select from the approved master sources with claim provenance.
 - Mirror the JD's vocabulary where truthful and evidence-backed.
 
@@ -218,11 +219,13 @@ Onkar
 <phone> · github.com/Onkarj012
 ```
 
-### Follow-up
-- Trigger: **4 days** after send, no reply.
-- **One** follow-up only, then drop. Keep it 2–3 sentences, reference the original.
-- Surfaced as a flagged list; Onkar reviews, Claude drafts.
-- (Follow-up tracking configured now; primarily used for cold-email flow.)
+### Follow-up (cold email)
+- **Graduated** cadence, not fixed intervals (increasing gaps read as human, static ones read as automated): Day 0 initial → +3 → +7 → +7, i.e. touches on days 0, 3, 10, 17.
+- **Max 2 follow-ups** per contact, then stop. Stop immediately on any reply or a "no". Mirrors the Outreach DB `Sequence Stage` (Cold → Follow-up 1 → Follow-up 2).
+- Keep each follow-up 1–2 lines + one small new detail (a project update, a relevant stat) — never repeat the whole pitch.
+- Seeded only after Onkar confirms he sent the initial email. Surfaced as a flagged list by `/followups`; Onkar reviews, Claude drafts, Onkar sends. Never auto-sent.
+- Best send window: Tue–Thu, 8–10 AM the recipient's local time; avoid Fri evening/weekends.
+- (This is the cold-email cadence. Portal-application follow-ups are separate — day 7 then day 14, max 2 — per `career-ops/followup-cadence.mjs`.)
 
 ---
 
@@ -233,7 +236,8 @@ Onkar
 | "morning" / `/morning` | Manual once-daily routine: discovery leads → Strict and fallback sections → readiness/composition handoff → due-follow-up evidence. Discovery and surfacing only, never applies |
 | "pull today's jobs" / `/pull-jobs` | Tracked + warm reverse ATS + public sources + optional Indeed → normalize → gate → freshness/dedup → Match and Conversion Score → 25–35 local leads plus a verified-original-ATS ten-role shortlist when inventory supports it |
 | "follow-ups?" / `/followups` | Read user-supplied tracker/ledger evidence against the 3/7-day application, 4-day outreach, and 1/3-day conversation cadence → draft only on request, never send |
-| "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each manually selected JD; leave application state and tracker changes to the user |
+| "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each `Make Resume`-checked row; leave application state and tracker changes to the user |
+| "run outreach" / `/outreach` | Batch cold email: find a verified recruiter/lead per company (Explorium, free-first, ≤2/company) → draft personalized email + attach that role's resume → log Outreach DB → Gmail draft; never send |
 | "tailor for <row/company>" / `/resume-latex` | Read JD → select profile and two supported projects → create matrix/provenance sidecars → compile and verify one-page PDF |
 | "check my resume" / `/resume-check` | Brutal recruiter review of the `.tex` source vs a pasted JD (or generic fallback) → per-section gaps + rewrites + overall verdict |
 | "quick add this job" / `/quick-add` | Capture → gate/dedup → Match and Conversion Score → propose a local lead record with explicit readiness status |
@@ -244,6 +248,7 @@ Onkar
 - **Discovery restrictions:** no email ingestion, logged-in/computer-use portal browsing, application submission, or outreach action.
 - **Dedup:** canonical URL → provider+Job ID → normalized company/title/location → local write ledger → JD fingerprint where description exists. `fingerprint-core.mjs` supplies SimHash; `detect-reposts.mjs` is a separate repost-pattern report.
 - **Watchlist growth:** propose a verified ATS+slug addition for manual approval; never alter `companies.json` as a side effect of a lead or application state.
+- **Selection checkboxes (Applications v4):** `Make Resume` = Onkar's pick of rows for Claude to build resumes for (read by `/make-applications` + `/outreach`, never set by Claude). `Applied?` = Onkar's post-submission progress tally, ticked with Applied Date, never set by any skill. `Auto-Suggest` = cloud opinion only.
 
 ---
 

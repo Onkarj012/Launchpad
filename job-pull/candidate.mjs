@@ -131,7 +131,7 @@ export function extractExperienceYears(text) {
   if (!cleaned) return null;
   const matches = [];
   const forward = new RegExp(
-    String.raw`(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)[^\d]{0,40}?\b${EXPERIENCE_NUMBER}(?:\s*(?:years?|yrs?))?`,
+    String.raw`(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)[^\d]{0,40}?\b${EXPERIENCE_NUMBER}\s*(?:years?|yrs?)`,
     'gi',
   );
   for (const match of cleaned.matchAll(forward)) {
@@ -144,6 +144,15 @@ export function extractExperienceYears(text) {
     'gi',
   );
   for (const match of cleaned.matchAll(reverse)) {
+    const parsed = experienceMatch(match, cleaned);
+    if (parsed) matches.push(parsed);
+  }
+
+  const activityRequirement = new RegExp(
+    String.raw`\b${EXPERIENCE_NUMBER}\s*(?:years?|yrs?)\b(?:\s+of)?(?:\s+(?:professional|hands-on|relevant|industry))?(?:\s+[A-Za-z][A-Za-z+.#/-]*){0,3}\s+(?:experience|development|engineering|building|developing|designing|working|programming|coding|implementing|maintaining)\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(activityRequirement)) {
     const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
   }

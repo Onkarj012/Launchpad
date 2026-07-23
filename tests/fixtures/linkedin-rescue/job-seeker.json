@@ -1,0 +1,16 @@
+{
+  "query": "hiring \"Backend Python Engineer\"",
+  "postUrl": "https://www.linkedin.com/posts/open-to-work-321",
+  "author": {
+    "name": "Kiran Shah",
+    "profileUrl": "https://www.linkedin.com/in/kiran-shah",
+    "relationship": "Job seeker"
+  },
+  "timestampEvidence": "3h",
+  "postedAt": "2026-07-23T03:30:00.000Z",
+  "observedAt": "2026-07-23T06:30:00.000Z",
+  "rawHiringContext": "I am open to work and seeking my next backend opportunity. Please hire me for a Python role.",
+  "company": null,
+  "title": "Backend Python Engineer",
+  "location": "Pune, India"
+}
