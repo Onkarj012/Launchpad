@@ -51,6 +51,7 @@ function mapRow(provider, row, board) {
 }
 
 const INDIA_LOCATION = /\b(india|ind|pune|bengaluru|bangalore|hyderabad|chennai|gurugram|gurgaon|noida|new delhi|delhi|ncr|mumbai|maharashtra|karnataka|telangana|tamil nadu)\b/i;
+const FOREIGN_ONLY_LOCATION = /\b(?:austria|belgium|brazil|canada|china|denmark|france|germany|ireland|italy|japan|mexico|netherlands|new zealand|poland|portugal|singapore|south africa|spain|sweden|switzerland|united kingdom|uk|united states|usa|us)\b/i;
 function sourceLocation(provider, row) {
   if (provider === 'greenhouse') return row?.location?.name || '';
   if (provider === 'lever') return row?.categories?.location || '';
@@ -59,10 +60,13 @@ function sourceLocation(provider, row) {
 function clearlyForeign(provider, row) {
   const location = String(sourceLocation(provider, row)).trim();
   if (!location) return false;
-  return !INDIA_LOCATION.test(location);
+  if (/\b(?:us|usa|united states|uk|united kingdom)\s+only\b/i.test(location)) return true;
+  if (/\b(?:apac|asia[ -]pacific|worldwide|global|anywhere|remote)\b/i.test(location)) return false;
+  if (INDIA_LOCATION.test(location)) return false;
+  return FOREIGN_ONLY_LOCATION.test(location);
 }
 
-function candidate(row, board, sourceUrl, runAt) {
+function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
   if (!row.url || !row.title) return null;
   const startupTagged = board.startupTagged === true;
   const item = normalizeCandidate({
@@ -82,7 +86,10 @@ function candidate(row, board, sourceUrl, runAt) {
     originalApplicationUrl: row.url,
     originalApplicationEvidence: 'public ATS posting',
     liveness: { status: 'Active', checkedAt: runAt, evidence: 'public-ats-feed' },
-    evidence: { classification: 'direct', verified: true, provider: board.provider, board: board.slug, sourceUrl, startupTagged },
+    evidence: {
+      classification: 'direct', verified: true, provider: board.provider, board: board.slug, sourceUrl, startupTagged,
+      ...(sourceGeoObservation ? { sourceGeoObservation } : {}),
+    },
   }, { runAt, provider: board.provider, sourceCategory: 'direct-company' });
   item.classification = 'direct';
   // Board-level startup tagging is operator-curated, evidence-backed metadata
@@ -125,11 +132,19 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
       const indiaFirst = board.indiaFirst === true;
       const eligibleListings = indiaFirst ? listings.filter((row) => !clearlyForeign(provider, row)) : listings;
       const foreignDiscardedAtSource = listings.length - eligibleListings.length;
+      const oldFilterWouldDiscard = (raw) => {
+        const location = String(sourceLocation(provider, raw)).trim();
+        return indiaFirst && Boolean(location) && !INDIA_LOCATION.test(location);
+      };
+      const foreignPassedThroughAtSource = indiaFirst
+        ? eligibleListings.filter((raw) => oldFilterWouldDiscard(raw)).length
+        : 0;
       for (const raw of eligibleListings.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
-        const item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt);
+        const sourceGeoObservation = oldFilterWouldDiscard(raw) ? 'india-first-filter-bypass' : null;
+        const item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
         if (item) observations.push(item);
       }
-      sources.push({ provider, board: board.slug, company: board.company, fetched: listings.length, observations: observations.length - before, foreignDiscardedAtSource, status: 'ok' });
+      sources.push({ provider, board: board.slug, company: board.company, fetched: listings.length, observations: observations.length - before, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' });
     } catch (error) {
       failures.push({ provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' });
     }

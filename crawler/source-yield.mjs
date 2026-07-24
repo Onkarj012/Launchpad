@@ -48,6 +48,8 @@ export function buildSourceYieldReport(records = [], sourceTelemetry = {}, optio
       const row = rows[sourceId] ||= blank(sourceId, { provider: detail.provider, company: detail.company, evidence: { board: detail.board } });
       row.fetched = Math.max(row.fetched, number(detail.fetched));
       row.foreignDiscardedAtSource += number(detail.foreignDiscardedAtSource ?? detail.foreignDiscarded);
+      const foreignPassedThroughAtSource = number(detail.foreignPassedThroughAtSource);
+      if (foreignPassedThroughAtSource) row.foreignPassedThroughAtSource = number(row.foreignPassedThroughAtSource) + foreignPassedThroughAtSource;
     }
   }
 
@@ -68,6 +70,8 @@ export function buildSourceYieldReport(records = [], sourceTelemetry = {}, optio
     for (const field of ['fetched', 'indiaBased', 'targetTitle', 'freshWithinSevenDays', 'experienceCompatible', 'applicationReady', 'foreignDiscardedAtSource']) sum[field] += row[field];
     return sum;
   }, { fetched: 0, indiaBased: 0, targetTitle: 0, freshWithinSevenDays: 0, experienceCompatible: 0, applicationReady: 0, foreignDiscardedAtSource: 0 });
+  const foreignPassedThroughAtSource = sources.reduce((sum, row) => sum + number(row.foreignPassedThroughAtSource), 0);
+  if (foreignPassedThroughAtSource) totals.foreignPassedThroughAtSource = foreignPassedThroughAtSource;
   return { schemaVersion: 'LaunchpadSourceYieldV1', sources, totals, calibration: { minimumRunsForPause: minimumRuns, automaticPause: false } };
 }
 

@@ -37,3 +37,38 @@ test('India-first warm boards discard clearly foreign rows before the job cap', 
   assert.equal(result.observations[0].employment.type, 'full-time');
   assert.equal(result.manifest.sources[0].foreignDiscardedAtSource, 1);
 });
+
+test('India-first warm boards pass ambiguous and non-India-scoped observations to eligibility', async () => {
+  const result = await fetchWarmAts({
+    boards: [{ provider: 'ashby', slug: 'acme', company: 'Acme', indiaFirst: true }],
+    transport: async () => ({ status: 200, body: { jobs: [
+      { id: 'pune-metro', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/pune-metro', location: 'Hinjawadi, Pune' },
+      { id: 'apac', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/apac', location: 'APAC' },
+      { id: 'worldwide', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/worldwide', location: 'Worldwide' },
+      { id: 'remote-global', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/remote-global', location: 'Remote - Global' },
+      { id: 'empty', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/empty', location: '' },
+    ] } }),
+  });
+
+  assert.deepEqual(result.observations.map((row) => row.jobId), ['pune-metro', 'apac', 'worldwide', 'remote-global', 'empty']);
+  assert.deepEqual(result.observations.map((row) => row.evidence.sourceGeoObservation), [
+    undefined, 'india-first-filter-bypass', 'india-first-filter-bypass', 'india-first-filter-bypass', undefined,
+  ]);
+  assert.equal(result.observations[4].evidence.sourceGeoObservation, undefined);
+  assert.equal(result.manifest.sources[0].foreignDiscardedAtSource, 0);
+  assert.equal(result.manifest.sources[0].foreignPassedThroughAtSource, 3);
+});
+
+test('India-first warm boards still discard explicit foreign-only locations', async () => {
+  const result = await fetchWarmAts({
+    boards: [{ provider: 'ashby', slug: 'acme', company: 'Acme', indiaFirst: true }],
+    transport: async () => ({ status: 200, body: { jobs: [
+      { id: 'us-only', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/us-only', location: 'US Only - Remote' },
+      { id: 'global', title: 'AI Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/global', location: 'Remote - Global' },
+    ] } }),
+  });
+
+  assert.deepEqual(result.observations.map((row) => row.jobId), ['global']);
+  assert.equal(result.manifest.sources[0].foreignDiscardedAtSource, 1);
+  assert.equal(result.manifest.sources[0].foreignPassedThroughAtSource, 1);
+});
