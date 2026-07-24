@@ -269,5 +269,20 @@
     "maxHosts": 4,
     "maxBytes": 2000000,
     "maxRequests": 8
+  },
+  "careerPageDiscovery": {
+    "maxRedirects": 3,
+    "maxHosts": 2,
+    "maxBytes": 2000000,
+    "maxRequests": 40,
+    "maxJobUrlsPerCompany": 50,
+    "maxPagesPerCompany": 20,
+    "hostLimiterOptions": {
+      "minSpacingMs": 1000,
+      "maxConcurrency": 1
+    },
+    "retry": {
+      "maxAttempts": 3
+    }
   }
 }
