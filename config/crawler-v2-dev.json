@@ -200,7 +200,17 @@
       "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
       "dailyBudget": 20,
       "perQueryResultCap": 10,
-      "queries": []
+      "queries": [],
+      "country": "IN",
+      "searchLang": "en",
+      "maxPages": 1,
+      "roles": ["AI Engineer", "ML Engineer", "Backend Engineer", "Software Engineer"],
+      "geographies": ["Pune", "India"],
+      "experiences": ["fresher", "0-2 years", "new grad"],
+      "ats": ["boards.greenhouse.io", "jobs.lever.co", "myworkdayjobs.com", "jobs.ashbyhq.com"],
+      "career": ["careers"],
+      "startup": ["startup"],
+      "vc": ["Peak XV portfolio", "Accel portfolio", "Lightspeed portfolio", "Antler portfolio", "a16z portfolio"]
     },
     "indeed": {
       "enabled": false,
@@ -243,6 +253,14 @@
       "targetReserve": 12,
       "maxRecords": 100,
       "maxCostUsd": 5
+    },
+    "remote": {
+      "enabled": true,
+      "primaryProviders": ["himalayas"],
+      "secondaryProviders": ["jobicy", "weworkremotely", "remotive", "remoteok"],
+      "secondaryCadenceDays": 2,
+      "maxRecordsPrimary": 40,
+      "maxRecordsPerSecondary": 25
     }
   },
   "v4HistorySnapshotMaxAgeDays": 30,

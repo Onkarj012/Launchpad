@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { discoverBraveSearch, buildBraveQueries } from '../../crawler/brave-search.mjs';
+import {
+  discoverBraveSearch,
+  buildBraveQueries,
+  DEFAULT_BRAVE_DIMENSIONS,
+} from '../../crawler/brave-search.mjs';
+import { resolveJobIdentity } from '../../crawler/identity.mjs';
 
 const brave = (results) => ({ status: 200, body: { web: { results } } });
 const searxng = (results, unresponsive_engines = []) => ({ status: 200, body: { results, unresponsive_engines } });
@@ -138,4 +143,143 @@ test('does not interpret unresponsive_engines on a Brave API response', async ()
   assert.equal(result.manifest.status, undefined);
   assert.equal(result.manifest.telemetry.degradedQueries, 0);
   assert.deepEqual(result.manifest.telemetry.unresponsiveEngines, []);
+});
+
+test('default Brave query dimensions cover ATS domain, role family, geography, and entry-level', () => {
+  const queries = buildBraveQueries({ maxQueries: 20 });
+  assert.ok(queries.some((query) => /site:boards\.greenhouse\.io|site:jobs\.lever\.co|site:myworkdayjobs\.com|site:jobs\.ashbyhq\.com/.test(query)));
+  assert.ok(queries.some((query) => /AI Engineer|ML Engineer|Backend Engineer|Software Engineer/.test(query)));
+  assert.ok(queries.some((query) => /\bPune\b|\bIndia\b/.test(query)));
+  assert.ok(queries.some((query) => /fresher|0-2 years|new grad/.test(query)));
+  assert.ok(queries.some((query) => /startup|portfolio/.test(query)));
+  assert.ok(DEFAULT_BRAVE_DIMENSIONS.ats.includes('boards.greenhouse.io'));
+});
+
+test('search-derived page_age never becomes trusted postedAt; it only boosts discovery priority', async () => {
+  const result = await discoverBraveSearch({
+    transport: async () => brave([{
+      title: 'AI Engineer',
+      url: 'https://boards.greenhouse.io/acme/jobs/77',
+      description: 'Build agents',
+      page_age: '2026-07-20T00:00:00.000Z',
+    }]),
+    queries: ['AI Engineer India'],
+  });
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].postedAt, null);
+  assert.equal(result.observations[0].evidence.searchAgeTrustedPostedAt, false);
+  assert.equal(result.observations[0].evidence.searchAge, '2026-07-20T00:00:00.000Z');
+  assert.equal(result.observations[0].discoveryPriorityAt, '2026-07-20T00:00:00.000Z');
+});
+
+test('Brave-sourced direct ATS hits create proposal-only board promotions when the threshold is met', async () => {
+  const result = await discoverBraveSearch({
+    transport: async () => brave([{
+      title: 'Backend Engineer',
+      url: 'https://boards.greenhouse.io/newcoindia/jobs/1',
+      description: 'Pune role',
+      company: 'NewCo India',
+    }]),
+    queries: ['Backend Engineer India'],
+    boardPromotion: { minOccurrences: 1, minDistinctDates: 1 },
+    runAt: '2026-07-24T10:00:00.000Z',
+  });
+  assert.equal(result.boardProposals.length, 1);
+  const board = result.boardProposals[0].suggestedBoard;
+  assert.equal(board.enabled, false);
+  assert.equal(board.activationState, 'proposed');
+  assert.equal(board.provider, 'greenhouse');
+  assert.equal(board.slug, 'newcoindia');
+  assert.equal(result.discoveredBoards.some((entry) => entry.activationState === 'proposed'), true);
+});
+
+test('Brave-search and direct-ATS observations of the same job converge on one identity', async () => {
+  const braveResult = await discoverBraveSearch({
+    transport: async () => brave([{
+      title: 'AI Engineer',
+      url: 'https://boards.greenhouse.io/acme/jobs/123',
+      description: 'Build reliable AI systems for customers.',
+      company: 'Acme, Inc.',
+    }]),
+    queries: ['AI Engineer'],
+    runAt: '2026-07-23T10:00:00.000Z',
+  });
+  const fromBrave = braveResult.observations[0];
+  const fromDirectAts = {
+    provider: 'Greenhouse',
+    providerJobId: '123',
+    canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+    company: 'Acme, Inc.',
+    title: 'AI Engineer',
+    location: 'Pune, India',
+    description: 'Build reliable AI systems for customers.',
+    observedAt: '2026-07-23T11:00:00.000Z',
+    postedAt: '2026-07-22T10:00:00.000Z',
+    status: 'open',
+  };
+  const first = resolveJobIdentity(fromBrave, {});
+  const second = resolveJobIdentity(fromDirectAts, {
+    existingJobs: [{
+      jobKey: first.identity.jobKey,
+      provider: 'greenhouse',
+      providerJobId: null,
+      canonicalUrl: fromBrave.canonicalUrl,
+      company: 'acme inc',
+      title: 'ai engineer',
+      location: 'pune, india',
+      fingerprint: first.fingerprint,
+      firstSeenAt: '2026-07-23T10:00:00.000Z',
+      lastSeenAt: '2026-07-23T10:00:00.000Z',
+    }],
+  });
+  assert.equal(first.code, 'NEW_TO_ME');
+  assert.equal(second.identity.jobKey, first.identity.jobKey);
+  assert.equal(second.evidence.matchType, 'canonical_url');
+  assert.notEqual(second.code, 'NEW_TO_ME');
+});
+
+test('query budget, country localization, caching, and consumed-credits telemetry are visible', async () => {
+  const cache = new Map();
+  const calls = [];
+  const transport = async (query, meta = {}) => {
+    calls.push({ query, country: meta.country, offset: meta.offset });
+    return brave(results.slice(0, 1));
+  };
+  const first = await discoverBraveSearch({
+    transport, queries: ['one', 'two'], dailyBudget: 2, cache, country: 'IN', maxPages: 1,
+  });
+  const second = await discoverBraveSearch({
+    transport, queries: ['one', 'two'], dailyBudget: 2, cache, country: 'IN', maxPages: 1,
+  });
+  assert.equal(first.manifest.telemetry.country, 'IN');
+  assert.equal(first.manifest.telemetry.budgetUsed, 2);
+  assert.equal(first.manifest.telemetry.consumedCredits, 2);
+  assert.equal(first.manifest.telemetry.cacheMisses, 2);
+  assert.equal(first.manifest.telemetry.pagesFetched, 2);
+  assert.equal(second.manifest.telemetry.cacheHits, 2);
+  assert.equal(second.manifest.telemetry.cacheMisses, 0);
+  assert.ok(calls.every((call) => call.country === 'IN'));
+  assert.equal(calls.length, 2);
+});
+
+test('SearXNG healthy-empty zero-result is distinct from unresponsive-engine degradation', async () => {
+  const healthy = await discoverBraveSearch({
+    provider: 'searxng',
+    transport: async () => searxng([], []),
+    queries: ['AI Engineer Pune'],
+  });
+  assert.equal(healthy.receipts[0].status, 'success');
+  assert.equal(healthy.manifest.telemetry.engineHealth, 'healthy-empty');
+  assert.equal(healthy.manifest.telemetry.degradedQueries, 0);
+  assert.deepEqual(healthy.manifest.telemetry.unresponsiveEngines, []);
+
+  const degraded = await discoverBraveSearch({
+    provider: 'searxng',
+    transport: async () => searxng([], [['google', 'timeout'], ['brave', 'too many requests']]),
+    queries: ['AI Engineer Pune'],
+  });
+  assert.equal(degraded.receipts[0].status, 'degraded');
+  assert.equal(degraded.manifest.telemetry.engineHealth, 'degraded');
+  assert.equal(degraded.manifest.telemetry.degradedQueries, 1);
+  assert.deepEqual(degraded.manifest.telemetry.unresponsiveEngines, [['google', 'timeout'], ['brave', 'too many requests']]);
 });

@@ -68,3 +68,24 @@ test('builds bounded vc-lane requests that target employer ATS hosts, never the 
   }
   assert.match(requests[0].query, /"Classplus"/);
 });
+
+test('Lightspeed is present and Antler/a16z are empty, clearly-unverified placeholder funds', () => {
+  const watchlist = loadVcPortfolioWatchlist('config/vc-portfolio-watchlist.json');
+  const byFund = Object.fromEntries(watchlist.funds.map((fund) => [fund.fund, fund]));
+
+  assert.ok(byFund['Lightspeed India Partners'], 'Lightspeed fund entry must exist');
+  assert.ok(Array.isArray(byFund['Lightspeed India Partners'].companies));
+
+  for (const name of ['Antler', 'a16z']) {
+    assert.ok(byFund[name], `${name} fund entry must exist`);
+    assert.deepEqual(byFund[name].companies, []);
+    assert.match(
+      String(byFund[name].verificationMethod || ''),
+      /not yet verified|requires live portfolio-page fetch/i,
+    );
+  }
+
+  // Placeholder funds must not invent flat company rows.
+  assert.equal(watchlist.companies.filter((row) => row.fund === 'Antler').length, 0);
+  assert.equal(watchlist.companies.filter((row) => row.fund === 'a16z').length, 0);
+});

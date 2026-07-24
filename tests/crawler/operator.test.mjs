@@ -5,15 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   buildSourcePlans,
+  buildIndiaStartupLaneRequests,
+  listBraveQueries,
   buildCrawlerHelp,
   createCrawlerRunResolver,
   runCrawlerOperator,
   validateCrawlerConfig,
 } from '../../crawler/operator.mjs';
+import { crawlWorkflow } from '../../crawler/workflow.mjs';
+import { openCrawlerStore } from '../../crawler/run.mjs';
 import { HIMALAYAS_SEARCH_URL } from '../../job-pull/remote-adapters/himalayas.mjs';
 import { JOBICY_FEED_URL } from '../../job-pull/remote-adapters/jobicy.mjs';
 import { WWR_FEED_URL } from '../../job-pull/remote-adapters/weworkremotely.mjs';
 import { REMOTIVE_FEED_URL } from '../../job-pull/remote-adapters/remotive.mjs';
+import { REMOTEOK_FEED_URL } from '../../job-pull/remote-adapters/remoteok.mjs';
 
 test('operator help exposes validation, planning, discovery, and readiness commands', () => {
   const help = buildCrawlerHelp();
@@ -156,7 +161,7 @@ test('operator invokes a configured commercial records feed only after free-lane
   assert.equal(result.jobs.length, 1);
 });
 
-test('remote-mode buildSourcePlans wires real fetchJson/fetchText into all four native providers and yields real candidates', async () => {
+test('remote-mode buildSourcePlans wires real fetchJson/fetchText into all five native providers and yields real candidates', async () => {
   const requestedUrls = [];
   const transport = async (url, options) => {
     requestedUrls.push(url);
@@ -175,6 +180,9 @@ test('remote-mode buildSourcePlans wires real fetchJson/fetchText into all four 
     if (url === WWR_FEED_URL) {
       assert.equal(options?.redirect, 'error');
       return { status: 200, body: '<rss><channel><item><title><![CDATA[Full Stack Engineer]]></title><link>https://weworkremotely.com/remote-jobs/1</link><region>Worldwide</region><type>Full-Time</type><pubDate>Thu, 23 Jul 2026 01:00:00 GMT</pubDate></item></channel></rss>' };
+    }
+    if (url === REMOTEOK_FEED_URL) {
+      return { status: 200, body: JSON.stringify([{ last_updated: 1, legal: 'https://remoteok.com/legal' }, { id: '9', position: 'Platform Engineer', company: 'Remoteok Co', location: 'Worldwide', date: '2026-07-22T00:00:00Z', url: 'https://remoteok.com/remote-jobs/9' }]) };
     }
     throw new Error(`unexpected transport call: ${url}`);
   };
@@ -196,16 +204,18 @@ test('remote-mode buildSourcePlans wires real fetchJson/fetchText into all four 
   assert.ok(requestedUrls.some((url) => url === WWR_FEED_URL));
   assert.ok(requestedUrls.some((url) => url === JOBICY_FEED_URL));
   assert.ok(requestedUrls.some((url) => url === REMOTIVE_FEED_URL));
+  assert.ok(requestedUrls.some((url) => url === REMOTEOK_FEED_URL));
   assert.ok(requestedUrls.some((url) => url.startsWith(HIMALAYAS_SEARCH_URL)));
 
   const companies = result.observations.map((observation) => observation.company);
   assert.ok(companies.includes('Himalayas Co'));
   assert.ok(companies.includes('Jobicy Co'));
   assert.ok(companies.includes('Remotive Co'));
+  assert.ok(companies.includes('Remoteok Co'));
   assert.ok(result.observations.some((observation) => observation.title === 'Full Stack Engineer'));
 
   const laneManifests = result.manifest.telemetry.lanes;
-  for (const provider of ['himalayas', 'jobicy', 'weworkremotely', 'remotive']) {
+  for (const provider of ['himalayas', 'jobicy', 'weworkremotely', 'remotive', 'remoteok']) {
     const laneManifest = laneManifests.find((manifest) => manifest.sourceId === provider);
     assert.equal(laneManifest.status, 'ok', `${provider} lane should not be unavailable/failed`);
   }
@@ -274,4 +284,124 @@ test('startup-mode buildSourcePlans wires yc and vc-portfolio-boards lanes with 
   assert.notEqual(ycManifest.status, 'unavailable');
   assert.equal(vcManifest.status, 'ok');
   assert.notEqual(vcManifest.status, 'unavailable');
+});
+
+test('india-startup lane requests include ATS-domain, role-family, geography, and entry-level dimensions', () => {
+  const requests = buildIndiaStartupLaneRequests({
+    indiaStartup: {
+      requests: [],
+      queryBudget: 20,
+      dimensionQueryBudget: 12,
+      roles: ['AI Engineer'],
+      geographies: ['Pune', 'India'],
+      experiences: ['fresher'],
+      ats: ['boards.greenhouse.io', 'jobs.lever.co'],
+      career: ['careers'],
+      startup: ['startup'],
+      vc: ['Peak XV portfolio'],
+      watchlist: 'config/vc-portfolio-watchlist.json',
+    },
+  });
+  const queries = requests.map((request) => request.query);
+  assert.ok(queries.some((query) => /site:boards\.greenhouse\.io|site:jobs\.lever\.co|site:myworkdayjobs\.com|site:jobs\.ashbyhq\.com/.test(query)));
+  assert.ok(queries.some((query) => /AI Engineer|ML Engineer|Backend Engineer|Software Engineer/.test(query)));
+  assert.ok(queries.some((query) => /\bPune\b|\bIndia\b/.test(query)));
+  assert.ok(queries.some((query) => /fresher|0-2|new grad|careers/.test(query)));
+});
+
+test('dormant sources.brave.queries expands into a real brave-search workflow plan from dimensions', async () => {
+  const previous = process.env.BRAVE_SEARCH_API_KEY;
+  process.env.BRAVE_SEARCH_API_KEY = 'test-key-not-real';
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-brave-lane-'));
+  try {
+    const braveConfig = {
+      enabled: true,
+      apiKeyEnv: 'BRAVE_SEARCH_API_KEY',
+      dailyBudget: 3,
+      perQueryResultCap: 5,
+      country: 'IN',
+      roles: ['AI Engineer'],
+      geographies: ['India'],
+      experiences: ['fresher'],
+      ats: ['boards.greenhouse.io'],
+      career: ['careers'],
+      startup: ['startup'],
+      vc: ['Peak XV portfolio'],
+      queries: [],
+    };
+    const queries = listBraveQueries(braveConfig);
+    assert.ok(queries.length > 0);
+    assert.ok(queries.some((query) => /site:boards\.greenhouse\.io/.test(query)));
+    assert.ok(queries.some((query) => /AI Engineer/.test(query)));
+    assert.ok(queries.some((query) => /India|fresher/.test(query)));
+
+    const transportCalls = [];
+    const store = openCrawlerStore(path.join(root, 'crawler.sqlite'));
+    try {
+      const result = await crawlWorkflow({
+        store,
+        runId: 'brave-lane-test',
+        schedule: 'morning',
+        config: { sources: { brave: braveConfig } },
+        clock: { now: () => '2026-07-24T10:00:00.000Z' },
+        sourcePlans: [],
+        brave: { ...braveConfig, queries },
+        braveOptions: { country: 'IN' },
+        braveTransport: async (query, meta = {}) => {
+          transportCalls.push({ query, country: meta.country });
+          return {
+            status: 200,
+            body: { web: { results: [{ title: 'AI Engineer', url: 'https://boards.greenhouse.io/acme/jobs/1' }] } },
+          };
+        },
+      });
+      assert.ok(transportCalls.length > 0, 'brave-search plan must execute when enabled');
+      assert.ok(transportCalls.every((call) => call.country === 'IN'));
+      assert.ok(queries.every((query) => typeof query === 'string' && query.length > 0));
+      assert.ok(result.observations.length >= 0);
+    } finally {
+      store.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.BRAVE_SEARCH_API_KEY;
+    else process.env.BRAVE_SEARCH_API_KEY = previous;
+  }
+});
+
+test('SearXNG transport preserves unresponsive_engines so zero-result degradation is observable', async () => {
+  const plans = buildSourcePlans({
+    config: {
+      sources: {
+        searxng: {
+          enabled: true,
+          endpoint: 'http://127.0.0.1:8080',
+          queries: ['AI Engineer India fresher'],
+          perQueryResultCap: 10,
+          dailyBudget: 1,
+        },
+        indiaStartup: { enabled: false },
+        brave: { enabled: false },
+      },
+    },
+    transport: async () => ({
+      status: 200,
+      body: JSON.stringify({
+        results: [],
+        unresponsive_engines: [['brave', 'too many requests'], ['duckduckgo', 'timeout']],
+      }),
+    }),
+    runAt: '2026-07-24T10:00:00.000Z',
+    schedule: 'morning',
+    resolver: async () => null,
+  });
+
+  const searxPlan = plans.find((plan) => plan.id === 'searxng-search');
+  assert.ok(searxPlan);
+  const result = await searxPlan.fetch({});
+  assert.equal(result.receipts[0].status, 'degraded');
+  assert.equal(result.manifest.telemetry.engineHealth, 'degraded');
+  assert.deepEqual(result.manifest.telemetry.unresponsiveEngines, [
+    ['brave', 'too many requests'],
+    ['duckduckgo', 'timeout'],
+  ]);
 });

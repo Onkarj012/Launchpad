@@ -4,19 +4,51 @@ import { fetchHimalayas } from './remote-adapters/himalayas.mjs';
 import { fetchJobicy } from './remote-adapters/jobicy.mjs';
 import { fetchWeWorkRemotely } from './remote-adapters/weworkremotely.mjs';
 import { fetchRemotive } from './remote-adapters/remotive.mjs';
+import { fetchRemoteOk } from './remote-adapters/remoteok.mjs';
+
+/** Himalayas is the primary native remote feed; the rest are bounded secondaries. */
+export const PRIMARY_REMOTE_PROVIDERS = Object.freeze(['himalayas']);
+export const SECONDARY_REMOTE_PROVIDERS = Object.freeze(['jobicy', 'weworkremotely', 'remotive', 'remoteok']);
+export const NATIVE_REMOTE_PROVIDERS = Object.freeze([...PRIMARY_REMOTE_PROVIDERS, ...SECONDARY_REMOTE_PROVIDERS]);
 
 export const REMOTE_SOURCE_LANES = Object.freeze([
   { id: 'remote-ats', kind: 'remote-ats', category: 'direct-ats', required: true },
   { id: 'yc', kind: 'yc-startup-board', category: 'startup-board', provider: 'yc', optional: true },
   { id: 'wellfound', kind: 'wellfound', category: 'startup-board', provider: 'wellfound', optional: true },
   { id: 'bounded-remote-search', kind: 'bounded-remote-search', category: 'search', optional: true },
-  { id: 'himalayas', kind: 'native-public-feed', category: 'broad-remote', provider: 'himalayas', required: true },
-  { id: 'jobicy', kind: 'native-public-feed', category: 'broad-remote', provider: 'jobicy', required: true },
-  { id: 'weworkremotely', kind: 'native-public-feed', category: 'broad-remote', provider: 'weworkremotely', required: true },
-  { id: 'remotive', kind: 'native-public-feed', category: 'broad-remote', provider: 'remotive', required: true },
+  { id: 'himalayas', kind: 'native-public-feed', category: 'broad-remote', provider: 'himalayas', required: true, role: 'primary' },
+  { id: 'jobicy', kind: 'native-public-feed', category: 'broad-remote', provider: 'jobicy', required: true, role: 'secondary' },
+  { id: 'weworkremotely', kind: 'native-public-feed', category: 'broad-remote', provider: 'weworkremotely', required: true, role: 'secondary' },
+  { id: 'remotive', kind: 'native-public-feed', category: 'broad-remote', provider: 'remotive', required: true, role: 'secondary' },
+  { id: 'remoteok', kind: 'native-public-feed', category: 'broad-remote', provider: 'remoteok', required: true, role: 'secondary' },
 ]);
 
-const NATIVE_ADAPTERS = Object.freeze({ himalayas: fetchHimalayas, jobicy: fetchJobicy, weworkremotely: fetchWeWorkRemotely, remotive: fetchRemotive });
+const NATIVE_ADAPTERS = Object.freeze({
+  himalayas: fetchHimalayas,
+  jobicy: fetchJobicy,
+  weworkremotely: fetchWeWorkRemotely,
+  remotive: fetchRemotive,
+  remoteok: fetchRemoteOk,
+});
+
+/**
+ * Select which native remote providers run for a given schedule tick.
+ * Himalayas (primary) always runs; secondaries respect secondaryCadenceDays
+ * (default 2 = every other UTC day) unless forceAll (explicit --mode remote).
+ */
+export function selectRemoteProviders({ remoteConfig = {}, runAt, forceAll = false } = {}) {
+  const primary = Array.isArray(remoteConfig.primaryProviders) && remoteConfig.primaryProviders.length
+    ? remoteConfig.primaryProviders
+    : [...PRIMARY_REMOTE_PROVIDERS];
+  const secondary = Array.isArray(remoteConfig.secondaryProviders) && remoteConfig.secondaryProviders.length
+    ? remoteConfig.secondaryProviders
+    : [...SECONDARY_REMOTE_PROVIDERS];
+  if (forceAll) return [...new Set([...primary, ...secondary])];
+  const cadence = Math.max(1, Number(remoteConfig.secondaryCadenceDays ?? 2));
+  const dayIndex = Math.floor(Date.parse(runAt || 0) / 86_400_000);
+  const includeSecondary = !Number.isFinite(dayIndex) || dayIndex % cadence === 0;
+  return includeSecondary ? [...new Set([...primary, ...secondary])] : [...primary];
+}
 
 function errorMessage(error) { return error?.message || String(error); }
 
@@ -73,6 +105,7 @@ function normalizeLaneCandidate(raw, lane, { runAt, runId }) {
     employment: raw?.employmentStabilityEvidence ?? raw?.contractStabilityEvidence ?? base.employment?.evidence ?? null,
     timezone: raw?.timezoneEvidence ?? raw?.timezoneOverlapEvidence ?? null,
   };
+  const feedPublishedAt = raw?.feedPublishedAt ?? base.evidence?.feedPublishedAt ?? null;
   const enriched = {
     ...base,
     source: raw?.source || base.source || lane.id,
@@ -87,6 +120,7 @@ function normalizeLaneCandidate(raw, lane, { runAt, runId }) {
     remoteLaneId: lane.id,
     remoteProviderPolicy: raw?.remoteProviderPolicy || (lane.provider === 'remotive' ? { first24hEligible: false, reason: 'Remotive inventory is delayed' } : null),
     providerDateEvidence: providerEvidence(raw, base, lane),
+    feedPublishedAt,
     remoteEvidence,
     dedupKey: candidateDedupKey(base),
     evidence: {
@@ -94,6 +128,7 @@ function normalizeLaneCandidate(raw, lane, { runAt, runId }) {
       discovery: { url: discoveryUrl, source: discoverySource, category: discoveryCategory, provider: raw?.provider || base.provider || provider || null },
       originalApplication: originalEvidence,
       providerDate: providerEvidence(raw, base, lane),
+      ...(feedPublishedAt ? { feedPublishedAt } : {}),
       remote: remoteEvidence,
       verifiedAt: raw?.verifiedAt ?? raw?.liveness?.checkedAt ?? base.liveness?.checkedAt ?? null,
     },

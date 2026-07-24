@@ -33,6 +33,7 @@ export function remoteModeFixtures() {
     jobicy: { records: [remoteJob(6, { provider: 'jobicy', location: 'Remote - India', providerDateField: 'pubDate', providerDateEvidence: 'jobicy.pubDate' })], telemetry: { dateField: 'pubDate', pages: [{ page: 1, requested: 50, returned: 1 }] } },
     weworkremotely: { records: [remoteJob(7, { provider: 'weworkremotely', location: 'Worldwide', description: 'Worldwide remote including India. Full-time role. 0-1 years.', providerDateField: 'pubDate', providerDateEvidence: 'weworkremotely.pubDate' })], telemetry: { dateField: 'pubDate', pages: [{ page: 1, returned: 1 }] } },
     remotive: { records: [remoteJob(8, { provider: 'remotive', location: 'Worldwide', description: 'Worldwide remote including India. Full-time role. 0-1 years.', postedAt: posted(3), remoteProviderPolicy: { first24hEligible: false, reason: 'delayed inventory' } })], telemetry: { dateField: 'publication_date', first24hEligible: false, pages: [{ page: 1, returned: 1 }] } },
+    remoteok: { records: [remoteJob(9, { provider: 'remoteok', location: 'Worldwide', description: 'Worldwide remote including India. Full-time role. 0-1 years.', providerDateField: 'date', providerDateEvidence: 'remoteok.date', feedPublishedAt: posted(4) })], telemetry: { dateField: 'date', pages: [{ page: 1, returned: 1 }] } },
   };
 }
 

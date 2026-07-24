@@ -80,6 +80,20 @@
         { "name": "Loop" },
         { "name": "Urban Company" }
       ]
+    },
+    {
+      "fund": "Antler",
+      "sourceUrl": "https://www.antler.co/portfolio",
+      "verifiedAt": null,
+      "verificationMethod": "not yet verified — requires live portfolio-page fetch before company list can be populated",
+      "companies": []
+    },
+    {
+      "fund": "a16z",
+      "sourceUrl": "https://a16z.com/portfolio/",
+      "verifiedAt": null,
+      "verificationMethod": "not yet verified — requires live portfolio-page fetch before company list can be populated",
+      "companies": []
     }
   ]
 }

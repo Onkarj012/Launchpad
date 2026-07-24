@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fetchAtsBatch1 } from './ats-batch-1.mjs';
 import { fetchWarmAts } from './ats-warm.mjs';
-import { discoverBraveSearch } from './brave-search.mjs';
+import { buildBraveQueries, DEFAULT_BRAVE_DIMENSIONS, discoverBraveSearch } from './brave-search.mjs';
 import { createChromiumFallbackTransport } from './chromium-fallback.mjs';
 import { discoverAtsBatch2 } from './ats-batch-2.mjs';
 import { discoverEnterpriseAts } from './ats-enterprise.mjs';
 import { importIndeedInbox } from './indeed-inbox.mjs';
 import {
   ORIGINAL_LISTING_RESOLVER_VERSION,
+  applyOriginalListingResolution,
   createOriginalListingResolver,
 } from './original-listing-resolver.mjs';
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
@@ -28,7 +29,7 @@ import { readOpportunityLedger } from '../job-pull/opportunity-ledger.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 import { runStartupSourcePlan } from '../job-pull/startup-sources.mjs';
-import { runRemoteSourcePlan } from '../job-pull/remote-sources.mjs';
+import { runRemoteSourcePlan, selectRemoteProviders } from '../job-pull/remote-sources.mjs';
 import { buildDiscoveryProfile } from './discovery-profile.mjs';
 import {
   normalizeConnectorEnvelope,
@@ -104,7 +105,13 @@ function resolverSettings(config) {
   return settings;
 }
 
-/** Shared SearXNG search transport: wraps the base HTTP transport into the `(query) => { status, body: { results } }` shape every search-based discovery function (discoverBraveSearch, discoverYcJobs) expects. */
+/**
+ * Shared SearXNG search transport: wraps the base HTTP transport into the
+ * `(query) => { status, body: { results, unresponsive_engines? } }` shape every
+ * search-based discovery function (discoverBraveSearch, discoverYcJobs) expects.
+ * Preserves unresponsive_engines so zero-result engine degradation is distinct
+ * from a healthy empty market.
+ */
 function searxngTransport(endpoint, baseTransport) {
   return async (query) => {
     const url = new URL('/search', endpoint);
@@ -112,8 +119,64 @@ function searxngTransport(endpoint, baseTransport) {
     url.searchParams.set('format', 'json');
     const response = await baseTransport(url.toString(), { headers: { Accept: 'application/json' } });
     const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-    return { ...response, body: { results: body?.results ?? [] } };
+    const payload = { results: body?.results ?? [] };
+    if (Array.isArray(body?.unresponsive_engines)) payload.unresponsive_engines = body.unresponsive_engines;
+    return { ...response, body: payload };
   };
+}
+
+/**
+ * Merges configured india-startup requests with VC watchlist seeds and
+ * dimension-generated Brave queries (ATS domain / role family / geography /
+ * entry-level / startup) so the lane always carries the full dimension set.
+ */
+export function buildIndiaStartupLaneRequests(sources = {}) {
+  const india = sources.indiaStartup ?? {};
+  const configured = Array.isArray(india.requests) ? india.requests.map((request) => ({ ...request })) : [];
+  const watchlistPath = india.watchlist
+    ?? sources.startup?.vcPortfolioWatchlistPath
+    ?? 'config/vc-portfolio-watchlist.json';
+  let watchlistRequests = [];
+  try {
+    const watchlist = loadVcPortfolioWatchlist(watchlistPath);
+    watchlistRequests = buildVcWatchlistRequests(watchlist, {
+      limit: india.vcPortfolioLimit ?? sources.startup?.vcPortfolioLimit ?? 20,
+    });
+  } catch {
+    watchlistRequests = [];
+  }
+  const budget = Math.max(0, Number(india.queryBudget ?? india.dailyBudget ?? 20));
+  const dimensionCap = Math.min(budget, Math.max(0, Number(india.dimensionQueryBudget ?? 8)));
+  const dimensionQueries = buildBraveQueries({
+    roles: india.roles ?? DEFAULT_BRAVE_DIMENSIONS.roles,
+    geographies: india.geographies ?? DEFAULT_BRAVE_DIMENSIONS.geographies,
+    experiences: india.experiences ?? DEFAULT_BRAVE_DIMENSIONS.experiences,
+    ats: india.ats ?? DEFAULT_BRAVE_DIMENSIONS.ats,
+    career: india.career ?? DEFAULT_BRAVE_DIMENSIONS.career,
+    startup: india.startup ?? DEFAULT_BRAVE_DIMENSIONS.startup,
+    vc: india.vc ?? DEFAULT_BRAVE_DIMENSIONS.vc,
+    maxQueries: dimensionCap,
+  });
+  const dimensionRequests = dimensionQueries.map((query) => ({ id: 'ats-search', query }));
+  const seen = new Set();
+  const take = (requests, limit) => {
+    const out = [];
+    for (const request of requests) {
+      if (out.length >= limit) break;
+      const query = typeof request?.query === 'string' ? request.query.trim() : '';
+      if (!query) continue;
+      const key = query.toLocaleLowerCase('en-US').replace(/\s+/g, ' ');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: request.id || 'ats-search', query, evidence: request.evidence });
+    }
+    return out;
+  };
+  // Reserve dimension coverage (ATS/role/geo/entry-level) so VC watchlist volume
+  // cannot crowd out the provider-specific Brave query matrix.
+  const dimensions = take(dimensionRequests, dimensionCap);
+  const remainder = take([...configured, ...watchlistRequests], Math.max(0, budget - dimensions.length));
+  return [...dimensions, ...remainder].slice(0, budget);
 }
 
 function verificationResolution(observation, error) {
@@ -250,15 +313,70 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
   }));
-  if (profile?.mode === 'remote') plans.push(sourcePlan('remote-mode', 'remote-sources', 'remote', async () => {
+  // Explicit --mode remote always runs all native feeds. Scheduled --mode normal
+  // also runs them when sources.remote.enabled (toggle without code changes).
+  // Startup mode never inherits remote lanes. Midday keeps the lighter ATS-only plan.
+  const explicitRemoteMode = profile?.mode === 'remote';
+  const scheduledRemoteEnabled = sources.remote?.enabled === true
+    && profile?.mode === 'normal'
+    && schedule !== 'midday';
+  if (explicitRemoteMode || scheduledRemoteEnabled) plans.push(sourcePlan('remote-mode', 'remote-sources', 'remote', async () => {
+    const remoteConfig = sources.remote ?? {};
+    const forceAll = explicitRemoteMode;
+    const activeProviders = selectRemoteProviders({ remoteConfig, runAt, forceAll });
     const fetchJson = async (url, options) => { const response = await transport(url, options); const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; return body; };
     const fetchText = async (url, options) => { const response = await transport(url, options); return response.body; };
-    const providerFetchers = {
-      ...Object.fromEntries(['himalayas', 'jobicy', 'remotive'].map((provider) => [provider, { fetchJson }])),
-      weworkremotely: { fetchText },
+    const providerFetchers = {};
+    for (const provider of activeProviders) {
+      providerFetchers[provider] = provider === 'weworkremotely' ? { fetchText } : { fetchJson };
+    }
+    const outputs = await runRemoteSourcePlan({ providerFetchers, runAt, runId: profile?.mode || 'normal' });
+    const primarySet = new Set(remoteConfig.primaryProviders ?? ['himalayas']);
+    const maxPrimary = Math.max(1, Number(remoteConfig.maxRecordsPrimary ?? 40));
+    const maxSecondary = Math.max(1, Number(remoteConfig.maxRecordsPerSecondary ?? remoteConfig.maxRecordsPerProvider ?? 25));
+    const observations = [];
+    const verificationQueue = [];
+    for (const item of outputs) {
+      const laneId = item.manifest?.sourceId || item.manifest?.provider;
+      const cap = primarySet.has(laneId) ? maxPrimary : maxSecondary;
+      const candidates = (item.candidates || []).slice(0, cap);
+      for (const candidate of candidates) {
+        const alreadyResolved = ['Direct ATS', 'Resolved Original'].includes(candidate.applicationResolution?.status)
+          && candidate.originalApplicationUrl;
+        if (typeof resolver === 'function' && !alreadyResolved) {
+          let resolution;
+          try { resolution = await resolver(candidate); }
+          catch (error) { resolution = verificationResolution(candidate, error); }
+          const resolved = applyOriginalListingResolution(candidate, resolution);
+          if (resolved.classification !== 'direct' || !resolved.originalApplicationUrl) {
+            verificationQueue.push({
+              url: candidate.discoveryUrl || candidate.canonicalUrl,
+              company: candidate.company,
+              reason: 'original-listing',
+              evidence: resolved.evidence,
+            });
+          }
+          observations.push(resolved);
+        } else {
+          observations.push(candidate);
+        }
+      }
+    }
+    return {
+      observations,
+      verificationQueue,
+      manifest: {
+        fetched: observations.length,
+        changed: observations.length,
+        noAutoApply: true,
+        writesPlanned: false,
+        telemetry: {
+          mode: forceAll ? 'remote' : 'scheduled-remote',
+          activeProviders,
+          lanes: outputs.map((item) => item.manifest),
+        },
+      },
     };
-    const outputs = await runRemoteSourcePlan({ providerFetchers, runAt, runId: profile.mode });
-    return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'remote', lanes: outputs.map((item) => item.manifest) } } };
   }));
   if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => {
     // discoverIndiaStartupLanes calls transport(request, meta) with a {source, kind, query, url}
@@ -270,8 +388,10 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       return { observations: [], verificationQueue: [], manifest: { schemaVersion: 'IndiaStartupLanesManifestV1', runAt, sources: [], telemetry: { unavailable: 'searxng-not-configured' }, noAutoApply: true }, telemetry: {} };
     }
     const searxTransport = searxngTransport(sources.searxng.endpoint, transport);
+    const requests = buildIndiaStartupLaneRequests(sources);
     return discoverIndiaStartupLanes({
       ...sources.indiaStartup,
+      requests,
       transport: async (request) => searxTransport(request.query),
       runAt,
     });
@@ -284,19 +404,48 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       transport: searxngTransport(sources.searxng.endpoint, transport),
       resolveOriginalListing: resolver,
       runAt,
+      country: sources.searxng.country ?? 'IN',
     });
   }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   return plans;
+}
+
+/**
+ * Direct Brave lane query materialization. Empty `queries: []` expands from the
+ * role / ATS / geography / entry-level / startup / VC dimensions so the workflow
+ * `brave-search` plan is not a no-op when the lane is enabled.
+ */
+export function listBraveQueries(braveConfig = {}) {
+  const configured = Array.isArray(braveConfig.queries)
+    ? braveConfig.queries.map((query) => (typeof query === 'string' ? query.trim() : '')).filter(Boolean)
+    : [];
+  if (configured.length) return configured;
+  return buildBraveQueries({
+    ...braveConfig,
+    roles: braveConfig.roles ?? DEFAULT_BRAVE_DIMENSIONS.roles,
+    geographies: braveConfig.geographies ?? DEFAULT_BRAVE_DIMENSIONS.geographies,
+    experiences: braveConfig.experiences ?? DEFAULT_BRAVE_DIMENSIONS.experiences,
+    ats: braveConfig.ats ?? DEFAULT_BRAVE_DIMENSIONS.ats,
+    career: braveConfig.career ?? DEFAULT_BRAVE_DIMENSIONS.career,
+    startup: braveConfig.startup ?? DEFAULT_BRAVE_DIMENSIONS.startup,
+    vc: braveConfig.vc ?? DEFAULT_BRAVE_DIMENSIONS.vc,
+    maxQueries: braveConfig.maxQueries ?? braveConfig.dailyBudget ?? 20,
+  });
 }
 
 function braveTransportFor(config, transport) {
   if (!config.sources.brave?.enabled) return null;
   const key = process.env[config.sources.brave.apiKeyEnv ?? 'BRAVE_SEARCH_API_KEY'];
   if (!key) throw new Error(`Brave is enabled but ${config.sources.brave.apiKeyEnv ?? 'BRAVE_SEARCH_API_KEY'} is unavailable`);
-  return async (query) => {
+  const country = config.sources.brave.country ?? 'IN';
+  const searchLang = config.sources.brave.searchLang ?? 'en';
+  return async (query, meta = {}) => {
     const url = new URL('https://api.search.brave.com/res/v1/web/search');
     url.searchParams.set('q', query);
     url.searchParams.set('count', String(config.sources.brave.perQueryResultCap ?? 10));
+    url.searchParams.set('country', meta.country ?? country);
+    url.searchParams.set('search_lang', searchLang);
+    if (meta.offset != null) url.searchParams.set('offset', String(meta.offset));
     return transport(url.toString(), { headers: { Accept: 'application/json', 'X-Subscription-Token': key } });
   };
 }
@@ -363,8 +512,14 @@ export async function runCrawlerOperator({
       careerTransport: (config.sources.careerSites ?? []).length
         ? createChromiumFallbackTransport({ baseTransport: transport, ...(config.sources.chromium ?? {}) })
         : undefined,
-      brave: schedule !== 'midday' && config.sources.brave?.enabled ? config.sources.brave : null,
-      braveOptions: config.sources.brave ?? {},
+      brave: schedule !== 'midday' && config.sources.brave?.enabled
+        ? { ...config.sources.brave, queries: listBraveQueries(config.sources.brave) }
+        : null,
+      braveOptions: {
+        ...(config.sources.brave ?? {}),
+        country: config.sources.brave?.country ?? 'IN',
+        resolveOriginalListing: resolver,
+      },
       braveTransport: schedule !== 'midday' ? braveTransportFor(config, transport) : null,
       prepareEntry,
     });
