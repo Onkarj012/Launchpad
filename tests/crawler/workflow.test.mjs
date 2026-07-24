@@ -18,6 +18,44 @@ function database() {
   return openCrawlerStore(path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-crawler-e2e-')), 'crawler.sqlite'));
 }
 
+function fixtureObservation(overrides = {}) {
+  return {
+    provider: 'fixture',
+    providerJobId: overrides.providerJobId || overrides.company?.toLowerCase().replace(/\s+/g, '-') || 'fixture-1',
+    canonicalUrl: 'https://jobs.example.test/fixture-1',
+    company: 'Fixture Co',
+    title: 'AI Engineer',
+    location: 'Pune',
+    description: 'Build AI systems.',
+    postedAt: '2026-07-23T08:00:00.000Z',
+    classification: 'direct',
+    sourceKind: 'ats-direct',
+    applicationReady: true,
+    applicationResolution: { status: 'Resolved Original', evidence: 'fixture' },
+    liveness: { status: 'Active', evidence: 'fixture' },
+    ...overrides,
+  };
+}
+
+async function runFixture({ runId, observation, prepareEntry, verificationQueue, historicalRows } = {}) {
+  const store = database();
+  const result = await crawlWorkflow({
+    store,
+    runId,
+    clock: fixedClock(),
+    sourcePlans: [{
+      id: `fixture-${runId}`,
+      lane: 'fixture',
+      trustClass: 'direct',
+      fetch: async () => ({ observations: [observation], verificationQueue }),
+    }],
+    prepareEntry,
+    historicalRows,
+  });
+  store.close();
+  return result;
+}
+
 const careerBody = `<html><script type="application/ld+json">${JSON.stringify({
   '@type': 'JobPosting',
   title: 'AI Engineer',
@@ -168,4 +206,119 @@ test('a new run automatically uses durable crawler history for novelty', async (
   assert.equal(second.shortlist.length, 0);
   assert.equal(second.jobs.length, 1);
   store.close();
+});
+
+test('adds a verifiable reserve exclusion to verification without source self-reporting', async () => {
+  const observation = fixtureObservation({
+    canonicalUrl: 'https://jobs.example.test/unresolved-application',
+    company: 'Needs Verification Co',
+    applicationReady: false,
+    applicationResolution: { status: 'Unresolved' },
+  });
+  const result = await runFixture({
+    runId: 'verification-derived',
+    observation,
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: true, strict: false, experience: { manualReview: true, code: 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW' } },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+
+  assert.equal(result.verificationQueue.length, 1);
+  assert.equal(result.verificationQueue[0].url, observation.canonicalUrl);
+  assert.ok(result.verificationQueue[0].reasons.includes('ORIGINAL_APPLICATION_NOT_RESOLVED'));
+  assert.ok(result.verificationQueue[0].reasons.includes('EXPERIENCE_NOT_STATED_MANUAL_REVIEW'));
+});
+
+test('does not add a hard geography rejection to verification', async () => {
+  const observation = fixtureObservation({
+    canonicalUrl: 'https://jobs.example.test/foreign-role',
+    company: 'Foreign Co',
+    location: 'London',
+    applicationReady: false,
+    applicationResolution: { status: 'Unresolved' },
+  });
+  const result = await runFixture({
+    runId: 'verification-hard-reject',
+    observation,
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: false, reasons: ['GEO_ONSITE_NOT_PUNE'], geo: { code: 'GEO_ONSITE_NOT_PUNE' } },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+
+  assert.equal(result.verificationQueue.some((item) => item.url === observation.canonicalUrl), false);
+});
+
+test('moves an unresolved placeholder-company aggregator lead out of the primary queue', async () => {
+  const observation = fixtureObservation({
+    canonicalUrl: 'https://www.ycombinator.com/jobs/role/all/india',
+    company: 'Unknown Company',
+    title: 'Unresolved job lead',
+    classification: 'lead',
+    sourceKind: 'aggregator',
+    applicationReady: false,
+    applicationResolution: { status: 'Unresolved' },
+  });
+  const result = await runFixture({
+    runId: 'placeholder-lead',
+    observation,
+    verificationQueue: [{ url: observation.canonicalUrl, company: observation.company, reason: 'original-listing' }],
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+
+  assert.equal(result.verificationQueue.some((item) => item.url === observation.canonicalUrl), false);
+  assert.equal(result.unresolvedLeads.some((item) => item.lowQuality === true && item.url === observation.canonicalUrl), true);
+});
+
+test('historical rows suppress a candidate before shortlist, reserve, and verification handoff', async () => {
+  const observation = fixtureObservation({
+    canonicalUrl: 'https://jobs.example.test/historical-role',
+    company: 'Historical Co',
+  });
+  const result = await runFixture({
+    runId: 'historical-suppression',
+    observation,
+    historicalRows: [{ company: observation.company, title: observation.title, location: observation.location, state: 'surfaced' }],
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.reserve.length, 0);
+  assert.equal(result.plannedDownstreamHandoff.reserveQueue.length, 0);
+  assert.equal(result.verificationQueue.length, 0);
+  assert.equal(result.historicalSuppressions.length, 1);
+  assert.equal(result.historicalSuppressions[0].code, 'SUPPRESSED_HISTORICAL');
+  assert.equal(result.counts.historicalSuppressed, 1);
+});
+
+test('an explicit empty historicalRows list preserves the existing workflow result', async () => {
+  const observation = fixtureObservation({
+    canonicalUrl: 'https://jobs.example.test/default-history',
+    company: 'Default History Co',
+  });
+  const prepareEntry = (candidate) => ({
+    candidate,
+    eligibility: { eligible: true, strict: true },
+    freshness: { eligible: true, ageHours: 2 },
+  });
+  const withoutRows = await runFixture({ runId: 'history-default-a', observation, prepareEntry });
+  const withEmptyRows = await runFixture({ runId: 'history-default-b', observation, prepareEntry, historicalRows: [] });
+
+  assert.deepEqual(withEmptyRows.shortlist, withoutRows.shortlist);
+  assert.deepEqual(withEmptyRows.reserve, withoutRows.reserve);
+  assert.deepEqual(withEmptyRows.verificationQueue, withoutRows.verificationQueue);
+  assert.deepEqual(withEmptyRows.shortfall, withoutRows.shortfall);
+  assert.deepEqual(withEmptyRows.historicalSuppressions, withoutRows.historicalSuppressions);
+  assert.deepEqual(withEmptyRows.counts, withoutRows.counts);
 });

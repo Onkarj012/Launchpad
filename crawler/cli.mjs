@@ -22,6 +22,30 @@ function value(args, name, fallback = null) {
   return index >= 0 ? args[index + 1] ?? fallback : fallback;
 }
 
+const ENV_CONFIG_PATHS = Object.freeze({
+  production: 'config/crawler-v2.json',
+  'live-test': 'config/crawler-v2-live-test.json',
+  dev: 'config/crawler-v2-dev.json',
+});
+
+function explicitOption(args, name) {
+  const index = args.indexOf(name);
+  if (index < 0) return null;
+  const optionValue = args[index + 1];
+  if (!optionValue || optionValue.startsWith('--')) throw new Error(`${name} requires a value`);
+  return optionValue;
+}
+
+export function resolveCrawlerConfigPath(args) {
+  const configPath = explicitOption(args, '--config');
+  if (configPath) return configPath;
+  const environment = explicitOption(args, '--env') ?? 'dev';
+  if (!Object.hasOwn(ENV_CONFIG_PATHS, environment)) {
+    throw new Error(`--env must be one of production, live-test, or dev; received: ${environment}`);
+  }
+  return ENV_CONFIG_PATHS[environment];
+}
+
 function positional(args) {
   return args.filter((item, index) => !item.startsWith('--') && (index === 0 || !args[index - 1].startsWith('--')));
 }
@@ -82,7 +106,7 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(buildCrawlerHelp());
     return 0;
   }
-  const { config, path: configPath } = loadCrawlerConfig(value(argv, '--config', 'config/crawler-v2.json'));
+  const { config, path: configPath } = loadCrawlerConfig(resolveCrawlerConfigPath(argv));
   if (command === 'validate') {
     output({
       status: 'valid',

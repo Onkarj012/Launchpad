@@ -25,6 +25,7 @@ import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { loadConfig as loadJobPullPolicy } from '../job-pull/config.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 import { readOpportunityLedger } from '../job-pull/opportunity-ledger.mjs';
+import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 import { runStartupSourcePlan } from '../job-pull/startup-sources.mjs';
 import { runRemoteSourcePlan } from '../job-pull/remote-sources.mjs';
@@ -325,6 +326,7 @@ export async function runCrawlerOperator({
   try {
     const policy = loadJobPullPolicy();
     const lifecycleRows = readOpportunityLedger(config.opportunityLedgerPath).rows;
+    const historicalRows = readV4HistorySnapshot(config.v4HistorySnapshotPath).rows;
     const prepareEntry = (candidate) => {
       const eligibility = classifyCandidate(candidate, policy);
       const freshness = classifyFreshness(candidate, { now: runAt, ...policy.freshness });
@@ -342,6 +344,7 @@ export async function runCrawlerOperator({
       config: { ...config, discoveryProfile: profile },
       clock,
       priorLifecycleRows: lifecycleRows,
+      historicalRows,
       sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},
@@ -379,6 +382,7 @@ export async function runCrawlerOperator({
           config: { ...config, discoveryProfile: profile },
           clock,
           priorLifecycleRows: lifecycleRows,
+          historicalRows,
           sourcePlans: [sourcePlan('commercial-rescue', 'commercial-rescue', 'commercial-rescue', async () => ({
             observations: commercial.records.map((record) => normalizeCandidate({
               ...record,

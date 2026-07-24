@@ -58,6 +58,32 @@ function responseBody(response) {
 }
 function retryableStatus(status) { return status === 408 || status === 425 || status === 429 || status >= 500; }
 function resultRows(body) { return body?.web?.results ?? body?.results; }
+function unresponsiveEngines(body, provider) {
+  if (provider !== 'searxng' || !Array.isArray(body?.unresponsive_engines)) return [];
+  return body.unresponsive_engines
+    .filter((pair) => Array.isArray(pair) && pair.length >= 2)
+    .map(([engine, reason]) => [engine, reason]);
+}
+function sparseResults(rows, resultCap) {
+  const requested = Math.max(0, Number(resultCap));
+  return rows.length === 0 || (requested > 1 && rows.length <= Math.floor(requested / 2));
+}
+function configuredEngineNames(options) {
+  return list(options.configuredEngines
+    ?? options.localEngines
+    ?? options.searxngEngines
+    ?? options.searchConfig?.configuredEngines
+    ?? options.searchConfig?.localEngines
+    ?? options.searchConfig?.searxngEngines
+    ?? options.engines);
+}
+function fullyDegraded(unresponsive, rows, options) {
+  if (!unresponsive.length || !sparseResults(rows, options.perQueryResultCap)) return false;
+  const configured = configuredEngineNames(options);
+  if (!configured.length) return true;
+  const reported = new Set(unresponsive.map(([engine]) => String(engine).toLocaleLowerCase('en-US')));
+  return configured.every((engine) => reported.has(engine.toLocaleLowerCase('en-US')));
+}
 
 function observationFrom(row, sourceQuery, runAt, provider = 'brave-search') {
   const url = canonical(row?.url);
@@ -94,11 +120,24 @@ export async function discoverBraveSearch({
   const budget = Math.max(0, Number(dailyBudget ?? queries.length));
   const receipts = []; const observations = []; const seen = new Set(); const verificationQueue = [];
   const discoveredCompanies = []; const discoveredBoards = []; const companyKeys = new Set(); const boardKeys = new Set();
-  const telemetry = { queriesGenerated: queries.length, duplicateQueries: 0, budgetRequested: budget, budgetUsed: 0, resultCount: 0, duplicateResults: 0, malformedResponses: 0, retryable: 0, terminal: 0, direct: 0, leads: 0, unresolved: 0, resolverPromotions: 0 };
+  const telemetry = {
+    queriesGenerated: queries.length, duplicateQueries: 0, budgetRequested: budget, budgetUsed: 0,
+    queriesSkipped: 0, skippedReason: null, resultCount: 0, duplicateResults: 0,
+    malformedResponses: 0, retryable: 0, terminal: 0, degradedQueries: 0,
+    unresponsiveEngines: [], unresponsiveEngineEvents: [], direct: 0, leads: 0,
+    unresolved: 0, resolverPromotions: 0,
+  };
   const uniqueQueries = []; const queryKeys = new Set();
   for (const query of queries) { const key = query.toLocaleLowerCase('en-US').replace(/\s+/g, ' ').trim(); if (queryKeys.has(key)) telemetry.duplicateQueries += 1; else { queryKeys.add(key); uniqueQueries.push(query); } }
   const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
-  for (const query of uniqueQueries.slice(0, budget)) {
+  const budgetQueries = uniqueQueries.slice(0, budget);
+  let skipRemaining = false;
+  for (const [queryIndex, query] of budgetQueries.entries()) {
+    if (skipRemaining) {
+      telemetry.queriesSkipped += 1;
+      receipts.push({ query, attempts: 0, status: 'skipped', reason: telemetry.skippedReason, resultCap: perQueryResultCap, results: 0, observations: 0, unresponsiveEngines: [] });
+      continue;
+    }
     telemetry.budgetUsed += 1; let response; let attempts = 0; let outcome = 'terminal'; let reason = null;
     while (attempts < maxAttempts) {
       attempts += 1;
@@ -114,8 +153,19 @@ export async function discoverBraveSearch({
     const body = outcome === 'success' ? responseBody(response) : null;
     const rows = body && resultRows(body);
     if (outcome === 'success' && !Array.isArray(rows)) { outcome = 'malformed'; telemetry.malformedResponses += 1; }
+    const engineErrors = outcome === 'success' ? unresponsiveEngines(body, provider) : [];
+    const isDegraded = outcome === 'success' && engineErrors.length > 0 && sparseResults(rows, perQueryResultCap);
+    if (isDegraded) {
+      outcome = 'degraded'; telemetry.degradedQueries += 1;
+      for (const pair of engineErrors) if (!telemetry.unresponsiveEngines.some((existing) => existing[0] === pair[0] && existing[1] === pair[1])) telemetry.unresponsiveEngines.push(pair);
+      telemetry.unresponsiveEngineEvents.push({ query, engines: engineErrors });
+      if (queryIndex === 0 && fullyDegraded(engineErrors, rows, { ...options, perQueryResultCap })) {
+        skipRemaining = true;
+        telemetry.skippedReason = 'first-query-fully-degraded';
+      }
+    }
     const observationsBeforeQuery = observations.length;
-    if (outcome === 'success') {
+    if (outcome === 'success' || outcome === 'degraded') {
       telemetry.resultCount += Math.min(rows.length, perQueryResultCap);
       for (const row of rows.slice(0, perQueryResultCap)) {
         const url = canonical(row?.url); if (!url || seen.has(url)) { if (url) telemetry.duplicateResults += 1; continue; }
@@ -146,9 +196,13 @@ export async function discoverBraveSearch({
         if (typeof options.enrichBoard === 'function' && observation.classification === 'direct') { const board = await options.enrichBoard(observation); if (board && !boardKeys.has(JSON.stringify(board))) { boardKeys.add(JSON.stringify(board)); discoveredBoards.push(board); } }
       }
     }
-    receipts.push({ query, attempts, status: outcome, reason, resultCap: perQueryResultCap, results: outcome === 'success' ? Math.min(rows.length, perQueryResultCap) : 0, observations: outcome === 'success' ? observations.length - observationsBeforeQuery : 0 });
+    receipts.push({ query, attempts, status: outcome, reason, resultCap: perQueryResultCap, results: outcome === 'success' || outcome === 'degraded' ? Math.min(rows.length, perQueryResultCap) : 0, observations: outcome === 'success' || outcome === 'degraded' ? observations.length - observationsBeforeQuery : 0, unresponsiveEngines: engineErrors });
   }
-  return { observations, verificationQueue, discoveredCompanies, discoveredBoards, receipts, manifest: { schemaVersion: provider === 'searxng' ? 'SearxngSearchManifestV1' : 'BraveSearchManifestV1', runAt, queries, telemetry, noAutoApply: true } };
+  const executedQueries = receipts.length - telemetry.queriesSkipped;
+  const degradedRun = telemetry.degradedQueries > 0 && telemetry.degradedQueries * 3 >= Math.max(1, executedQueries * 2);
+  const manifest = { schemaVersion: provider === 'searxng' ? 'SearxngSearchManifestV1' : 'BraveSearchManifestV1', runAt, queries, telemetry, noAutoApply: true };
+  if (degradedRun) manifest.status = 'degraded';
+  return { observations, verificationQueue, discoveredCompanies, discoveredBoards, receipts, manifest };
 }
 
 export default discoverBraveSearch;

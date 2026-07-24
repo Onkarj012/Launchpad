@@ -5,17 +5,21 @@ import { discoverEnterpriseAts } from '../../crawler/ats-enterprise.mjs';
 const runAt = '2026-07-23T10:00:00Z';
 
 test('parses Workday postings, follows one bounded page, and preserves direct/lead provenance', async () => {
+  // Real Workday CXS pagination: same endpoint URL every request, offset
+  // advanced in the POST body, continuation driven by `total` vs items
+  // fetched so far -- there is no next-link field in the live response.
   const calls = [];
   const transport = async (url, options) => {
     calls.push({ url, options });
-    if (url.endsWith('/jobs')) return { status: 200, headers: { etag: 'w1' }, body: JSON.stringify({
+    const { offset } = JSON.parse(options.body);
+    if (offset === 0) return { status: 200, headers: { etag: 'w1' }, body: JSON.stringify({
+      total: 3,
       jobPostings: [
         { title: 'AI Engineer', externalPath: '/job/ai-engineer', locations: ['Pune'], postedOn: '2026-07-22', jobReqId: 'WD-1' },
         { title: 'Partner Engineer', externalPath: 'https://partner.example/jobs/2', locations: ['Remote'], postedOn: '2026-07-21', jobReqId: 'WD-2' },
       ],
-      next: 'https://acme.wd1.myworkdayjobs.com/jobs?page=2',
     }) };
-    return { status: 200, headers: {}, body: JSON.stringify({ jobPostings: [{ title: 'Backend Engineer', externalPath: '/job/backend', postedOn: '2026-07-20', jobReqId: 'WD-3' }] }) };
+    return { status: 200, headers: {}, body: JSON.stringify({ total: 3, jobPostings: [{ title: 'Backend Engineer', externalPath: '/job/backend', postedOn: '2026-07-20', jobReqId: 'WD-3' }] }) };
   };
 
   const result = await discoverEnterpriseAts({
@@ -28,6 +32,8 @@ test('parses Workday postings, follows one bounded page, and preserves direct/le
   assert.equal(result.observations[1].classification, 'lead');
   assert.equal(result.observations[0].provider, 'workday');
   assert.equal(result.observations[0].originalApplicationUrl, 'https://acme.wd1.myworkdayjobs.com/job/ai-engineer');
+  assert.equal(JSON.parse(calls[0].options.body).offset, 0);
+  assert.equal(JSON.parse(calls[1].options.body).offset, 2);
   assert.equal(result.manifest.sources[0].pagesFetched, 2);
   assert.equal(result.conditionalState['https://acme.wd1.myworkdayjobs.com/jobs'].etag, 'w1');
   assert.equal(result.observations[1].provenance.provider, 'workday');
@@ -129,4 +135,37 @@ test('pagination is capped and a listing without a trustworthy URL is skipped', 
   assert.equal(result.manifest.sources[0].pagesCapped, true);
   assert.ok(result.failures.some((failure) => failure.code === 'LISTING_URL_MISSING'));
   assert.ok(result.provenance.transportInjected);
+});
+
+test('Workday: large tenant paginates past the first 20 postings via offset, bounded by maxPages', async () => {
+  const totalPostings = 55;
+  const calls = [];
+  const transport = async (url, options) => {
+    calls.push(JSON.parse(options.body));
+    const { offset, limit } = JSON.parse(options.body);
+    const remaining = Math.max(0, totalPostings - offset);
+    const pageSize = Math.min(limit, remaining);
+    const jobPostings = Array.from({ length: pageSize }, (_, index) => ({
+      title: `Engineer ${offset + index + 1}`,
+      externalPath: `/job/${offset + index + 1}`,
+      locations: ['Pune, India'],
+      postedOn: '2026-07-22',
+      jobReqId: `WD-${offset + index + 1}`,
+    }));
+    return { status: 200, headers: {}, body: JSON.stringify({ total: totalPostings, jobPostings }) };
+  };
+
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'BigCo', url: 'https://bigco.wd1.myworkdayjobs.com/wday/cxs/bigco/Careers/jobs' }],
+    transport, runAt, maxPages: 5, maxJobsPerBoard: 200,
+  });
+
+  // Old behavior stalled at offset 0/limit 20 forever; the fix must advance
+  // offset every request and keep going until `total` is exhausted or
+  // maxPages is hit -- here maxPages(5) * limit(20) = 100 > total(55), so it
+  // stops early on exhaustion, not on the page cap.
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map((body) => body.offset), [0, 20, 40]);
+  assert.equal(result.observations.length, totalPostings);
+  assert.equal(result.manifest.sources[0].pagesCapped, false);
 });

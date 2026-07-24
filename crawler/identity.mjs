@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const SUPPRESSION_STATES = new Set(['surfaced', 'applied', 'contacted', 'rejected', 'cooldown']);
+const SUPPRESSION_STATES = new Set(['surfaced', 'applied', 'contacted', 'interviewing', 'rejected', 'cooldown']);
 const CLOSED_STATES = new Set(['closed', 'inactive', 'filled', 'expired', 'removed', 'withdrawn']);
 const MATCH_TYPES = ['provider_job_id', 'canonical_url', 'company_title_location'];
 

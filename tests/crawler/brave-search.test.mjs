@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { discoverBraveSearch, buildBraveQueries } from '../../crawler/brave-search.mjs';
 
 const brave = (results) => ({ status: 200, body: { web: { results } } });
+const searxng = (results, unresponsive_engines = []) => ({ status: 200, body: { results, unresponsive_engines } });
 const results = [
   { title: 'AI Engineer - Acme', url: 'https://boards.greenhouse.io/acme/jobs/1', description: 'AI Engineer Pune' },
   { title: 'AI Engineer - Acme', url: 'https://boards.greenhouse.io/acme/jobs/1?utm_source=brave', description: 'duplicate' },
@@ -83,4 +84,58 @@ test('returns serialization-friendly receipts and manifest telemetry', async () 
   assert.equal(result.manifest.schemaVersion, 'BraveSearchManifestV1');
   assert.equal(result.receipts[0].observations, 0);
   assert.equal(buildBraveQueries({ queries: ['x', 'x'] }).length, 1);
+});
+
+test('marks an empty SearXNG response degraded and exposes the source status', async () => {
+  const result = await discoverBraveSearch({
+    provider: 'searxng',
+    transport: async () => searxng([], [['brave', 'too many requests']]),
+    queries: ['AI Engineer'],
+  });
+  assert.equal(result.receipts[0].status, 'degraded');
+  assert.equal(result.manifest.status, 'degraded');
+  assert.equal(result.manifest.telemetry.degradedQueries, 1);
+});
+
+test('preserves SearXNG engine and reason pairs in manifest telemetry', async () => {
+  const unresponsive = [['brave', 'too many requests'], ['duckduckgo', 'CAPTCHA']];
+  const result = await discoverBraveSearch({
+    provider: 'searxng', transport: async () => searxng([], unresponsive), queries: ['AI Engineer'],
+  });
+  assert.deepEqual(result.manifest.telemetry.unresponsiveEngines, unresponsive);
+  assert.deepEqual(result.receipts[0].unresponsiveEngines, unresponsive);
+});
+
+test('skips the remaining budget after a fully degraded first SearXNG query', async () => {
+  const calls = [];
+  const result = await discoverBraveSearch({
+    provider: 'searxng', queries: ['one', 'two', 'three'], dailyBudget: 3,
+    configuredEngines: ['brave', 'duckduckgo'],
+    transport: async (query) => { calls.push(query); return searxng([], [['brave', 'too many requests'], ['duckduckgo', 'CAPTCHA']]); },
+  });
+  assert.deepEqual(calls, ['one']);
+  assert.equal(result.manifest.telemetry.queriesSkipped, 2);
+  assert.equal(result.manifest.telemetry.skippedReason, 'first-query-fully-degraded');
+  assert.deepEqual(result.receipts.slice(1).map((receipt) => receipt.status), ['skipped', 'skipped']);
+  assert.ok(result.receipts.slice(1).every((receipt) => receipt.reason === 'first-query-fully-degraded'));
+});
+
+test('leaves healthy SearXNG responses successful', async () => {
+  const result = await discoverBraveSearch({
+    provider: 'searxng', transport: async () => searxng(results.slice(0, 1), []), queries: ['AI Engineer'],
+  });
+  assert.equal(result.receipts[0].status, 'success');
+  assert.equal(result.manifest.status, undefined);
+  assert.equal(result.manifest.telemetry.degradedQueries, 0);
+});
+
+test('does not interpret unresponsive_engines on a Brave API response', async () => {
+  const result = await discoverBraveSearch({
+    transport: async () => ({ status: 200, body: { web: { results: [] }, unresponsive_engines: [['brave', 'too many requests']] } }),
+    queries: ['AI Engineer'],
+  });
+  assert.equal(result.receipts[0].status, 'success');
+  assert.equal(result.manifest.status, undefined);
+  assert.equal(result.manifest.telemetry.degradedQueries, 0);
+  assert.deepEqual(result.manifest.telemetry.unresponsiveEngines, []);
 });

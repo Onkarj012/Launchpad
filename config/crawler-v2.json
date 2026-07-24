@@ -137,7 +137,9 @@
         }
       ],
       "disabledBoards": [],
-      "notes": "ats-enterprise.mjs previously issued a plain GET with no body for every provider. Workday's public CXS jobs endpoint returns HTTP 400 on GET and requires a POST with a JSON search body ({ appliedFacets, limit, offset, searchText }); ats-enterprise.mjs and operator.mjs's defaultHttpTransport were fixed to send that for provider workday only (see requestOptions() in crawler/ats-enterprise.mjs). All four boards above were confirmed end-to-end through the real fetch transport, not just via a manual curl probe."
+      "maxPages": 10,
+      "maxJobsPerBoard": 200,
+      "notes": "ats-enterprise.mjs previously issued a plain GET with no body for every provider. Workday's public CXS jobs endpoint returns HTTP 400 on GET and requires a POST with a JSON search body ({ appliedFacets, limit, offset, searchText }); ats-enterprise.mjs and operator.mjs's defaultHttpTransport were fixed to send that for provider workday only (see requestOptions() in crawler/ats-enterprise.mjs). All four boards above were confirmed end-to-end through the real fetch transport, not just via a manual curl probe. maxPages/maxJobsPerBoard raised from the 3-page/20-job default: the previous requestOptions() always sent offset:0, so every board silently capped at its first 20 postings regardless of these limits; ats-enterprise.mjs now advances offset from the actual item count received and stops on Workday's own `total` field, so this budget is honored (up to 10 pages x 20/page = 200 postings per board, e.g. covers a meaningful slice of Mastercard's 1169 rather than just the first page)."
     },
     "careerSites": [],
     "disabledCareerSites": [

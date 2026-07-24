@@ -1,6 +1,7 @@
 import { discoverBraveSearch } from './brave-search.mjs';
 import { discoverCompanyCareers } from './company-careers.mjs';
-import { resolveJobIdentity } from './identity.mjs';
+import { filterHistoricalCandidates } from './historical-suppression.mjs';
+import { canonicalizeApplicationUrl, normalizeText, resolveJobIdentity } from './identity.mjs';
 import { selectDailyReserve } from './reserve.mjs';
 import { buildSourceYieldReport } from './source-yield.mjs';
 import {
@@ -17,6 +18,101 @@ const nowAt = (clock) => {
 const asArray = (value) => Array.isArray(value) ? value : [];
 const jsonSafe = (value) => JSON.parse(JSON.stringify(value));
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const VERIFICATION_EXCLUSIONS = new Set(['ineligible', 'unresolved', 'undated', 'stale']);
+const HARD_REASON_PATTERNS = [
+  /^GEO_/,
+  /^TITLE_(?:SENIORITY_REJECT|OFF_TARGET)/,
+  /^EXPERIENCE_(?:HARD_MIN|ABOVE_RELAXED)/,
+  /^SALARY_BELOW_/,
+  /^STIPEND_(?:BELOW|CURRENCY_NOT)/,
+  /^EMPLOYMENT_(?:CATEGORY|UNPAID|TRAINING|TYPE)/,
+  /^REMOTE_NOT_ELIGIBLE/,
+  /^ONSITE_HYBRID_NOT_PUNE$/,
+  /^LIVENESS_EXPIRED$/,
+  /^FRESHNESS_(?:EXPIRED|OLDER_THAN_14D|FUTURE)/,
+  /^FEES_OR_BOND/,
+];
+const VERIFICATION_REASON_PATTERNS = [
+  /^EXPERIENCE_(?:NOT_STATED|NOT_VERIFIED)/,
+  /^STIPEND_(?:UNVERIFIED|AMBIGUOUS|MISSING|CURRENCY_MISSING|PERIOD_NOT_SAFE)/,
+  /^LIVENESS_NOT_VERIFIED$/,
+  /^FRESHNESS_(?:NOT_VERIFIED|UNDATED)/,
+  /^ORIGINAL_APPLICATION_/,
+];
+const CLOSED_STATES = new Set(['closed', 'inactive', 'filled', 'expired', 'removed', 'withdrawn']);
+const PLACEHOLDER_COMPANIES = new Set(['unknown', 'unknown company', 'unresolved company', 'company unknown', 'n/a', 'na']);
+
+const candidateOf = (entry) => entry?.candidate || entry || {};
+const queueUrl = (value) => canonicalizeApplicationUrl(value?.url ?? value?.canonicalUrl ?? value?.discoveryUrl ?? value?.originalApplicationUrl ?? value?.applicationUrl);
+const candidateKey = (value) => queueUrl(value) || [value?.provider, value?.providerJobId, value?.company, value?.title, value?.location].map((part) => normalizeText(part)).join('|');
+const isHardReason = (reason) => HARD_REASON_PATTERNS.some((pattern) => pattern.test(String(reason)))
+  || CLOSED_STATES.has(normalizeText(reason));
+const isVerificationReason = (reason) => VERIFICATION_REASON_PATTERNS.some((pattern) => pattern.test(String(reason)));
+const isPlaceholderCompany = (company) => PLACEHOLDER_COMPANIES.has(normalizeText(company))
+  || /^(?:unknown|unresolved)(?:\s+(?:company|employer|organization))?$/.test(normalizeText(company));
+
+function entryReasons(entry, selection) {
+  const candidate = candidateOf(entry);
+  const eligibility = entry?.eligibility || candidate.eligibility || {};
+  const freshness = entry?.freshness || candidate.freshness || {};
+  const readiness = candidate.readiness || candidate.applicationReadiness || {};
+  const evidence = readiness.evidence || {};
+  const reasonValues = [
+    ...asArray(eligibility.reasons), eligibility.reasonCode,
+    eligibility.geo?.code, eligibility.title?.code, eligibility.experience?.code,
+    eligibility.salary?.code, eligibility.employment?.code, eligibility.liveness?.code,
+    freshness.code, ...asArray(readiness.reasons), ...asArray(evidence.hardFailures),
+    candidate.status, candidate.liveness?.status,
+  ].filter(Boolean).map(String);
+  if (reasonValues.some(isHardReason) || (eligibility.eligible === false && !reasonValues.some(isVerificationReason))) return [];
+  if (!Object.entries(selection.excluded || {}).some(([reason, count]) => VERIFICATION_EXCLUSIONS.has(reason) && number(count) > 0)) return [];
+
+  const reasons = [];
+  const resolution = evidence.resolution || candidate.applicationResolution || {};
+  if (candidate.applicationReady === false
+    || ['Unresolved', 'Needs Verification'].includes(resolution.status)
+    || (resolution.ready === false && (resolution.reasons || []).length)) {
+    reasons.push(...asArray(resolution.reasons), 'ORIGINAL_APPLICATION_NOT_RESOLVED');
+  }
+  if (candidate.liveness?.status && !['Active', 'Expired'].includes(candidate.liveness.status)) reasons.push('LIVENESS_NOT_VERIFIED');
+  if (eligibility.experience?.manualReview === true || eligibility.experience?.code === 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW') {
+    reasons.push(eligibility.experience.code || 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  }
+  if (freshness.verifyQueue === true || freshness.code === 'FRESHNESS_UNDATED_VERIFY_QUEUE'
+    || freshness.code === 'FRESHNESS_NOT_VERIFIED' || (candidate.postedAt == null && freshness.eligible !== true)) {
+    reasons.push(freshness.code || 'FRESHNESS_NOT_VERIFIED');
+  }
+  return [...new Set(reasons.filter((reason) => !isHardReason(reason)))];
+}
+
+function hasRealListingEvidence(candidate) {
+  if (candidate?.sourceKind === 'ats-direct' || candidate?.classification === 'direct') return true;
+  const status = candidate?.applicationResolution?.status;
+  return Boolean(candidate?.originalApplicationUrl && ['Direct ATS', 'Resolved Original'].includes(status))
+    || Boolean(candidate?.originalApplicationEvidence || candidate?.applicationResolution?.evidence || candidate?.evidence?.originalApplication);
+}
+
+function isUnresolvedPlaceholderLead(candidate) {
+  const classification = candidate?.classification ?? candidate?.evidence?.classification;
+  const sourceKind = candidate?.sourceKind ?? candidate?.evidence?.sourceKind;
+  const nonDirect = classification !== 'direct'
+    && (sourceKind === 'aggregator' || ['lead', 'unresolved', 'aggregator'].includes(classification));
+  return nonDirect && isPlaceholderCompany(candidate?.company) && !hasRealListingEvidence(candidate);
+}
+
+function verificationRecord(entry, reasons) {
+  const candidate = candidateOf(entry);
+  return {
+    url: queueUrl(candidate),
+    company: candidate.company,
+    title: candidate.title,
+    provider: candidate.provider,
+    source: candidate.source,
+    reason: reasons[0],
+    reasons,
+    evidence: { eligibility: entry.eligibility || {}, freshness: entry.freshness || {}, readiness: candidate.readiness || null },
+  };
+}
 
 function sourceCursor(priorState, sourceId) {
   return priorState?.sources?.[sourceId]?.cursor ?? null;
@@ -48,6 +144,7 @@ export async function crawlWorkflow({
   priorState = {},
   priorJobs = [],
   priorLifecycleRows = [],
+  historicalRows = [],
   sourcePlans = [],
   careerSites = [],
   careerOptions = {},
@@ -142,7 +239,6 @@ export async function crawlWorkflow({
     observedAt: record.observedAt,
     classification: record.classification,
   }));
-  const verificationQueue = persistedWorkflow?.verificationQueue ?? verificationFromSources;
   const entries = records.map((observation) => observation._crawlerReserveEntry || {
     candidate: observation,
     identity: observation._crawlerIdentity,
@@ -150,7 +246,37 @@ export async function crawlWorkflow({
     eligibility: observation.eligibility || {},
     freshness: observation.freshness || {},
   });
-  const selection = selectDailyReserve(entries, reserveOptions);
+  const historicalResult = filterHistoricalCandidates(entries.map((entry) => candidateOf(entry)), historicalRows);
+  const keptCandidates = new Set(historicalResult.kept);
+  const historicalSuppressedEntries = entries.filter((entry) => !keptCandidates.has(candidateOf(entry)));
+  const nonHistoricalEntries = entries.filter((entry) => keptCandidates.has(candidateOf(entry)));
+  const selection = selectDailyReserve(nonHistoricalEntries, reserveOptions);
+  const selectedCandidates = new Set(selection.reserve.map((item) => item.candidate));
+  const recordsByKey = new Map(records.map((record) => [candidateKey(record), record]));
+  const historicalKeys = new Set(historicalSuppressedEntries.map((entry) => candidateKey(candidateOf(entry))));
+  const unresolvedLeads = [];
+  const verificationKeys = new Set();
+  const verificationQueue = [];
+  const addVerification = (item, relatedCandidate = null) => {
+    const candidate = relatedCandidate || item?.candidate || recordsByKey.get(candidateKey(item)) || item;
+    if (historicalKeys.has(candidateKey(candidate))) return;
+    if (isUnresolvedPlaceholderLead(candidate)) {
+      unresolvedLeads.push({ ...item, lowQuality: true });
+      return;
+    }
+    const key = queueUrl(item);
+    if (key && verificationKeys.has(key)) return;
+    if (key) verificationKeys.add(key);
+    verificationQueue.push(item);
+  };
+  for (const item of (persistedWorkflow?.verificationQueue ?? verificationFromSources)) addVerification(item);
+  for (const entry of nonHistoricalEntries) {
+    if (selectedCandidates.has(candidateOf(entry))) continue;
+    const reasons = entryReasons(entry, selection);
+    if (!reasons.length) continue;
+    const item = verificationRecord(entry, reasons);
+    addVerification(item, candidateOf(entry));
+  }
   const handoff = {
     schemaVersion: 'LaunchpadV5CrawlerHandoffV1',
     noAutoApply: true,
@@ -168,11 +294,17 @@ export async function crawlWorkflow({
   // Reserve/verification counts are durable so schedule-health can report them
   // for a completed run without recomputing selection from raw observations.
   const rejectedTotal = Object.values(selection.excluded || {}).reduce((sum, value) => sum + number(value), 0);
-  const workflowCounts = { ready: selection.shortlist.length, verification: verificationQueue.length, rejected: rejectedTotal };
+  const workflowCounts = { ready: selection.shortlist.length, verification: verificationQueue.length, rejected: rejectedTotal, historicalSuppressed: historicalResult.suppressed.length };
   if (!durable.idempotent) {
     const workflowTelemetry = {
       ...durable.telemetry,
-      workflow: { verificationQueue: jsonSafe(verificationQueue), sourceTelemetry: jsonSafe(sourceTelemetry), sourceYield: jsonSafe(sourceYield) },
+      workflow: {
+        verificationQueue: jsonSafe(verificationQueue),
+        unresolvedLeads: jsonSafe(unresolvedLeads),
+        historicalSuppressions: jsonSafe(historicalResult.suppressed),
+        sourceTelemetry: jsonSafe(sourceTelemetry),
+        sourceYield: jsonSafe(sourceYield),
+      },
     };
     const status = durable.run.status;
     const updatedRun = finishCrawlRun(store, runId, {
@@ -194,6 +326,9 @@ export async function crawlWorkflow({
     observations: records,
     jobs: data.jobs,
     verificationQueue: jsonSafe(verificationQueue),
+    unresolvedLeads: jsonSafe(unresolvedLeads),
+    historicalSuppressions: jsonSafe(historicalResult.suppressed),
+    counts: workflowCounts,
     reserve: selection.reserve,
     shortlist: selection.shortlist,
     shortfall: selection.shortfall,
