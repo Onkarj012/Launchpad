@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  ACTIONED_STATES,
+  LIFECYCLE_STATES,
+  lifecycleFromObservation,
+  mergeLifecycleState,
+  SURFACED_SUPPRESSION_STATES,
+} from './identity.mjs';
 
 const SCHEMA_VERSION = 2;
 const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
@@ -157,6 +164,8 @@ export function openCrawlerStore(path = ':memory:') {
   ensureColumn(db, 'jobs', 'latest_updated_at', 'TEXT');
   ensureColumn(db, 'jobs', 'inferred_repost_at', 'TEXT');
   ensureColumn(db, 'jobs', 'closed_at', 'TEXT');
+  ensureColumn(db, 'jobs', 'lifecycle_state', 'TEXT');
+  ensureColumn(db, 'jobs', 'lifecycle_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'source_telemetry', 'details_json', "TEXT NOT NULL DEFAULT '{}'");
   db.prepare(`INSERT INTO crawler_meta(key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
@@ -320,6 +329,44 @@ function findJob(db, source, observation) {
   return row?.job_key ?? null;
 }
 
+function readJobLifecycle(store, jobKey) {
+  const row = store.prepare('SELECT lifecycle_state, lifecycle_json FROM jobs WHERE job_key = ?').get(jobKey);
+  if (!row) return { state: null, json: {} };
+  return { state: row.lifecycle_state || null, json: json(row.lifecycle_json, {}) };
+}
+
+/** Monotonic lifecycle write. Raw observation never writes 'surfaced' — selection does. */
+export function updateJobLifecycle(store, jobKey, nextState, { at = new Date().toISOString(), patch = {} } = {}) {
+  if (!jobKey || !nextState) return null;
+  const current = readJobLifecycle(store, jobKey);
+  const merged = mergeLifecycleState(current.state, nextState);
+  if (!merged) return current.state;
+  const nextJson = {
+    ...current.json,
+    ...patch,
+    state: merged,
+    updatedAt: at,
+  };
+  if (merged === LIFECYCLE_STATES.SURFACED || SURFACED_SUPPRESSION_STATES.has(merged)) {
+    nextJson.surfacedAt = current.json.surfacedAt || at;
+    nextJson.lastSurfacedAt = at;
+    nextJson.timesSurfaced = Number(current.json.timesSurfaced || 0) + (nextState === LIFECYCLE_STATES.SURFACED && current.state !== LIFECYCLE_STATES.SURFACED ? 1 : 0);
+  }
+  if (ACTIONED_STATES.has(merged)) {
+    nextJson.actionState = merged;
+    nextJson.actionAt = at;
+  }
+  store.prepare('UPDATE jobs SET lifecycle_state = ?, lifecycle_json = ? WHERE job_key = ?')
+    .run(merged, JSON.stringify(nextJson), jobKey);
+  return merged;
+}
+
+export function markJobsSurfaced(store, jobKeys, { at = new Date().toISOString() } = {}) {
+  const keys = [...new Set((Array.isArray(jobKeys) ? jobKeys : []).filter(Boolean))];
+  for (const jobKey of keys) updateJobLifecycle(store, jobKey, LIFECYCLE_STATES.SURFACED, { at });
+  return keys.length;
+}
+
 function persistObservation(store, source, runId, observation, observedAt) {
   const sourceKey = sourceRecordKey(observation);
   const observationKey = hash(`${runId}|${source.id}|${sourceKey}`);
@@ -344,17 +391,33 @@ function persistObservation(store, source, runId, observation, observedAt) {
     ON CONFLICT(board_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       board_url = COALESCE(company_boards.board_url, excluded.board_url)`).run(boardKey, companyKey, source.id, provider, boardUrl, boardIdentity, observedAt, observedAt);
   const closedAt = ['closed', 'inactive', 'expired', 'removed', 'filled'].includes(normalized(observation.status ?? observation.liveness?.status)) ? observedAt : null;
-  store.prepare(`INSERT INTO jobs(job_key, company_key, provider, provider_job_id, canonical_url, company, title, location, first_seen_at, last_seen_at, original_posted_at, latest_updated_at, inferred_repost_at, closed_at, latest_fingerprint)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  // Observation may advance lifecycle up to application-ready only — never starts cooldown/surfaced.
+  const observationLifecycle = lifecycleFromObservation(observation);
+  const priorLifecycle = readJobLifecycle(store, jobKey);
+  const nextLifecycle = mergeLifecycleState(priorLifecycle.state, observationLifecycle) || observationLifecycle;
+  const lifecycleJson = {
+    ...priorLifecycle.json,
+    state: nextLifecycle,
+    lastObservedAt: observedAt,
+    applicationReady: observation.applicationReady === true
+      || priorLifecycle.json.applicationReady === true
+      || nextLifecycle === LIFECYCLE_STATES.APPLICATION_READY
+      || nextLifecycle === LIFECYCLE_STATES.SURFACED
+      || ACTIONED_STATES.has(nextLifecycle),
+  };
+  store.prepare(`INSERT INTO jobs(job_key, company_key, provider, provider_job_id, canonical_url, company, title, location, first_seen_at, last_seen_at, original_posted_at, latest_updated_at, inferred_repost_at, closed_at, latest_fingerprint, lifecycle_state, lifecycle_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(job_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       latest_updated_at = COALESCE(excluded.latest_updated_at, jobs.latest_updated_at),
       inferred_repost_at = COALESCE(excluded.inferred_repost_at, jobs.inferred_repost_at),
       closed_at = COALESCE(excluded.closed_at, jobs.closed_at),
-      latest_fingerprint = excluded.latest_fingerprint`).run(jobKey, companyKey, provider, text(providerJobId), text(observation.canonicalUrl), companyName, normalized(observation.title), normalized(observation.location), observedAt, observedAt, text(observation.postedAt), text(observation.updatedAt), text(observation.inferredRepostAt), closedAt, fp);
+      latest_fingerprint = excluded.latest_fingerprint,
+      lifecycle_state = excluded.lifecycle_state,
+      lifecycle_json = excluded.lifecycle_json`).run(jobKey, companyKey, provider, text(providerJobId), text(observation.canonicalUrl), companyName, normalized(observation.title), normalized(observation.location), observedAt, observedAt, text(observation.postedAt), text(observation.updatedAt), text(observation.inferredRepostAt), closedAt, fp, nextLifecycle, JSON.stringify(lifecycleJson));
   if (observation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(observation.description), observedAt);
   store.prepare(`INSERT INTO job_observations(observation_key, job_key, source_id, run_id, source_record_key, canonical_url, posted_at, updated_at, observed_at, fingerprint, classification, raw_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp, observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation));
-  return { duplicate: false, jobKey };
+  return { duplicate: false, jobKey, lifecycle: nextLifecycle };
 }
 
 async function fetchSource(store, source, runId, priorState, config, clock) {
@@ -484,20 +547,33 @@ export function readCrawlerState(store) {
 }
 
 /** Read the durable detail needed to reconstruct a serialization-safe workflow result. */
+function mapJobRow(row) {
+  const lifecycleJson = json(row.lifecycle_json, {});
+  const lifecycle = row.lifecycle_state || lifecycleJson.state || null;
+  return {
+    jobKey: row.job_key,
+    provider: row.provider,
+    providerJobId: row.provider_job_id,
+    canonicalUrl: row.canonical_url,
+    company: row.company,
+    title: row.title,
+    location: row.location,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    fingerprint: row.latest_fingerprint,
+    lifecycle,
+    lifecycle_state: lifecycle,
+    lifecycleJson,
+    applicationReady: lifecycleJson.applicationReady === true || lifecycle === LIFECYCLE_STATES.APPLICATION_READY
+      || lifecycle === LIFECYCLE_STATES.SURFACED || ACTIONED_STATES.has(lifecycle),
+    surfaced: lifecycle === LIFECYCLE_STATES.SURFACED || Boolean(lifecycleJson.surfacedAt),
+    surfacedAt: lifecycleJson.surfacedAt || null,
+  };
+}
+
 export function readCrawlerRunData(store, runId) {
   return {
-    jobs: store.prepare('SELECT * FROM jobs ORDER BY job_key').all().map((row) => ({
-      jobKey: row.job_key,
-      provider: row.provider,
-      providerJobId: row.provider_job_id,
-      canonicalUrl: row.canonical_url,
-      company: row.company,
-      title: row.title,
-      location: row.location,
-      firstSeenAt: row.first_seen_at,
-      lastSeenAt: row.last_seen_at,
-      fingerprint: row.latest_fingerprint,
-    })),
+    jobs: store.prepare('SELECT * FROM jobs ORDER BY job_key').all().map(mapJobRow),
     observations: store.prepare(`SELECT * FROM job_observations
       WHERE run_id = ? ORDER BY observation_key`).all(runId).map((row) => ({
       observationKey: row.observation_key,

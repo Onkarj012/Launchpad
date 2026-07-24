@@ -1,8 +1,40 @@
 import { createHash } from 'node:crypto';
 
-const SUPPRESSION_STATES = new Set(['surfaced', 'applied', 'contacted', 'interviewing', 'rejected', 'cooldown']);
+/** Terminal user/action outcomes — permanently suppress resurfacing. */
+export const ACTIONED_STATES = new Set(['applied', 'contacted', 'interviewing', 'rejected']);
+/** Surfaced/cooldown — suppress until external ledger expires cooldown; never from raw observation alone. */
+export const SURFACED_SUPPRESSION_STATES = new Set(['surfaced', 'cooldown']);
+/** Full durable observation lifecycle (monotonic upgrades; actioned is terminal and external). */
+export const LIFECYCLE_STATES = Object.freeze({
+  OBSERVED: 'observed',
+  RESOLVED: 'resolved',
+  ELIGIBLE: 'eligible',
+  FRESHNESS_VERIFIED: 'freshness-verified',
+  APPLICATION_READY: 'application-ready',
+  SURFACED: 'surfaced',
+  APPLIED: 'applied',
+  CONTACTED: 'contacted',
+  INTERVIEWING: 'interviewing',
+  REJECTED: 'rejected',
+  COOLDOWN: 'cooldown',
+});
+const LIFECYCLE_RANK = Object.freeze({
+  observed: 1,
+  resolved: 2,
+  eligible: 3,
+  'freshness-verified': 4,
+  'application-ready': 5,
+  surfaced: 6,
+  cooldown: 6,
+  applied: 100,
+  contacted: 100,
+  interviewing: 100,
+  rejected: 100,
+});
+const SUPPRESSION_STATES = new Set([...ACTIONED_STATES, ...SURFACED_SUPPRESSION_STATES]);
 const CLOSED_STATES = new Set(['closed', 'inactive', 'filled', 'expired', 'removed', 'withdrawn']);
 const MATCH_TYPES = ['provider_job_id', 'canonical_url', 'company_title_location'];
+const UNRESOLVED_RESOLUTION = new Set(['unresolved', 'needs verification']);
 
 const value = (row, ...names) => {
   for (const name of names) {
@@ -103,9 +135,17 @@ function matchingRows(observation, candidates) {
   return { type: null, key: null, matches: [] };
 }
 
-function stateOf(row) {
-  const state = normalizeText(value(row, 'state', 'status', 'lifecycle', 'suppressionState', 'action_state', 'actionState'));
-  if (SUPPRESSION_STATES.has(state)) return state;
+function rawLifecycle(row) {
+  return normalizeText(value(row, 'lifecycle', 'lifecycle_state', 'lifecycleState', 'suppressionState', 'action_state', 'actionState', 'state', 'status'));
+}
+
+/** Explicit suppression/action state only — never infer from raw observation alone. */
+export function stateOf(row) {
+  const state = rawLifecycle(row);
+  if (ACTIONED_STATES.has(state) || SURFACED_SUPPRESSION_STATES.has(state)) return state;
+  // Explicit surface markers set only when a role enters shortlist/reserve output.
+  // Ledger last_surfaced_at is intentionally not permanent here — 7-day cooldown
+  // expiry is owned by opportunity-ledger.suppressionFor.
   if (row?.surfaced === true || row?.surfacedAt || row?.surfaced_at) return 'surfaced';
   return null;
 }
@@ -124,7 +164,56 @@ function fingerprintOf(row) {
   return value(row, 'fingerprint', 'descriptionFingerprint', 'description_fingerprint') || fingerprintDescription(value(row, 'description'));
 }
 
+export function isApplicationReady(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (row.applicationReady === true || row.readiness?.ready === true || row.applicationReadiness?.ready === true) return true;
+  const lifecycle = rawLifecycle(row);
+  if (lifecycle === LIFECYCLE_STATES.APPLICATION_READY || lifecycle === LIFECYCLE_STATES.SURFACED || SURFACED_SUPPRESSION_STATES.has(lifecycle) || ACTIONED_STATES.has(lifecycle)) {
+    return true;
+  }
+  const resolution = row.applicationResolution?.status ?? row.readiness?.evidence?.resolution?.status;
+  return ['Resolved Original', 'Direct ATS'].includes(resolution);
+}
+
+export function isIncompleteObservation(row) {
+  if (!row || typeof row !== 'object') return true;
+  if (isApplicationReady(row)) return false;
+  if (row.applicationReady === false) return true;
+  const lifecycle = rawLifecycle(row);
+  if (lifecycle && (LIFECYCLE_RANK[lifecycle] ?? 0) > 0 && (LIFECYCLE_RANK[lifecycle] ?? 0) < LIFECYCLE_RANK['application-ready']) return true;
+  const resolution = normalizeText(row.applicationResolution?.status ?? row.readiness?.evidence?.resolution?.status);
+  if (UNRESOLVED_RESOLUTION.has(resolution)) return true;
+  // Durable jobs rows without readiness fields are incomplete until proven ready or surfaced.
+  if (lifecycle == null || lifecycle === '' || lifecycle === 'open' || lifecycle === 'active') {
+    return row.applicationReady !== true;
+  }
+  return true;
+}
+
+/** Derive durable lifecycle label from an observation (never 'surfaced' — that is selection-only). */
+export function lifecycleFromObservation(observation) {
+  if (isApplicationReady(observation)) return LIFECYCLE_STATES.APPLICATION_READY;
+  const resolution = normalizeText(observation?.applicationResolution?.status);
+  if (resolution && !UNRESOLVED_RESOLUTION.has(resolution) && resolution !== '') return LIFECYCLE_STATES.RESOLVED;
+  if (observation?.postedAt || observation?.description || observation?.canonicalUrl) return LIFECYCLE_STATES.OBSERVED;
+  return LIFECYCLE_STATES.OBSERVED;
+}
+
+export function mergeLifecycleState(prior, next) {
+  const previous = normalizeText(prior) || null;
+  const incoming = normalizeText(next) || null;
+  if (!incoming) return previous;
+  if (!previous) return incoming;
+  if (ACTIONED_STATES.has(previous)) return previous;
+  if (ACTIONED_STATES.has(incoming)) return incoming;
+  if (SURFACED_SUPPRESSION_STATES.has(previous) && !ACTIONED_STATES.has(incoming)) return previous;
+  const priorRank = LIFECYCLE_RANK[previous] ?? 0;
+  const nextRank = LIFECYCLE_RANK[incoming] ?? 0;
+  return nextRank >= priorRank ? incoming : previous;
+}
+
 function baseEvidence(observation, matchType, matchKey, matches, fingerprint, lifecycleMatch) {
+  const lifecycleRow = lifecycleMatch?.matches?.[0] ?? null;
   return {
     matchType,
     matchKey,
@@ -134,7 +223,7 @@ function baseEvidence(observation, matchType, matchKey, matches, fingerprint, li
       prior: matches.length === 1 ? fingerprintOf(matches[0]) : null,
       same: matches.length === 1 && fingerprint && fingerprintOf(matches[0]) ? fingerprint === fingerprintOf(matches[0]) : null,
     },
-    lifecycle: lifecycleMatch ? { state: stateOf(lifecycleMatch.row), matchType: lifecycleMatch.type, matchKey: lifecycleMatch.key } : null,
+    lifecycle: lifecycleRow ? { state: stateOf(lifecycleRow) || rawLifecycle(lifecycleRow), matchType: lifecycleMatch.type, matchKey: lifecycleMatch.key } : null,
   };
 }
 
@@ -156,6 +245,7 @@ export function resolveJobIdentity(observation, { existingJobs = [], lifecycleRo
     return { code: 'AMBIGUOUS_COLLISION', novelty: 'not_new', authority: 'external_lifecycle_data', identity, fingerprint, evidence: baseEvidence(observation, jobMatch.type || lifecycleMatch.type, jobMatch.key || lifecycleMatch.key, jobMatch.matches.length > 1 ? jobMatch.matches : lifecycleMatch.matches, fingerprint, null) };
   }
 
+  // Actioned always wins — permanent suppression even if observation looks newly actionable.
   if (lifecycleMatch.matches.length === 1 && stateOf(lifecycleMatch.matches[0])) {
     const state = stateOf(lifecycleMatch.matches[0]);
     return { code: `SUPPRESSED_${state.toUpperCase()}`, novelty: 'not_new', authority: 'external_lifecycle_data', identity, fingerprint, evidence: baseEvidence(observation, jobMatch.type || lifecycleMatch.type, jobMatch.key || lifecycleMatch.key, jobMatch.matches, fingerprint, lifecycleMatch) };
@@ -163,20 +253,64 @@ export function resolveJobIdentity(observation, { existingJobs = [], lifecycleRo
 
   if (!jobMatch.matches.length) {
     const code = isClosed(observation) ? 'CLOSURE' : 'NEW_TO_ME';
-    return { code, novelty: code === 'NEW_TO_ME' ? 'new_to_me' : 'not_new', authority: 'crawler_identity_only', identity, fingerprint, evidence: baseEvidence(observation, null, null, [], fingerprint, null) };
+    return {
+      code,
+      novelty: code === 'NEW_TO_ME' ? 'new_to_me' : 'not_new',
+      authority: 'crawler_identity_only',
+      identity,
+      fingerprint,
+      lifecycle: lifecycleFromObservation(observation),
+      evidence: baseEvidence(observation, null, null, [], fingerprint, null),
+    };
   }
 
   const prior = jobMatch.matches[0];
+  const priorSuppression = stateOf(prior);
+  if (priorSuppression) {
+    return {
+      code: `SUPPRESSED_${priorSuppression.toUpperCase()}`,
+      novelty: 'not_new',
+      authority: 'crawler_identity_only',
+      identity,
+      fingerprint,
+      lifecycle: priorSuppression,
+      evidence: baseEvidence(observation, jobMatch.type, jobMatch.key, jobMatch.matches, fingerprint, null),
+    };
+  }
+
   const priorFingerprint = fingerprintOf(prior);
   const evidence = baseEvidence(observation, jobMatch.type, jobMatch.key, jobMatch.matches, fingerprint, null);
+  const materialRefresh = Boolean(fingerprint && priorFingerprint && fingerprint !== priorFingerprint);
   const repost = !isClosed(observation) && isClosed(prior) && (dateValue(observation, 'postedAt', 'posted_at') ?? 0) > (dateValue(prior, 'closedAt', 'closed_at', 'lastSeenAt', 'last_seen_at') ?? 0);
+  const currentReady = isApplicationReady(observation);
+  const priorIncomplete = isIncompleteObservation(prior);
+  // Incomplete prior observation becoming application-ready may surface once.
+  const newlyActionable = currentReady && priorIncomplete && !isClosed(observation) && !repost;
+
   let code = 'UNCHANGED_DUPLICATE';
   let novelty = 'not_new';
   if (isClosed(observation)) code = 'CLOSURE';
   else if (repost) { code = 'REPOST'; novelty = 'new_to_me'; }
-  else if (fingerprint && priorFingerprint && fingerprint !== priorFingerprint) code = 'MATERIAL_REFRESH';
-  evidence.classification = { priorStatus: value(prior, 'status', 'state'), currentStatus: value(observation, 'status', 'state'), repost };
-  return { code, novelty, authority: 'crawler_identity_only', identity, fingerprint, evidence };
+  else if (newlyActionable) { code = 'NEWLY_ACTIONABLE'; novelty = 'new_to_me'; }
+  else if (materialRefresh) code = 'MATERIAL_REFRESH';
+
+  evidence.classification = {
+    priorStatus: value(prior, 'status', 'state', 'lifecycle', 'lifecycle_state'),
+    currentStatus: value(observation, 'status', 'state'),
+    repost,
+    materialRefresh,
+    newlyActionable,
+    reevaluate: materialRefresh || newlyActionable,
+  };
+  return {
+    code,
+    novelty,
+    authority: 'crawler_identity_only',
+    identity,
+    fingerprint,
+    lifecycle: newlyActionable ? LIFECYCLE_STATES.APPLICATION_READY : mergeLifecycleState(rawLifecycle(prior) || lifecycleFromObservation(prior), lifecycleFromObservation(observation)),
+    evidence,
+  };
 }
 
 export const reconcileJobIdentity = resolveJobIdentity;

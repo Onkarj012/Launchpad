@@ -1,13 +1,20 @@
 import { discoverBraveSearch } from './brave-search.mjs';
 import { discoverCompanyCareers } from './company-careers.mjs';
 import { filterHistoricalCandidates } from './historical-suppression.mjs';
-import { canonicalizeApplicationUrl, normalizeText, resolveJobIdentity } from './identity.mjs';
+import {
+  canonicalizeApplicationUrl,
+  isApplicationReady,
+  lifecycleFromObservation,
+  normalizeText,
+  resolveJobIdentity,
+} from './identity.mjs';
 import { selectDailyReserve } from './reserve.mjs';
 import { buildSourceYieldReport } from './source-yield.mjs';
 import { buildFunnelReport } from '../job-pull/funnel-report.mjs';
 import {
   crawlRun,
   finishCrawlRun,
+  markJobsSurfaced,
   readCrawlerRunData,
 } from './run.mjs';
 
@@ -175,19 +182,47 @@ export async function crawlWorkflow({
     fetch: async (context) => {
       const result = await plan.fetch(context);
       const observations = asArray(result?.observations).map((observation) => {
-        const identity = resolveJobIdentity(observation, { existingJobs: knownJobs, lifecycleRows: priorLifecycleRows });
-        const decorated = {
-          ...observation,
-          _crawlerIdentity: identity,
-          _crawlerNovelty: { newToMe: identity.novelty === 'new_to_me' },
-        };
+        // prepareEntry may attach readiness before novelty is decided; identity still
+        // owns suppression and must not treat raw observe as surfaced.
+        let working = observation;
+        let prepared = null;
         if (typeof prepareEntry === 'function') {
-          const prepared = prepareEntry(observation, identity, { runAt, source: plan, context });
-          if (prepared != null) decorated._crawlerReserveEntry = prepared.candidate
-            ? { ...prepared, identity, novelty: { newToMe: identity.novelty === 'new_to_me' } }
-            : { candidate: observation, ...prepared, identity, novelty: { newToMe: identity.novelty === 'new_to_me' } };
+          prepared = prepareEntry(observation, null, { runAt, source: plan, context });
+          if (prepared != null) {
+            const cand = prepared.candidate || observation;
+            working = {
+              ...observation,
+              applicationReady: cand.applicationReady ?? observation.applicationReady,
+              applicationResolution: cand.applicationResolution ?? observation.applicationResolution,
+              readiness: cand.readiness ?? observation.readiness,
+            };
+          }
         }
-        knownJobs.push({ ...observation, jobKey: identity.identity.jobKey, fingerprint: identity.fingerprint });
+        const identity = resolveJobIdentity(working, { existingJobs: knownJobs, lifecycleRows: priorLifecycleRows });
+        const novelty = {
+          newToMe: identity.novelty === 'new_to_me',
+          code: identity.code,
+          newlyActionable: identity.code === 'NEWLY_ACTIONABLE',
+        };
+        const decorated = {
+          ...working,
+          _crawlerIdentity: identity,
+          _crawlerNovelty: novelty,
+          lifecycle: identity.lifecycle || lifecycleFromObservation(working),
+        };
+        if (prepared != null) {
+          decorated._crawlerReserveEntry = prepared.candidate
+            ? { ...prepared, identity, novelty }
+            : { candidate: working, ...prepared, identity, novelty };
+        }
+        // In-run history: raw observation never implies surfaced/cooldown.
+        knownJobs.push({
+          ...working,
+          jobKey: identity.identity.jobKey,
+          fingerprint: identity.fingerprint,
+          lifecycle: identity.lifecycle || lifecycleFromObservation(working),
+          applicationReady: isApplicationReady(working),
+        });
         return decorated;
       });
       verificationFromSources.push(...asArray(result?.verificationQueue));
@@ -255,6 +290,22 @@ export async function crawlWorkflow({
   const selectedCandidates = new Set(selection.reserve.map((item) => item.candidate));
   const recordsByKey = new Map(records.map((record) => [candidateKey(record), record]));
   const historicalKeys = new Set(historicalSuppressedEntries.map((entry) => candidateKey(candidateOf(entry))));
+  // Cooldown/surfaced starts only when a role enters shortlist/reserve output — never on raw observe.
+  // Prefer durable SQLite job_key from persisted observations (identity.jobKey hashing differs).
+  const selectedSurfaceKeys = new Set(selection.reserve.map((item) => candidateKey(candidateOf(item))).filter(Boolean));
+  const surfacedJobKeys = [...new Set(records
+    .filter((record) => selectedSurfaceKeys.has(candidateKey(record)))
+    .map((record) => record.jobKey)
+    .filter(Boolean))];
+  if (!durable.idempotent && surfacedJobKeys.length) {
+    markJobsSurfaced(store, surfacedJobKeys, { at: runAt });
+  }
+  const jobs = !durable.idempotent && surfacedJobKeys.length
+    ? readCrawlerRunData(store, runId).jobs
+    : data.jobs;
+  const newlyActionableCount = nonHistoricalEntries.filter((entry) => entry.identity?.code === 'NEWLY_ACTIONABLE'
+    || entry.novelty?.newlyActionable === true
+    || entry.novelty?.code === 'NEWLY_ACTIONABLE').length;
   const unresolvedLeads = [];
   const verificationKeys = new Set();
   const verificationQueue = [];
@@ -265,6 +316,18 @@ export async function crawlWorkflow({
       unresolvedLeads.push({ ...item, lowQuality: true });
       return;
     }
+    // Ambiguous identity collisions always fail closed into verification — never auto-surface.
+    const identityCode = item?.identity?.code || candidate?._crawlerIdentity?.code;
+    if (identityCode === 'AMBIGUOUS_COLLISION') {
+      const key = queueUrl(item) || queueUrl(candidate);
+      if (key && verificationKeys.has(key)) return;
+      if (key) verificationKeys.add(key);
+      verificationQueue.push({
+        ...verificationRecord({ candidate, identity: item?.identity || candidate?._crawlerIdentity, eligibility: {}, freshness: {} }, ['AMBIGUOUS_IDENTITY_COLLISION']),
+        reasons: ['AMBIGUOUS_IDENTITY_COLLISION'],
+      });
+      return;
+    }
     const key = queueUrl(item);
     if (key && verificationKeys.has(key)) return;
     if (key) verificationKeys.add(key);
@@ -272,6 +335,10 @@ export async function crawlWorkflow({
   };
   for (const item of (persistedWorkflow?.verificationQueue ?? verificationFromSources)) addVerification(item);
   for (const entry of nonHistoricalEntries) {
+    if (entry.identity?.code === 'AMBIGUOUS_COLLISION') {
+      addVerification(entry, candidateOf(entry));
+      continue;
+    }
     if (selectedCandidates.has(candidateOf(entry))) continue;
     const reasons = entryReasons(entry, selection);
     if (!reasons.length) continue;
@@ -328,7 +395,7 @@ export async function crawlWorkflow({
         || entry.freshness?.code === 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE').length,
       ready: selection.shortlist.length,
       selected: selection.shortlist.length,
-      newlyActionable: null,
+      newlyActionable: newlyActionableCount,
     },
   });
   const workflowCounts = {
@@ -336,6 +403,8 @@ export async function crawlWorkflow({
     verification: verificationQueue.length,
     rejected: rejectedTotal,
     historicalSuppressed: historicalResult.suppressed.length,
+    newlyActionable: newlyActionableCount,
+    surfaced: selection.reserve.length,
     fetched: funnel.lifecycle.fetched,
     sourceFiltered: funnel.lifecycle.sourceFiltered,
     normalized: funnel.lifecycle.normalized,
@@ -372,7 +441,7 @@ export async function crawlWorkflow({
     run: durable.run,
     stages: durable.stages,
     observations: records,
-    jobs: data.jobs,
+    jobs,
     verificationQueue: jsonSafe(verificationQueue),
     unresolvedLeads: jsonSafe(unresolvedLeads),
     historicalSuppressions: jsonSafe(historicalResult.suppressed),

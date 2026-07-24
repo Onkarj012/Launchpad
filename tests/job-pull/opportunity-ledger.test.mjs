@@ -25,7 +25,7 @@ function candidate(url = 'https://example.test/1', overrides = {}) {
   return normalizeCandidate({
     url, source: 'greenhouse-full', sourceKind: 'ats-direct', provider: 'greenhouse', id: 'job-1',
     company: 'Example', title: 'AI Engineer', location: 'Pune', postedAt: NOW,
-    employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 },
+    employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 }, matchScore: 80,
     liveness: { status: 'Active', evidence: 'fixture' }, ...overrides,
   });
 }
@@ -142,4 +142,31 @@ test('markAction rejects invalid states and missing rows', () => {
   const ledgerPath = tempLedger();
   assert.throws(() => markAction({ path: ledgerPath, key: 'missing', state: 'bogus', now: NOW }), /invalid action state/);
   assert.throws(() => markAction({ path: ledgerPath, key: 'missing', state: 'applied', now: NOW }), /no matching opportunity/);
+});
+
+
+test('raw observation without recordSurfaced does not start cooldown', () => {
+  const ledgerPath = tempLedger();
+  // Simulates crawler/job-pull observing a role without shortlist inclusion.
+  const observed = candidate('https://example.test/observed-only');
+  assert.equal(readOpportunityLedger(ledgerPath).rows.length, 0);
+  assert.deepEqual(suppressionFor(null, NOW), { suppressed: false, code: '' });
+  assert.deepEqual(
+    suppressionFor({ action_state: 'none', last_surfaced_at: null }, NOW),
+    { suppressed: false, code: '' },
+  );
+  // No ledger write occurs until recordSurfaced (shortlist/selection path).
+  assert.equal(readOpportunityLedger(ledgerPath).missing, true);
+  void observed;
+});
+
+test('recordSurfaced starts the seven-day cooldown only after shortlist inclusion', () => {
+  const ledgerPath = tempLedger();
+  const item = candidate('https://example.test/shortlisted');
+  recordSurfaced([item], { path: ledgerPath, now: NOW });
+  const row = readOpportunityLedger(ledgerPath).rows[0];
+  assert.equal(row.last_surfaced_at, NOW);
+  assert.deepEqual(suppressionFor(row, NOW), { suppressed: true, code: 'SUPPRESSED_COOLDOWN_7D' });
+  assert.deepEqual(suppressionFor(row, '2026-07-25T12:00:00.000Z'), { suppressed: true, code: 'SUPPRESSED_COOLDOWN_7D' });
+  assert.deepEqual(suppressionFor(row, '2026-07-25T12:00:01.000Z'), { suppressed: false, code: '' });
 });

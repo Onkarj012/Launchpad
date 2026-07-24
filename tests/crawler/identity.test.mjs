@@ -117,3 +117,112 @@ test('first-seen observation is new to me and gets a durable deterministic key',
   assert.equal(result.evidence.matchType, null);
   assert.equal(resolveJobIdentity(base, {}).identity.jobKey, result.identity.jobKey);
 });
+
+test('raw repeated observation alone does not suppress or start cooldown', () => {
+  const first = resolveJobIdentity(base, {});
+  const second = resolveJobIdentity(base, {
+    existingJobs: [prior({
+      lifecycle: 'observed',
+      applicationReady: false,
+      applicationResolution: { status: 'Unresolved' },
+    })],
+  });
+  assert.equal(first.code, 'NEW_TO_ME');
+  // Still incomplete on both sides — not newly actionable, not surfaced/cooldown.
+  assert.equal(second.code, 'UNCHANGED_DUPLICATE');
+  assert.equal(second.novelty, 'not_new');
+  assert.notEqual(second.code.startsWith('SUPPRESSED_'), true);
+});
+
+test('incomplete prior observation that becomes application-ready is newly actionable once', () => {
+  const incompletePrior = prior({
+    lifecycle: 'observed',
+    applicationReady: false,
+    applicationResolution: { status: 'Unresolved' },
+    fingerprint: fingerprintDescription(base.description),
+  });
+  const ready = resolveJobIdentity({
+    ...base,
+    applicationReady: true,
+    applicationResolution: { status: 'Resolved Original' },
+  }, { existingJobs: [incompletePrior] });
+
+  assert.equal(ready.code, 'NEWLY_ACTIONABLE');
+  assert.equal(ready.novelty, 'new_to_me');
+  assert.equal(ready.evidence.classification.newlyActionable, true);
+
+  const afterReady = resolveJobIdentity({
+    ...base,
+    applicationReady: true,
+    applicationResolution: { status: 'Resolved Original' },
+  }, {
+    existingJobs: [prior({
+      lifecycle: 'application-ready',
+      applicationReady: true,
+      applicationResolution: { status: 'Resolved Original' },
+    })],
+  });
+  assert.equal(afterReady.code, 'UNCHANGED_DUPLICATE');
+  assert.equal(afterReady.novelty, 'not_new');
+});
+
+test('surfaced lifecycle starts suppression; actioned states stay permanently suppressed', () => {
+  const readyObservation = {
+    ...base,
+    applicationReady: true,
+    applicationResolution: { status: 'Resolved Original' },
+  };
+  const surfaced = resolveJobIdentity(readyObservation, {
+    existingJobs: [prior({ lifecycle: 'surfaced', applicationReady: true, surfaced: true })],
+  });
+  assert.equal(surfaced.code, 'SUPPRESSED_SURFACED');
+  assert.equal(surfaced.novelty, 'not_new');
+
+  for (const state of ['applied', 'contacted', 'interviewing', 'rejected']) {
+    const result = resolveJobIdentity(readyObservation, {
+      lifecycleRows: [{ canonicalUrl: base.canonicalUrl, state }],
+      existingJobs: [prior({ lifecycle: 'observed', applicationReady: false })],
+    });
+    assert.equal(result.code, `SUPPRESSED_${state.toUpperCase()}`);
+    assert.equal(result.novelty, 'not_new');
+  }
+});
+
+test('material refresh re-evaluates without auto-reposting as new', () => {
+  const refresh = resolveJobIdentity({
+    ...base,
+    description: 'Build reliable AI systems and mentor engineers.',
+    applicationReady: true,
+    applicationResolution: { status: 'Resolved Original' },
+  }, {
+    existingJobs: [prior({
+      lifecycle: 'application-ready',
+      applicationReady: true,
+      applicationResolution: { status: 'Resolved Original' },
+    })],
+  });
+  assert.equal(refresh.code, 'MATERIAL_REFRESH');
+  assert.equal(refresh.novelty, 'not_new');
+  assert.equal(refresh.evidence.classification.materialRefresh, true);
+  assert.equal(refresh.evidence.classification.repost, false);
+  assert.equal(refresh.evidence.classification.reevaluate, true);
+});
+
+test('idempotent re-resolution of the same newly-actionable transition does not change identity key', () => {
+  const incompletePrior = prior({
+    lifecycle: 'observed',
+    applicationReady: false,
+    applicationResolution: { status: 'Unresolved' },
+  });
+  const observation = {
+    ...base,
+    applicationReady: true,
+    applicationResolution: { status: 'Resolved Original' },
+  };
+  const first = resolveJobIdentity(observation, { existingJobs: [incompletePrior] });
+  const second = resolveJobIdentity(observation, { existingJobs: [incompletePrior] });
+  assert.equal(first.code, 'NEWLY_ACTIONABLE');
+  assert.equal(second.code, 'NEWLY_ACTIONABLE');
+  assert.equal(first.identity.jobKey, second.identity.jobKey);
+  assert.equal(first.identity.jobKey, 'job-existing');
+});

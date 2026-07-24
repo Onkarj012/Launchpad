@@ -65,7 +65,11 @@ export function selectDailyReserve(entries = [], options = {}) {
     const key = candidate.canonicalUrl || candidate.url || `${candidate.company || ''}|${candidate.title || ''}|${candidate.location || ''}`;
     if (!key || seen.has(key)) { rejection(result, 'duplicate'); continue; }
     seen.add(key);
-    if (novelty.newToMe !== true && identity.novelty !== 'new_to_me' && identity.newToMe !== true) { rejection(result, 'notNewToMe'); continue; }
+    if (novelty.newToMe !== true && identity.novelty !== 'new_to_me' && identity.newToMe !== true
+      && identity.code !== 'NEWLY_ACTIONABLE' && novelty.code !== 'NEWLY_ACTIONABLE') {
+      rejection(result, 'notNewToMe');
+      continue;
+    }
     if (eligibility.eligible !== true) { rejection(result, eligibility.reasonCode || 'ineligible'); continue; }
     if (candidate.applicationReady === false || ['Unresolved', 'Needs Verification'].includes(candidate.applicationResolution?.status)) { rejection(result, 'unresolved'); continue; }
     const tier = freshnessTier(entry, eligibility, freshness);
