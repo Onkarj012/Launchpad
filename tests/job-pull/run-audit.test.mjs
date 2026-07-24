@@ -52,6 +52,8 @@ test('undated candidates are surfaced in verifyQueue and never selected or rejec
     title: candidate.title,
     canonicalUrl: candidate.canonicalUrl,
     provider: candidate.provider,
+    code: 'FRESHNESS_UNDATED_VERIFY_QUEUE',
+    workdayUncorroborated: false,
   }]);
   assert.equal(result.counts.selected, 0);
   assert.equal(result.counts.verifyQueue, 1);

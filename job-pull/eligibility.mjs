@@ -41,8 +41,15 @@ export function classifySalary(candidate, policy = {}) {
   const usable = Number.isFinite(salary.maximum) ? salary.maximum : Number.isFinite(salary.minimum) ? salary.minimum : null;
   const currency = evidence(salary.currency);
   const period = evidence(salary.period);
-  const floorLpa = Number(policy.salaryFloorLpa);
-  if (usable == null || (currency && !INR_CURRENCY_PATTERN.test(currency)) || !period || !ANNUAL_PERIOD_PATTERN.test(period) || !Number.isFinite(floorLpa)) {
+  // null/unset floor means no compensation gate (master_prompt: blank = don't filter on comp).
+  // Number(null) is 0, so treat null/empty as NaN rather than a zero floor.
+  const floorLpa = policy.salaryFloorLpa == null || policy.salaryFloorLpa === ''
+    ? NaN
+    : Number(policy.salaryFloorLpa);
+  if (!Number.isFinite(floorLpa)) {
+    return { pass: true, code: 'SALARY_FLOOR_DISABLED', evidence: null };
+  }
+  if (usable == null || (currency && !INR_CURRENCY_PATTERN.test(currency)) || !period || !ANNUAL_PERIOD_PATTERN.test(period)) {
     return { pass: true, code: 'SALARY_NOT_VERIFIED', evidence: null };
   }
   if (usable < floorLpa * 100000) {

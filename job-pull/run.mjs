@@ -17,6 +17,7 @@ import { runReverseAtsScan, reverseAtsCandidatesFromFixture } from './adapters/r
 import { importPublicSearchCandidates } from './adapters/public-search.mjs';
 import { importIndeedCandidates, indeedUnavailable } from './adapters/indeed.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
+import { buildFunnelReport } from './funnel-report.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CAREER_OPS_DIR = path.resolve(MODULE_DIR, '../career-ops');
@@ -255,6 +256,7 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     const suppression = entry.freshness.backfill && row
       ? { suppressed: true, code: 'SUPPRESSED_BACKFILL_ALREADY_SEEN' }
       : row ? suppressionFor(row, now) : { suppressed: false, code: '' };
+    entry.suppression = suppression;
     if (suppression.suppressed) suppressionCounts[suppression.code]++;
     else selectionPool.push(entry);
   }
@@ -268,6 +270,8 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       title: entry.candidate.title,
       canonicalUrl: entry.candidate.canonicalUrl,
       provider: entry.candidate.provider,
+      code: entry.freshness.code,
+      workdayUncorroborated: entry.freshness.workdayUncorroborated === true,
     }));
   const gateExclusions = classified
     .filter((entry) => !entry.freshness.verifyQueue && (!entry.eligibility.eligible || !entry.freshness.eligible))
@@ -277,9 +281,13 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       evidence: !entry.freshness.eligible ? entry.freshness.evidence : entry.eligibility.evidenceCodes,
     }));
   const selectedUrls = new Set(selection.selected.map((candidate) => candidate.canonicalUrl));
-  for (const candidate of selection.selected) {
-    const manifest = manifestForCandidate(manifests, candidate);
-    if (manifest) manifest.selected++;
+  for (const entry of classified) {
+    entry.selected = selectedUrls.has(entry.candidate.canonicalUrl);
+    entry.ready = entry.candidate.applicationReady === true;
+    if (entry.selected) {
+      const manifest = manifestForCandidate(manifests, entry.candidate);
+      if (manifest) manifest.selected++;
+    }
   }
   const strictCandidates = selection.selected.filter((candidate) => candidate.selectionTier === 'strict');
   const relaxedCandidates = selection.selected.filter((candidate) => candidate.selectionTier === 'relaxed');
@@ -300,6 +308,24 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     recordSurfaced(records.map((record) => record.candidate), { path: opportunityLedgerPath, now });
   }
   const sourceCounts = manifests.map((manifest) => ({ ...manifest }));
+  const funnel = buildFunnelReport({
+    observations: classified,
+    lifecycle: {
+      fetched: allCandidates.length,
+      sourceFiltered: allCandidates.length,
+      eligible: classified.filter((entry) => entry.eligibility.eligible).length,
+      historicalSuppressed: 0,
+      suppressedCooldown: suppressionCounts.SUPPRESSED_COOLDOWN_7D,
+      suppressedBackfillAlreadySeen: suppressionCounts.SUPPRESSED_BACKFILL_ALREADY_SEEN,
+      suppressedActioned: suppressionCounts.SUPPRESSED_ACTIONED,
+      verifyQueue: verifyQueue.length,
+      workdayUncorroboratedVerifyQueue: classified.filter((entry) => entry.freshness.workdayUncorroborated === true
+        || entry.freshness.code === 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE').length,
+      ready: classified.filter((entry) => entry.ready).length,
+      selected: records.length,
+      newlyActionable: null,
+    },
+  });
   return {
     schemaVersion: 'JobPullRunV1',
     runId,
@@ -321,7 +347,9 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       applicationShortlist: applicationShortlist.selected.length,
       suppressed,
       suppressedByCode: suppressionCounts,
+      workdayUncorroboratedVerifyQueue: funnel.lifecycle.workdayUncorroboratedVerifyQueue,
     },
+    funnel,
     strictShortfall: selection.strictShortfall,
     strictTarget: config.run.strictTarget,
     targetRange: [config.run.minimumTotal, config.run.maximumTotal],

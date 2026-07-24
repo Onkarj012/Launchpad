@@ -69,6 +69,8 @@ test('fixture workflow returns a stable no-write operator result', () => {
     title: 'AI Engineer',
     canonicalUrl: 'https://jobs.example.test/2',
     provider: 'greenhouse',
+    code: 'FRESHNESS_UNDATED_VERIFY_QUEUE',
+    workdayUncorroborated: false,
   }]);
   assert.equal(result.shortfall.selected, 1);
   assert.equal(result.shortfall.missing, 9);

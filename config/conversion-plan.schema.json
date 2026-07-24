@@ -13,7 +13,7 @@
     "cadence": { "type": "object" },
     "dailyTargets": { "type": "object" },
     "checkpoints": { "type": "object" },
-    "salaryFloorLpa": { "type": "number", "minimum": 0 }
+    "salaryFloorLpa": { "type": ["number", "null"], "minimum": 0 }
   },
   "additionalProperties": false
 }

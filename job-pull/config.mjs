@@ -189,7 +189,11 @@ export function validateConversionPlan(plan) {
   if (!plan.checkpoints || plan.checkpoints.first !== 50 || plan.checkpoints.secondMin !== 70 || plan.checkpoints.secondMax !== 100) {
     errors.push('checkpoints must remain 50 and 70-100');
   }
-  if (plan.salaryFloorLpa !== 8) errors.push('salaryFloorLpa must remain 8');
+  if (plan.salaryFloorLpa != null) {
+    if (typeof plan.salaryFloorLpa !== 'number' || !Number.isFinite(plan.salaryFloorLpa) || plan.salaryFloorLpa < 0) {
+      errors.push('salaryFloorLpa must be null/unset or a non-negative number');
+    }
+  }
   return errors;
 }
 

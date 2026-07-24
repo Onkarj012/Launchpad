@@ -4,6 +4,7 @@ import { filterHistoricalCandidates } from './historical-suppression.mjs';
 import { canonicalizeApplicationUrl, normalizeText, resolveJobIdentity } from './identity.mjs';
 import { selectDailyReserve } from './reserve.mjs';
 import { buildSourceYieldReport } from './source-yield.mjs';
+import { buildFunnelReport } from '../job-pull/funnel-report.mjs';
 import {
   crawlRun,
   finishCrawlRun,
@@ -294,7 +295,53 @@ export async function crawlWorkflow({
   // Reserve/verification counts are durable so schedule-health can report them
   // for a completed run without recomputing selection from raw observations.
   const rejectedTotal = Object.values(selection.excluded || {}).reduce((sum, value) => sum + number(value), 0);
-  const workflowCounts = { ready: selection.shortlist.length, verification: verificationQueue.length, rejected: rejectedTotal, historicalSuppressed: historicalResult.suppressed.length };
+  const shortlistKeys = new Set(selection.shortlist.map((item) => candidateKey(candidateOf(item))));
+  const funnelObservations = entries.map((entry) => {
+    const candidate = candidateOf(entry);
+    const key = candidateKey(candidate);
+    const historical = historicalKeys.has(key);
+    return {
+      candidate,
+      eligibility: entry.eligibility || candidate.eligibility || {},
+      freshness: entry.freshness || candidate.freshness || {},
+      historicalSuppressed: historical,
+      suppression: historical
+        ? { suppressed: true, code: 'HISTORICAL_SUPPRESSED' }
+        : entry.suppression || null,
+      selected: shortlistKeys.has(key),
+      ready: candidate.applicationReady === true || selection.reserve.some((item) => candidateOf(item) === candidate),
+    };
+  });
+  const fetchedTotal = Object.values(sourceTelemetry || {}).reduce(
+    (sum, row) => sum + number(row?.fetched ?? row?.attempted ?? row?.detail?.fetched),
+    0,
+  );
+  const funnel = buildFunnelReport({
+    observations: funnelObservations,
+    lifecycle: {
+      fetched: fetchedTotal || records.length,
+      sourceFiltered: records.length,
+      eligible: funnelObservations.filter((entry) => entry.eligibility?.eligible === true).length,
+      historicalSuppressed: historicalResult.suppressed.length,
+      verifyQueue: verificationQueue.length,
+      workdayUncorroboratedVerifyQueue: funnelObservations.filter((entry) => entry.freshness?.workdayUncorroborated === true
+        || entry.freshness?.code === 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE').length,
+      ready: selection.shortlist.length,
+      selected: selection.shortlist.length,
+      newlyActionable: null,
+    },
+  });
+  const workflowCounts = {
+    ready: selection.shortlist.length,
+    verification: verificationQueue.length,
+    rejected: rejectedTotal,
+    historicalSuppressed: historicalResult.suppressed.length,
+    fetched: funnel.lifecycle.fetched,
+    sourceFiltered: funnel.lifecycle.sourceFiltered,
+    normalized: funnel.lifecycle.normalized,
+    eligible: funnel.lifecycle.eligible,
+    selected: funnel.lifecycle.selected,
+  };
   if (!durable.idempotent) {
     const workflowTelemetry = {
       ...durable.telemetry,
@@ -304,6 +351,7 @@ export async function crawlWorkflow({
         historicalSuppressions: jsonSafe(historicalResult.suppressed),
         sourceTelemetry: jsonSafe(sourceTelemetry),
         sourceYield: jsonSafe(sourceYield),
+        funnel: jsonSafe(funnel),
       },
     };
     const status = durable.run.status;
@@ -329,6 +377,7 @@ export async function crawlWorkflow({
     unresolvedLeads: jsonSafe(unresolvedLeads),
     historicalSuppressions: jsonSafe(historicalResult.suppressed),
     counts: workflowCounts,
+    funnel: jsonSafe(persistedWorkflow?.funnel ?? funnel),
     reserve: selection.reserve,
     shortlist: selection.shortlist,
     shortfall: selection.shortfall,

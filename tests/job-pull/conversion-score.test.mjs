@@ -24,7 +24,10 @@ const strictIndiaEligibility = {
 
 test('conversion plan validates the single seven-factor source of truth', () => {
   assert.deepEqual(validateConversionPlan(conversionPlan), []);
-  assert.match(validateConversionPlan({ ...conversionPlan, salaryFloorLpa: 7 }).join('; '), /salaryFloorLpa/);
+  assert.deepEqual(validateConversionPlan({ ...conversionPlan, salaryFloorLpa: null }), []);
+  assert.deepEqual(validateConversionPlan({ ...conversionPlan, salaryFloorLpa: 8 }), []);
+  assert.match(validateConversionPlan({ ...conversionPlan, salaryFloorLpa: -1 }).join('; '), /salaryFloorLpa/);
+  assert.match(validateConversionPlan({ ...conversionPlan, salaryFloorLpa: '8' }).join('; '), /salaryFloorLpa/);
 });
 
 test('conversion score exposes the seven plan factors and never implies auto-apply', () => {

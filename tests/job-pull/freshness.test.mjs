@@ -41,8 +41,9 @@ test('Workday without verified startDate evidence is VerifyQueue', () => {
     evidence: { freshness: { kind: 'workday-unverified' } },
   }, { now });
   assert.equal(result.window, 'VerifyQueue');
-  assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
+  assert.equal(result.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');
   assert.equal(result.verifyQueue, true);
+  assert.equal(result.workdayUncorroborated, true);
 });
 
 test('Workday source provenance cannot masquerade as a non-Workday provider', () => {
@@ -52,5 +53,6 @@ test('Workday source provenance cannot masquerade as a non-Workday provider', ()
     evidence: null,
   }, { now });
   assert.equal(result.window, 'VerifyQueue');
-  assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
+  assert.equal(result.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');
+  assert.equal(result.workdayUncorroborated, true);
 });

@@ -6,6 +6,7 @@ import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 
 const config = loadConfig();
 const conversionPolicy = { ...config, salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
+const explicitFloorPolicy = { ...config, salaryFloorLpa: 8 };
 
 function candidate(overrides = {}) {
   return normalizeCandidate({
@@ -210,17 +211,30 @@ test('graduate titles with a seniority phrase use the graduate exception', () =>
   assert.equal(result.tier, 'strict');
 });
 
-test('annual INR salary below the configured floor is a hard rejection with evidence', () => {
-  const result = classifyCandidate(candidate({ salary: { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' } }), conversionPolicy);
+test('annual INR salary below an explicit floor is a hard rejection with evidence', () => {
+  const result = classifyCandidate(candidate({ salary: { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' } }), explicitFloorPolicy);
   assert.equal(result.salary.pass, false);
   assert.equal(result.salary.code, 'SALARY_BELOW_FLOOR');
   assert.equal(result.salary.evidence, '₹6-7 lakh per annum');
   assert.ok(result.reasons.includes('SALARY_BELOW_FLOOR'));
 });
 
+test('null or unset salary floor rejects nothing regardless of compensation evidence', () => {
+  const lowSalary = { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' };
+  for (const floor of [null, undefined]) {
+    const result = classifyCandidate(candidate({ salary: lowSalary }), { ...config, salaryFloorLpa: floor });
+    assert.equal(result.salary.pass, true, String(floor));
+    assert.equal(result.salary.code, 'SALARY_FLOOR_DISABLED', String(floor));
+    assert.equal(result.eligible, true, String(floor));
+  }
+  // Default conversion plan leaves the floor blank/unconfirmed.
+  assert.equal(conversionPolicy.salaryFloorLpa, null);
+  assert.equal(classifyCandidate(candidate({ salary: lowSalary }), conversionPolicy).salary.pass, true);
+});
+
 test('missing or ambiguous salary data passes through without invented evidence', () => {
-  const missing = classifyCandidate(candidate({ salary: {} }), conversionPolicy);
-  const ambiguous = classifyCandidate(candidate({ salary: { maximum: 700000, currency: 'USD', period: 'annual' } }), conversionPolicy);
+  const missing = classifyCandidate(candidate({ salary: {} }), explicitFloorPolicy);
+  const ambiguous = classifyCandidate(candidate({ salary: { maximum: 700000, currency: 'USD', period: 'annual' } }), explicitFloorPolicy);
   assert.equal(missing.salary.pass, true);
   assert.equal(missing.salary.evidence, null);
   assert.equal(ambiguous.salary.pass, true);
