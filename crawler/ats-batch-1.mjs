@@ -146,26 +146,26 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
   const boardCursor = cursorState[provider]?.[boardId(board)] || {};
   let page = Number(boardCursor.page ?? 0);
   let rowOffset = Number.isFinite(Number(boardCursor.rowOffset)) ? Math.max(0, Number(boardCursor.rowOffset)) : 0;
-  let pages = 0; let fetched = 0; let status = 'ok'; let nextEndpoint = null;
+  let pages = 0; let fetched = 0; let status = 'ok'; let nextEndpoint = boardCursor.nextEndpoint || null; let naturalTerminal = false; let interrupted = false; let capHit = null; let recordsNotExamined = null;
   const boundedPages = Math.max(0, Number(maxPages)); const boundedJobs = Math.max(0, Number(maxJobs));
   while (pages < boundedPages && observations.length < boundedJobs) {
     const url = canonical(nextEndpoint || adapter.url(board, { page, pageSize: Math.max(1, Number(pageSize)) }));
     if (!url) { failures.push({ kind: 'invalid-endpoint', provider, board: boardId(board), page }); status = 'malformed'; break; }
     let response;
     try { response = await transport(url, { method: 'GET', headers: { ...(rowOffset === 0 && conditionalState[url]?.etag ? { 'if-none-match': conditionalState[url].etag } : {}), ...(rowOffset === 0 && conditionalState[url]?.lastModified ? { 'if-modified-since': conditionalState[url].lastModified } : {}) }, provider, board, page }); }
-    catch (error) { failures.push({ kind: 'transport', provider, board: boardId(board), page, message: error?.message || 'transport error' }); status = 'failed'; break; }
+    catch (error) { failures.push({ kind: 'transport', provider, board: boardId(board), page, message: error?.message || 'transport error' }); status = 'failed'; interrupted = true; break; }
     const httpStatus = Number(response?.status ?? 200);
-    if (httpStatus === 304) { pages += 1; status = 'not-modified'; break; }
-    if (httpStatus < 200 || httpStatus >= 300) { failures.push({ kind: httpStatus >= 500 || httpStatus === 429 ? 'retryable' : 'http', provider, board: boardId(board), page, status: httpStatus }); status = httpStatus >= 500 || httpStatus === 429 ? 'retryable' : 'failed'; break; }
+    if (httpStatus === 304) { pages += 1; status = 'not-modified'; naturalTerminal = true; break; }
+    if (httpStatus < 200 || httpStatus >= 300) { failures.push({ kind: httpStatus >= 500 || httpStatus === 429 ? 'retryable' : 'http', provider, board: boardId(board), page, status: httpStatus }); status = httpStatus >= 500 || httpStatus === 429 ? 'retryable' : 'failed'; interrupted = true; break; }
     let body;
-    try { body = responseJson(response); } catch { failures.push({ kind: 'malformed-json', provider, board: boardId(board), page, url }); status = 'malformed'; break; }
+    try { body = responseJson(response); } catch { failures.push({ kind: 'malformed-json', provider, board: boardId(board), page, url }); status = 'malformed'; interrupted = true; break; }
     const rows = adapter.rows(body);
-    if (!Array.isArray(rows)) { failures.push({ kind: 'malformed-payload', provider, board: boardId(board), page, url }); status = 'malformed'; break; }
+    if (!Array.isArray(rows)) { failures.push({ kind: 'malformed-payload', provider, board: boardId(board), page, url }); status = 'malformed'; interrupted = true; break; }
     fetched += rows.length;
     const headers = headersOf(response); conditionalState[url] = { ...(conditionalState[url] || {}), canonicalUrl: url, etag: headers.etag, lastModified: headers.lastModified };
     let pageComplete = true;
     for (let rowIndex = rowOffset; rowIndex < rows.length; rowIndex += 1) {
-      if (observations.length >= boundedJobs) { pageComplete = false; break; }
+      if (observations.length >= boundedJobs) { pageComplete = false; capHit = 'maxJobs'; recordsNotExamined = rows.length - rowIndex; break; }
       const row = rows[rowIndex];
       rowOffset = rowIndex + 1;
       let mapped = adapter.map(row, board);
@@ -189,13 +189,18 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
     if (!pageComplete) break;
     rowOffset = 0;
     const next = adapter.next(body, { page, pageSize });
-    if (next == null || next === false || rows.length === 0) { page = page + 1; break; }
+    if (next == null || next === false || rows.length === 0) { page = page + 1; naturalTerminal = true; break; }
     if (typeof next === 'string' && /^https?:\/\//i.test(next)) { nextEndpoint = next; page += 1; } else { nextEndpoint = null; page = Number(next); }
   }
+  if (!naturalTerminal && !interrupted && !capHit && observations.length >= boundedJobs) capHit = 'maxJobs';
+  if (!naturalTerminal && !interrupted && !capHit && pages >= boundedPages) capHit = 'maxPages';
+  if (capHit) status = 'truncated';
+  const newestPostingAt = observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null;
   const nextCursor = { page };
   if (rowOffset > 0) nextCursor.rowOffset = rowOffset;
+  if (nextEndpoint) nextCursor.nextEndpoint = nextEndpoint;
   cursorState[provider] = { ...(cursorState[provider] || {}), [boardId(board)]: nextCursor };
-  return { provider, board: boardId(board), observations, failures, cursorState, conditionalState, manifest: { status, provider, board: boardId(board), pages, fetched, jobs: observations.length, foreignDiscardedAtSource: 0, bounded: { maxPages: boundedPages, maxJobs: boundedJobs, pageSize } } };
+  return { provider, board: boardId(board), observations, failures, cursorState, conditionalState, cursor: cursorState, interrupted, manifest: { status, provider, board: boardId(board), startingCursor: boardCursor, pages, fetched, jobs: observations.length, changed: observations.length, foreignDiscardedAtSource: 0, naturalTerminal, interrupted, truncated: Boolean(capHit), capHit, recordsNotExamined, newestPostingAt, bounded: { maxPages: boundedPages, maxJobs: boundedJobs, pageSize } } };
 }
 
 export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, ...options } = {}) {
@@ -206,7 +211,9 @@ export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date(
     const result = await fetchAtsProvider({ ...options, board, provider, transport, runAt, cursorState, conditionalState }); results.push(result); failures.push(...result.failures);
     for (const observation of result.observations) if (!seen.has(observation.canonicalUrl)) { seen.add(observation.canonicalUrl); observations.push(observation); }
   }
-  return { schemaVersion: ATS_BATCH_SCHEMA_VERSION, observations, manifest: { schemaVersion: 'AtsBatchManifestV1', batch: 'ats-batch-1', runAt, providers: ATS_BATCH_1, boardsAttempted: results.length, boardsBound: Math.min(boards.length, Math.max(0, Number(maxBoards))), pages: results.reduce((sum, result) => sum + (result.manifest.pages || 0), 0), fetched: results.reduce((sum, result) => sum + (result.manifest.fetched || 0), 0), direct: observations.filter((row) => row.evidence.classification === 'direct').length, leads: observations.filter((row) => row.evidence.classification === 'lead').length, failures: failures.length, sources: results.map((result, index) => ({ provider: result.provider, board: result.board, company: boards[index]?.company ?? boards[index]?.name ?? result.board, fetched: Number(result.manifest.fetched || 0), observations: result.observations.length, foreignDiscardedAtSource: Number(result.manifest.foreignDiscardedAtSource || 0), status: result.manifest.status, failures: result.failures.length })), noAutoApply: true }, cursorState, conditionalState, failures, results };
+  const interrupted = results.some((result) => result.manifest.interrupted);
+  const truncated = results.some((result) => result.manifest.truncated);
+  return { schemaVersion: ATS_BATCH_SCHEMA_VERSION, observations, manifest: { schemaVersion: 'AtsBatchManifestV1', batch: 'ats-batch-1', runAt, providers: ATS_BATCH_1, boardsAttempted: results.length, boardsBound: Math.min(boards.length, Math.max(0, Number(maxBoards))), pages: results.reduce((sum, result) => sum + (result.manifest.pages || 0), 0), fetched: results.reduce((sum, result) => sum + (result.manifest.fetched || 0), 0), changed: observations.length, direct: observations.filter((row) => row.evidence.classification === 'direct').length, leads: observations.filter((row) => row.evidence.classification === 'lead').length, failures: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted, truncated, capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, sources: results.map((result, index) => ({ provider: result.provider, board: result.board, company: boards[index]?.company ?? boards[index]?.name ?? result.board, startingCursor: result.manifest.startingCursor, fetched: Number(result.manifest.fetched || 0), observations: result.observations.length, foreignDiscardedAtSource: Number(result.manifest.foreignDiscardedAtSource || 0), status: result.manifest.status, naturalTerminal: result.manifest.naturalTerminal, interrupted: result.manifest.interrupted, truncated: result.manifest.truncated, capHit: result.manifest.capHit, recordsNotExamined: result.manifest.recordsNotExamined, newestPostingAt: result.manifest.newestPostingAt, failures: result.failures.length })), noAutoApply: true }, cursorState, conditionalState, failures, results };
 }
 
 export const runAtsBatch1 = fetchAtsBatch1;

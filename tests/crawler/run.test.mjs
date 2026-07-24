@@ -65,12 +65,10 @@ test('a crawl run persists schema, source state, observations, stages, and funne
     failed: 0,
   });
   assert.deepEqual(result.telemetry.sources.greenhouse, {
-    status: 'succeeded',
-    attempts: 1,
-    fetched: 1,
-    observations: 1,
-    changed: 1,
-    duplicates: 0,
+    status: 'succeeded', attempts: 1, fetched: 1, observations: 1, changed: 1, duplicates: 0,
+    startingCursor: { page: 3 }, naturalTerminal: true, interrupted: false, truncated: false,
+    newestPostingAt: '2026-07-22T10:00:00.000Z', cursorReset: false, cursorContinued: false,
+    consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
   });
   assert.equal(result.stages.fetch.status, 'committed');
   assert.equal(result.stages.commit.status, 'committed');
@@ -78,7 +76,8 @@ test('a crawl run persists schema, source state, observations, stages, and funne
   const state = readCrawlerState(store);
   assert.equal(state.schemaVersion, 2);
   assert.equal(state.sources.length, 1);
-  assert.deepEqual(state.sources[0].cursor, { page: 4 });
+  assert.equal(state.sources[0].cursor, null);
+  assert.equal(state.sources[0].scan.scanStatus, 'completed');
   assert.equal(state.companies.length, 1);
   assert.equal(state.companies[0].name, 'example');
   assert.equal(state.companyBoards.length, 1);
@@ -186,5 +185,61 @@ test('opens and expands a version-1 jobs table without losing existing rows', ()
   assert.equal(state.jobs[0].jobKey, 'legacy-job');
   const columns = new Set(store.prepare('PRAGMA table_info(jobs)').all().map((row) => row.name));
   for (const name of ['company_key', 'original_posted_at', 'latest_updated_at', 'inferred_repost_at', 'closed_at']) assert.ok(columns.has(name));
+  store.close();
+});
+
+test('completed newest-first scans reset their next scheduled run to the front', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const cursors = [];
+  const sourcePlans = [{
+    id: 'newest-first', lane: 'ats', capabilities: { newestFirst: true },
+    fetch: async ({ cursor }) => {
+      cursors.push(cursor);
+      const front = cursor == null;
+      return {
+        observations: [{ providerJobId: front ? 'front-2' : 'old-1', canonicalUrl: `https://jobs.example.test/${front ? 'front-2' : 'old-1'}`, title: front ? 'New AI Engineer' : 'Old AI Engineer', company: 'Example', location: 'Pune', postedAt: front ? '2026-07-24T08:00:00Z' : '2026-07-20T08:00:00Z' }],
+        cursor: { page: front ? 1 : 40 },
+        manifest: { fetched: 1, changed: 1, naturalTerminal: true, newestPostingAt: front ? '2026-07-24T08:00:00Z' : '2026-07-20T08:00:00Z' },
+      };
+    },
+  }];
+
+  await crawlRun({ store, runId: 'scheduled-1', schedule: 'morning', sourcePlans, clock: fixedClock() });
+  const second = await crawlRun({ store, runId: 'scheduled-2', schedule: 'morning', sourcePlans, clock: fixedClock() });
+
+  assert.deepEqual(cursors, [null, null]);
+  assert.equal(second.telemetry.sources['newest-first'].cursorReset, true);
+  assert.equal(second.telemetry.sources['newest-first'].newestPostingAt, '2026-07-24T08:00:00Z');
+  assert.equal(readCrawlerState(store).observations.length, 2);
+  store.close();
+});
+
+test('interrupted newest-first scans continue from their saved cursor without replaying completed pages', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const cursors = [];
+  let invocation = 0;
+  const sourcePlans = [{
+    id: 'interrupted-source', lane: 'ats', capabilities: { newestFirst: true },
+    fetch: async ({ cursor }) => {
+      invocation += 1; cursors.push(cursor);
+      if (invocation === 1) return {
+        observations: [{ providerJobId: 'page-0', canonicalUrl: 'https://jobs.example.test/page-0', title: 'Page Zero', company: 'Example', location: 'Pune' }],
+        cursor: { page: 1 }, manifest: { fetched: 1, changed: 1, interrupted: true, naturalTerminal: false },
+      };
+      assert.deepEqual(cursor, { page: 1 });
+      return {
+        observations: [{ providerJobId: 'page-1', canonicalUrl: 'https://jobs.example.test/page-1', title: 'Page One', company: 'Example', location: 'Pune' }],
+        cursor: { page: 2 }, manifest: { fetched: 1, changed: 1, naturalTerminal: true },
+      };
+    },
+  }];
+
+  const first = await crawlRun({ store, runId: 'interrupted-1', sourcePlans, clock: fixedClock() });
+  const second = await crawlRun({ store, runId: 'interrupted-2', sourcePlans, clock: fixedClock() });
+
+  assert.equal(first.telemetry.sources['interrupted-source'].status, 'interrupted');
+  assert.equal(second.telemetry.sources['interrupted-source'].cursorContinued, true);
+  assert.deepEqual(cursors, [null, { page: 1 }]);
+  assert.equal(readCrawlerState(store).observations.length, 2);
   store.close();
 });

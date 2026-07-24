@@ -31,8 +31,8 @@ test('fetches the bounded first ATS batch through an injected transport', async 
   assert.equal(result.observations[1].originalApplicationUrl, 'https://beta.recruitee.com/o/backend-engineer');
   assert.equal(result.failures.length, 0);
   assert.deepEqual(result.manifest.sources, [
-    { provider: 'smartrecruiters', board: 'Acme', company: 'Acme', fetched: 1, observations: 1, foreignDiscardedAtSource: 0, status: 'ok', failures: 0 },
-    { provider: 'recruitee', board: 'beta', company: 'Beta', fetched: 1, observations: 1, foreignDiscardedAtSource: 0, status: 'ok', failures: 0 },
+    { provider: 'smartrecruiters', board: 'Acme', company: 'Acme', fetched: 1, observations: 1, foreignDiscardedAtSource: 0, status: 'ok', failures: 0, capHit: null, interrupted: false, naturalTerminal: true, newestPostingAt: '2026-07-22T00:00:00.000Z', recordsNotExamined: null, startingCursor: {}, truncated: false },
+    { provider: 'recruitee', board: 'beta', company: 'Beta', fetched: 1, observations: 1, foreignDiscardedAtSource: 0, status: 'ok', failures: 0, capHit: null, interrupted: false, naturalTerminal: true, newestPostingAt: '2026-07-21T00:00:00.000Z', recordsNotExamined: null, startingCursor: {}, truncated: false },
   ]);
   assert.equal(result.manifest.noAutoApply, true);
 });

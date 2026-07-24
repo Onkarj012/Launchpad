@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS source_telemetry (
   changed INTEGER NOT NULL DEFAULT 0,
   observations INTEGER NOT NULL DEFAULT 0,
   duplicates INTEGER NOT NULL DEFAULT 0,
+  details_json TEXT NOT NULL DEFAULT '{}',
   error TEXT,
   PRIMARY KEY (run_id, source_id)
 );
@@ -156,6 +157,7 @@ export function openCrawlerStore(path = ':memory:') {
   ensureColumn(db, 'jobs', 'latest_updated_at', 'TEXT');
   ensureColumn(db, 'jobs', 'inferred_repost_at', 'TEXT');
   ensureColumn(db, 'jobs', 'closed_at', 'TEXT');
+  ensureColumn(db, 'source_telemetry', 'details_json', "TEXT NOT NULL DEFAULT '{}'");
   db.prepare(`INSERT INTO crawler_meta(key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
   for (let version = 1; version <= SCHEMA_VERSION; version += 1) {
@@ -220,8 +222,26 @@ function telemetryFor(db, runId) {
     changed: row.changed,
     duplicates: row.duplicates,
     ...(row.fetched == null ? {} : { fetched: row.fetched }),
+    ...json(row.details_json, {}),
     ...(row.error ? { error: row.error } : {}),
   }]));
+}
+
+function sourceState(value, fallback = null) {
+  const parsed = typeof value === 'string' ? json(value, null) : value;
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.scanStatus === 'string') {
+    return { cursor: parsed.scanStatus === 'interrupted' ? parsed.cursor ?? null : null, state: parsed };
+  }
+  return { cursor: fallback ?? parsed ?? null, state: { scanStatus: 'legacy' } };
+}
+
+function encodedSourceState(cursor, state) {
+  return JSON.stringify({ version: 1, cursor: cursor ?? null, ...state });
+}
+
+function newestPostingAt(observations, manifest) {
+  const values = observations.map((observation) => observation.postedAt).filter(Boolean).sort();
+  return manifest?.newestPostingAt ?? values.at(-1) ?? null;
 }
 
 function snapshot(db, runId) {
@@ -340,8 +360,20 @@ function persistObservation(store, source, runId, observation, observedAt) {
 async function fetchSource(store, source, runId, priorState, config, clock) {
   const retry = { maxAttempts: 1, baseDelayMs: 250, ...(config.retry ?? {}) };
   const sourceRow = store.prepare('SELECT * FROM sources WHERE source_id = ?').get(source.id);
-  const cursor = json(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
-  const telemetry = { status: 'running', attempts: 0, fetched: 0, changed: 0, observations: 0 };
+  const persisted = sourceState(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
+  const sourceCapabilities = source.capabilities ?? {};
+  const previousState = persisted.state;
+  const cursor = sourceCapabilities.newestFirst && previousState.scanStatus !== 'interrupted'
+    ? null
+    : persisted.cursor;
+  const telemetry = {
+    status: 'running', attempts: 0, fetched: 0, changed: 0, observations: 0,
+    startingCursor: cursor,
+    cursorReset: Boolean(sourceCapabilities.newestFirst && previousState.scanStatus !== 'interrupted' && (previousState.scanStatus !== 'legacy' || persisted.cursor != null)),
+    cursorContinued: Boolean(cursor != null && previousState.scanStatus === 'interrupted'),
+    naturalTerminal: false, interrupted: false, truncated: false, newestPostingAt: null,
+    consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
+  };
   let lastError;
   for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     telemetry.attempts = attempt;
@@ -350,12 +382,31 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
       const observations = Array.isArray(result?.observations) ? result.observations : [];
       let duplicates = 0;
       for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
-      telemetry.status = 'succeeded';
+      const manifest = result?.manifest ?? {};
+      const interrupted = Boolean(result?.interrupted || manifest.interrupted);
+      const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
+      telemetry.status = interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'succeeded';
       telemetry.observations = observations.length;
       telemetry.duplicates = duplicates;
-      telemetry.fetched = Number(result?.manifest?.fetched ?? observations.length);
-      telemetry.changed = Number(result?.manifest?.changed ?? observations.length - duplicates);
-      store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(result?.cursor == null ? sourceRow?.cursor_json : JSON.stringify(result.cursor), nowFrom(clock), source.id);
+      telemetry.fetched = Number(manifest.fetched ?? observations.length);
+      telemetry.changed = Number(manifest.changed ?? observations.length - duplicates);
+      telemetry.naturalTerminal = Boolean(naturalTerminal);
+      telemetry.interrupted = interrupted;
+      telemetry.truncated = Boolean(manifest.truncated);
+      telemetry.capHit = manifest.capHit ?? null;
+      telemetry.recordsNotExamined = manifest.recordsNotExamined ?? null;
+      telemetry.newestPostingAt = newestPostingAt(observations, manifest);
+      telemetry.consecutiveZeroNewRuns = telemetry.changed === 0 ? Number(previousState.consecutiveZeroNewRuns ?? 0) + 1 : 0;
+      const nextCursor = interrupted ? result?.cursor ?? cursor : null;
+      store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(nextCursor, {
+        scanStatus: interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'completed',
+        naturalTerminal: Boolean(naturalTerminal),
+        truncated: Boolean(manifest.truncated),
+        newestPostingAt: telemetry.newestPostingAt,
+        consecutiveZeroNewRuns: telemetry.consecutiveZeroNewRuns,
+        cursorReset: telemetry.cursorReset,
+        cursorContinued: telemetry.cursorContinued,
+      }), nowFrom(clock), source.id);
       return { telemetry, duplicates };
     } catch (error) {
       lastError = error;
@@ -369,6 +420,14 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
     VALUES (?, ?, 'fetch', ?, ?, ?, ?, ?, ?)`).run(runId, source.id, telemetry.attempts, retryClass, sourceHost(source.url), lastError?.statusCode ?? null, message, nowFrom(clock));
   telemetry.status = 'failed';
   telemetry.error = message;
+  telemetry.interrupted = true;
+  telemetry.naturalTerminal = false;
+  telemetry.newestPostingAt = null;
+  telemetry.consecutiveZeroNewRuns = Number(previousState.consecutiveZeroNewRuns ?? 0) + 1;
+  store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(lastError?.cursor ?? cursor, {
+    scanStatus: 'interrupted', naturalTerminal: false, newestPostingAt: null,
+    consecutiveZeroNewRuns: telemetry.consecutiveZeroNewRuns,
+  }), nowFrom(clock), source.id);
   return { telemetry, duplicates: 0 };
 }
 
@@ -381,15 +440,16 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     const at = nowFrom(clock);
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
+      const initialCursor = priorState.sources?.[source.id]?.cursor;
       store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), priorState.sources?.[source.id]?.cursor == null ? null : JSON.stringify(priorState.sources[source.id].cursor), at);
+        ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
       if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
         const result = await fetchSource(store, source, runId, priorState, config, clock);
         const t = result.telemetry;
-        store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, error)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, t.error ?? null);
+        store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined }), t.error ?? null);
       }
     }
     const telemetry = telemetryFor(store, runId);
@@ -398,7 +458,7 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
       changed: total.changed + source.changed,
       observations: total.observations + source.observations,
       duplicates: total.duplicates + source.duplicates,
-      failed: total.failed + (source.status === 'failed' ? 1 : 0),
+      failed: total.failed + (source.status === 'failed' || source.status === 'interrupted' || source.status === 'truncated' ? 1 : 0),
     }), { fetched: 0, changed: 0, observations: 0, duplicates: 0, failed: 0 });
     transitionStage(store, runId, 'fetch', 'committed', { clock });
     transitionStage(store, runId, 'commit', 'running', { clock });
@@ -414,7 +474,7 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
 export function readCrawlerState(store) {
   return {
     schemaVersion: Number(store.prepare("SELECT value FROM crawler_meta WHERE key = 'schema_version'").get()?.value ?? 0),
-    sources: store.prepare('SELECT * FROM sources ORDER BY source_id').all().map((row) => ({ sourceId: row.source_id, lane: row.lane, trustClass: row.trust_class, cursor: json(row.cursor_json, null) })),
+    sources: store.prepare('SELECT * FROM sources ORDER BY source_id').all().map((row) => { const state = sourceState(row.cursor_json); return { sourceId: row.source_id, lane: row.lane, trustClass: row.trust_class, cursor: state.cursor, scan: state.state }; }),
     companies: store.prepare('SELECT * FROM companies ORDER BY company_key').all().map((row) => ({ companyKey: row.company_key, name: row.name, domain: row.domain })),
     companyBoards: store.prepare('SELECT * FROM company_boards ORDER BY board_key').all().map((row) => ({ boardKey: row.board_key, companyKey: row.company_key, sourceId: row.source_id, provider: row.provider, boardUrl: row.board_url, boardIdentity: row.board_identity })),
     jobs: store.prepare('SELECT * FROM jobs ORDER BY job_key').all().map((row) => ({ jobKey: row.job_key, provider: row.provider, providerJobId: row.provider_job_id, canonicalUrl: row.canonical_url })),

@@ -189,15 +189,15 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   if (sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor }) => {
     const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState });
     return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } };
-  }));
+  }, { capabilities: { newestFirst: true, paginated: true } }));
   if (schedule !== 'midday' && sources.atsBatch2?.boards?.length) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor }) => {
     const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: sources.atsBatch2.boards, transport, runAt, state: cursor ?? {} });
-    return { ...result, cursor: Object.fromEntries(result.results.map((entry) => [entry.manifest.sourceId, entry.conditionalState])) };
-  }));
+    return { ...result, cursor: Object.fromEntries(result.results.map((entry, index) => [sources.atsBatch2.boards[index]?.slug || sources.atsBatch2.boards[index]?.company, entry.conditionalState])) };
+  }, { capabilities: { newestFirst: true, completeArray: true } }));
   if (schedule !== 'midday' && sources.enterprise?.boards?.length) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor }) => {
     const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: sources.enterprise.boards, transport, runAt, conditionalState: cursor ?? {} });
     return { ...result, cursor: result.conditionalState };
-  }));
+  }, { capabilities: { newestFirst: true, paginated: true } }));
   if (sources.indeed?.enabled) plans.push(sourcePlan('indeed-inbox', 'connector-imports', 'indeed', async () => importIndeedInbox({
     ...sources.indeed,
     date: sources.indeed.date ?? runAt.slice(0, 10),

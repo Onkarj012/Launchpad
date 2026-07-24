@@ -1,7 +1,24 @@
-import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { extractExperienceYears, normalizeCandidate, stripHtmlToText } from '../job-pull/candidate.mjs';
 
 const SUPPORTED = new Set(['workday', 'successfactors', 'phenom', 'icims', 'jobvite', 'oracle', 'custom']);
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+// Role-family vocabulary aligned with eligibility title patterns and job-pull role families
+// (ai/ml/backend/full-stack/new-grad SWE/adjacent). Used only to decide which Workday LIST
+// rows are worth a DETAIL request — never as a final reject gate.
+const DEFAULT_ROLE_FAMILY_KEYWORDS = Object.freeze([
+  'software', 'engineer', 'developer', 'sde', 'swe', 'backend', 'front end', 'frontend',
+  'full stack', 'fullstack', 'full-stack', 'ai', 'ml', 'machine learning', 'llm', 'genai',
+  'gen ai', 'python', 'data scientist', 'data engineer', 'platform', 'devops', 'sre',
+  'site reliability', 'product engineer', 'application engineer', 'solutions engineer',
+  'research engineer', 'automation engineer', 'associate software', 'graduate engineer',
+  'member of technical staff', 'mts', 'nlp', 'prompt', 'agentic',
+]);
+const DEFAULT_LOCATION_KEYWORDS = Object.freeze([
+  'pune', 'india', 'indian', 'bengaluru', 'bangalore', 'hyderabad', 'mumbai', 'chennai',
+  'delhi', 'noida', 'gurgaon', 'gurugram', 'remote', 'apac', 'asia', 'worldwide',
+  'world wide', 'global', 'anywhere', 'hinjawadi', 'hinjewadi', 'kharadi', 'baner',
+]);
 
 const clean = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const first = (...values) => values.find((value) => clean(value) || (typeof value === 'number' && Number.isFinite(value))) ?? null;
@@ -26,7 +43,7 @@ function locationText(value) {
   if (Array.isArray(value)) return value.map(locationText).filter(Boolean).join(', ') || null;
   if (typeof value === 'string') return clean(value);
   if (!value || typeof value !== 'object') return null;
-  return clean([value.name, value.city, value.addressLocality, value.region, value.country].filter(Boolean).join(', '));
+  return clean([value.name, value.city, value.addressLocality, value.region, value.country, value.descriptor].filter(Boolean).join(', '));
 }
 
 function jsonLd(body) {
@@ -88,16 +105,28 @@ function providerFrom(board) {
   return null;
 }
 
+function listRequisitionId(row) {
+  const direct = first(row.jobReqId, row.requisitionId, row.requisitionid, row.reqId, row.externalCode, row.id, row.jobId);
+  if (direct != null) return String(direct);
+  if (Array.isArray(row.bulletFields) && row.bulletFields.length) {
+    const bullet = clean(String(row.bulletFields[0]));
+    if (bullet) return bullet;
+  }
+  return null;
+}
+
 function fields(provider, row, boardUrl) {
   const url = first(row.url, row.jobUrl, row.detailUrl, row.careerSiteUrl, row.applyUrl, row.applyurl, row.externalPath, row.jobPostingUrl, row.links?.self, row.links?.job);
   const title = first(row.title, row.jobTitle, row.jobtitle, row.name, row.role);
   const company = first(row.company, row.companyName, row.hiringOrganization?.name);
-  const date = first(row.postedAt, row.datePosted, row.postingDate, row.postedOn, row.posteddate, row.createdAt);
-  const id = first(row.jobReqId, row.requisitionid, row.requisitionId, row.externalCode, row.id, row.jobId);
+  const date = first(row.postedAt, row.datePosted, row.postingDate, row.postedOn, row.posteddate, row.createdAt, row.startDate);
+  const id = listRequisitionId(row);
   return {
     url: canonical(url, boardUrl), title: clean(title), company: clean(company), postedAt: parseDate(date), id: id == null ? null : String(id),
-    location: locationText(first(row.location, row.locations, row.jobLocation, row.city)), description: clean(row.description || row.descriptionPlain || row.jobDescription),
-    applicationUrl: canonical(first(row.applyUrl, row.applyurl, row.applicationUrl), boardUrl), provider,
+    location: locationText(first(row.location, row.locations, row.locationsText, row.jobLocation, row.city)),
+    description: clean(row.description || row.descriptionPlain || row.jobDescription),
+    applicationUrl: canonical(first(row.applyUrl, row.applyurl, row.applicationUrl, row.externalUrl), boardUrl), provider,
+    externalPath: clean(row.externalPath),
   };
 }
 
@@ -111,11 +140,17 @@ function candidateFrom(row, { provider, board, endpointUrl, page, runAt, parser 
     applicationUrl: value.applicationUrl, originalApplicationEvidence: 'enterprise ATS observation', provider,
     source: endpointUrl, sourceKind: classification === 'direct' ? 'ats-direct' : 'aggregator',
     liveness: { status: value.postedAt ? 'Active' : 'Not Verified', checkedAt: runAt, evidence: 'enterprise-ats-feed' },
-    evidence: { classification, parser, provider, boardUrl: board.url, endpointUrl, page, verified: false },
+    evidence: { classification, parser, provider, boardUrl: board.url, endpointUrl, page, verified: false, requisitionId: value.id },
   }, { runAt, provider });
   candidate.classification = classification;
   candidate.provenance = { provider, boardUrl: board.url, endpointUrl, page, parser, transportInjected: true };
+  candidate.providerJobId = value.id;
+  candidate._listExternalPath = value.externalPath;
   return { value: candidate };
+}
+
+function candidateIdentity(candidate) {
+  return String(candidate.jobId ?? candidate.evidence?.providerJobId ?? candidate.canonicalUrl);
 }
 
 function parserRows(provider, payload) {
@@ -145,20 +180,331 @@ function requestOptions(provider, maxJobsPerBoard, etag, offset = 0) {
   };
 }
 
-export async function discoverEnterpriseAts({ boards = [], transport, runAt = new Date().toISOString(), conditionalState = {}, maxPages = 3, maxJobsPerBoard = 100, retry = {} } = {}) {
+function keywordHit(text, keywords) {
+  const hay = String(text || '').toLowerCase();
+  if (!hay) return false;
+  return keywords.some((keyword) => {
+    const needle = String(keyword || '').toLowerCase().trim();
+    return needle && hay.includes(needle);
+  });
+}
+
+/**
+ * Decide whether a Workday LIST row is worth a DETAIL fetch. Ambiguous rows
+ * (missing title/location, or unclear) always select true so they are not
+ * silently dropped before hydration can reveal relevance. Final policy gates
+ * still own eligibility — this never rejects a role from the observation set.
+ */
+export function preselectWorkdayListRow(row, { roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS, locationKeywords = DEFAULT_LOCATION_KEYWORDS } = {}) {
+  const title = clean(first(row?.title, row?.jobTitle, row?.jobtitle, row?.name, row?.role)) || '';
+  const location = locationText(first(row?.location, row?.locations, row?.locationsText, row?.jobLocation, row?.city)) || '';
+  const roleHit = keywordHit(title, roleFamilyKeywords);
+  const locationPresent = Boolean(location);
+  const locationHit = locationPresent && keywordHit(location, locationKeywords);
+  const ambiguous = !title || !locationPresent;
+
+  if (ambiguous) return { selected: true, reason: 'ambiguous' };
+  if (roleHit) return { selected: true, reason: 'role-family' };
+  if (locationHit) return { selected: true, reason: 'location-relevant' };
+  // Clearly off-family title at a clearly non-relevant location: skip DETAIL only.
+  return { selected: false, reason: 'not-plausible' };
+}
+
+/**
+ * Build the CXS DETAIL URL from a LIST board URL and externalPath.
+ * LIST:  https://{host}/wday/cxs/{tenant}/{site}/jobs
+ * DETAIL: https://{host}/wday/cxs/{tenant}/{site}/job/{loc}/{slug_REQ}
+ * externalPath is typically "/job/{loc}/{slug_REQ}".
+ */
+export function workdayDetailUrl(boardUrl, externalPath) {
+  const path = clean(externalPath);
+  if (!boardUrl || !path) return null;
+  if (/^https?:\/\//i.test(path)) return null;
+  try {
+    const board = new URL(boardUrl);
+    const basePath = board.pathname.replace(/\/jobs\/?$/, '');
+    if (!/\/wday\/cxs\//i.test(basePath) && !/\/wday\/cxs\//i.test(board.pathname)) {
+      // Non-CXS board URL: resolve relative to host root.
+      return canonical(path.startsWith('/') ? path : `/${path}`, `${board.origin}/`);
+    }
+    const joined = `${basePath}${path.startsWith('/') ? path : `/${path}`}`;
+    return canonical(joined, board.origin);
+  } catch {
+    return null;
+  }
+}
+
+function workdayPublicApplicationUrl(boardUrl, externalPath, detailExternalUrl) {
+  const fromDetail = canonical(detailExternalUrl);
+  if (fromDetail) return fromDetail;
+  const path = clean(externalPath);
+  if (!boardUrl || !path) return null;
+  if (/^https?:\/\//i.test(path)) return canonical(path);
+  try {
+    const board = new URL(boardUrl);
+    // Prefer human careers URL: https://{host}/{site}/job/...
+    const match = board.pathname.match(/\/wday\/cxs\/[^/]+\/([^/]+)\/jobs\/?$/i);
+    if (match) {
+      const site = match[1];
+      return canonical(`/${site}${path.startsWith('/') ? path : `/${path}`}`, board.origin);
+    }
+    return canonical(path, board.origin);
+  } catch {
+    return null;
+  }
+}
+
+function extractWorkdayDetail(payload) {
+  if (!payload || payload.__malformed || payload.__html) return null;
+  const info = payload.jobPostingInfo && typeof payload.jobPostingInfo === 'object' ? payload.jobPostingInfo : payload;
+  if (!info || typeof info !== 'object') return null;
+  const descriptionHtml = first(info.jobDescription, info.description, info.descriptionHtml);
+  const description = descriptionHtml ? stripHtmlToText(descriptionHtml) : null;
+  const location = locationText(first(
+    info.location,
+    info.locationsText,
+    info.jobRequisitionLocation?.descriptor,
+    info.jobRequisitionLocation,
+    info.country?.descriptor,
+  ));
+  const requisitionId = first(info.jobReqId, info.requisitionId, info.reqId, info.id);
+  const applicationUrl = canonical(first(info.externalUrl, info.jobPostingUrl, info.url));
+  const experienceEvidence = first(
+    typeof info.experience === 'string' ? info.experience : null,
+    info.experienceRequired,
+    info.additionalInformation,
+  );
+  const experienceFromText = extractExperienceYears(description || experienceEvidence || '') || null;
+  const experience = experienceFromText || (experienceEvidence ? { minYears: null, maxYears: null, evidence: experienceEvidence } : null);
+  const closed = info.closed === true || info.isClosed === true || info.posted === false || info.canApply === false
+    || /closed|expired|filled|withdrawn|removed/i.test(String(info.status ?? info.jobStatus ?? ''));
+  const live = !closed && (info.posted === true || info.canApply === true || Boolean(description || info.title));
+  // startDate / postedOn are mutable Workday provider timestamps — retained as
+  // uncorroborated evidence only (see job-pull/freshness.mjs Workday exception).
+  const providerStartDate = parseDate(info.startDate);
+  const providerPostedOn = parseDate(info.postedOn);
+  return {
+    title: clean(info.title),
+    description,
+    location,
+    requisitionId: requisitionId == null ? null : String(requisitionId),
+    applicationUrl,
+    experience,
+    liveness: closed
+      ? { status: 'Expired', evidence: 'workday-detail-closed' }
+      : live
+        ? { status: 'Active', evidence: 'workday-detail-live' }
+        : { status: 'Not Verified', evidence: 'workday-detail-liveness-unverified' },
+    providerStartDate,
+    providerPostedOn,
+    company: clean(payload.hiringOrganization?.name || info.hiringOrganization?.name),
+  };
+}
+
+function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
+  const requisitionId = detail.requisitionId || candidate.jobId || candidate.providerJobId || null;
+  const applicationUrl = detail.applicationUrl || candidate.originalApplicationUrl || candidate.canonicalUrl;
+  const description = detail.description || candidate.description || null;
+  const location = detail.location || candidate.location || null;
+  const experience = detail.experience || candidate.experience || { minYears: null, maxYears: null, evidence: null };
+  const next = normalizeCandidate({
+    ...candidate,
+    url: applicationUrl,
+    originalApplicationUrl: applicationUrl,
+    company: detail.company || candidate.company,
+    title: detail.title || candidate.title,
+    location,
+    description,
+    jobId: requisitionId,
+    postedAt: candidate.postedAt,
+    discoveredAt: candidate.discoveredAt || runAt,
+    crawledAt: runAt,
+    applicationUrl,
+    originalApplicationEvidence: 'workday detail externalUrl',
+    provider: 'workday',
+    source: candidate.source,
+    sourceKind: candidate.sourceKind || 'ats-direct',
+    experience,
+    liveness: { ...detail.liveness, checkedAt: runAt },
+    evidence: {
+      ...candidate.evidence,
+      verified: true,
+      detailHydration: { status: 'succeeded', detailUrl },
+      requisitionId,
+      providerStartDate: detail.providerStartDate,
+      providerPostedOn: detail.providerPostedOn,
+      // Mutable Workday dates stay uncorroborated; do not set workday-startDate.
+      freshness: { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
+    },
+  }, { runAt, provider: 'workday' });
+  next.classification = candidate.classification;
+  next.provenance = { ...candidate.provenance, detailUrl, detailHydrated: true };
+  next.providerJobId = requisitionId;
+  return next;
+}
+
+function markWorkdayDetailFailure(candidate, { runAt, detailUrl, code, message }) {
+  const next = {
+    ...candidate,
+    crawledAt: runAt || candidate.crawledAt,
+    evidence: {
+      ...candidate.evidence,
+      verified: false,
+      detailHydration: { status: 'failed', detailUrl, code, message },
+      verificationReason: code,
+    },
+    provenance: { ...candidate.provenance, detailUrl, detailHydrated: false, detailFailure: code },
+  };
+  return next;
+}
+
+async function mapPool(items, concurrency, fn) {
+  if (!items.length) return [];
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await fn(items[index], index);
+    }
+  }
+  const width = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
+  await Promise.all(Array.from({ length: width }, () => worker()));
+  return results;
+}
+
+async function hydrateWorkdayDetails(pending, {
+  transport, runAt, detailConcurrency, maxDetailRequests, detailTelemetry, verificationQueue,
+}) {
+  let remaining = Math.max(0, Number(maxDetailRequests) || 0);
+  const selected = [];
+  for (const item of pending) {
+    if (remaining <= 0) {
+      detailTelemetry.budgetExhausted += 1;
+      item.candidate.evidence = {
+        ...item.candidate.evidence,
+        detailHydration: { status: 'skipped', reason: 'budget-exhausted' },
+      };
+      continue;
+    }
+    remaining -= 1;
+    selected.push(item);
+  }
+
+  await mapPool(selected, detailConcurrency, async (item) => {
+    detailTelemetry.attempted += 1;
+    const detailUrl = item.detailUrl;
+    let response;
+    try {
+      response = await transport(detailUrl, {
+        method: 'GET',
+        headers: {},
+        endpoint: 'enterprise-ats-detail',
+        provider: 'workday',
+        detail: true,
+        runAt,
+      });
+    } catch (error) {
+      detailTelemetry.failed += 1;
+      item.candidate = markWorkdayDetailFailure(item.candidate, {
+        runAt, detailUrl, code: 'WORKDAY_DETAIL_TRANSPORT_ERROR', message: error?.message || 'detail transport error',
+      });
+      verificationQueue.push({
+        url: item.candidate.canonicalUrl, company: item.candidate.company,
+        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
+      });
+      return;
+    }
+
+    const status = Number(response?.status ?? 0);
+    if (status < 200 || status >= 300) {
+      detailTelemetry.failed += 1;
+      const code = status === 404 ? 'WORKDAY_DETAIL_NOT_FOUND' : RETRYABLE.has(status) ? 'WORKDAY_DETAIL_RATE_LIMITED' : `WORKDAY_DETAIL_HTTP_${status || '0'}`;
+      item.candidate = markWorkdayDetailFailure(item.candidate, {
+        runAt, detailUrl, code, message: response?.error?.message || `workday detail returned HTTP ${status}`,
+      });
+      verificationQueue.push({
+        url: item.candidate.canonicalUrl, company: item.candidate.company,
+        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
+      });
+      return;
+    }
+
+    const payload = payloadOf(response);
+    if (!payload || payload.__malformed || payload.__html) {
+      detailTelemetry.failed += 1;
+      item.candidate = markWorkdayDetailFailure(item.candidate, {
+        runAt, detailUrl, code: 'WORKDAY_DETAIL_MALFORMED', message: 'workday detail response was not valid JSON jobPostingInfo',
+      });
+      verificationQueue.push({
+        url: item.candidate.canonicalUrl, company: item.candidate.company,
+        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
+      });
+      return;
+    }
+
+    const detail = extractWorkdayDetail(payload);
+    if (!detail || (!detail.description && !detail.requisitionId && !detail.location)) {
+      detailTelemetry.failed += 1;
+      item.candidate = markWorkdayDetailFailure(item.candidate, {
+        runAt, detailUrl, code: 'WORKDAY_DETAIL_EMPTY', message: 'workday detail payload lacked description, requisition id, and location',
+      });
+      verificationQueue.push({
+        url: item.candidate.canonicalUrl, company: item.candidate.company,
+        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
+      });
+      return;
+    }
+
+    // Prefer list externalPath-derived public URL when detail omits externalUrl.
+    if (!detail.applicationUrl) {
+      detail.applicationUrl = workdayPublicApplicationUrl(item.boardUrl, item.externalPath, null);
+    }
+    detailTelemetry.succeeded += 1;
+    item.candidate = applyWorkdayDetail(item.candidate, detail, { runAt, detailUrl });
+  });
+}
+
+export async function discoverEnterpriseAts({
+  boards = [],
+  transport,
+  runAt = new Date().toISOString(),
+  conditionalState = {},
+  maxPages = 3,
+  maxJobsPerBoard = 100,
+  retry = {},
+  enrichDetails = false,
+  detailConcurrency = 4,
+  maxDetailRequestsPerRun = 0,
+  roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS,
+  locationKeywords = DEFAULT_LOCATION_KEYWORDS,
+} = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverEnterpriseAts requires injected transport');
   const observations = []; const failures = []; const verificationQueue = []; const seen = new Set(); const state = { ...conditionalState };
-  const sources = []; const telemetry = { boards: boards.length, attempted: 0, succeeded: 0, pages: 0, extracted: 0, direct: 0, leads: 0, duplicates: 0, skipped: 0, capped: 0 };
+  const sources = [];
+  const detailTelemetry = { attempted: 0, succeeded: 0, failed: 0, budgetExhausted: 0, preselected: 0, skipped: 0 };
+  const telemetry = {
+    boards: boards.length, attempted: 0, succeeded: 0, pages: 0, extracted: 0, direct: 0, leads: 0, duplicates: 0, skipped: 0, capped: 0,
+    workdayDetail: detailTelemetry,
+  };
+  const detailBudget = Math.max(0, Number(maxDetailRequestsPerRun) || (enrichDetails ? 50 : 0));
+  const detailEnabled = enrichDetails === true || detailBudget > 0;
+  const concurrency = Math.max(1, Number(detailConcurrency) || 4);
+  const workdayPending = [];
+
   for (const input of boards) {
     const board = { ...input, url: canonical(input.url || input.endpoint || input.boardUrl) };
     const provider = providerFrom(board);
-    const source = { board: board.company || null, provider, url: board.url, status: 'pending', pagesFetched: 0, pagesCapped: false, failures: [] };
+    const boardKey = board.company || board.url;
+    const resume = state.__cursor?.[boardKey] || {};
+    const source = { board: board.company || null, provider, url: board.url, status: 'pending', startingCursor: resume, pagesFetched: 0, pagesCapped: false, failures: [], naturalTerminal: false, interrupted: false, truncated: false, capHit: null, recordsNotExamined: null, newestPostingAt: null };
     sources.push(source);
     if (!board.url || !provider || !SUPPORTED.has(provider)) {
       const item = failure(board, 0, 'UNSUPPORTED_PROVIDER', 'board provider is unsupported or private; no listing was inferred', board.url);
       failures.push(item); source.failures.push(item); source.status = 'degraded'; telemetry.skipped += 1; continue;
     }
-    let endpointUrl = board.url; const visited = new Set(); let page = 0; let boardJobs = 0; let workdayTotal = null; let workdayReceived = 0;
+    let endpointUrl = resume.endpointUrl || board.url; const visited = new Set(); let page = Number(resume.page || 0); let boardJobs = 0; let workdayTotal = null; let workdayReceived = Number(resume.workdayReceived || 0);
     while (endpointUrl && page < Math.max(1, Number(maxPages))) {
       const workdayOffset = provider === 'workday' ? workdayReceived : 0;
       page += 1; telemetry.pages += 1; telemetry.attempted += 1; source.pagesFetched += 1; visited.add(endpointUrl);
@@ -170,24 +516,24 @@ export async function discoverEnterpriseAts({ boards = [], transport, runAt = ne
         if (!RETRYABLE.has(Number(response?.status)) || attempts >= maxAttempts) break;
       }
       const status = Number(response?.status ?? 200);
-      if (status === 304) { source.status = 'ok'; state[endpointUrl] = { ...state[endpointUrl], canonicalUrl: endpointUrl, notModified: true }; telemetry.succeeded += 1; break; }
+      if (status === 304) { source.status = 'ok'; source.naturalTerminal = true; state[endpointUrl] = { ...state[endpointUrl], canonicalUrl: endpointUrl, notModified: true }; telemetry.succeeded += 1; break; }
       if (status < 200 || status >= 300) {
         const item = failure(board, page, response?.error ? 'TRANSPORT_ERROR' : RETRYABLE.has(status) ? 'RETRY_EXHAUSTED' : `HTTP_${status}`, response?.error?.message || `enterprise ATS returned HTTP ${status}`, endpointUrl);
-        failures.push(item); source.failures.push(item); source.status = 'degraded'; break;
+        failures.push(item); source.failures.push(item); source.status = 'degraded'; source.interrupted = true; break;
       }
       const body = typeof response.body === 'string' ? response.body : response.body ?? response.json;
       state[endpointUrl] = { ...state[endpointUrl], canonicalUrl: endpointUrl, etag: response.headers?.etag ?? state[endpointUrl]?.etag ?? null, lastModified: response.headers?.['last-modified'] ?? state[endpointUrl]?.lastModified ?? null, fingerprint: String(body ?? '') };
       const payload = payloadOf(response);
       if (payload?.__malformed) {
         const item = failure(board, page, 'MALFORMED_PAYLOAD', 'response was neither valid JSON nor structured HTML', endpointUrl);
-        failures.push(item); source.failures.push(item); source.status = 'degraded'; break;
+        failures.push(item); source.failures.push(item); source.status = 'degraded'; source.interrupted = true; break;
       }
       if (provider === 'workday' && Number.isFinite(Number(payload?.total))) workdayTotal = Number(payload.total);
       const parsed = parserRows(provider, payload);
       if (provider === 'workday') workdayReceived += Array.isArray(parsed.rows) ? parsed.rows.length : 0;
       if (!parsed.rows) {
         const item = failure(board, page, 'MALFORMED_PAYLOAD', 'provider payload did not contain an array of listings', endpointUrl);
-        failures.push(item); source.failures.push(item); source.status = 'degraded'; break;
+        failures.push(item); source.failures.push(item); source.status = 'degraded'; source.interrupted = true; break;
       }
       if (parsed.malformedJsonLd) {
         const item = failure(board, page, 'MALFORMED_JSON_LD', 'one or more JSON-LD blocks could not be parsed', endpointUrl);
@@ -195,13 +541,39 @@ export async function discoverEnterpriseAts({ boards = [], transport, runAt = ne
         source.status = 'degraded';
       }
       telemetry.succeeded += 1; source.status = 'ok';
-      for (const row of parsed.rows) {
-        if (boardJobs >= Math.max(0, Number(maxJobsPerBoard))) { source.pagesCapped = true; telemetry.capped += 1; break; }
+      for (let rowIndex = 0; rowIndex < parsed.rows.length; rowIndex += 1) {
+        const row = parsed.rows[rowIndex];
+        if (boardJobs >= Math.max(0, Number(maxJobsPerBoard))) { source.pagesCapped = true; source.truncated = true; source.capHit = 'maxJobsPerBoard'; source.recordsNotExamined = parsed.rows.length - rowIndex; telemetry.capped += 1; break; }
         const parsedRow = row?.__malformedJsonLd ? null : candidateFrom(row, { provider, board, endpointUrl, page, runAt, parser: parsed.parser });
         if (!parsedRow?.value) { if (parsedRow?.failure) { const item = failure(board, page, parsedRow.failure.code, parsedRow.failure.message, endpointUrl); failures.push(item); source.failures.push(item); } telemetry.skipped += 1; continue; }
-        const candidate = parsedRow.value; if (seen.has(candidate.canonicalUrl)) { telemetry.duplicates += 1; continue; }
-        seen.add(candidate.canonicalUrl); observations.push(candidate); boardJobs += 1; telemetry.extracted += 1; telemetry[candidate.classification === 'direct' ? 'direct' : 'leads'] += 1;
+        const candidate = parsedRow.value; const identity = candidateIdentity(candidate); if (seen.has(identity)) { telemetry.duplicates += 1; continue; }
+        seen.add(identity);
+        observations.push(candidate); boardJobs += 1; source.newestPostingAt = [source.newestPostingAt, candidate.postedAt].filter(Boolean).sort().at(-1) ?? null; telemetry.extracted += 1; telemetry[candidate.classification === 'direct' ? 'direct' : 'leads'] += 1;
         if (candidate.classification !== 'direct') verificationQueue.push({ url: candidate.canonicalUrl, company: candidate.company, reason: 'enterprise-lead', evidence: candidate.provenance });
+
+        if (provider === 'workday' && detailEnabled) {
+          const selection = preselectWorkdayListRow(row, { roleFamilyKeywords, locationKeywords });
+          if (!selection.selected) {
+            detailTelemetry.skipped += 1;
+            candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: selection.reason } };
+          } else {
+            detailTelemetry.preselected += 1;
+            const detailUrl = workdayDetailUrl(board.url, candidate._listExternalPath || row.externalPath);
+            if (!detailUrl) {
+              detailTelemetry.skipped += 1;
+              candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: 'no-detail-url' } };
+            } else {
+              workdayPending.push({
+                candidate,
+                observationIndex: observations.length - 1,
+                detailUrl,
+                boardUrl: board.url,
+                externalPath: candidate._listExternalPath || row.externalPath,
+              });
+            }
+          }
+        }
+        delete candidate._listExternalPath;
       }
       if (provider === 'workday') {
         const moreOnServer = workdayTotal == null || workdayReceived < workdayTotal;
@@ -210,11 +582,35 @@ export async function discoverEnterpriseAts({ boards = [], transport, runAt = ne
         const next = nextUrl(provider, payload, endpointUrl, page);
         endpointUrl = next && !visited.has(next) ? next : null;
       }
+      if (endpointUrl && !source.truncated && !source.interrupted) state.__cursor = { ...(state.__cursor || {}), [boardKey]: { endpointUrl, page, workdayReceived } };
+      else if (!endpointUrl && !source.truncated && !source.interrupted && state.__cursor) delete state.__cursor[boardKey];
+      if (!endpointUrl && !source.truncated && !source.interrupted) source.naturalTerminal = true;
     }
-    if (endpointUrl) { source.pagesCapped = true; telemetry.capped += 1; }
+    if (endpointUrl) { source.pagesCapped = true; source.truncated = true; source.capHit = source.capHit ?? 'maxPages'; telemetry.capped += 1; }
   }
-  return { observations, manifests: sources, manifest: { schemaVersion: 'EnterpriseAtsManifestV1', runAt, sources, telemetry, noAutoApply: true }, conditionalState: state, failures, verificationQueue, provenance: { transportInjected: true, networkUsed: false, providers: [...SUPPORTED] }, telemetry };
+
+  if (workdayPending.length && detailEnabled) {
+    await hydrateWorkdayDetails(workdayPending, {
+      transport, runAt, detailConcurrency: concurrency, maxDetailRequests: detailBudget, detailTelemetry, verificationQueue,
+    });
+    for (const item of workdayPending) {
+      observations[item.observationIndex] = item.candidate;
+    }
+  }
+
+  return {
+    observations,
+    manifests: sources,
+    manifest: { schemaVersion: 'EnterpriseAtsManifestV1', runAt, sources, telemetry, changed: observations.length, naturalTerminal: sources.length > 0 && sources.every((source) => source.naturalTerminal), interrupted: sources.some((source) => source.interrupted), truncated: sources.some((source) => source.truncated), capHit: sources.find((source) => source.capHit)?.capHit ?? null, recordsNotExamined: sources.reduce((sum, source) => sum + (source.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true },
+    conditionalState: state,
+    failures,
+    verificationQueue,
+    provenance: { transportInjected: true, networkUsed: false, providers: [...SUPPORTED] },
+    telemetry,
+  };
 }
 
 export const ENTERPRISE_ATS_PROVIDERS = [...SUPPORTED];
+export const WORKDAY_DEFAULT_ROLE_FAMILY_KEYWORDS = DEFAULT_ROLE_FAMILY_KEYWORDS;
+export const WORKDAY_DEFAULT_LOCATION_KEYWORDS = DEFAULT_LOCATION_KEYWORDS;
 export default discoverEnterpriseAts;

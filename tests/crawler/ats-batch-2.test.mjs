@@ -60,6 +60,28 @@ test('Breezy adapter emits normalized direct observations with provenance', asyn
   assert.equal(result.manifest.noAutoApply, true);
 });
 
+test('complete-array feeds do not invent page parameters and report item truncation', async () => {
+  const calls = [];
+  const result = await fetchAtsBatch2({
+    board: { provider: 'breezy', slug: 'large', company: 'Large Co' }, runAt, maxItems: 2,
+    transport: async (url) => {
+      calls.push(url);
+      return { status: 200, body: [
+        { id: '1', name: 'Engineer 1', url: 'https://large.breezy.hr/p/1' },
+        { id: '2', name: 'Engineer 2', url: 'https://large.breezy.hr/p/2' },
+        { id: '3', name: 'Engineer 3', url: 'https://large.breezy.hr/p/3' },
+      ] };
+    },
+  });
+
+  assert.deepEqual(calls, ['https://large.breezy.hr/json']);
+  assert.equal(result.observations.length, 2);
+  assert.equal(result.manifest.completeArray, true);
+  assert.equal(result.manifest.truncated, true);
+  assert.equal(result.manifest.recordsNotExamined, 1);
+  assert.equal(result.manifest.naturalTerminal, false);
+});
+
 test('BambooHR pagination advances cursor and obeys page and item bounds', async () => {
   const urls = [];
   const result = await fetchAtsBatch2({

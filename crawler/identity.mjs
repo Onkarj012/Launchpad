@@ -43,8 +43,15 @@ export function fingerprintDescription(description) {
 
 function keysFor(row) {
   const provider = normalizeText(value(row, 'provider', 'sourceProvider'));
-  const providerJobId = normalizeText(value(row, 'providerJobId', 'provider_job_id', 'jobId', 'job_id'));
-  const url = canonicalizeApplicationUrl(value(row, 'canonicalUrl', 'canonical_url', 'url', 'jdLink'));
+  // Prefer stable provider requisition / job IDs (Workday jobReqId, etc.) over
+  // company+title+location fallback so distinct requisitions never collapse.
+  const providerJobId = normalizeText(value(
+    row,
+    'providerJobId', 'provider_job_id',
+    'requisitionId', 'requisition_id', 'jobReqId', 'job_req_id', 'reqId',
+    'jobId', 'job_id',
+  )) || normalizeText(row?.evidence?.requisitionId);
+  const url = canonicalizeApplicationUrl(value(row, 'canonicalUrl', 'canonical_url', 'url', 'jdLink', 'originalApplicationUrl'));
   const identityText = (input) => normalizeText(input).replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
   const company = identityText(value(row, 'company'));
   const title = identityText(value(row, 'title', 'role'));
@@ -78,7 +85,18 @@ function matchingRows(observation, candidates) {
     if (!key) continue;
     const matches = candidates.filter((candidate) => {
       const candidateKeys = keysFor(candidate);
-      return candidateKeys[type === 'provider_job_id' ? 'providerJobId' : type === 'canonical_url' ? 'canonicalUrl' : 'companyTitleLocation'] === key;
+      const candidateKey = candidateKeys[type === 'provider_job_id' ? 'providerJobId' : type === 'canonical_url' ? 'canonicalUrl' : 'companyTitleLocation'];
+      if (candidateKey !== key) return false;
+      // Same-provider distinct requisition IDs must never collapse via company-
+      // title-location fallback (e.g. two Workday REQs sharing title+location).
+      // Cross-source URL matches remain valid when provider IDs differ.
+      if (type === 'company_title_location' && observationKeys.providerJobId && candidateKeys.providerJobId
+        && observationKeys.providerJobId !== candidateKeys.providerJobId) {
+        const obsProvider = observationKeys.providerJobId.split('|')[0];
+        const candProvider = candidateKeys.providerJobId.split('|')[0];
+        if (obsProvider && obsProvider === candProvider) return false;
+      }
+      return true;
     });
     if (matches.length) return { type, key, matches };
   }

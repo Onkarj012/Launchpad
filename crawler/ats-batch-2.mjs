@@ -1,6 +1,7 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 
 export const ATS_BATCH_2_PROVIDERS = Object.freeze(['breezy', 'bamboohr', 'personio', 'comeet', 'pinpoint', 'rippling']);
+const COMPLETE_ARRAY_PROVIDERS = new Set(['breezy', 'personio', 'comeet', 'pinpoint', 'rippling']);
 const RETRYABLE = new Set([408, 425, 429]);
 
 const text = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -126,6 +127,10 @@ function candidateFrom(board, row, runAt, sourceUrl) {
   return candidate;
 }
 
+function candidateIdentity(candidate) {
+  return String(candidate.jobId ?? candidate.evidence?.providerJobId ?? candidate.canonicalUrl);
+}
+
 function nextState(response, url, prior = {}) {
   const headers = response?.headers || {};
   const get = (name) => headers[name] ?? headers[name.toLowerCase()] ?? null;
@@ -156,26 +161,33 @@ export async function fetchAtsBatch2({ board, transport, runAt = new Date().toIS
   if (!board?.provider || !ATS_BATCH_2_PROVIDERS.includes(board.provider)) throw new TypeError(`unsupported ATS batch 2 provider: ${board?.provider}`);
   if (typeof transport !== 'function') throw new TypeError('fetchAtsBatch2 requires injected transport');
   const observations = [], errors = [], seen = new Set();
-  const prior = state || {}; let cursor = { page: Number(prior.cursor?.page || 1) }; const startPage = cursor.page; let status = 'ok'; let fetchedPages = 0; let notModified = false; let lastResponse = null;
-  for (let page = startPage; page < startPage + maxPages && observations.length < maxItems; page += 1) {
+  const prior = state || {}; const completeArray = COMPLETE_ARRAY_PROVIDERS.has(board.provider); let cursor = { page: Number(prior.cursor?.page || 1) }; const startPage = cursor.page; let status = 'ok'; let fetchedPages = 0; let notModified = false; let lastResponse = null; let naturalTerminal = false; let interrupted = false; let capHit = null; let recordsNotExamined = null;
+  const pageLimit = completeArray ? startPage + 1 : startPage + maxPages;
+  for (let page = startPage; page < pageLimit && observations.length < maxItems; page += 1) {
     const url = endpointFor(board, page); if (!url) { status = 'terminal'; errors.push('invalid board URL'); break; }
     const result = await request(url, transport, page === cursor.page ? prior : {}, retry); fetchedPages += 1;
-    if (result.error) { status = result.retryable ? 'retryable' : 'terminal'; errors.push(result.error); break; }
-    const response = result.response; lastResponse = response; if (response.status === 304) { notModified = true; status = 'not-modified'; break; }
+    if (result.error) { status = result.retryable ? 'retryable' : 'terminal'; interrupted = true; errors.push(result.error); break; }
+    const response = result.response; lastResponse = response; if (response.status === 304) { notModified = true; status = 'not-modified'; naturalTerminal = true; break; }
     const rows = parseRows(board.provider, responseBody(response));
-    if (!Array.isArray(rows)) { status = 'malformed'; errors.push('response did not contain a supported jobs array'); break; }
-    for (const row of rows.slice(0, Math.max(0, maxItems - observations.length))) {
-      const candidate = candidateFrom(board, row, runAt, url); if (!candidate || seen.has(candidate.canonicalUrl)) continue;
-      seen.add(candidate.canonicalUrl); observations.push(candidate);
+    if (!Array.isArray(rows)) { status = 'malformed'; interrupted = true; errors.push('response did not contain a supported jobs array'); break; }
+    const available = Math.max(0, maxItems - observations.length);
+    if (rows.length > available) { capHit = 'maxItems'; recordsNotExamined = rows.length - available; }
+    for (const row of rows.slice(0, available)) {
+      const candidate = candidateFrom(board, row, runAt, url); if (!candidate || seen.has(candidateIdentity(candidate))) continue;
+      seen.add(candidateIdentity(candidate)); observations.push(candidate);
     }
-    const hasMore = board.provider === 'bamboohr' && (responseBody(response)?.nextPage || responseBody(response)?.next_page || rows.length >= pageSize);
-    if (!hasMore || rows.length < pageSize) { cursor = { page: page + 1 }; break; }
+    const hasMore = !completeArray && board.provider === 'bamboohr' && (responseBody(response)?.nextPage || responseBody(response)?.next_page || rows.length >= pageSize);
+    if (capHit) { cursor = { page: page + 1 }; break; }
+    if (!hasMore || rows.length < pageSize) { cursor = { page: page + 1 }; naturalTerminal = true; break; }
     cursor = { page: page + 1 };
   }
+  if (!naturalTerminal && !interrupted && !capHit && fetchedPages >= (completeArray ? 1 : maxPages)) capHit = completeArray ? null : 'maxPages';
+  if (capHit) status = 'truncated';
+  const newestPostingAt = observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null;
   const lastResponseState = state?.lastResponse || {};
   return {
     observations, cursor, conditionalState: { ...nextState(lastResponse || { headers: {} }, endpointFor(board, cursor.page), lastResponseState), cursor, fetchedAt: runAt },
-    manifest: { schemaVersion: 'AtsBatch2ManifestV1', sourceId: `ats-batch-2:${board.provider}:${board.slug || board.company || 'board'}`, provider: board.provider, status, attempted: true, pages: fetchedPages, fetched: observations.length, direct: observations.filter((x) => x.classification === 'direct').length, leads: observations.filter((x) => x.classification === 'lead').length, notModified, errors, bounds: { maxPages, maxItems }, noAutoApply: true },
+    manifest: { schemaVersion: 'AtsBatch2ManifestV1', sourceId: `ats-batch-2:${board.provider}:${board.slug || board.company || 'board'}`, provider: board.provider, startingCursor: prior.cursor ?? null, status, attempted: true, pages: fetchedPages, fetched: observations.length, changed: observations.length, direct: observations.filter((x) => x.classification === 'direct').length, leads: observations.filter((x) => x.classification === 'lead').length, notModified, errors, naturalTerminal, interrupted, truncated: Boolean(capHit), capHit, recordsNotExamined, newestPostingAt, completeArray, bounds: { maxPages, maxItems }, noAutoApply: true },
   };
 }
 
@@ -186,7 +198,7 @@ export async function discoverAtsBatch2({ boards = [], transport, runAt, state =
     try { const result = await fetchAtsBatch2({ board, transport, runAt, state: state[board.slug || board.company] || {}, ...options }); results.push(result); observations.push(...result.observations); if (result.manifest.status !== 'ok' && result.manifest.status !== 'not-modified') failures.push(result.manifest); }
     catch (error) { failures.push({ sourceId: `ats-batch-2:${board.provider}:${board.slug || board.company || 'board'}`, status: 'terminal', errors: [error.message] }); }
   }
-  return { observations, results, failures, manifest: { schemaVersion: 'AtsBatch2BatchManifestV1', sourceId: 'ats-batch-2', providers: [...new Set(boards.slice(0, maxBoards).map((board) => board.provider))], boardsAttempted: results.length + failures.length, fetched: observations.length, failed: failures.length, noAutoApply: true } };
+  return { observations, results, failures, manifest: { schemaVersion: 'AtsBatch2BatchManifestV1', sourceId: 'ats-batch-2', providers: [...new Set(boards.slice(0, maxBoards).map((board) => board.provider))], boardsAttempted: results.length + failures.length, fetched: observations.length, changed: observations.length, failed: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted: results.some((result) => result.manifest.interrupted), truncated: results.some((result) => result.manifest.truncated), capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true } };
 }
 
 export const discoverExpandedAtsBatch2 = discoverAtsBatch2;
