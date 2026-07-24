@@ -1,6 +1,7 @@
 {
   "schemaVersion": "LaunchpadCrawlerConfigV1",
   "databasePath": ".local/launchpad-crawler/crawler.sqlite",
+  "boardRegistryPath": "config/board-registry.json",
   "sources": {
     "atsWarm": {
       "boards": [

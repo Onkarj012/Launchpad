@@ -33,6 +33,9 @@ import { buildDiscoveryProfile } from './discovery-profile.mjs';
 import {
   normalizeConnectorEnvelope,
 } from './connector-inbox.mjs';
+import {
+  withRegistryProjectedBoards,
+} from './board-registry.mjs';
 
 export const CRAWLER_CONFIG_VERSION = 'LaunchpadCrawlerConfigV1';
 
@@ -68,7 +71,8 @@ export function validateCrawlerConfig(config) {
 
 export function loadCrawlerConfig(file = 'config/crawler-v2.json') {
   const resolved = path.resolve(file);
-  return { config: validateCrawlerConfig(JSON.parse(fs.readFileSync(resolved, 'utf8'))), path: resolved };
+  const config = validateCrawlerConfig(JSON.parse(fs.readFileSync(resolved, 'utf8')));
+  return { config: withRegistryProjectedBoards(config), path: resolved };
 }
 
 export async function defaultHttpTransport(url, options = {}) {
@@ -182,7 +186,10 @@ async function readConnectorInbox({ inboxDir, runAt, resolver }) {
 }
 
 export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }) {
-  const sources = config.sources;
+  // Project boards from the unified registry when configured; tests that inject
+  // inline sources.*.boards without boardRegistryPath keep their fixtures.
+  const projected = withRegistryProjectedBoards(config);
+  const sources = projected.sources;
   const plans = [];
   if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
     fetchWarmAts({ ...sources.atsWarm, boards: sources.atsWarm.boards, transport, runAt })));

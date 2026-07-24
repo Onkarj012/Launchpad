@@ -29,9 +29,16 @@ test('repeated discoveries across distinct dates clear the threshold and propose
   assert.equal(proposal.occurrences, 3);
   assert.equal(proposal.distinctDates, 3);
   assert.equal(proposal.noAutoApply, true);
-  assert.deepEqual(proposal.suggestedBoard, {
-    provider: 'greenhouse', company: 'Acme India', url: 'https://boards.greenhouse.io/acmeindia', enabled: false, probeStatus: 'proposed',
-  });
+  assert.equal(proposal.suggestedBoard.provider, 'greenhouse');
+  assert.equal(proposal.suggestedBoard.company, 'Acme India');
+  assert.equal(proposal.suggestedBoard.url, 'https://boards.greenhouse.io/acmeindia');
+  assert.equal(proposal.suggestedBoard.enabled, false);
+  assert.equal(proposal.suggestedBoard.activationState, 'proposed');
+  assert.equal(proposal.suggestedBoard.probeStatus, 'proposed');
+  assert.equal(proposal.suggestedBoard.slug, 'acmeindia');
+  assert.equal(proposal.suggestedBoard.scheduleLane, 'atsWarm');
+  assert.equal(proposal.suggestedBoard.capabilities.listingEnumeration, true);
+  assert.equal(proposal.suggestedBoard.health.repeatedFailureCount, 0);
 });
 
 test('repeated same-day discoveries never propose without a second distinct date', () => {

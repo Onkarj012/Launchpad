@@ -8,6 +8,7 @@ import {
 import { crawlWorkflow } from './workflow.mjs';
 import { fetchWarmAts } from './ats-warm.mjs';
 import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
+import { projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
 import { runNormalMode } from '../job-pull/normal-mode.mjs';
 
 function runAtFrom(clock) {
@@ -48,6 +49,11 @@ function warmOnlyConfig(config) {
 }
 
 function trackedBoards(config) {
+  // Unified registry is authoritative when wired; reverse-warm-set remains the
+  // legacy / test-fixture input path.
+  const registry = resolveBoardRegistry(config);
+  if (registry) return projectTrackedBoards(registry);
+
   const file = config.reverseWarmSetPath
     ?? config.sources?.trackedAts?.warmSetPath
     ?? 'config/reverse-warm-set.json';
@@ -61,6 +67,8 @@ function trackedBoards(config) {
   }
   return boards;
 }
+
+export { trackedBoards };
 
 function failureMessages(failures) {
   return failures.map((failure) => [
