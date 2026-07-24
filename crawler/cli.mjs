@@ -14,6 +14,8 @@ import {
   assessProductionReadiness,
   buildLocalReadinessEvidence,
 } from './readiness.mjs';
+import { installSchedules } from './install-schedule.mjs';
+import { buildScheduleHealthReport } from './schedule-health.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -114,6 +116,16 @@ export async function main(argv = process.argv.slice(2)) {
     const result = localReadiness(config, argv);
     output(result);
     return result.assessment.productionReady ? 0 : 1;
+  }
+  if (command === 'install-schedule') {
+    const dryRun = argv.includes('--dry-run');
+    const result = installSchedules({ dryRun });
+    output(result);
+    return result.agents.every((agent) => agent.dryRun || agent.installed) ? 0 : 1;
+  }
+  if (command === 'schedule-health') {
+    output(buildScheduleHealthReport({ databasePath: config.databasePath }));
+    return 0;
   }
   process.stderr.write(`Unknown crawler command: ${command}\n\n${buildCrawlerHelp()}`);
   return 2;

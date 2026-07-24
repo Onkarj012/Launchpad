@@ -58,6 +58,42 @@ test('covers SuccessFactors, Phenom, iCIMS, Jobvite, and Oracle-like JSON feeds 
   assert.equal(result.observations.every((row) => row.classification === 'direct'), true);
 });
 
+test('sends Workday requests as a POST with a JSON search body, since Workday CXS rejects GET', async () => {
+  const calls = [];
+  const transport = async (url, options) => {
+    calls.push({ url, options });
+    return { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'Workday POST Engineer', externalPath: '/job/1', postedOn: '2026-07-22', jobReqId: 'WD-9' }] }) };
+  };
+
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs' }],
+    transport, runAt, maxPages: 1, maxJobsPerBoard: 20,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.method, 'POST');
+  assert.equal(calls[0].options.headers['content-type'], 'application/json');
+  const sentBody = JSON.parse(calls[0].options.body);
+  assert.deepEqual(sentBody.appliedFacets, {});
+  assert.equal(sentBody.offset, 0);
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].title, 'Workday POST Engineer');
+});
+
+test('non-Workday enterprise providers are still fetched as a plain GET', async () => {
+  const calls = [];
+  const transport = async (url, options) => {
+    calls.push(options);
+    return { status: 200, headers: {}, body: JSON.stringify({ jobs: [{ title: 'Phenom Engineer', id: 'P-1', url: '/job/p-1', datePosted: '2026-07-22' }] }) };
+  };
+  await discoverEnterpriseAts({
+    boards: [{ provider: 'phenom', company: 'Phenom Co', url: 'https://phenom.example/jobs' }],
+    transport, runAt,
+  });
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].body, undefined);
+});
+
 test('unsupported and malformed boards degrade visibly without fabricated observations', async () => {
   let called = false;
   const result = await discoverEnterpriseAts({

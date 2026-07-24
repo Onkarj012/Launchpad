@@ -75,8 +75,16 @@ function parseRows(provider, body) {
   }
   if (provider === 'breezy') return Array.isArray(body) ? body : body?.positions ?? body?.jobs ?? null;
   if (provider === 'bamboohr') return body?.result ?? body?.results ?? body?.jobs ?? (Array.isArray(body) ? body : null);
-  if (['comeet', 'pinpoint', 'rippling'].includes(provider)) return body?.jobs ?? body?.positions ?? body?.results ?? body?.items ?? (Array.isArray(body) ? body : null);
+  // Pinpoint's live postings.json is JSON:API-shaped ({ data: [...] }), not
+  // the { jobs / positions / results / items } shape the other batch-2
+  // providers use.
+  if (['comeet', 'pinpoint', 'rippling'].includes(provider)) return body?.jobs ?? body?.positions ?? body?.results ?? body?.items ?? body?.data ?? (Array.isArray(body) ? body : null);
   return null;
+}
+
+function pinpointLocationText(value) {
+  if (!value || typeof value !== 'object') return text(value);
+  return text([value.city, value.province, value.country].filter(Boolean).join(', ')) || text(value.name);
 }
 
 function providerJobUrl(board, row) {
@@ -101,7 +109,7 @@ function candidateFrom(board, row, runAt, sourceUrl) {
   const candidate = normalizeCandidate({
     url, id: row.id || row.jobId || row.requisitionId,
     company, title: row.title || row.name || row.jobTitle || row.jobOpeningName,
-    location: row.location || row.city || row.office,
+    location: board.provider === 'pinpoint' ? pinpointLocationText(row.location) : (row.location || row.city || row.office),
     description: row.description || row.jobDescription || row.content,
     postedAt: isoDate(row.postedAt || row.createdAt || row.publishedAt || row.created_at),
     discoveredAt: runAt, crawledAt: runAt,

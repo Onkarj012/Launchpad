@@ -6,6 +6,7 @@ import { applicationReadiness } from './normal-readiness.mjs';
 import { enrichStartupSources } from './startup-enrichment.mjs';
 import { runStartupSourcePlan } from './startup-sources.mjs';
 import { selectStartupApplications } from './startup-selection.mjs';
+import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
 
 export const STARTUP_MODE_SCHEMA_VERSION = 'LaunchpadV5StartupModeV1';
 
@@ -151,7 +152,7 @@ function verificationRecord(candidate, eligibility) {
 function fatalResult(runId, runAt, sourceManifests, companyRecords, error) {
   return {
     schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
-    companyRecords, plannedNotionOperations: [], transaction: null,
+    companyRecords, plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
     shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => ['failed', 'unavailable'].includes(item.status)).map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
     counts: null,
@@ -162,7 +163,7 @@ function fatalResult(runId, runAt, sourceManifests, companyRecords, error) {
 export async function runStartupMode({
   mode = 'startup', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(), executeGateway = false,
-  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = [],
+  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = [], historicalV4Rows = [],
 } = {}) {
   if (String(mode).toLowerCase() !== 'startup') throw new StartupModeError(`Startup runner only supports startup mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -180,7 +181,10 @@ export async function runStartupMode({
     assertValidConfig(baseConfig);
     assertValidConversionPlan(baseConversionPlan);
     const pipeline = runPipeline({ config: baseConfig, conversionPlan: baseConversionPlan, now: runAt, runId, ledgerRows, opportunityLedgerRows, sources: sourceResults, dryRun: true });
-    const selectionEntries = pipeline.scoringCandidates.map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
+    // v4 identity matches are suppressed before they reach shortlist/Notion planning.
+    // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
+    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
+    const selectionEntries = nonHistoricalCandidates.map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
     const selection = selectStartupApplications(selectionEntries, { maximumPerCompany: baseConfig.run.maximumPerCompany });
     const shortlist = selection.selected;
     const operations = shortlist.map((candidate) => ({ operation: 'create', resource: 'application', dedupKey: candidateDedupKey(candidate), payload: startupPayload(candidate, runId), provenance: provenanceFor(candidate, runId) }));
@@ -205,9 +209,10 @@ export async function runStartupMode({
     const missing = Math.max(0, 10 - shortlist.length);
     return {
       schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist, verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, companyRecords, plannedNotionOperations: plannedOperations, transaction,
+      historicalSuppressions,
       shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing, preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes, reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)], linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' } },
       outcome: { status: failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), companyRecords: companyRecords.length, fundingSignals: companyRecords.filter((company) => company.fundingSignal?.within18Months).length, underSixMonthFunding: companyRecords.filter((company) => company.fundingSignal?.under6Months).length, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, startupSources: selection.startupSources },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), companyRecords: companyRecords.length, fundingSignals: companyRecords.filter((company) => company.fundingSignal?.within18Months).length, underSixMonthFunding: companyRecords.filter((company) => company.fundingSignal?.under6Months).length, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, startupSources: selection.startupSources },
     };
   } catch (error) {
     return fatalResult(runId, runAt, sourceResults.map(({ manifest }) => manifest), companyRecords, error);

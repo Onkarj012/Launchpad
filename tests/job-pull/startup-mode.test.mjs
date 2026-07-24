@@ -95,6 +95,20 @@ test('Unresolved startup leads remain in verification and cannot satisfy the app
   assert.equal(result.verificationQueue.some((record) => record.company === 'Needs Verify Startup'), true);
 });
 
+test('v4 historical identity match is suppressed before the shortlist/Notion-planning step', async () => {
+  const historicalV4Rows = [{ company: 'Startup Co 2', title: 'AI Engineer', location: 'Pune, India', state: 'applied' }];
+  const result = await runStartupMode({
+    clock: () => STARTUP_NOW,
+    sourceFunctions: startupSourceFunctions(),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+    historicalV4Rows,
+  });
+  assert.equal(result.shortlist.some((candidate) => candidate.company === 'Startup Co 2'), false);
+  assert.ok(result.plannedNotionOperations.every((operation) => operation.payload.Company !== 'Startup Co 2'));
+  assert.ok(result.historicalSuppressions.some((item) => item.company === 'Startup Co 2'));
+  assert.equal(result.counts.historicalSuppressed, result.historicalSuppressions.length);
+});
+
 test('Startup transaction execution accepts only the injected fake gateway', async () => {
   const gateway = createFakeTransactionalGateway();
   const result = await runStartupMode({ clock: () => STARTUP_NOW, sourceFunctions: startupSourceFunctions(), notionGateway: gateway, executeGateway: true });

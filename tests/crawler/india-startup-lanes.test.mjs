@@ -5,6 +5,10 @@ import {
   buildIndiaStartupRequests,
   discoverIndiaStartupLanes,
 } from '../../crawler/india-startup-lanes.mjs';
+import {
+  loadVcPortfolioWatchlist,
+  buildVcWatchlistRequests,
+} from '../../crawler/vc-portfolio-watchlist.mjs';
 
 const runAt = '2026-07-23T10:00:00Z';
 
@@ -110,4 +114,33 @@ test('rejects an omitted transport so this adapter cannot silently perform live 
     discoverIndiaStartupLanes({ sources: ['yc'] }),
     /requires injected transport/,
   );
+});
+
+test('consumes the live-verified VC portfolio watchlist as bounded vc-lane requests, seeding employer pages rather than fund pages', async () => {
+  const watchlist = loadVcPortfolioWatchlist('config/vc-portfolio-watchlist.json');
+  const vcRequests = buildVcWatchlistRequests(watchlist, { limit: 3 });
+  const requests = buildIndiaStartupRequests({ requests: vcRequests });
+
+  assert.equal(requests.length, 3);
+  for (const request of requests) {
+    assert.equal(request.source, 'vc');
+    assert.equal(request.kind, INDIA_STARTUP_LANES.vc.input);
+    assert.ok(request.query);
+  }
+
+  const calls = [];
+  const result = await discoverIndiaStartupLanes({
+    runAt,
+    requests: vcRequests,
+    transport: async (request) => {
+      calls.push(request.query);
+      return { status: 200, body: { results: [
+        { title: 'Backend Engineer', company: vcRequests[0].evidence.company, url: 'https://jobs.ashbyhq.com/portfolio-co/1', location: 'Pune' },
+      ] } };
+    },
+  });
+
+  assert.equal(calls.length, 3);
+  assert.equal(result.observations[0].classification, 'direct');
+  assert.ok(calls.every((query) => !query.includes(vcRequests[0].evidence.fundSourceUrl)));
 });

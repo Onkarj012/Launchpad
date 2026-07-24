@@ -75,6 +75,23 @@ test('every rejection/report class is explicit and preserves post evidence', () 
   assert.equal(result.applicationLeads.some((lead) => lead.status === 'Ready'), false);
 });
 
+test('v4 historical identity match is suppressed before the shortlist/Notion-planning handoff', () => {
+  const post = read('dual-output.json');
+  const historicalV4Rows = [{ company: 'Acme AI', title: 'AI Engineer', location: 'Pune, India (Hybrid)', state: 'applied' }];
+
+  const baseline = run([post]);
+  assert.equal(baseline.applicationLeads.length, 1);
+  assert.equal(baseline.historicalSuppressions.length, 0);
+
+  const suppressed = run([post], { historicalV4Rows });
+  assert.equal(suppressed.applicationLeads.length, 0);
+  assert.equal(suppressed.historicalSuppressions.length, 1);
+  assert.equal(suppressed.historicalSuppressions[0].company, 'Acme AI');
+  assert.equal(suppressed.counts.applicationLeads, 0);
+  assert.equal(suppressed.counts.historicalSuppressed, 1);
+  assert.ok(suppressed.reports.some((item) => item.code === 'SUPPRESSED_HISTORICAL'));
+});
+
 test('bounds fail closed for query allowlist, per-query posts, total posts, and stale-window input', () => {
   assert.throws(() => buildLinkedInRescueQueryPlan({ queries: ['free-form hiring query'], observedAt: NOW }), LinkedInRescueBoundsError);
   assert.throws(() => buildLinkedInRescueQueryPlan({ queries: [...LINKEDIN_RESCUE_QUERY_ALLOWLIST, 'hiring "AI/LLM Engineer"'], observedAt: NOW }), /query count|unique/);

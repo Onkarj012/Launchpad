@@ -25,6 +25,26 @@ test('Comeet, Pinpoint, and Rippling public payloads use the same bounded contra
   }
 });
 
+test('Pinpoint parses the live JSON:API postings.json shape ({ data: [...] }) with an object location', async () => {
+  const result = await fetchAtsBatch2({
+    board: { provider: 'pinpoint', slug: 'infor', company: 'Infor' }, runAt, maxItems: 5,
+    transport: async () => ({
+      status: 200,
+      body: {
+        data: [
+          { id: '1', title: 'Security Analyst', url: 'https://careers.infor.com/en/postings/abc', location: { city: 'Bengaluru', province: 'Karnataka', country: 'India' }, description: 'Secure the network.' },
+          { id: '2', title: '', url: 'https://careers.infor.com/en/postings/no-title', location: { city: 'Remote' } },
+        ],
+      },
+    }),
+  });
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].title, 'Security Analyst');
+  assert.equal(result.observations[0].location, 'Bengaluru, Karnataka, India');
+  assert.equal(result.observations[0].classification, 'lead');
+  assert.equal(result.manifest.status, 'ok');
+});
+
 test('Breezy adapter emits normalized direct observations with provenance', async () => {
   const calls = [];
   const result = await fetchAtsBatch2({

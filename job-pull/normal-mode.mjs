@@ -8,6 +8,7 @@ import { selectNormalApplications } from './normal-selection.mjs';
 import { readLedger } from './ledger.mjs';
 import { readOpportunityLedger } from './opportunity-ledger.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
+import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
 
 export class NormalModeError extends Error {
   constructor(message, stage = 'normal-mode') { super(message); this.name = 'NormalModeError'; this.stage = stage; }
@@ -130,7 +131,7 @@ function fatalResult(runId, runAt, mode, sourceManifests, error) {
   return {
     schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode,
     shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
-    plannedNotionOperations: [], transaction: null,
+    plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
     counts: null,
@@ -142,6 +143,7 @@ export async function runNormalMode({
   mode = 'normal', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
+  historicalV4Rows = [],
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -163,7 +165,10 @@ export async function runNormalMode({
       config: normalConfig, conversionPlan: baseConversionPlan, now: runAt, runId,
       ledgerRows: effectiveLedgerRows, opportunityLedgerRows: effectiveOpportunityLedgerRows, sources: sourceResults, dryRun: true,
     });
-    const selectionEntries = pipeline.scoringCandidates.map((candidate) => ({
+    // v4 identity matches are suppressed before they reach shortlist/Notion planning.
+    // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
+    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
+    const selectionEntries = nonHistoricalCandidates.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
     const selection = selectNormalApplications(selectionEntries, { maximumPerCompany: normalConfig.run.maximumPerCompany });
@@ -198,6 +203,7 @@ export async function runNormalMode({
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
+      historicalSuppressions,
       dedupInputs: {
         committedLedgerRows: effectiveLedgerRows.length,
         opportunityLedgerRows: effectiveOpportunityLedgerRows.length,
@@ -209,7 +215,7 @@ export async function runNormalMode({
         linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' },
       },
       outcome: { status: failedLanes.length ? 'degraded' : 'ok', fatal: false, degraded: failedLanes.length > 0, errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts },
     };
   } catch (error) {
     return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error);

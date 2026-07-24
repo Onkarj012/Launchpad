@@ -117,6 +117,36 @@ test('fake gateway proves reserve-write-verify-commit, partial abort, and idempo
   assert.deepEqual(gateway.events.map((event) => event.stage), ['reserve', 'write', 'verify', 'write', 'abort', 'commit', 'reserve']);
 });
 
+test('v4 historical identity match is suppressed before the shortlist/Notion-planning step', async () => {
+  const readyCandidate = raw(1, {
+    discoveryUrl: 'https://naukri.example/job/1',
+    originalApplicationUrl: 'https://acme.example/careers/1',
+    originalApplicationEvidence: 'Acme ATS resolved from employer careers page',
+    applicationResolution: { status: 'Resolved Original', evidence: 'Acme ATS resolved from employer careers page' },
+  });
+  const historicalV4Rows = [{ company: 'Company 1', title: 'AI Engineer', location: 'Pune, India', state: 'applied' }];
+
+  const suppressed = await runNormalMode({
+    clock: () => NOW, sourceFunctions: allFunctions({ 'portal-naukri': [readyCandidate] }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+    historicalV4Rows,
+  });
+  assert.equal(suppressed.shortlist.length, 0);
+  assert.equal(suppressed.plannedNotionOperations.length, 0);
+  assert.equal(suppressed.historicalSuppressions.length, 1);
+  assert.equal(suppressed.historicalSuppressions[0].company, 'Company 1');
+  assert.deepEqual(suppressed.historicalSuppressions[0].matchTypes, ['company_title_location']);
+  assert.equal(suppressed.counts.historicalSuppressed, 1);
+
+  // Without historical rows the same candidate is unaffected: read-only, no side effects.
+  const unsuppressed = await runNormalMode({
+    clock: () => NOW, sourceFunctions: allFunctions({ 'portal-naukri': [readyCandidate] }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(unsuppressed.shortlist.length, 1);
+  assert.equal(unsuppressed.historicalSuppressions.length, 0);
+});
+
 test('fatal core failure occurs before planning or transactional execution', async () => {
   const gateway = createFakeTransactionalGateway();
   const result = await runNormalMode({ clock: () => NOW, config: { schemaVersion: 'bad' }, notionGateway: gateway, sourceFunctions: {} });

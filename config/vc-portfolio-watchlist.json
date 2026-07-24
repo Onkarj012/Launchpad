@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "VcPortfolioWatchlistV1",
+  "generatedAt": "2026-07-24",
+  "purpose": "Prioritization/seeding only. Never scraped for job data directly; used to seed which employer career/ATS pages get checked. See docs/research/job-board-source-audit-2026-07-23.md.",
+  "funds": [
+    {
+      "fund": "Peak XV Partners",
+      "sourceUrl": "https://www.peakxv.com/our-companies",
+      "verifiedAt": "2026-07-24",
+      "verificationMethod": "Live fetch of peakxv.com companies page; only India-headquartered names retained.",
+      "companies": [
+        { "name": "CRED" },
+        { "name": "Razorpay" },
+        { "name": "Zomato" },
+        { "name": "BlinkIt" },
+        { "name": "Pine Labs" },
+        { "name": "Mamaearth" },
+        { "name": "OYO" }
+      ]
+    },
+    {
+      "fund": "Accel",
+      "sourceUrl": "https://www.accel.com/relationships",
+      "verifiedAt": "2026-07-24",
+      "verificationMethod": "Live fetch of accel.com relationships page; page explicitly labels these as Indian startups.",
+      "companies": [
+        { "name": "Agrostar" },
+        { "name": "ApnaMart" },
+        { "name": "Bizongo" },
+        { "name": "BlackBuck" },
+        { "name": "Book My Show" },
+        { "name": "CleverTap" },
+        { "name": "Cogoport" },
+        { "name": "CityMall" }
+      ]
+    },
+    {
+      "fund": "Blume Ventures",
+      "sourceUrl": "https://blume.vc/portfolio",
+      "verifiedAt": "2026-07-24",
+      "verificationMethod": "Live fetch of blume.vc/portfolio (page title 'Startups - Blume Portfolio'); names taken from the page's embedded portfolio company list.",
+      "companies": [
+        { "name": "Classplus" },
+        { "name": "Exotel" },
+        { "name": "Instamojo" },
+        { "name": "GreyOrange" },
+        { "name": "greytHR" },
+        { "name": "Battery Smart" },
+        { "name": "Cashify" },
+        { "name": "IDfy" }
+      ]
+    },
+    {
+      "fund": "Lightspeed India Partners",
+      "sourceUrl": "https://lsvp.com/portfolio/",
+      "verifiedAt": "2026-07-24",
+      "verificationMethod": "Live fetch of lsvp.com/portfolio (Lightspeed Venture Partners' global companies page, which lists Lightspeed India Partners portfolio alongside global names); only recognizable India-headquartered names retained. www.lightspeed.com/india and lightspeedindia.com were unreachable/client-rendered at verification time.",
+      "companies": [
+        { "name": "Indian Energy Exchange (IEX)" },
+        { "name": "Darwinbox" },
+        { "name": "Dukaan" },
+        { "name": "Innovaccer" },
+        { "name": "OfficeBanao" },
+        { "name": "OkCredit" },
+        { "name": "Physics Wallah" }
+      ]
+    },
+    {
+      "fund": "Elevation Capital",
+      "sourceUrl": "https://elevationcapital.com/",
+      "verifiedAt": "2026-07-24",
+      "verificationMethod": "Live fetch of elevationcapital.com landing page's featured/portfolio company sections.",
+      "companies": [
+        { "name": "ShareChat" },
+        { "name": "Dezerv" },
+        { "name": "Sprinto" },
+        { "name": "NoBroker" },
+        { "name": "XpressBees" },
+        { "name": "Nanonets" },
+        { "name": "Loop" },
+        { "name": "Urban Company" }
+      ]
+    }
+  ]
+}

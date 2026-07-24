@@ -13,6 +13,8 @@ import {
   createOriginalListingResolver,
 } from './original-listing-resolver.mjs';
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
+import { discoverYcJobs } from './yc-discovery.mjs';
+import { buildVcWatchlistRequests, loadVcPortfolioWatchlist } from './vc-portfolio-watchlist.mjs';
 import { runCommercialRescue } from './commercial-rescue.mjs';
 import { openCrawlerStore } from './run.mjs';
 import { selectDailyReserve } from './reserve.mjs';
@@ -41,8 +43,12 @@ Usage:
   node crawler/cli.mjs plan [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE]
   node crawler/cli.mjs run [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE] [--run-id ID]
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
+  node crawler/cli.mjs install-schedule [--dry-run]
+  node crawler/cli.mjs schedule-health [--config FILE]
 
 The crawler performs discovery and produces a planning-only handoff. It never applies or sends.
+install-schedule installs local launchd agents for the morning and midday
+schedules; schedule-health reports durable per-schedule run history.
 Commercial rescue remains explicit and
 requires separate configured credentials and operator invocation.
 `;
@@ -72,6 +78,7 @@ export async function defaultHttpTransport(url, options = {}) {
   const response = await fetch(url, {
     method: options.method ?? 'GET',
     headers: options.headers,
+    body: options.body,
     signal: options.signal ?? timeoutSignal,
   });
   return { status: response.status, headers: response.headers, body: await response.text() };
@@ -90,6 +97,18 @@ function resolverSettings(config) {
   if (configured.maxRedirects != null) settings.maxRedirects = configured.maxRedirects;
   if (configured.maxBytes != null) settings.maxBytes = configured.maxBytes;
   return settings;
+}
+
+/** Shared SearXNG search transport: wraps the base HTTP transport into the `(query) => { status, body: { results } }` shape every search-based discovery function (discoverBraveSearch, discoverYcJobs) expects. */
+function searxngTransport(endpoint, baseTransport) {
+  return async (query) => {
+    const url = new URL('/search', endpoint);
+    url.searchParams.set('q', query);
+    url.searchParams.set('format', 'json');
+    const response = await baseTransport(url.toString(), { headers: { Accept: 'application/json' } });
+    const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+    return { ...response, body: { results: body?.results ?? [] } };
+  };
 }
 
 function verificationResolution(observation, error) {
@@ -186,33 +205,75 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   }), { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: ['indeed', 'apna', 'whatjobs'] } }));
   if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async () => {
-    const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions: {}, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
+    const sourceFunctions = {};
+    // yc and vc-portfolio-boards both need a search transport and an original-listing
+    // resolver; without both, honestly leave them unavailable rather than fabricate.
+    if (sources.searxng?.enabled && sources.searxng.endpoint && typeof resolver === 'function') {
+      const searxTransport = searxngTransport(sources.searxng.endpoint, transport);
+      const ycQueries = (sources.searxng.queries ?? []).filter((query) => /ycombinator\.com\/jobs/i.test(query));
+      if (ycQueries.length) {
+        sourceFunctions.yc = async () => {
+          const result = await discoverYcJobs({
+            transport: searxTransport,
+            queries: ycQueries,
+            resolveOriginalListing: resolver,
+            runAt,
+            perQueryResultCap: sources.searxng.perQueryResultCap,
+          });
+          return { candidates: result.observations, manifest: { status: 'ok', ...result.manifest } };
+        };
+      }
+      sourceFunctions['vc-portfolio-boards'] = async () => {
+        const watchlist = loadVcPortfolioWatchlist(sources.startup?.vcPortfolioWatchlistPath ?? 'config/vc-portfolio-watchlist.json');
+        const requests = buildVcWatchlistRequests(watchlist, { limit: sources.startup?.vcPortfolioLimit ?? 20 });
+        if (!requests.length) return { candidates: [], manifest: { status: 'empty', fetched: 0 } };
+        const result = await discoverBraveSearch({
+          transport: searxTransport,
+          provider: 'searxng',
+          queries: requests.map((request) => request.query),
+          dailyBudget: requests.length,
+          perQueryResultCap: sources.searxng.perQueryResultCap,
+          resolveOriginalListing: resolver,
+          runAt,
+        });
+        return { candidates: result.observations, manifest: { status: 'ok', ...result.manifest } };
+      };
+    }
+    const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
   }));
   if (profile?.mode === 'remote') plans.push(sourcePlan('remote-mode', 'remote-sources', 'remote', async () => {
     const fetchJson = async (url, options) => { const response = await transport(url, options); const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; return body; };
-    const providerFetchers = Object.fromEntries(['himalayas', 'jobicy', 'weworkremotely', 'remotive'].map((provider) => [provider, fetchJson]));
+    const fetchText = async (url, options) => { const response = await transport(url, options); return response.body; };
+    const providerFetchers = {
+      ...Object.fromEntries(['himalayas', 'jobicy', 'remotive'].map((provider) => [provider, { fetchJson }])),
+      weworkremotely: { fetchText },
+    };
     const outputs = await runRemoteSourcePlan({ providerFetchers, runAt, runId: profile.mode });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'remote', lanes: outputs.map((item) => item.manifest) } } };
   }));
-  if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => discoverIndiaStartupLanes({
-    ...sources.indiaStartup,
-    transport,
-    runAt,
-  })));
+  if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => {
+    // discoverIndiaStartupLanes calls transport(request, meta) with a {source, kind, query, url}
+    // object, not transport(url, options) like every other lane — every configured request here
+    // is kind:'search' (see INDIA_STARTUP_LANES), so route it through the same SearXNG query
+    // transport the startup/searxng lanes already use. Without SearXNG configured, leave the lane
+    // unavailable rather than fabricate results.
+    if (!sources.searxng?.enabled || !sources.searxng.endpoint) {
+      return { observations: [], verificationQueue: [], manifest: { schemaVersion: 'IndiaStartupLanesManifestV1', runAt, sources: [], telemetry: { unavailable: 'searxng-not-configured' }, noAutoApply: true }, telemetry: {} };
+    }
+    const searxTransport = searxngTransport(sources.searxng.endpoint, transport);
+    return discoverIndiaStartupLanes({
+      ...sources.indiaStartup,
+      transport: async (request) => searxTransport(request.query),
+      runAt,
+    });
+  }));
   if (schedule !== 'midday' && sources.searxng?.enabled) plans.push(sourcePlan('searxng-search', 'web-discovery', 'searxng', async () => {
     if (!sources.searxng.endpoint) throw new Error('SearXNG is enabled but endpoint is unavailable');
     return discoverBraveSearch({
       ...sources.searxng,
       provider: 'searxng',
-      transport: async (query) => {
-        const url = new URL('/search', sources.searxng.endpoint);
-        url.searchParams.set('q', query);
-        url.searchParams.set('format', 'json');
-        const response = await transport(url.toString(), { headers: { Accept: 'application/json' } });
-        const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-        return { ...response, body: { results: body?.results ?? [] } };
-      },
+      transport: searxngTransport(sources.searxng.endpoint, transport),
       resolveOriginalListing: resolver,
       runAt,
     });

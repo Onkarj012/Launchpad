@@ -16,6 +16,7 @@ const nowAt = (clock) => {
 
 const asArray = (value) => Array.isArray(value) ? value : [];
 const jsonSafe = (value) => JSON.parse(JSON.stringify(value));
+const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 
 function sourceCursor(priorState, sourceId) {
   return priorState?.sources?.[sourceId]?.cursor ?? null;
@@ -164,6 +165,10 @@ export async function crawlWorkflow({
     { ...telemetry, detail: sourceTelemetryDetails[sourceId] ?? null },
   ]));
   const sourceYield = buildSourceYieldReport(records, sourceTelemetry, config.sourceYield);
+  // Reserve/verification counts are durable so schedule-health can report them
+  // for a completed run without recomputing selection from raw observations.
+  const rejectedTotal = Object.values(selection.excluded || {}).reduce((sum, value) => sum + number(value), 0);
+  const workflowCounts = { ready: selection.shortlist.length, verification: verificationQueue.length, rejected: rejectedTotal };
   if (!durable.idempotent) {
     const workflowTelemetry = {
       ...durable.telemetry,
@@ -172,7 +177,7 @@ export async function crawlWorkflow({
     const status = durable.run.status;
     const updatedRun = finishCrawlRun(store, runId, {
       status,
-      counts: durable.run.counts,
+      counts: { ...durable.run.counts, ...workflowCounts },
       telemetry: workflowTelemetry,
       clock,
       error: durable.run.error,

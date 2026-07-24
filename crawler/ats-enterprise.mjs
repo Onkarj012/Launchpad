@@ -128,6 +128,18 @@ function failure(board, page, code, message, endpointUrl) {
   return { board: board.company || null, provider: board.provider || null, page, code, message, endpointUrl, provenance: { source: endpointUrl, transportInjected: true } };
 }
 
+// Workday's public CXS jobs endpoint rejects GET (HTTP 400) and requires a
+// POST with a JSON search body; every other supported provider here is a
+// plain GET feed.
+function requestOptions(provider, maxJobsPerBoard, etag) {
+  if (provider !== 'workday') return { method: 'GET', headers: { ...(etag ? { 'if-none-match': etag } : {}) } };
+  return {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(etag ? { 'if-none-match': etag } : {}) },
+    body: JSON.stringify({ appliedFacets: {}, limit: Math.min(20, Math.max(1, Number(maxJobsPerBoard) || 20)), offset: 0, searchText: '' }),
+  };
+}
+
 export async function discoverEnterpriseAts({ boards = [], transport, runAt = new Date().toISOString(), conditionalState = {}, maxPages = 3, maxJobsPerBoard = 100, retry = {} } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverEnterpriseAts requires injected transport');
   const observations = []; const failures = []; const verificationQueue = []; const seen = new Set(); const state = { ...conditionalState };
@@ -147,7 +159,7 @@ export async function discoverEnterpriseAts({ boards = [], transport, runAt = ne
       let response; let attempts = 0; const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
       while (attempts < maxAttempts) {
         attempts += 1;
-        try { response = await transport(endpointUrl, { endpoint: 'enterprise-ats', provider, page, headers: { ...(state[endpointUrl]?.etag ? { 'if-none-match': state[endpointUrl].etag } : {}) }, runAt }); }
+        try { response = await transport(endpointUrl, { endpoint: 'enterprise-ats', provider, page, ...requestOptions(provider, maxJobsPerBoard, state[endpointUrl]?.etag), runAt }); }
         catch (error) { if (error?.retryable && attempts < maxAttempts) continue; response = { status: 0, error }; break; }
         if (!RETRYABLE.has(Number(response?.status)) || attempts >= maxAttempts) break;
       }

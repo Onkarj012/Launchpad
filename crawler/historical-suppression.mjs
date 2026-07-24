@@ -159,3 +159,37 @@ export function suppressHistoricalCandidate(candidate, index) {
     evidence: evidenceFor(matches[0].entry, matches.map(({ type }) => type), matches.map(({ key }) => key)),
   };
 }
+
+/**
+ * Convenience seam for mode runners: split candidates into those that survive
+ * v4 suppression and those suppressed, with the historical identity that
+ * caused each suppression recorded for operator evidence. Read-only against
+ * v4 rows; an empty/missing historicalRows list is a no-op (nothing suppressed).
+ */
+export function filterHistoricalCandidates(candidates = [], historicalRows = []) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const rows = Array.isArray(historicalRows) ? historicalRows : [];
+  if (!rows.length) return { kept: list, suppressed: [], index: null };
+
+  const index = buildHistoricalSuppressionIndex(rows);
+  const kept = [];
+  const suppressed = [];
+  for (const candidate of list) {
+    const result = suppressHistoricalCandidate(candidate, index);
+    if (!result.suppressed) { kept.push(candidate); continue; }
+    suppressed.push({
+      company: candidate?.company ?? null,
+      title: candidate?.title ?? null,
+      canonicalUrl: candidate?.canonicalUrl ?? candidate?.discoveryUrl ?? candidate?.originalApplicationUrl ?? candidate?.applicationUrl ?? candidate?.url ?? null,
+      code: result.code,
+      historicalIdentity: result.evidence.historicalIdentity,
+      historicalRowIndex: result.evidence.historicalRowIndex,
+      historicalState: result.evidence.historicalState,
+      matchTypes: result.evidence.matchTypes,
+      matchKeys: result.evidence.matchKeys,
+      immutable: true,
+      v4Writes: false,
+    });
+  }
+  return { kept, suppressed, index };
+}

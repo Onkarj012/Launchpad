@@ -6,6 +6,7 @@ import { applicationReadiness } from './normal-readiness.mjs';
 import { enrichRemoteSources, REMOTE_SCHEMA_FIELDS } from './remote-enrichment.mjs';
 import { runRemoteSourcePlan } from './remote-sources.mjs';
 import { selectRemoteApplications } from './remote-selection.mjs';
+import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
 
 export const REMOTE_MODE_SCHEMA_VERSION = 'LaunchpadV5RemoteModeV1';
 
@@ -170,6 +171,7 @@ function fatalResult(runId, runAt, sourceManifests, error) {
     sourceTelemetry: sourceManifests,
     plannedNotionOperations: [],
     transaction: null,
+    historicalSuppressions: [],
     shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => ['failed', 'unavailable'].includes(item.status)).map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
     counts: null,
@@ -181,7 +183,7 @@ export async function runRemoteMode({
   mode = 'remote', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {},
   notionGateway = createNoWriteNotionGateway(), executeGateway = false,
-  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = [],
+  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = [], historicalV4Rows = [],
 } = {}) {
   if (String(mode).toLowerCase() !== 'remote') throw new RemoteModeError(`Remote runner only supports remote mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -199,7 +201,10 @@ export async function runRemoteMode({
     remoteConfig.employment.allowedTypes = [...new Set([...remoteConfig.employment.allowedTypes, 'contract'])];
     const pipeline = runPipeline({ config: remoteConfig, conversionPlan: baseConversionPlan, now: runAt, runId, ledgerRows, opportunityLedgerRows, sources: sourceResults, dryRun: true });
     const pipelineByUrl = new Map(pipeline.scoringCandidates.map((candidate) => [candidate.canonicalUrl, candidate]));
-    const selectionEntries = pipeline.scoringCandidates
+    // v4 identity matches are suppressed before they reach shortlist/Notion planning.
+    // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
+    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
+    const selectionEntries = nonHistoricalCandidates
       .filter((candidate) => candidate.remoteReady === true)
       .map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
     const selection = selectRemoteApplications(selectionEntries, { maximumPerCompany: remoteConfig.run.maximumPerCompany });
@@ -237,9 +242,10 @@ export async function runRemoteMode({
       sourceTelemetry: sourceManifests,
       plannedNotionOperations: plannedOperations,
       transaction,
+      historicalSuppressions,
       shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing, preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes, reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)], linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' } },
       outcome: { status: failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), dated: sourceResults.reduce((sum, source) => sum + source.candidates.filter((candidate) => candidate.postedAt != null).length, 0), applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, eligibilityClasses: selection.eligibilityClasses, schemaIntegrationRequired: true, missingFields: [...REMOTE_SCHEMA_FIELDS] },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), dated: sourceResults.reduce((sum, source) => sum + source.candidates.filter((candidate) => candidate.postedAt != null).length, 0), applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, eligibilityClasses: selection.eligibilityClasses, schemaIntegrationRequired: true, missingFields: [...REMOTE_SCHEMA_FIELDS] },
     };
   } catch (error) {
     return fatalResult(runId, runAt, sourceResults.map(({ manifest }) => manifest), error);

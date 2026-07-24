@@ -9,6 +9,7 @@ import { deduplicateLinkedInRescueOutputs } from './linkedin-rescue-dedup.mjs';
 import { buildAssociatedPersonHandoff } from './linkedin-rescue-handoff.mjs';
 import { parseCapturedLinkedInPost, LinkedInRescueParseError } from './linkedin-rescue-parser.mjs';
 import { buildLinkedInRescueQueryPlan, validateLinkedInRescuePlan, LinkedInRescueBoundsError } from './linkedin-rescue-query.mjs';
+import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
 
 export const LINKEDIN_RESCUE_MODE_SCHEMA_VERSION = 'LaunchpadV5LinkedInRescueV1';
 
@@ -198,6 +199,7 @@ export function runLinkedInRescue({
   capturedPosts = [],
   config = null,
   conversionPlan = null,
+  historicalV4Rows = [],
 } = {}) {
   if (explicitInvocation !== true && invokedBy !== 'linkedin-leads') throw new LinkedInRescueInvocationError();
   if (typeof now !== 'string' || Number.isNaN(Date.parse(now))) throw new LinkedInRescueBoundsError('now must be an ISO timestamp', 'LINKEDIN_RESCUE_TIMESTAMP_INVALID');
@@ -234,6 +236,16 @@ export function runLinkedInRescue({
   }
   const deduped = deduplicateLinkedInRescueOutputs({ applicationLeads, associatedPeople });
   reports.push(...deduped.duplicateReports);
+  // v4 identity matches are suppressed before they reach the shortlist/Notion planning
+  // handoff. Read-only against v4 rows: never migrates, mutates, or deletes historical data.
+  const { kept: nonHistoricalLeads, suppressed: historicalSuppressions } = filterHistoricalCandidates(deduped.applicationLeads, historicalV4Rows);
+  for (const suppression of historicalSuppressions) {
+    reports.push({
+      code: 'SUPPRESSED_HISTORICAL',
+      category: 'duplicate',
+      evidence: { company: suppression.company, title: suppression.title, jobLink: suppression.canonicalUrl, historicalIdentity: suppression.historicalIdentity, historicalRowIndex: suppression.historicalRowIndex, matchTypes: suppression.matchTypes },
+    });
+  }
   return {
     schemaVersion: LINKEDIN_RESCUE_MODE_SCHEMA_VERSION,
     runId,
@@ -241,16 +253,18 @@ export function runLinkedInRescue({
     invoked: true,
     invocation: { explicit: true, command: 'linkedin-leads', autoRun: false },
     queryPlan: plan,
-    applicationLeads: deduped.applicationLeads,
+    applicationLeads: nonHistoricalLeads,
     associatedPeople: deduped.associatedPeople,
     reports,
+    historicalSuppressions,
     counts: {
       captured: capturedPosts.length,
       parsed: parsedPosts.length,
-      applicationLeads: deduped.applicationLeads.length,
-      ready: deduped.applicationLeads.filter((lead) => lead.ready).length,
-      needsVerification: deduped.applicationLeads.filter((lead) => !lead.ready).length,
+      applicationLeads: nonHistoricalLeads.length,
+      ready: nonHistoricalLeads.filter((lead) => lead.ready).length,
+      needsVerification: nonHistoricalLeads.filter((lead) => !lead.ready).length,
       associatedPeople: deduped.associatedPeople.length,
+      historicalSuppressed: historicalSuppressions.length,
       reports: reports.length,
     },
     sideEffects: {
