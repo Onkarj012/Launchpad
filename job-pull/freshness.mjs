@@ -17,12 +17,14 @@ function parseTimestamp(value) {
 export function classifyFreshness(candidateOrPostedAt, options = {}) {
   const candidate = candidateOrPostedAt && typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt : null;
   const isWorkday = candidate?.provider?.toLowerCase?.() === 'workday';
+  const isPersonio = candidate?.provider?.toLowerCase?.() === 'personio';
   const workdayHasVerifiedDate = candidate?.evidence?.freshness?.kind === 'workday-startDate';
   const rawPostedAt = candidate ? candidate.postedAt : candidateOrPostedAt;
   // Workday postedOn is provider evidence requiring corroboration; alone it must
   // never produce Hot/Active — route to VerifyQueue as explicit verification work.
   const workdayUncorroborated = Boolean(isWorkday && !workdayHasVerifiedDate && rawPostedAt != null);
-  const postedAt = isWorkday && !workdayHasVerifiedDate
+  const personioUncorroborated = Boolean(isPersonio && candidate?.evidence?.dateConfidence === 'provider-unverified' && rawPostedAt != null);
+  const postedAt = (isWorkday && !workdayHasVerifiedDate) || personioUncorroborated
     ? null
     : rawPostedAt;
   const nowValue = options.now ?? new Date().toISOString();
@@ -38,10 +40,13 @@ export function classifyFreshness(candidateOrPostedAt, options = {}) {
       ageHours: null,
       code: workdayUncorroborated
         ? 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE'
+        : personioUncorroborated
+          ? 'FRESHNESS_PERSONIO_UNCORROBORATED_VERIFY_QUEUE'
         : 'FRESHNESS_UNDATED_VERIFY_QUEUE',
-      evidence: workdayUncorroborated ? 'workday-postedOn-uncorroborated' : 'Not Verified',
+      evidence: workdayUncorroborated ? 'workday-postedOn-uncorroborated' : personioUncorroborated ? 'personio-provider-date-uncorroborated' : 'Not Verified',
       verifyQueue: true,
       workdayUncorroborated,
+      personioUncorroborated,
     };
   }
   if (nowMs == null) throw new Error('freshness run clock must be a valid timestamp');

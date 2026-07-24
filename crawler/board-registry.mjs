@@ -16,7 +16,12 @@ export const PROVIDER_LANES = Object.freeze({
   workable: 'atsBatch1',
   teamtailor: 'atsBatch1',
   recruitee: 'atsBatch1',
+  breezy: 'atsBatch2',
+  bamboohr: 'atsBatch2',
+  personio: 'atsBatch2',
+  comeet: 'atsBatch2',
   pinpoint: 'atsBatch2',
+  rippling: 'atsBatch2',
   workday: 'enterprise',
 });
 
@@ -37,6 +42,10 @@ export const DEFAULT_CAPABILITIES = Object.freeze({
   workable: { ...ALL_CAPS },
   teamtailor: { ...ALL_CAPS },
   recruitee: { ...ALL_CAPS },
+  breezy: { ...ALL_CAPS },
+  bamboohr: { ...ALL_CAPS },
+  personio: { ...ALL_CAPS },
+  comeet: { ...ALL_CAPS },
   pinpoint: {
     listingEnumeration: true,
     detailRetrieval: false,
@@ -44,6 +53,7 @@ export const DEFAULT_CAPABILITIES = Object.freeze({
     liveness: true,
     applicationUrl: true,
   },
+  rippling: { ...ALL_CAPS },
   workday: { ...ALL_CAPS },
 });
 

@@ -14,6 +14,7 @@ import {
   projectLaneBoards,
   projectTrackedBoards,
   projectTrackedWarmSet,
+  PROVIDER_LANES,
   workdayCxsUrl,
 } from '../../crawler/board-registry.mjs';
 import { buildBoardPromotionProposals } from '../../crawler/board-promotion.mjs';
@@ -155,6 +156,36 @@ test('newly proposed boards stay proposal-only until manually activated', () => 
   const live = projectLaneBoards(activated, 'atsWarm');
   assert.equal(live.length, 1);
   assert.equal(live[0].slug, 'newcoindia');
+});
+
+test('Personio and Comeet resolve to batch-2 with complete default capabilities', () => {
+  for (const provider of ['personio', 'comeet']) {
+    assert.equal(PROVIDER_LANES[provider], 'atsBatch2');
+    assert.deepEqual(defaultCapabilities(provider), {
+      listingEnumeration: true,
+      detailRetrieval: true,
+      dateEvidence: true,
+      liveness: true,
+      applicationUrl: true,
+    });
+  }
+});
+
+test('discovered Personio and Comeet tenants remain disabled proposal-only boards', () => {
+  for (const [provider, host] of [['personio', 'acme.jobs.personio.com'], ['comeet', 'www.comeet.com']]) {
+    let state = {};
+    const discovery = { provider, company: `${provider} Acme`, url: `https://${host}/jobs/acme`, discoveredAt: '2026-07-20T00:00:00Z' };
+    ({ state } = buildBoardPromotionProposals([discovery], state, { runAt: '2026-07-20T00:00:00Z' }));
+    ({ state } = buildBoardPromotionProposals([{ ...discovery, discoveredAt: '2026-07-21T00:00:00Z' }], state, { runAt: '2026-07-21T00:00:00Z' }));
+    const result = buildBoardPromotionProposals([{ ...discovery, discoveredAt: '2026-07-22T00:00:00Z' }], state, { runAt: '2026-07-22T00:00:00Z' });
+    assert.equal(result.proposals.length, 1, provider);
+    const suggested = result.proposals[0].suggestedBoard;
+    assert.equal(suggested.scheduleLane, 'atsBatch2');
+    assert.equal(suggested.enabled, false);
+    assert.equal(suggested.activationState, 'proposed');
+    assert.equal(suggested.probeStatus, 'proposed');
+    assert.equal(result.proposals[0].noAutoApply, true);
+  }
 });
 
 test('registry health metadata defaults exist and recordBoardHealth updates them', async () => {

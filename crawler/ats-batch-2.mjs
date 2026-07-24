@@ -65,7 +65,9 @@ function xmlField(block, name) {
 function parsePersonio(body) {
   return [...String(body).matchAll(/<(?:position|job|jobPosition)\b[^>]*>([\s\S]*?)<\/(?:position|job|jobPosition)>/gi)].map((match) => {
     const block = match[1];
-    return { id: xmlField(block, 'id') || xmlField(block, 'requisitionId'), title: xmlField(block, 'name') || xmlField(block, 'title'), location: xmlField(block, 'office') || xmlField(block, 'location'), description: xmlField(block, 'jobDescription') || xmlField(block, 'description'), postedAt: xmlField(block, 'createdAt') || xmlField(block, 'publishedAt'), url: xmlField(block, 'url') || xmlField(block, 'applicationUrl') };
+    const createdAt = xmlField(block, 'createdAt');
+    const publishedAt = xmlField(block, 'publishedAt');
+    return { id: xmlField(block, 'id') || xmlField(block, 'requisitionId'), title: xmlField(block, 'name') || xmlField(block, 'title'), location: xmlField(block, 'office') || xmlField(block, 'location'), description: xmlField(block, 'jobDescription') || xmlField(block, 'description'), createdAt, publishedAt, postedAt: createdAt || publishedAt, url: xmlField(block, 'url') || xmlField(block, 'applicationUrl') };
   });
 }
 
@@ -102,24 +104,55 @@ function classify(board, url) {
   return url && boardUrl(board) && new URL(url).hostname.endsWith(new URL(boardUrl(board)).hostname) ? 'direct' : 'lead';
 }
 
+function dateEvidence(provider, row) {
+  if (provider === 'personio') {
+    const providerCreatedAt = isoDate(row.createdAt);
+    const providerPublishedAt = isoDate(row.publishedAt);
+    return {
+      postedAt: isoDate(row.createdAt || row.publishedAt || row.postedAt),
+      evidence: {
+        dateConfidence: 'provider-unverified',
+        providerCreatedAt,
+        providerPublishedAt,
+      },
+    };
+  }
+  if (provider === 'comeet') {
+    const modifiedAt = isoDate(row.time_updated || row.update_ts || row.updatedAt || row.updated_at || row.modifiedAt || row.modified_at);
+    const postedAt = isoDate(row.postedAt || row.post_ts || row.posted_at || row.publishedAt || row.published_at || row.datePosted || row.date_posted);
+    return {
+      postedAt,
+      evidence: {
+        dateConfidence: postedAt ? 'provider-unverified' : 'modification-only',
+        modifiedAt,
+      },
+    };
+  }
+  return {
+    postedAt: isoDate(row.postedAt || row.createdAt || row.publishedAt || row.created_at),
+    evidence: {},
+  };
+}
+
 function candidateFrom(board, row, runAt, sourceUrl) {
   const url = providerJobUrl(board, row);
   if (!url || !text(row.title || row.name || row.jobTitle || row.jobOpeningName)) return null;
   const classification = classify(board, url);
   const company = text(board.company || row.company || row.companyName) || 'Unknown Company';
+  const dates = dateEvidence(board.provider, row);
   const candidate = normalizeCandidate({
     url, id: row.id || row.jobId || row.requisitionId,
     company, title: row.title || row.name || row.jobTitle || row.jobOpeningName,
     location: board.provider === 'pinpoint' ? pinpointLocationText(row.location) : (row.location || row.city || row.office),
     description: row.description || row.jobDescription || row.content,
-    postedAt: isoDate(row.postedAt || row.createdAt || row.publishedAt || row.created_at),
+    postedAt: dates.postedAt,
     discoveredAt: runAt, crawledAt: runAt,
     source: sourceUrl, provider: board.provider,
     sourceKind: classification === 'direct' ? 'ats-direct' : 'aggregator',
     liveness: { status: 'Active', checkedAt: runAt, evidence: 'public-ats-feed' },
     evidence: {
       classification, provider: board.provider, board: board.slug || board.company || null,
-      endpoint: sourceUrl, fetchedAt: runAt, contract: `${board.provider}-public`,
+      endpoint: sourceUrl, fetchedAt: runAt, contract: `${board.provider}-public`, ...dates.evidence,
     },
   }, { runAt, provider: board.provider, source: sourceUrl });
   candidate.classification = classification;
