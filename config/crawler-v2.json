@@ -247,5 +247,11 @@
   "sourceYield": {
     "minimumFetchedForReview": 100,
     "minimumRunsForPause": 3
+  },
+  "originalListingResolver": {
+    "maxRedirects": 5,
+    "maxHosts": 4,
+    "maxBytes": 2000000,
+    "maxRequests": 8
   }
 }

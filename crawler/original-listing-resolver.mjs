@@ -1,6 +1,11 @@
-import { extractExperienceYears, stripHtmlToText } from '../job-pull/candidate.mjs';
-
 export const ORIGINAL_LISTING_RESOLVER_VERSION = 'OriginalListingResolverV1';
+
+export const DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET = Object.freeze({
+  maxRedirects: 5,
+  maxHosts: 4,
+  maxBytes: 2_000_000,
+  maxRequests: 8,
+});
 
 const ATS_HOSTS = Object.freeze([
   ['greenhouse', /(?:^|\.)greenhouse\.io$/i],
@@ -11,14 +16,63 @@ const ATS_HOSTS = Object.freeze([
   ['recruitee', /(?:^|\.)recruitee\.com$/i],
   ['workday', /(?:^|\.)myworkdayjobs\.com$/i],
 ]);
-const AGGREGATOR_HOST = /(?:^|\.)(?:linkedin\.com|indeed\.[a-z.]+|glassdoor\.[a-z.]+|wellfound\.com|builtin\.com|ziprecruiter\.com|dice\.com|monster\.[a-z.]+|simplyhired\.[a-z.]+)$/i;
+const AGGREGATOR_HOST = /(?:^|\.)(?:linkedin\.com|indeed\.[a-z.]+|glassdoor\.[a-z.]+|wellfound\.com|builtin\.com|ziprecruiter\.com|dice\.com|monster\.[a-z.]+|simplyhired\.[a-z.]+|hirist\.tech|cutshort\.io|instahyre\.com|naukri\.com|internshala\.com|angel\.co|remoteok\.com|weworkremotely\.com|remotive\.com|himalayas\.app|jobicy\.com)$/i;
 const RESERVED_HOST = /(?:^|\.)(?:example|invalid|test|localhost)(?:$|\.)/i;
 const CAREER_PATH = /(?:^|[\/_-])(career|careers|jobs?|join[-_ ]?us|work[-_ ]?with[-_ ]?us|opportunit)(?:$|[\/_-])/i;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-const MAX_REDIRECT_HOPS = 3;
+const BLOCKED_STATUSES = new Set([401, 403, 407, 429, 451]);
+const APPLY_HINT = /\b(apply|view\s+original|view\s+job|original\s+posting|company\s+site|employer|external\s+apply|continue\s+to\s+application)\b/i;
+const CANONICAL_REL = /\brel\s*=\s*["'][^"']*canonical[^"']*["']/i;
+const CAPTCHA_HINT = /\b(captcha|recaptcha|hcaptcha|cf-challenge|attention\s+required|access\s+denied|paywall|subscribe\s+to\s+continue|verify\s+you\s+are\s+human)\b/i;
+const FIELD_SOURCE_ORIGINAL = 'original-employer-detail';
+const FIELD_SOURCE_LEAD = 'lead-only';
 
 const text = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const first = (...values) => values.find((value) => text(value) != null) ?? null;
+
+/** Minimal entity decode + tag strip so the resolver stays free of the career-ops import graph. */
+function stripHtmlToText(value) {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(\d+);/g, (_, code) => {
+      const n = Number(code);
+      return Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractExperienceYears(raw) {
+  const cleaned = stripHtmlToText(raw || '');
+  if (!cleaned) return null;
+  const matches = [];
+  const patterns = [
+    /(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)\D{0,40}?\b(\d+(?:\.\d+)?)(?:\s*(?:\+|to|-)\s*(\d+(?:\.\d+)?))?\s*(?:years?|yrs?)/gi,
+    /\b(\d+(?:\.\d+)?)(?:\s*(?:\+|to|-)\s*(\d+(?:\.\d+)?))?\s*(?:years?|yrs?)\b(?:\s+of)?(?:\s+(?:professional|relevant|industry))?\s+experience\b/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of cleaned.matchAll(pattern)) {
+      const minYears = Number(match[1]);
+      const maxYears = match[2] == null ? null : Number(match[2]);
+      if (!Number.isFinite(minYears)) continue;
+      matches.push({
+        minYears,
+        maxYears: Number.isFinite(maxYears) ? maxYears : null,
+        evidence: match[0].trim().replace(/\s+/g, ' '),
+      });
+    }
+  }
+  if (!matches.length) return null;
+  return matches.reduce((best, current) => (current.minYears > best.minYears ? current : best));
+}
 
 function canonical(value, base = null) {
   if (!text(value)) return null;
@@ -202,6 +256,16 @@ function extractDetails(response, observation, provider) {
   ));
   const hasDetail = Boolean(posting || (description && (title || location || employment || postedAt || validThrough)) || (root && (root.title || root.description || root.jobDescription)));
   if (!hasDetail) return { verified: false, reason: 'job-detail-not-found' };
+  const fieldSources = {
+    title: title ? FIELD_SOURCE_ORIGINAL : null,
+    description: plainDescription ? FIELD_SOURCE_ORIGINAL : null,
+    location: location ? FIELD_SOURCE_ORIGINAL : null,
+    employment: employment ? FIELD_SOURCE_ORIGINAL : null,
+    experience: experience && (experience.minYears != null || experience.evidence) ? FIELD_SOURCE_ORIGINAL : null,
+    postedAt: postedAt ? FIELD_SOURCE_ORIGINAL : null,
+    liveness: FIELD_SOURCE_ORIGINAL,
+    originalApplicationUrl: FIELD_SOURCE_ORIGINAL,
+  };
   return {
     verified: true,
     title,
@@ -219,6 +283,7 @@ function extractDetails(response, observation, provider) {
       : active ? { status: 'Active', checkedAt: null, evidence: validThrough ? 'job-detail-and-validThrough' : 'job-detail' }
         : { status: 'Not Verified', checkedAt: null, evidence: 'job-detail-liveness-unverified' },
     freshness: workday ? { kind: postedAt ? 'workday-startDate' : 'workday-unverified' } : null,
+    fieldSources,
     evidence: {
       detail: 'original-listing-detail',
       description: Boolean(description),
@@ -228,8 +293,98 @@ function extractDetails(response, observation, provider) {
       compensation: Boolean(salaryValue(posting || root)),
       closing: Boolean(validThrough || closed || rawStatus),
       liveness: active || closed,
+      fieldSources,
     },
   };
+}
+
+function pathSegments(url) {
+  try {
+    return new URL(url).pathname.split('/').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Provider fingerprint + requisition/job id from a resolved original URL.
+ * Returns only values that the URL itself proves — never invents ids.
+ */
+export function extractProviderFingerprint(value) {
+  const classified = classifyOriginalListingUrl(value);
+  if (!classified.url || !['ats', 'employer-career'].includes(classified.kind)) {
+    return { provider: classified.provider, kind: classified.kind, host: classified.host || null, requisitionId: null, url: classified.url };
+  }
+  const segments = pathSegments(classified.url);
+  let requisitionId = null;
+  if (classified.provider === 'greenhouse') {
+    const jobsIdx = segments.findIndex((part) => part.toLowerCase() === 'jobs');
+    if (jobsIdx >= 0 && segments[jobsIdx + 1] && /^\d+$/.test(segments[jobsIdx + 1])) requisitionId = segments[jobsIdx + 1];
+  } else if (classified.provider === 'lever') {
+    const last = segments[segments.length - 1];
+    if (last && /^[0-9a-f-]{8,}$/i.test(last)) requisitionId = last;
+  } else if (classified.provider === 'ashby') {
+    const last = segments[segments.length - 1];
+    if (last && /^[0-9a-f-]{8,}$/i.test(last)) requisitionId = last;
+  } else if (classified.provider === 'smartrecruiters') {
+    const last = segments[segments.length - 1];
+    if (last && last.toLowerCase() !== 'jobs') requisitionId = last;
+  } else if (classified.provider === 'workable') {
+    const jIdx = segments.findIndex((part) => part.toLowerCase() === 'j');
+    if (jIdx >= 0 && segments[jIdx + 1]) requisitionId = segments[jIdx + 1];
+  } else if (classified.provider === 'recruitee') {
+    const oIdx = segments.findIndex((part) => part.toLowerCase() === 'o');
+    if (oIdx >= 0 && segments[oIdx + 1]) requisitionId = segments[oIdx + 1];
+  } else if (classified.provider === 'workday') {
+    const last = segments[segments.length - 1];
+    if (last && !/^(en-us|careers|job|jobs)$/i.test(last)) requisitionId = decodeURIComponent(last);
+  } else if (classified.provider === 'employer-career') {
+    const last = segments[segments.length - 1];
+    if (last && last.length >= 3) requisitionId = decodeURIComponent(last);
+  }
+  return {
+    provider: classified.provider,
+    kind: classified.kind,
+    host: classified.host,
+    requisitionId,
+    url: classified.url,
+  };
+}
+
+function collectHrefCandidates(html, base) {
+  const ranked = [];
+  const add = (value, rank, why) => {
+    const url = canonical(value, base);
+    if (!url) return;
+    ranked.push({ url, rank, why });
+  };
+
+  for (const match of html.matchAll(/<link\b([^>]*)>/gi)) {
+    const attrs = match[1] || '';
+    const href = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (href && CANONICAL_REL.test(attrs)) add(href, 0, 'canonical-link');
+  }
+  for (const match of html.matchAll(/<meta\b([^>]*)>/gi)) {
+    const attrs = match[1] || '';
+    if (/\bhttp-equiv\s*=\s*["']refresh["']/i.test(attrs)) {
+      const content = attrs.match(/\bcontent\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+      const target = content.match(/url\s*=\s*([^\s;]+)/i)?.[1];
+      if (target) add(target.replace(/^['"]|['"]$/g, ''), 1, 'meta-refresh');
+    }
+    if (/\bproperty\s*=\s*["']og:url["']/i.test(attrs) || /\bname\s*=\s*["']original[-_]?url["']/i.test(attrs)) {
+      const content = attrs.match(/\bcontent\s*=\s*["']([^"']+)["']/i)?.[1];
+      if (content) add(content, 2, 'meta-original');
+    }
+  }
+  for (const match of html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attrs = match[1] || '';
+    const inner = stripHtmlToText(match[2] || '');
+    const href = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!href) continue;
+    const labeled = APPLY_HINT.test(inner) || APPLY_HINT.test(attrs);
+    add(href, labeled ? 3 : 8, labeled ? 'apply-link' : 'anchor');
+  }
+  return ranked;
 }
 
 function urlsFromBody(response, base) {
@@ -242,10 +397,50 @@ function urlsFromBody(response, base) {
     add(node.sameAs);
     add(node.potentialAction?.target);
   }
-  const html = htmlBody(response);
-  for (const match of html.matchAll(/<(?:link|meta)\b[^>]*(?:href|content)\s*=\s*["']([^"']+)["'][^>]*>/gi)) add(match[1]);
-  for (const match of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi)) add(match[1]);
+  for (const candidate of collectHrefCandidates(htmlBody(response), base)) add(candidate.url);
   return [...new Set(urls)];
+}
+
+/**
+ * Rank outbound targets: original ATS/employer destinations first, then
+ * apply/view-original intermediate hops (tracking pages) that may still resolve.
+ */
+function preferOutboundTargets(response, base, { exclude = new Set() } = {}) {
+  const body = bodyOf(response);
+  const ranked = [];
+  const push = (url, rank, why, { allowIntermediate = false } = {}) => {
+    const value = canonical(url, base);
+    if (!value || exclude.has(value)) return;
+    const classified = classifyOriginalListingUrl(value);
+    const isOriginal = ['ats', 'employer-career'].includes(classified.kind);
+    if (!isOriginal && !allowIntermediate) return;
+    if (!isOriginal && classified.kind === 'unsupported') return;
+    ranked.push({ url: value, rank: isOriginal ? rank : rank + 20, why, classified, isOriginal });
+  };
+
+  for (const path of ['applyUrl', 'applicationUrl', 'originalApplicationUrl', 'absolute_url', 'hostedUrl', 'redirectUrl', 'jobUrl', 'job_url', 'url', 'sameAs']) {
+    push(readPath(body, path), 4, `json:${path}`, { allowIntermediate: true });
+  }
+  for (const node of jsonLdNodes(htmlBody(response))) {
+    push(node.url, 5, 'jsonld:url', { allowIntermediate: true });
+    push(node.sameAs, 5, 'jsonld:sameAs', { allowIntermediate: true });
+    push(node.potentialAction?.target, 3, 'jsonld:potentialAction', { allowIntermediate: true });
+  }
+  for (const candidate of collectHrefCandidates(htmlBody(response), base)) {
+    const allowIntermediate = candidate.why === 'apply-link'
+      || candidate.why === 'canonical-link'
+      || candidate.why === 'meta-refresh'
+      || candidate.why === 'meta-original';
+    push(candidate.url, candidate.rank, candidate.why, { allowIntermediate });
+  }
+
+  ranked.sort((a, b) => a.rank - b.rank || a.url.localeCompare(b.url));
+  const seen = new Set();
+  return ranked.filter((item) => {
+    if (seen.has(item.url)) return false;
+    seen.add(item.url);
+    return true;
+  });
 }
 
 export function classifyOriginalListingUrl(value) {
@@ -262,28 +457,79 @@ export function classifyOriginalListingUrl(value) {
   return { kind: 'unsupported', provider: null, host, url };
 }
 
-function resolutionFailure(observation, reason, chain = [], extra = {}) {
+function emptyTelemetry(budget) {
+  return {
+    requests: 0,
+    redirects: 0,
+    hostsFollowed: 0,
+    bytesObserved: 0,
+    budget: { ...budget },
+  };
+}
+
+function responseBytes(response) {
+  if (typeof response?.body === 'string') return Buffer.byteLength(response.body);
+  if (typeof response?.text === 'string') return Buffer.byteLength(response.text);
+  const headers = response?.headers || {};
+  const raw = typeof headers.get === 'function' ? headers.get('content-length') : headers['content-length'] ?? headers['Content-Length'];
+  const length = Number(raw);
+  return Number.isFinite(length) ? length : 0;
+}
+
+function looksBlocked(response, status) {
+  if (BLOCKED_STATUSES.has(status)) return true;
+  const body = htmlBody(response);
+  if (!body) return false;
+  return CAPTCHA_HINT.test(body) && body.length < 50_000;
+}
+
+function looksMalformed(response, status) {
+  if (status < 200 || status >= 300) return false;
+  const body = bodyOf(response);
+  if (body == null) return true;
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    if (!trimmed) return true;
+    // Binary-ish garbage or truncated non-markup payload with no useful structure.
+    if (trimmed.length < 16) return true;
+    if (!/[<>{[]/.test(trimmed) && trimmed.length < 80) return true;
+  }
+  return false;
+}
+
+function resolutionFailure(observation, reason, chain = [], extra = {}, telemetry = null) {
   const discoveryUrl = canonical(observation?.discoveryUrl ?? observation?.canonicalUrl ?? observation?.url);
+  const leadOnly = {
+    title: text(observation?.title) ? FIELD_SOURCE_LEAD : null,
+    description: text(observation?.description) || text(observation?.snippet) ? FIELD_SOURCE_LEAD : null,
+    location: text(observation?.location) ? FIELD_SOURCE_LEAD : null,
+    postedAt: observation?.postedAt ? FIELD_SOURCE_LEAD : null,
+  };
   return {
     status: 'verification',
     discoveryUrl,
     originalApplicationUrl: null,
     applicationResolution: { status: 'Needs Verification', evidence: null },
+    shortlistEligible: false,
     evidence: {
       resolver: ORIGINAL_LISTING_RESOLVER_VERSION,
       resolution: { status: 'verification', reason, chain },
+      fieldSources: leadOnly,
+      leadOnly: true,
       ...extra,
     },
+    telemetry: telemetry || emptyTelemetry(DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET),
   };
 }
 
-function mergePatch(observation, details, finalUrl, provider, runAt) {
+function mergePatch(observation, details, finalUrl, provider, runAt, fingerprint) {
   const patch = {
     originalApplicationUrl: finalUrl,
     originalApplicationEvidence: `original-listing:${provider}-detail`,
     applicationResolution: { status: 'Resolved Original', evidence: `original-listing:${provider}-detail` },
     sourceKind: 'ats-direct',
     provider: provider === 'employer-career' ? observation.provider : provider,
+    ...(fingerprint?.requisitionId ? { jobId: fingerprint.requisitionId, requisitionId: fingerprint.requisitionId } : {}),
     ...(details.title ? { title: details.title } : {}),
     ...(details.description ? { description: details.description } : {}),
     ...(details.location ? { location: details.location } : {}),
@@ -298,6 +544,9 @@ function mergePatch(observation, details, finalUrl, provider, runAt) {
       originalApplication: `original-listing:${provider}-detail`,
       originalApplicationProvider: provider,
       originalApplicationLiveness: details.liveness,
+      providerFingerprint: fingerprint,
+      fieldSources: details.fieldSources || {},
+      leadOnly: false,
       ...(details.freshness ? { freshness: details.freshness } : {}),
       resolution: details.evidence,
     },
@@ -315,7 +564,8 @@ export function applyOriginalListingResolution(observation, resolution) {
       discoveryUrl,
       originalApplicationUrl: null,
       applicationResolution: { status: 'Needs Verification', evidence: null },
-      evidence: { ...(observation.evidence || {}), ...(resolution.evidence || {}), resolver: resolution.evidence?.resolver || ORIGINAL_LISTING_RESOLVER_VERSION },
+      shortlistEligible: false,
+      evidence: { ...(observation.evidence || {}), ...(resolution.evidence || {}), resolver: resolution.evidence?.resolver || ORIGINAL_LISTING_RESOLVER_VERSION, leadOnly: true },
     };
   }
   const finalUrl = canonical(resolution.originalApplicationUrl ?? resolution.url);
@@ -323,21 +573,86 @@ export function applyOriginalListingResolution(observation, resolution) {
   merged.applicationResolution = resolution.applicationResolution || { status: 'Resolved Original', evidence: resolution.evidence?.originalApplication || 'injected-resolver' };
   merged.evidence = { ...(observation.evidence || {}), ...(resolution.evidence || {}), ...(resolution.patch?.evidence || {}) };
   merged.classification = 'direct';
+  merged.sourceKind = merged.sourceKind || 'ats-direct';
+  merged.shortlistEligible = true;
   return merged;
 }
 
 /**
- * Build a bounded, transport-injected resolver. It performs at most
- * `maxRedirects + 1` requests and never follows a redirect to an unsupported
- * host. It does not run shared eligibility, freshness, or readiness gates.
+ * Pure shortlist gate from a resolver outcome. URL-only portal leads stay
+ * non-eligible until hydration produces a Resolved Original destination.
  */
-export function createOriginalListingResolver({ transport, runAt = new Date().toISOString(), maxRedirects = MAX_REDIRECT_HOPS, maxBytes = 2_000_000 } = {}) {
+export function isShortlistEligibleFromResolution(resolution, observation = {}) {
+  if (!resolution || typeof resolution !== 'object') return false;
+  if (resolution.shortlistEligible === true) return true;
+  if (resolution.status === 'resolved' && canonical(resolution.originalApplicationUrl ?? resolution.url)) {
+    const patch = resolution.patch || {};
+    return Boolean(patch.description || resolution.evidence?.resolution?.description);
+  }
+  const applied = applyOriginalListingResolution(observation, resolution);
+  return applied.shortlistEligible === true
+    && applied.applicationResolution?.status === 'Resolved Original'
+    && Boolean(applied.originalApplicationUrl)
+    && Boolean(applied.description || applied.evidence?.resolution?.description);
+}
+
+/** Normalize budget knobs from constructor options or crawler config. */
+export function normalizeOriginalListingResolverBudget(input = {}) {
+  const nested = input.originalListingResolver
+    || input.sources?.originalListingResolver
+    || input.sources?.resolver
+    || input.budget
+    || input;
+  const defaults = DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET;
+  const number = (value, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+  };
+  return {
+    maxRedirects: number(nested.maxRedirects ?? input.maxRedirects, defaults.maxRedirects),
+    maxHosts: number(nested.maxHosts ?? input.maxHosts, defaults.maxHosts),
+    maxBytes: number(nested.maxBytes ?? input.maxBytes, defaults.maxBytes),
+    maxRequests: number(nested.maxRequests ?? input.maxRequests ?? nested.requestBudget ?? input.requestBudget, defaults.maxRequests),
+  };
+}
+
+/**
+ * Build a bounded, transport-injected resolver. It performs at most
+ * `maxRequests` fetches, follows at most `maxRedirects` hops across
+ * `maxHosts` hosts, and never treats aggregator snippets as employer facts.
+ */
+export function createOriginalListingResolver({
+  transport,
+  runAt = new Date().toISOString(),
+  maxRedirects,
+  maxHosts,
+  maxBytes,
+  maxRequests,
+  requestBudget,
+  config,
+  budget,
+} = {}) {
   if (typeof transport !== 'function') throw new TypeError('createOriginalListingResolver requires injected transport');
-  const redirectLimit = Math.max(0, Math.min(MAX_REDIRECT_HOPS, Number(maxRedirects) || 0));
+  const limits = normalizeOriginalListingResolverBudget({
+    maxRedirects,
+    maxHosts,
+    maxBytes,
+    maxRequests: maxRequests ?? requestBudget,
+    budget,
+    ...(config || {}),
+  });
+  const redirectLimit = limits.maxRedirects;
+  const hostLimit = Math.max(1, limits.maxHosts);
+  const requestLimit = Math.max(1, limits.maxRequests);
+  const byteLimit = Math.max(1, limits.maxBytes);
 
   return async function resolveOriginalListing(observation = {}) {
     const discoveryUrl = canonical(observation.discoveryUrl ?? observation.canonicalUrl ?? observation.url);
-    if (!discoveryUrl || !/^https:\/\//i.test(discoveryUrl)) return resolutionFailure(observation, 'invalid-or-insecure-discovery-url');
+    const telemetry = emptyTelemetry(limits);
+    const hosts = new Set();
+    if (!discoveryUrl || !/^https:\/\//i.test(discoveryUrl)) {
+      return resolutionFailure(observation, 'invalid-or-insecure-discovery-url', [], {}, telemetry);
+    }
     let current = discoveryUrl;
     const chain = [];
     const seen = new Set();
@@ -345,45 +660,113 @@ export function createOriginalListingResolver({ transport, runAt = new Date().to
       // A redirect into an unsupported host is a classification failure, not
       // a loop, even when canonicalization makes the destination recur.
       if (hop > 0 && classifyOriginalListingUrl(current).kind === 'unsupported') {
-        return resolutionFailure(observation, 'redirect-to-unsupported-host', [...chain, current]);
+        return resolutionFailure(observation, 'redirect-to-unsupported-host', [...chain, current], {}, telemetry);
       }
-      if (seen.has(current)) return resolutionFailure(observation, 'redirect-loop', chain);
-      seen.add(current); chain.push(current);
+      if (seen.has(current)) return resolutionFailure(observation, 'redirect-loop', chain, {}, telemetry);
+      seen.add(current);
+      chain.push(current);
+
+      const host = hostOf(current);
+      if (host && !hosts.has(host)) {
+        if (hosts.size >= hostLimit) {
+          return resolutionFailure(observation, 'host-budget-exceeded', chain, {}, telemetry);
+        }
+        hosts.add(host);
+        telemetry.hostsFollowed = hosts.size;
+      }
+
+      if (telemetry.requests >= requestLimit) {
+        return resolutionFailure(observation, 'request-budget-exceeded', chain, {}, telemetry);
+      }
+
       let response;
       try {
-        response = await transport(current, { method: 'GET', redirect: 'manual', maxBytes, purpose: 'original-listing-resolution', runAt, hop });
+        telemetry.requests += 1;
+        response = await transport(current, {
+          method: 'GET',
+          redirect: 'manual',
+          maxBytes: byteLimit,
+          purpose: 'original-listing-resolution',
+          runAt,
+          hop,
+          budget: limits,
+          telemetry: { ...telemetry },
+        });
       } catch (error) {
-        return resolutionFailure(observation, 'transport-error', chain, { error: error?.message || 'transport-error' });
+        return resolutionFailure(observation, 'transport-error', chain, { error: error?.message || 'transport-error' }, telemetry);
       }
+
       const status = Number(response?.status ?? 200);
+      telemetry.bytesObserved += responseBytes(response);
+      if (Number.isFinite(Number(response?.byteLength)) && Number(response.byteLength) > byteLimit) {
+        return resolutionFailure(observation, 'response-too-large', chain, {}, telemetry);
+      }
+
       const headers = headersOf(response);
       const responseUrl = canonical(response?.url);
       const location = canonical(headers.location, current);
       const next = location || (response?.redirected && responseUrl && responseUrl !== current ? responseUrl : null);
+
       if (REDIRECT_STATUSES.has(status) || next) {
-        if (!next) return resolutionFailure(observation, 'redirect-without-location', chain);
+        if (!next) return resolutionFailure(observation, 'redirect-without-location', chain, {}, telemetry);
         const target = classifyOriginalListingUrl(next);
-        if (target.kind === 'unsupported' || target.kind === 'invalid') return resolutionFailure(observation, 'redirect-to-unsupported-host', [...chain, next]);
-        if (hop === redirectLimit) return resolutionFailure(observation, 'redirect-limit-exceeded', [...chain, next]);
+        if (target.kind === 'unsupported' || target.kind === 'invalid') {
+          return resolutionFailure(observation, 'redirect-to-unsupported-host', [...chain, next], {}, telemetry);
+        }
+        if (hop === redirectLimit) {
+          return resolutionFailure(observation, 'redirect-limit-exceeded', [...chain, next], {}, telemetry);
+        }
+        telemetry.redirects += 1;
         current = next;
         continue;
       }
-      if (status < 200 || status >= 300) return resolutionFailure(observation, `detail-http-${status}`, chain);
+
+      if (looksBlocked(response, status)) {
+        return resolutionFailure(observation, 'blocked', chain, { httpStatus: status }, telemetry);
+      }
+      if (status < 200 || status >= 300) {
+        return resolutionFailure(observation, `detail-http-${status}`, chain, { httpStatus: status }, telemetry);
+      }
+      if (looksMalformed(response, status)) {
+        return resolutionFailure(observation, 'malformed-response', chain, {}, telemetry);
+      }
+
       const target = classifyOriginalListingUrl(current);
       if (!['ats', 'employer-career'].includes(target.kind)) {
-        const destination = urlsFromBody(response, current).find((url) => ['ats', 'employer-career'].includes(classifyOriginalListingUrl(url).kind));
-        if (!destination) return resolutionFailure(observation, 'original-listing-not-found', chain);
+        const preferred = preferOutboundTargets(response, current, { exclude: seen });
+        const original = preferred.find((item) => item.isOriginal);
+        const intermediate = preferred.find((item) => !item.isOriginal);
+        const destination = original?.url
+          || intermediate?.url
+          || urlsFromBody(response, current).find((url) => ['ats', 'employer-career'].includes(classifyOriginalListingUrl(url).kind));
+        if (!destination) {
+          const reason = target.kind === 'aggregator' ? 'destination-intermediary' : 'original-listing-not-found';
+          return resolutionFailure(observation, reason, chain, {
+            pageKind: target.kind,
+            outboundCandidates: preferred.slice(0, 5).map((item) => item.url),
+          }, telemetry);
+        }
         const destinationClass = classifyOriginalListingUrl(destination);
-        if (seen.has(destination)) return resolutionFailure(observation, 'redirect-loop', [...chain, destination]);
-        if (hop === redirectLimit) return resolutionFailure(observation, 'redirect-limit-exceeded', [...chain, destination]);
-        if (destinationClass.kind === 'unsupported') return resolutionFailure(observation, 'destination-unsupported-host', [...chain, destination]);
+        if (seen.has(destination)) return resolutionFailure(observation, 'redirect-loop', [...chain, destination], {}, telemetry);
+        if (hop === redirectLimit) return resolutionFailure(observation, 'redirect-limit-exceeded', [...chain, destination], {}, telemetry);
+        if (destinationClass.kind === 'unsupported') {
+          return resolutionFailure(observation, 'destination-unsupported-host', [...chain, destination], {}, telemetry);
+        }
+        telemetry.redirects += 1;
         current = destination;
         continue;
       }
+
       const provider = target.provider;
+      const fingerprint = extractProviderFingerprint(current);
       const details = extractDetails(response, observation, provider);
-      if (!details.verified) return resolutionFailure(observation, details.reason, chain);
-      const patched = mergePatch(observation, details, current, provider, runAt);
+      if (!details.verified) {
+        const reason = details.reason === 'job-detail-not-found' && looksMalformed(response, status)
+          ? 'malformed-response'
+          : details.reason;
+        return resolutionFailure(observation, reason, chain, { provider, fingerprint }, telemetry);
+      }
+      const patched = mergePatch(observation, details, current, provider, runAt, fingerprint);
       return {
         status: 'resolved',
         discoveryUrl,
@@ -392,9 +775,12 @@ export function createOriginalListingResolver({ transport, runAt = new Date().to
         patch: patched,
         evidence: patched.evidence,
         redirectChain: chain,
+        providerFingerprint: fingerprint,
+        shortlistEligible: true,
+        telemetry,
       };
     }
-    return resolutionFailure(observation, 'resolver-bound-exhausted', chain);
+    return resolutionFailure(observation, 'resolver-bound-exhausted', chain, {}, telemetry);
   };
 }
 
