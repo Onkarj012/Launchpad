@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { applyOriginalListingResolution } from './original-listing-resolver.mjs';
 
 const ATS_HOSTS = /(?:greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workable\.com|smartrecruiters\.com|breezy\.hr|recruitee\.com)$/i;
 const AGGREGATOR_HOSTS = /(?:linkedin\.com|indeed\.com|glassdoor\.|wellfound\.com|builtin\.com|ziprecruiter\.com|dice\.com|monster\.|simplyhired\.)$/i;
@@ -66,7 +67,7 @@ function observationFrom(row, sourceQuery, runAt, provider = 'brave-search') {
     company: clean(row?.profile?.name ?? row?.company ?? row?.hiringOrganization?.name) || 'Unknown Company',
     title: title(row?.title),
     location: clean(row?.location),
-    description: clean(row?.description),
+    description: clean(row?.description ?? row?.content),
     postedAt: parseDate(row?.page_age ?? row?.datePosted),
     discoveredAt: runAt,
     crawledAt: runAt,
@@ -74,10 +75,11 @@ function observationFrom(row, sourceQuery, runAt, provider = 'brave-search') {
     provider,
     sourceKind: classify(url) === 'direct' ? 'ats-direct' : 'aggregator',
     liveness: { status: 'Not Verified', checkedAt: runAt, evidence: `${provider}-observation` },
-    evidence: { classification: classify(url), sourceQuery, snippet: clean(row?.description), verified: false },
+    evidence: { classification: classify(url), sourceQuery, snippet: clean(row?.content ?? row?.description), verified: false },
   };
   const candidate = normalizeCandidate(raw, { runAt, provider });
   candidate.classification = classify(url);
+  candidate.discoveryUrl = candidate.canonicalUrl;
   return candidate;
 }
 
@@ -118,11 +120,25 @@ export async function discoverBraveSearch({
       for (const row of rows.slice(0, perQueryResultCap)) {
         const url = canonical(row?.url); if (!url || seen.has(url)) { if (url) telemetry.duplicateResults += 1; continue; }
         let observation = observationFrom({ ...row, url }, query, runAt, provider); if (!observation) continue; seen.add(url);
-        if (typeof options.resolveOriginalListing === 'function') {
-          const resolved = await options.resolveOriginalListing(observation);
-          const resolvedUrl = canonical(typeof resolved === 'string' ? resolved : resolved?.url);
-          if (resolvedUrl) { observation.originalApplicationUrl = resolvedUrl; observation.applicationResolution = { status: 'Resolved Original', evidence: 'injected-resolver' }; observation.classification = directUrl(resolvedUrl) ? 'direct' : 'lead'; observation.evidence = { ...observation.evidence, resolver: 'promoted', verified: true }; telemetry.resolverPromotions += 1; }
-          if (resolved?.company) observation.company = resolved.company;
+        const resolver = options.resolveOriginalListing || options.resolver;
+        if (typeof resolver === 'function') {
+          let resolution;
+          try {
+            resolution = await resolver(observation);
+          } catch (error) {
+            resolution = { status: 'verification', evidence: { resolver: 'injected-resolver', reason: error?.message || 'resolver-error' } };
+          }
+          // Preserve the original resolver hook's small `{ url, company }`
+          // contract, while keeping structured results fail-closed unless they
+          // explicitly declare a resolved application.
+          if (resolution && typeof resolution === 'object'
+            && resolution.url && resolution.company
+            && !resolution.status && !resolution.applicationResolution) {
+            resolution = { ...resolution, status: 'resolved' };
+          }
+          observation = applyOriginalListingResolution(observation, typeof resolution === 'string' ? { status: 'resolved', url: resolution } : resolution);
+          if (resolution?.company) observation.company = resolution.company;
+          if (observation.applicationResolution?.status === 'Resolved Original') telemetry.resolverPromotions += 1;
         }
         observations.push(observation); telemetry[observation.classification === 'direct' ? 'direct' : observation.classification === 'lead' ? 'leads' : 'unresolved'] += 1;
         if (observation.classification !== 'direct') verificationQueue.push({ url: observation.canonicalUrl, company: observation.company, reason: observation.classification === 'unresolved' ? 'unresolved-lead' : 'original-listing', evidence: observation.evidence });

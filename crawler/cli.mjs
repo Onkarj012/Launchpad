@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
   buildCrawlerHelp,
-  crawlerSchedulePlan,
+  crawlerDiscoveryPlan,
   loadCrawlerConfig,
   runCrawlerOperator,
 } from './operator.mjs';
@@ -22,6 +22,14 @@ function value(args, name, fallback = null) {
 
 function positional(args) {
   return args.filter((item, index) => !item.startsWith('--') && (index === 0 || !args[index - 1].startsWith('--')));
+}
+
+export function parseDiscoveryProfileArgs(args, schedule = 'morning') {
+  return {
+    schedule,
+    mode: value(args, '--mode', 'normal'),
+    locationPreset: value(args, '--location-preset', 'india'),
+  };
 }
 
 function output(data) {
@@ -86,14 +94,17 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (command === 'plan') {
     const schedule = positional(argv)[1] ?? 'morning';
-    output(crawlerSchedulePlan(config, schedule));
+    output(crawlerDiscoveryPlan(config, parseDiscoveryProfileArgs(argv, schedule)));
     return 0;
   }
   if (command === 'run') {
     const schedule = positional(argv)[1] ?? 'morning';
+    const profile = parseDiscoveryProfileArgs(argv, schedule);
     const result = await runCrawlerOperator({
       config,
       schedule,
+      mode: profile.mode,
+      locationPreset: profile.locationPreset,
       runId: value(argv, '--run-id'),
     });
     output(result);

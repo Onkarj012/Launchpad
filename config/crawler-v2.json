@@ -30,16 +30,102 @@
     "atsBatch1": {
       "boards": [
         { "provider": "smartrecruiters", "board": "BoschGroup", "company": "Bosch Group", "country": "in" },
-        { "provider": "smartrecruiters", "board": "Visa", "company": "Visa", "country": "in" }
+        { "provider": "smartrecruiters", "board": "Visa", "company": "Visa", "country": "in" },
+        {
+          "provider": "workable",
+          "board": "blue-altair",
+          "company": "Blue Altair",
+          "indiaRelevant": true,
+          "puneRelevant": true,
+          "enabled": false,
+          "probeStatus": "pending",
+          "evidenceRef": "docs/research/job-board-source-audit-2026-07-23.md#2-workable-and-recruitee-boards"
+        },
+        {
+          "provider": "recruitee",
+          "board": "careersdeltacapita",
+          "company": "Delta Capita",
+          "indiaRelevant": true,
+          "puneRelevant": true,
+          "enabled": false,
+          "probeStatus": "pending",
+          "evidenceRef": "docs/research/job-board-source-audit-2026-07-23.md#2-workable-and-recruitee-boards"
+        }
       ],
+      "disabledBoards": [],
       "pageSize": 50,
       "maxPages": 1,
       "maxJobs": 100,
       "enrichDetails": true
     },
-    "atsBatch2": { "boards": [] },
-    "enterprise": { "boards": [] },
+    "atsBatch2": {
+      "boards": [],
+      "disabledBoards": [
+        {
+          "provider": "pinpoint",
+          "company": "TODO: verified Pinpoint board",
+          "board": null,
+          "enabled": false,
+          "probeStatus": "blocked-evidence",
+          "reason": "The repository audit documents the provider contract but no verified employer board identifier."
+        }
+      ]
+    },
+    "enterprise": {
+      "boards": [],
+      "disabledBoards": [
+        {
+          "provider": "workday",
+          "company": "Mastercard",
+          "tenant": null,
+          "instance": null,
+          "site": null,
+          "enabled": false,
+          "probeStatus": "blocked-evidence",
+          "reason": "The audit names Mastercard as a calibration lead but does not provide a verified tenant/instance/site tuple."
+        },
+        {
+          "provider": "workday",
+          "company": "Ingram Micro",
+          "tenant": null,
+          "instance": null,
+          "site": null,
+          "enabled": false,
+          "probeStatus": "blocked-evidence",
+          "reason": "The audit names Ingram Micro as a calibration lead but does not provide a verified tenant/instance/site tuple."
+        },
+        {
+          "provider": "workday",
+          "company": "ReliaQuest",
+          "tenant": null,
+          "instance": null,
+          "site": null,
+          "enabled": false,
+          "probeStatus": "blocked-evidence",
+          "reason": "The audit names ReliaQuest as a calibration lead but does not provide a verified tenant/instance/site tuple."
+        },
+        {
+          "provider": "workday",
+          "company": "Pitney Bowes",
+          "tenant": null,
+          "instance": null,
+          "site": null,
+          "enabled": false,
+          "probeStatus": "blocked-evidence",
+          "reason": "The audit names Pitney Bowes as a calibration lead but does not provide a verified tenant/instance/site tuple."
+        }
+      ]
+    },
     "careerSites": [],
+    "disabledCareerSites": [
+      {
+        "company": "TODO: verified Pune employer career site",
+        "websiteUrl": null,
+        "enabled": false,
+        "probeStatus": "blocked-evidence",
+        "reason": "The audit describes the career-site capability but provides no verified employer URL."
+      }
+    ],
     "careerOptions": {
       "maxPagesPerCompany": 25,
       "hostLimiterOptions": { "minSpacingMs": 1000, "maxConcurrency": 1 },
@@ -78,6 +164,14 @@
     "indeed": {
       "enabled": false,
       "inboxDir": "connector-inbox/indeed"
+    },
+    "connectorInbox": {
+      "enabled": false,
+      "inboxDir": "connector-inbox"
+    },
+    "startup": {
+      "fixtures": {},
+      "laneInputs": {}
     },
     "indiaStartup": {
       "enabled": false,

@@ -89,6 +89,16 @@ Live writes require explicit operator authorization, an external protected crede
 
 ## Verification suites
 
+The Phase 0 crawler release baseline is documented in
+[docs/crawler-v2-operational-baseline.md](docs/crawler-v2-operational-baseline.md)
+and is the following single scoped command:
+
+```sh
+node --test tests/crawler/*.test.mjs tests/job-pull/normal-mode.test.mjs tests/job-pull/startup-mode.test.mjs tests/job-pull/remote-mode.test.mjs tests/notion-v5/gateway.test.mjs tests/job-pull/dedup.test.mjs
+```
+
+The broader verification commands remain available for full local checks:
+
 ```sh
 node --test tests/job-pull/*.test.mjs
 node --test tests/crawler/*.test.mjs

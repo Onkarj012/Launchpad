@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fetchAtsBatch1 } from './ats-batch-1.mjs';
@@ -7,6 +8,10 @@ import { createChromiumFallbackTransport } from './chromium-fallback.mjs';
 import { discoverAtsBatch2 } from './ats-batch-2.mjs';
 import { discoverEnterpriseAts } from './ats-enterprise.mjs';
 import { importIndeedInbox } from './indeed-inbox.mjs';
+import {
+  ORIGINAL_LISTING_RESOLVER_VERSION,
+  createOriginalListingResolver,
+} from './original-listing-resolver.mjs';
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
 import { runCommercialRescue } from './commercial-rescue.mjs';
 import { openCrawlerStore } from './run.mjs';
@@ -19,6 +24,12 @@ import { loadConfig as loadJobPullPolicy } from '../job-pull/config.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 import { readOpportunityLedger } from '../job-pull/opportunity-ledger.mjs';
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { runStartupSourcePlan } from '../job-pull/startup-sources.mjs';
+import { runRemoteSourcePlan } from '../job-pull/remote-sources.mjs';
+import { buildDiscoveryProfile } from './discovery-profile.mjs';
+import {
+  normalizeConnectorEnvelope,
+} from './connector-inbox.mjs';
 
 export const CRAWLER_CONFIG_VERSION = 'LaunchpadCrawlerConfigV1';
 
@@ -27,8 +38,8 @@ export function buildCrawlerHelp() {
 
 Usage:
   node crawler/cli.mjs validate [--config FILE]
-  node crawler/cli.mjs plan [morning|midday] [--config FILE]
-  node crawler/cli.mjs run [morning|midday] [--config FILE] [--run-id ID]
+  node crawler/cli.mjs plan [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE]
+  node crawler/cli.mjs run [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE] [--run-id ID]
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
 
 The crawler performs discovery and produces a planning-only handoff. It never applies or sends.
@@ -54,19 +65,103 @@ export function loadCrawlerConfig(file = 'config/crawler-v2.json') {
 }
 
 export async function defaultHttpTransport(url, options = {}) {
+  const timeoutMs = Number(options.timeoutMs ?? 10000);
+  const timeoutSignal = typeof AbortSignal?.timeout === 'function'
+    ? AbortSignal.timeout(Math.max(1, timeoutMs))
+    : undefined;
   const response = await fetch(url, {
     method: options.method ?? 'GET',
     headers: options.headers,
-    signal: options.signal,
+    signal: options.signal ?? timeoutSignal,
   });
   return { status: response.status, headers: response.headers, body: await response.text() };
 }
 
-function sourcePlan(id, lane, provider, fetcher) {
-  return { id, lane, provider, trustClass: 'direct', fetch: fetcher };
+function sourcePlan(id, lane, provider, fetcher, metadata = {}) {
+  return { id, lane, provider, trustClass: 'direct', ...metadata, fetch: fetcher };
 }
 
-function buildSourcePlans({ config, transport, runAt, clock, schedule }) {
+function resolverSettings(config) {
+  const configured = config?.originalListingResolver
+    ?? config?.sources?.originalListingResolver
+    ?? config?.sources?.resolver
+    ?? {};
+  const settings = {};
+  if (configured.maxRedirects != null) settings.maxRedirects = configured.maxRedirects;
+  if (configured.maxBytes != null) settings.maxBytes = configured.maxBytes;
+  return settings;
+}
+
+function verificationResolution(observation, error) {
+  const discoveryUrl = observation?.discoveryUrl ?? observation?.canonicalUrl ?? observation?.url ?? null;
+  return {
+    status: 'verification',
+    discoveryUrl,
+    originalApplicationUrl: null,
+    applicationResolution: { status: 'Needs Verification', evidence: null },
+    evidence: {
+      resolver: ORIGINAL_LISTING_RESOLVER_VERSION,
+      resolution: { status: 'verification', reason: 'resolver-error' },
+      error: error?.message || 'resolver-error',
+    },
+  };
+}
+
+/** Build the one resolver shared by all resolver-capable sources in a run. */
+export function createCrawlerRunResolver({ config, transport, runAt }) {
+  const resolver = createOriginalListingResolver({
+    transport,
+    runAt,
+    ...resolverSettings(config),
+  });
+
+  return async (observation = {}) => {
+    const discoveryUrl = observation.discoveryUrl ?? observation.canonicalUrl ?? observation.url ?? null;
+    try {
+      // The connector hook copies the observation after resolving. Keep the
+      // discovery URL on that object as well as in the resolver result.
+      if (discoveryUrl && !observation.discoveryUrl) observation.discoveryUrl = discoveryUrl;
+      const resolution = await resolver({ ...observation, discoveryUrl });
+      return resolution && typeof resolution === 'object'
+        ? { ...resolution, discoveryUrl: resolution.discoveryUrl ?? discoveryUrl }
+        : resolution;
+    } catch (error) {
+      return verificationResolution({ ...observation, discoveryUrl }, error);
+    }
+  };
+}
+
+async function readConnectorInbox({ inboxDir, runAt, resolver }) {
+  const root = path.resolve(inboxDir);
+  if (!fs.existsSync(root)) return { observations: [], manifest: { status: 'unavailable', reason: 'inbox-missing', fetched: 0 } };
+  const receiptDir = path.join(root, '.receipts');
+  fs.mkdirSync(receiptDir, { recursive: true });
+  const observations = [];
+  const receipts = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true }).filter((item) => item.isFile() && item.name.endsWith('.json')).sort()) {
+    const file = path.join(root, entry.name);
+    const raw = fs.readFileSync(file);
+    const digest = createHash('sha256').update(raw).digest('hex');
+    const receipt = path.join(receiptDir, `${digest}.json`);
+    if (fs.existsSync(receipt)) { receipts.push({ file, status: 'duplicate' }); continue; }
+    let payload;
+    try { payload = JSON.parse(raw.toString('utf8')); }
+    catch (error) { receipts.push({ file, status: 'quarantined', error: error.message }); continue; }
+    const imported = normalizeConnectorEnvelope(payload, { runAt });
+    for (const observation of imported.observations) {
+      const resolved = typeof resolver === 'function' ? await resolver(observation) : null;
+      if (resolved) {
+        const { applyOriginalListingResolution } = await import('./original-listing-resolver.mjs');
+        observations.push(applyOriginalListingResolution(observation, resolved));
+      } else observations.push(observation);
+    }
+    fs.writeFileSync(receipt, JSON.stringify({ file, digest, imported: imported.observations.length, quarantined: imported.quarantine.length, importedAt: runAt }) + '\n', { flag: 'wx' });
+    receipts.push({ file, status: 'imported', imported: imported.observations.length, quarantined: imported.quarantine.length });
+  }
+  return { observations, manifest: { status: 'succeeded', fetched: observations.length, receipts, noAutoApply: true } };
+}
+
+export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }) {
   const sources = config.sources;
   const plans = [];
   if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
@@ -87,7 +182,19 @@ function buildSourcePlans({ config, transport, runAt, clock, schedule }) {
     ...sources.indeed,
     date: sources.indeed.date ?? runAt.slice(0, 10),
     clock,
-  })));
+    resolver,
+  }), { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
+  if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: ['indeed', 'apna', 'whatjobs'] } }));
+  if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async () => {
+    const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions: {}, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
+    return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
+  }));
+  if (profile?.mode === 'remote') plans.push(sourcePlan('remote-mode', 'remote-sources', 'remote', async () => {
+    const fetchJson = async (url, options) => { const response = await transport(url, options); const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; return body; };
+    const providerFetchers = Object.fromEntries(['himalayas', 'jobicy', 'weworkremotely', 'remotive'].map((provider) => [provider, fetchJson]));
+    const outputs = await runRemoteSourcePlan({ providerFetchers, runAt, runId: profile.mode });
+    return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'remote', lanes: outputs.map((item) => item.manifest) } } };
+  }));
   if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => discoverIndiaStartupLanes({
     ...sources.indiaStartup,
     transport,
@@ -106,9 +213,10 @@ function buildSourcePlans({ config, transport, runAt, clock, schedule }) {
         const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
         return { ...response, body: { results: body?.results ?? [] } };
       },
+      resolveOriginalListing: resolver,
       runAt,
     });
-  }));
+  }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   return plans;
 }
 
@@ -130,17 +238,26 @@ export function crawlerSchedulePlan(config, schedule = 'morning') {
   return plans[schedule];
 }
 
+export function crawlerDiscoveryPlan(config, { schedule = 'morning', mode = 'normal', locationPreset = 'india' } = {}) {
+  const profile = buildDiscoveryProfile({ schedule, mode, locationPreset });
+  return { ...crawlerSchedulePlan(config, schedule), profile };
+}
+
 export async function runCrawlerOperator({
   config,
   runId,
   schedule = 'morning',
+  mode = 'normal',
+  locationPreset = 'india',
   transport = defaultHttpTransport,
   clock = {},
 } = {}) {
   validateCrawlerConfig(config);
   crawlerSchedulePlan(config, schedule);
+  const profile = buildDiscoveryProfile({ mode, locationPreset, schedule });
   const nowValue = typeof clock.now === 'function' ? clock.now() : new Date().toISOString();
   const runAt = nowValue instanceof Date ? nowValue.toISOString() : String(nowValue);
+  const resolver = createCrawlerRunResolver({ config, transport, runAt });
   const databasePath = path.resolve(config.databasePath);
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   const store = openCrawlerStore(databasePath);
@@ -161,10 +278,10 @@ export async function runCrawlerOperator({
       store,
       runId: runId ?? `${schedule}-${runAt.replace(/[:.]/g, '-')}`,
       schedule,
-      config,
+      config: { ...config, discoveryProfile: profile },
       clock,
       priorLifecycleRows: lifecycleRows,
-      sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule }),
+      sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},
       careerTransport: (config.sources.careerSites ?? []).length
@@ -198,7 +315,7 @@ export async function runCrawlerOperator({
           store,
           runId: `${result.run.runId}-commercial`,
           schedule: `${schedule}-commercial-rescue`,
-          config,
+          config: { ...config, discoveryProfile: profile },
           clock,
           priorLifecycleRows: lifecycleRows,
           sourcePlans: [sourcePlan('commercial-rescue', 'commercial-rescue', 'commercial-rescue', async () => ({
@@ -236,7 +353,7 @@ export async function runCrawlerOperator({
     } else {
       result.commercialRescue = { invoked: false, status: 'disabled', records: [] };
     }
-    return { ...result, operator: { databasePath, schedule, configVersion: config.schemaVersion } };
+    return { ...result, profile, operator: { databasePath, schedule, configVersion: config.schemaVersion, profile } };
   } finally {
     store.close();
   }

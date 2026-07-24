@@ -4,7 +4,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  buildSourcePlans,
   buildCrawlerHelp,
+  createCrawlerRunResolver,
   runCrawlerOperator,
   validateCrawlerConfig,
 } from '../../crawler/operator.mjs';
@@ -21,6 +23,57 @@ test('configuration fails closed when durable paths or source sections are missi
     schemaVersion: 'LaunchpadCrawlerConfigV1',
     databasePath: ':memory:',
   }), /sources/);
+});
+
+test('builds resolver-capable SearXNG and connector plans without network access', async () => {
+  const calls = [];
+  const resolver = async (observation) => {
+    calls.push(observation.discoveryUrl);
+    return {
+      status: 'verification',
+      discoveryUrl: observation.discoveryUrl,
+      evidence: { resolver: 'test-resolver' },
+    };
+  };
+  const plans = buildSourcePlans({
+    config: {
+      sources: {
+        atsWarm: { boards: [] }, atsBatch1: { boards: [] }, atsBatch2: { boards: [] }, enterprise: { boards: [] },
+        indeed: { enabled: true, inboxDir: '/tmp/does-not-need-to-run' },
+        searxng: { enabled: true, endpoint: 'http://127.0.0.1:8080', queries: ['AI Engineer'] },
+      },
+    },
+    transport: async () => ({ status: 200, body: JSON.stringify({ results: [] }) }),
+    runAt: '2026-07-24T10:00:00.000Z',
+    clock: { now: () => '2026-07-24T10:00:00.000Z' },
+    schedule: 'morning',
+    resolver,
+  });
+
+  assert.deepEqual(plans.map((plan) => plan.id), ['indeed-inbox', 'searxng-search']);
+  assert.equal(plans.find((plan) => plan.id === 'indeed-inbox').capabilities.resolver, true);
+  assert.equal(plans.find((plan) => plan.id === 'searxng-search').capabilities.discoveryUrl, true);
+  assert.equal(calls.length, 0);
+});
+
+test('run resolver uses injected transport, preserves discoveryUrl, and fails closed', async () => {
+  const requests = [];
+  const resolve = createCrawlerRunResolver({
+    config: { sources: { originalListingResolver: { maxRedirects: 1, maxBytes: 1234 } } },
+    runAt: '2026-07-24T10:00:00.000Z',
+    transport: async (url, options) => {
+      requests.push({ url, options });
+      throw new Error('offline fixture');
+    },
+  });
+
+  const result = await resolve({ canonicalUrl: 'https://www.indeed.com/viewjob?id=1' });
+  assert.equal(result.status, 'verification');
+  assert.equal(result.discoveryUrl, 'https://www.indeed.com/viewjob?id=1');
+  assert.equal(result.applicationResolution.status, 'Needs Verification');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.maxBytes, 1234);
+  assert.equal(requests[0].options.purpose, 'original-listing-resolution');
 });
 
 test('operator runs a configured career-site discovery into durable SQLite', async () => {
