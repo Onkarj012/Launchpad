@@ -19,6 +19,7 @@ function candidate(index, overrides = {}) {
     employment: { type: 'full-time' },
     experience: { minYears: 0, maxYears: 1 },
     liveness: { status: 'Active', evidence: 'fixture' },
+    matchScore: 80,
     ...overrides,
   });
 }

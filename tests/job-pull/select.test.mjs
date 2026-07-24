@@ -75,6 +75,58 @@ test('strict shortfall reports shortage instead of inventing fallback', () => {
   assert.equal(result.selected.length, 3);
 });
 
+test('unscored eligible candidates stay in an explicit scoring queue and never compete as zero', () => {
+  const unscored = { ...entry(2), score: undefined, autoSuggest: true };
+  const result = selectCandidates([entry(1), unscored], { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 2, strictTarget: 1 } });
+  assert.deepEqual(result.selected.map((candidate) => candidate.canonicalUrl), ['https://example.test/1']);
+  assert.equal(result.selected[0].score, 99);
+  assert.equal(result.scoringQueue.length, 1);
+  assert.equal(result.scoringQueue[0].canonicalUrl, unscored.canonicalUrl);
+  assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
+  assert.equal(result.scoringQueue[0].score, undefined);
+});
+
+test('scored candidates carry Match Score evidence fields and valid Auto-Suggest', () => {
+  const candidate = {
+    ...entry(1),
+    matchScore: 87,
+    score: undefined,
+    rationale: 'Strong Python and RAG overlap',
+    hook: 'Shipped Stride and Lore Engine',
+    responseLikelihood: 16,
+    autoSuggest: true,
+  };
+  const result = selectCandidates([candidate], config);
+  assert.equal(result.selected[0].matchScore, 87);
+  assert.equal(result.selected[0].rationale, candidate.rationale);
+  assert.equal(result.selected[0].strongestHook, candidate.hook);
+  assert.equal(result.selected[0].responseLikelihood, 16);
+  assert.equal(result.selected[0].autoSuggest, true);
+});
+
+test('company cap preserves the strongest scored roles regardless of input order', () => {
+  const entries = [
+    entry(1, { company: 'Same Co' }),
+    entry(2, { company: 'Same Co' }),
+    entry(3, { company: 'Same Co' }),
+    entry(4, { company: 'Other Co' }),
+    entry(5, { company: 'Third Co' }),
+  ].map((item, index) => ({ ...item, score: [91, 99, 70, 80, 79][index] }));
+  const smallConfig = { ...config, run: { ...config.run, minimumTotal: 5, maximumTotal: 5, strictTarget: 5 } };
+  const first = selectCandidates(entries, smallConfig);
+  const shuffled = selectCandidates([entries[4], entries[2], entries[0], entries[3], entries[1]], smallConfig);
+  const sameCompany = (result) => result.selected.filter((candidate) => candidate.company === 'Same Co').map((candidate) => candidate.score).sort((a, b) => b - a);
+  assert.deepEqual(sameCompany(first), [99, 91]);
+  assert.deepEqual(sameCompany(shuffled), [99, 91]);
+  assert.deepEqual(first.selected.map((candidate) => candidate.canonicalUrl).sort(), shuffled.selected.map((candidate) => candidate.canonicalUrl).sort());
+});
+
+test('Auto-Suggest is disabled for an unscored candidate', () => {
+  const result = selectCandidates([{ ...entry(1), score: undefined, autoSuggest: true }], config);
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.scoringQueue[0].autoSuggest, false);
+});
+
 test('application shortlist applies role/source targets only to verified original application URLs', () => {
   const entries = [];
   const groups = [

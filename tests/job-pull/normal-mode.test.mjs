@@ -76,6 +76,19 @@ test('selection follows 24h, 72h, 3-7d, relaxed-fit, and relaxed-backfill waterf
   assert.equal(result.familyCounts.unknown, 5);
 });
 
+test('normal selection keeps unscored ready candidates out of the waterfall', () => {
+  const scored = normalizeCandidate(raw(1), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });
+  const unscored = normalizeCandidate(raw(2, { matchScore: undefined }), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });
+  const entries = [scored, unscored].map((candidate) => ({ candidate, eligibility: { eligible: true, strict: true }, freshness: { eligible: true, ageHours: 1, window: 'Hot' } }));
+  const result = selectNormalApplications(entries, { minimum: 1, preferred: 1, maximum: 2, maximumPerCompany: 2 });
+  assert.deepEqual(result.selected.map((candidate) => candidate.canonicalUrl), [scored.canonicalUrl]);
+  assert.equal(result.scoringQueue.length, 1);
+  assert.equal(result.scoringQueue[0].canonicalUrl, unscored.canonicalUrl);
+  assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
+  assert.equal(result.scoredCount, 1);
+  assert.equal(result.unscoredCount, 1);
+});
+
 test('10/12/20 volume contract has truthful bounds and no hard role-family quota', () => {
   const records = Object.fromEntries(NORMAL_SOURCE_LANES.slice(0, 1).map((lane) => [lane.id, Array.from({ length: 20 }, (_, i) => raw(i + 1))]));
   return runNormalMode({ clock: () => NOW, sourceFunctions: allFunctions(records), notionGateway: { planWrites: ({ operations }) => ({ operations }) } }).then((result) => {

@@ -3,8 +3,23 @@ import { applicationReadiness } from './normal-readiness.mjs';
 
 function ageHours(entry) { return Number(entry.freshness?.ageHours ?? entry.candidate?.freshness?.ageHours); }
 
+function scoreState(entry) {
+  const candidate = entry.candidate || entry;
+  const values = entry.candidate
+    ? [candidate.matchScore, candidate.score, entry.matchScore]
+    : [entry.matchScore, entry.score];
+  const rawScore = values.find((value) => value !== null && value !== undefined);
+  if (candidate.scoringFailed === true || candidate.scoringStatus === 'scoring-failed') return { status: 'scoring-failed', score: null };
+  if (rawScore === undefined || rawScore === null || rawScore === '' || (typeof rawScore === 'string' && !rawScore.trim())) return { status: 'unscored', score: null };
+  if (typeof rawScore === 'boolean') return { status: 'scoring-failed', score: null };
+  const score = Number(rawScore);
+  return Number.isFinite(score) && score >= 0 && score <= 100
+    ? { status: 'scored', score }
+    : { status: 'scoring-failed', score: null };
+}
+
 function fitScore(entry) {
-  return Number(entry.candidate?.matchScore ?? entry.candidate?.score ?? entry.matchScore ?? entry.score ?? 0);
+  return scoreState(entry).score ?? Number.NEGATIVE_INFINITY;
 }
 
 function compareFit(left, right) {
@@ -61,10 +76,12 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
       return { ...entry, candidate, eligibility, freshness, readiness, waterfallBand: waterfallBand({ ...entry, candidate, eligibility, freshness }) };
     })
     .filter((entry) => entry.readiness.ready && entry.waterfallBand);
+  const scored = ready.filter((entry) => scoreState(entry).status === 'scored');
+  const scoringQueue = ready.filter((entry) => scoreState(entry).status !== 'scored');
   const queues = new Map(WATERFALL.map((band) => [band, []]));
-  for (const entry of ready) queues.get(entry.waterfallBand).push(entry);
+  for (const entry of scored) queues.get(entry.waterfallBand).push(entry);
   for (const queue of queues.values()) queue.sort(compareFit);
-  const target = Math.min(maximum, ready.length);
+  const target = Math.min(maximum, scored.length);
   const selected = [];
   const companyCounts = new Map();
   const seen = new Set();
@@ -84,6 +101,12 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
       ];
       selected.push({
         ...candidate,
+        matchScore: scoreState(entry).score,
+        score: scoreState(entry).score,
+        rationale: candidate.rationale ?? null,
+        hook: candidate.hook ?? candidate.strongestHook ?? null,
+        strongestHook: candidate.strongestHook ?? candidate.hook ?? null,
+        responseLikelihood: candidate.responseLikelihood ?? null,
         applicationReady: true,
         applicationReadiness: 'Ready',
         selectionTier: strict ? 'Strict' : 'Backfill',
@@ -98,7 +121,16 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
   const selectedCount = selected.length;
   return {
     selected,
-    readyPoolCount: ready.length,
+    readyPoolCount: scored.length,
+    scoringQueue: scoringQueue.map((entry) => ({
+      ...entry.candidate,
+      scoringStatus: scoreState(entry).status,
+      scoringQueueReason: scoreState(entry).status === 'scoring-failed' ? 'INVALID_MATCH_SCORE' : 'MATCH_SCORE_REQUIRED',
+      autoSuggest: false,
+    })),
+    scoredCount: scored.length,
+    unscoredCount: scoringQueue.filter((entry) => scoreState(entry).status === 'unscored').length,
+    scoringFailedCount: scoringQueue.filter((entry) => scoreState(entry).status === 'scoring-failed').length,
     minimum,
     preferred: Math.min(preferred, maximum),
     maximum,
@@ -109,4 +141,3 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
     familyCounts: selected.reduce((counts, candidate) => ({ ...counts, [candidate.roleFamily || 'unknown']: (counts[candidate.roleFamily || 'unknown'] || 0) + 1 }), {}),
   };
 }
-

@@ -4,32 +4,70 @@ import { sourceQuality } from './dedup.mjs';
 function selectionView(entry) {
   const eligibility = entry.eligibility || {};
   const freshness = entry.freshness || {};
+  const candidate = entry.candidate || entry;
+  const scoreInput = entry.candidate
+    ? [candidate.matchScore, candidate.score, entry.matchScore]
+    : [entry.matchScore, entry.score];
+  const rawScore = scoreInput.find((value) => value !== null && value !== undefined);
+  const score = rawScore === '' || (typeof rawScore === 'string' && !rawScore.trim())
+    ? null
+    : typeof rawScore === 'boolean' || rawScore === undefined
+      ? null
+      : Number(rawScore);
+  const scoringStatus = candidate.scoringFailed === true || candidate.scoringStatus === 'scoring-failed'
+    ? 'scoring-failed'
+    : rawScore === null || rawScore === undefined || rawScore === '' || (typeof rawScore === 'string' && !rawScore.trim())
+    ? 'unscored'
+    : Number.isFinite(score) && score >= 0 && score <= 100
+      ? 'scored'
+      : 'scoring-failed';
   return {
-    candidate: entry.candidate || entry,
+    candidate,
     eligibility,
     freshness,
     tier: entry.selectionTier || eligibility.tier || null,
     conversionTier: entry.conversionTier || (entry.candidate || entry).conversionTier || null,
     window: entry.freshnessWindow || freshness.window || null,
     family: entry.roleFamily || eligibility.roleFamily || 'adjacent-engineering',
-    company: entry.companyKey || eligibility.companyKey || normalizedKey((entry.candidate || entry).company),
+    company: entry.companyKey || eligibility.companyKey || normalizedKey(candidate.company),
+    score: scoringStatus === 'scored' ? score : null,
+    scoringStatus,
   };
 }
 
 export function rankCandidate(entry) {
   const view = selectionView(entry);
   const candidate = view.candidate;
-  const score = Number(entry.conversionScore ?? candidate.conversionScore ?? entry.score ?? candidate.score ?? candidate.matchScore ?? 0);
   const age = Number.isFinite(view.freshness.ageHours) ? view.freshness.ageHours : Number.POSITIVE_INFINITY;
   const conversionTierRank = { strong: 2, inspect: 1, skip: 0 }[view.conversionTier] ?? -1;
   return {
-    score,
+    score: view.score ?? Number.NEGATIVE_INFINITY,
     conversionTier: view.conversionTier,
     conversionTierRank,
     quality: sourceQuality(candidate),
     age,
     postedAt: candidate.postedAt || '',
     key: `${candidate.canonicalUrl || ''}\0${candidate.company || ''}\0${candidate.title || ''}`,
+  };
+}
+
+function autoSuggest(view) {
+  const responseLikelihood = Number(view.candidate.responseLikelihood);
+  return view.scoringStatus === 'scored'
+    && view.candidate.autoSuggest === true
+    && view.score >= 80
+    && ['Hot', 'Active'].includes(view.window)
+    && String(view.tier).toLocaleLowerCase() === 'strict'
+    && Number.isFinite(responseLikelihood)
+    && responseLikelihood >= 14;
+}
+
+function queueCandidate(view) {
+  return {
+    ...view.candidate,
+    scoringStatus: view.scoringStatus,
+    scoringQueueReason: view.scoringStatus === 'scoring-failed' ? 'INVALID_MATCH_SCORE' : 'MATCH_SCORE_REQUIRED',
+    autoSuggest: false,
   };
 }
 
@@ -132,8 +170,10 @@ function fillForVolume(pool, selected, exclusions, targetCount, policy) {
 }
 
 export function selectCandidates(entries, config) {
-  const all = entries.map(selectionView).filter((entry) => entry.eligibility?.eligible && entry.freshness?.eligible);
-  const targetCount = Math.min(config.run.maximumTotal, Math.max(config.run.minimumTotal, all.length));
+  const eligible = entries.map(selectionView).filter((entry) => entry.eligibility?.eligible && entry.freshness?.eligible);
+  const scored = eligible.filter((entry) => entry.scoringStatus === 'scored');
+  const scoringQueue = eligible.filter((entry) => entry.scoringStatus !== 'scored');
+  const targetCount = Math.min(config.run.maximumTotal, Math.max(config.run.minimumTotal, scored.length));
   const selected = [];
   const exclusions = [];
   const phases = [
@@ -146,7 +186,7 @@ export function selectCandidates(entries, config) {
   ];
   for (const [tier, window] of phases) {
     if (selected.length >= targetCount) break;
-    const sourceEntries = all.filter((entry) => entry.tier === tier && entry.window === window);
+    const sourceEntries = scored.filter((entry) => entry.tier === tier && entry.window === window);
     const remaining = sourceEntries.filter((entry) => !selected.includes(entry));
     pickBalanced(remaining, selected, exclusions, targetCount, config);
   }
@@ -155,10 +195,10 @@ export function selectCandidates(entries, config) {
   // exhausted, while retaining the hard company cap.
   for (const [tier, window] of phases) {
     if (selected.length >= targetCount) break;
-    fillForVolume(all.filter((entry) => entry.tier === tier && entry.window === window), selected, exclusions, targetCount, config);
+    fillForVolume(scored.filter((entry) => entry.tier === tier && entry.window === window), selected, exclusions, targetCount, config);
   }
 
-  const strictEligible = all.filter((entry) => entry.tier === 'strict').length;
+  const strictEligible = scored.filter((entry) => entry.tier === 'strict').length;
   const strictSelected = selected.filter((entry) => entry.tier === 'strict').length;
   const relaxedSelected = selected.filter((entry) => entry.tier === 'relaxed').length;
   const familyCounts = {};
@@ -176,7 +216,13 @@ export function selectCandidates(entries, config) {
       freshnessWindow: entry.window,
       roleFamily: entry.family,
       companyKey: entry.company,
-      score: Number(entry.score ?? entry.candidate.score ?? entry.candidate.matchScore ?? 0),
+      matchScore: entry.score,
+      score: entry.score,
+      rationale: entry.candidate.rationale ?? null,
+      hook: entry.candidate.hook ?? entry.candidate.strongestHook ?? null,
+      strongestHook: entry.candidate.strongestHook ?? entry.candidate.hook ?? null,
+      responseLikelihood: entry.candidate.responseLikelihood ?? null,
+      autoSuggest: autoSuggest(entry),
       conversionTier: entry.conversionTier,
     })),
     strictSelected,
@@ -187,6 +233,10 @@ export function selectCandidates(entries, config) {
     familyCounts,
     companyCounts,
     exclusions,
+    scoringQueue: scoringQueue.map(queueCandidate),
+    scoredCount: scored.length,
+    unscoredCount: scoringQueue.filter((entry) => entry.scoringStatus === 'unscored').length,
+    scoringFailedCount: scoringQueue.filter((entry) => entry.scoringStatus === 'scoring-failed').length,
   };
 }
 

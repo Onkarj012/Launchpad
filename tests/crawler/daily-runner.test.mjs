@@ -33,6 +33,7 @@ function rawPortalJob(id, overrides = {}) {
     liveness: { status: 'Active', checkedAt: NOW, evidence: 'employer page checked' },
     originalApplicationUrl: `https://company-${id}.example.test/careers/${id}`,
     originalApplicationEvidence: 'resolved employer careers posting',
+    matchScore: 80,
     ...overrides,
   };
 }
@@ -108,8 +109,10 @@ test('crawler-v2 atsWarm observations feed reverse-ats-warm into the real Normal
     fakeTransport({ 'crawler-board': [greenhouseJob(101, 'crawler-board')] }),
   ));
 
-  assert.deepEqual(result.shortlist.map((candidate) => candidate.company), ['Crawler Company']);
-  assert.equal(result.shortlist[0].normalLaneId, 'reverse-ats-warm');
+  // Real crawler-sourced candidates carry no Match Score, so they correctly
+  // land in the scoring queue rather than the shortlist (ticket 06).
+  assert.deepEqual(result.scoringQueue.map((candidate) => candidate.company), ['Crawler Company']);
+  assert.equal(result.scoringQueue[0].normalLaneId, 'reverse-ats-warm');
   assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'reverse-ats-warm').fetched, 1);
 });
 
@@ -120,8 +123,10 @@ test('tracked warm-set observations feed tracked-ats into the real Normal pipeli
     fakeTransport({ 'tracked-board': [greenhouseJob(201, 'tracked-board')] }),
   ));
 
-  assert.deepEqual(result.shortlist.map((candidate) => candidate.company), ['tracked-board']);
-  assert.equal(result.shortlist[0].normalLaneId, 'tracked-ats');
+  // Real crawler-sourced candidates carry no Match Score, so they correctly
+  // land in the scoring queue rather than the shortlist (ticket 06).
+  assert.deepEqual(result.scoringQueue.map((candidate) => candidate.company), ['tracked-board']);
+  assert.equal(result.scoringQueue[0].normalLaneId, 'tracked-ats');
   assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats').fetched, 1);
 });
 

@@ -12,7 +12,7 @@ function raw(index, { title = 'AI Engineer', postedAt = '2026-07-14T08:00:00.000
   return normalizeCandidate({
     url: `https://jobs.example.test/${index}`, source: 'greenhouse-full', sourceKind: 'ats-direct', provider: 'greenhouse', id: String(index),
     company: `Company ${index}`, title, location, postedAt, employment: { type: 'full-time' }, experience,
-    liveness: { status: 'Active', evidence: 'fixture' },
+    liveness: { status: 'Active', evidence: 'fixture' }, matchScore: 80 - (index % 20),
   });
 }
 
@@ -80,6 +80,24 @@ test('score merge preserves agent scoring and daily date uses India timezone', (
   assert.equal(sources[0].candidates[0].applicationResolution.status, 'Resolved Original');
   assert.equal(sources[0].candidates[0].conversionSignals.humanContact, true);
   assert.equal(localRunDate('2026-07-14T20:00:00.000Z', config.timezone), '2026-07-15');
+});
+
+test('run telemetry separates scored, unscored, scoring-failed, and selected candidates', () => {
+  const scored = raw(201);
+  const unscored = raw(202);
+  delete unscored.matchScore;
+  const failed = { ...raw(203), scoringFailed: true };
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 3, strictTarget: 1 } },
+    now,
+    runId: 'scoring-telemetry-fixture',
+    sources: [{ candidates: [scored, unscored, failed], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.equal(result.counts.scored, 1);
+  assert.equal(result.counts.unscored, 1);
+  assert.equal(result.counts.scoringFailed, 1);
+  assert.equal(result.counts.selected, 1);
+  assert.deepEqual(result.scoring, { required: true, scoredCount: 1, unscoredCount: 1, scoringFailedCount: 1, selectedCount: 1 });
 });
 
 test('audit classifies supplied misses without discovery', () => {
