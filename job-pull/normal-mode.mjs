@@ -22,7 +22,10 @@ function readClock(clock) {
 }
 
 function issueFor(manifest) {
-  if (manifest.status === 'failed' || manifest.status === 'unavailable' || manifest.errors?.length) {
+  const liveInjectionOnly = manifest.reasonCode === 'PORTAL_REQUIRES_LIVE_INJECTION'
+    && manifest.status === 'unavailable'
+    && !manifest.errors?.length;
+  if (!liveInjectionOnly && (manifest.status === 'failed' || manifest.status === 'unavailable' || manifest.errors?.length)) {
     return { sourceId: manifest.sourceId, status: manifest.status, errors: manifest.errors || [] };
   }
   return null;
@@ -127,15 +130,71 @@ function verificationRecord(candidate, eligibility) {
   };
 }
 
-function fatalResult(runId, runAt, mode, sourceManifests, error) {
+function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
   return {
     schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode,
     shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
     plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
+    scoringQueue: details.scoringQueue || [],
+    scoring: details.scoring || null,
+    reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
-    counts: null,
+    counts: details.counts || null,
   };
+}
+
+function reconciliationLine({ eligible, scored, ready, selected, causes }) {
+  const causeText = Object.entries(causes)
+    .flatMap(([stage, stageCauses]) => Object.entries(stageCauses).map(([cause, count]) => `${stage}:${cause}=${count}`))
+    .join(',');
+  return `eligible=${eligible}; scored=${scored}; ready=${ready}; selected=${selected}; causes=${causeText || 'none'}`;
+}
+
+function buildReconciliation({ eligible, historicalSuppressed, selection, selected, runFailed = false }) {
+  const ready = selection.readyCount;
+  const scored = selection.scoredCount;
+  const notReady = Math.max(0, eligible - historicalSuppressed - ready);
+  const readyNotScored = Math.max(0, ready - scored);
+  const selectedGap = Math.max(0, scored - selected);
+  const causes = {
+    eligibleToReady: {
+      HISTORICAL_SUPPRESSION: historicalSuppressed,
+      NOT_APPLICATION_READY: notReady,
+    },
+    readyToScored: {
+      UNSCORED: selection.unscoredCount,
+      SCORING_FAILED: selection.scoringFailedCount,
+    },
+    scoredToSelected: {
+      ...(runFailed ? { RUN_FAILED_INCOMPLETE_SCORING: selectedGap } : { SELECTION_RULES: selectedGap }),
+    },
+  };
+  return {
+    eligible,
+    scored,
+    ready,
+    selected,
+    causes,
+    deltas: {
+      eligibleToReady: eligible - ready,
+      readyToScored: readyNotScored,
+      scoredToSelected: selectedGap,
+    },
+    line: reconciliationLine({ eligible, scored, ready, selected, causes }),
+  };
+}
+
+function scoringGateError(selection) {
+  const causes = selection.scoringQueue.map((candidate) => {
+    const reason = candidate.scoringFailureReason || candidate.scoringQueueReason;
+    return `${candidate.company} — ${candidate.title}: ${reason}`;
+  });
+  const error = new NormalModeError(
+    `complete scoring required before selection: unscored=${selection.unscoredCount}, scoring-failed=${selection.scoringFailedCount}${causes.length ? `; ${causes.join('; ')}` : ''}`,
+    'scoring',
+  );
+  return error;
 }
 
 /** Complete fixture/injection seam for India-first Normal mode. */
@@ -143,15 +202,15 @@ export async function runNormalMode({
   mode = 'normal', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
-  historicalV4Rows = [],
+  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
   const runId = suppliedRunId || `normal-${runAt}`;
   let sourceResults = [];
   try {
-    sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId });
-    await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates));
+    sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes });
+    await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates), { maxRequests: enrichmentBudget });
     const sourceManifests = sourceResults.map(({ manifest }) => manifest);
     const baseConfig = config || loadConfig();
     const baseConversionPlan = conversionPlan || loadConversionPlan();
@@ -172,6 +231,44 @@ export async function runNormalMode({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
     const selection = selectNormalApplications(selectionEntries, { maximumPerCompany: normalConfig.run.maximumPerCompany });
+    const eligibleCount = pipeline.scoringCandidates.length;
+    const incompleteScoring = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
+    const reconciliation = buildReconciliation({
+      eligible: eligibleCount,
+      historicalSuppressed: historicalSuppressions.length,
+      selection,
+      selected: incompleteScoring ? 0 : selection.selected.length,
+      runFailed: incompleteScoring,
+    });
+    if (incompleteScoring) {
+      const error = scoringGateError(selection);
+      error.details = {
+        scoringQueue: selection.scoringQueue,
+        scoring: {
+          required: true,
+          scoredCount: selection.scoredCount,
+          unscoredCount: selection.unscoredCount,
+          scoringFailedCount: selection.scoringFailedCount,
+          selectedCount: 0,
+        },
+        reconciliation,
+        counts: {
+          fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0),
+          eligible: eligibleCount,
+          scored: selection.scoredCount,
+          ready: selection.readyCount,
+          selected: 0,
+          verificationQueue: 0,
+          historicalSuppressed: historicalSuppressions.length,
+          minimum: 10,
+          preferred: 12,
+          maximum: 20,
+          unscored: selection.unscoredCount,
+          scoringFailed: selection.scoringFailedCount,
+        },
+      };
+      throw error;
+    }
     const shortlist = selection.selected;
     const operations = shortlist.map((candidate) => ({
       operation: 'create', resource: 'application', dedupKey: candidateDedupKey(candidate),
@@ -197,8 +294,13 @@ export async function runNormalMode({
       source.manifest.selected = 0;
       source.manifest.selected += shortlist.filter((candidate) => candidate.normalLaneId === source.manifest.sourceId).length;
     }
-    const failedLanes = sourceManifests.filter((manifest) => manifest.status === 'failed' || manifest.status === 'unavailable').map((manifest) => manifest.sourceId);
-    const emptyLanes = sourceManifests.filter((manifest) => ['empty', 'unavailable'].includes(manifest.status)).map((manifest) => manifest.sourceId);
+    const failedLanes = sourceManifests.filter((manifest) => {
+      if (manifest.required === false) return manifest.status === 'failed';
+      return manifest.status === 'failed' || manifest.status === 'unavailable';
+    }).map((manifest) => manifest.sourceId);
+    const emptyLanes = sourceManifests
+      .filter((manifest) => ['empty', 'unavailable'].includes(manifest.status) && manifest.reasonCode !== 'PORTAL_REQUIRES_LIVE_INJECTION')
+      .map((manifest) => manifest.sourceId);
     const missing = Math.max(0, 10 - shortlist.length);
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
@@ -216,9 +318,10 @@ export async function runNormalMode({
         linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' },
       },
       outcome: { status: failedLanes.length ? 'degraded' : 'ok', fatal: false, degraded: failedLanes.length > 0, errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, scored: selection.scoredCount, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      reconciliation,
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
     };
   } catch (error) {
-    return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error);
+    return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error, error.details);
   }
 }

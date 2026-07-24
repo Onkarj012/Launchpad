@@ -10,12 +10,14 @@ import {
   loadCrawlerConfig,
   runCrawlerOperator,
 } from './operator.mjs';
+import { runDailyNormal } from './daily-runner.mjs';
 import {
   assessProductionReadiness,
   buildLocalReadinessEvidence,
 } from './readiness.mjs';
 import { installSchedules } from './install-schedule.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
+import { createJsonCanaryStore } from './delivery-canary.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -100,7 +102,7 @@ function localReadiness(config, args) {
   return { evidence, assessment: assessProductionReadiness(evidence), testExitCode: testRun?.status ?? null };
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { dailyRunner = runDailyNormal, emit = output } = {}) {
   const command = argv[0] ?? 'help';
   if (['help', '--help', '-h'].includes(command)) {
     process.stdout.write(buildCrawlerHelp());
@@ -108,7 +110,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const { config, path: configPath } = loadCrawlerConfig(resolveCrawlerConfigPath(argv));
   if (command === 'validate') {
-    output({
+    emit({
       status: 'valid',
       configPath,
       databasePath: path.resolve(config.databasePath),
@@ -120,8 +122,17 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (command === 'plan') {
     const schedule = positional(argv)[1] ?? 'morning';
-    output(crawlerDiscoveryPlan(config, parseDiscoveryProfileArgs(argv, schedule)));
+    emit(crawlerDiscoveryPlan(config, parseDiscoveryProfileArgs(argv, schedule)));
     return 0;
+  }
+  if (command === 'daily') {
+    const result = await dailyRunner({
+      config,
+      runId: value(argv, '--run-id'),
+      canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
+    });
+    emit(result);
+    return result.outcome?.status === 'fatal' ? 1 : 0;
   }
   if (command === 'run') {
     const schedule = positional(argv)[1] ?? 'morning';
@@ -133,22 +144,22 @@ export async function main(argv = process.argv.slice(2)) {
       locationPreset: profile.locationPreset,
       runId: value(argv, '--run-id'),
     });
-    output(result);
+    emit(result);
     return result.run.status === 'failed' ? 1 : 0;
   }
   if (command === 'readiness') {
     const result = localReadiness(config, argv);
-    output(result);
+    emit(result);
     return result.assessment.productionReady ? 0 : 1;
   }
   if (command === 'install-schedule') {
     const dryRun = argv.includes('--dry-run');
     const result = installSchedules({ dryRun });
-    output(result);
+    emit(result);
     return result.agents.every((agent) => agent.dryRun || agent.installed) ? 0 : 1;
   }
   if (command === 'schedule-health') {
-    output(buildScheduleHealthReport({ databasePath: config.databasePath }));
+    emit(buildScheduleHealthReport({ databasePath: config.databasePath }));
     return 0;
   }
   process.stderr.write(`Unknown crawler command: ${command}\n\n${buildCrawlerHelp()}`);

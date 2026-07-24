@@ -42,7 +42,7 @@ test('generates morning (04:30) and midday (12:30) plists from the schedules.mjs
     assert.ok(agent.content.includes(`<string>${agent.label}</string>`));
     assert.ok(agent.content.includes('<string>/fixture/bin/node</string>'));
     assert.ok(agent.content.includes('<string>/fixture/repo root/crawler/cli.mjs</string>'));
-    assert.ok(agent.content.includes('<string>run</string>'));
+    assert.ok(agent.content.includes('<string>daily</string>'));
     assert.ok(agent.content.includes(`<string>${agent.schedule}</string>`));
     assert.ok(agent.content.includes('<string>--env</string>'));
     assert.ok(agent.content.includes('<string>production</string>'));

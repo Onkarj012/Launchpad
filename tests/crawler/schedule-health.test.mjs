@@ -100,3 +100,59 @@ test('falls back to sourceYield totals for ready count when durable counts omit 
   assert.equal(report.schedules.morning.counts.verification, 1);
   assert.equal(report.schedules.morning.counts.rejected, 0);
 });
+
+test('reports truncation signals and measured duration per source', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-source-signals-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'morning', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'morning', clock: { now: () => '2026-07-24T00:30:00.000Z' } });
+  store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, updated_at)
+    VALUES ('ats-enterprise', 'ats-expanded', 'direct', '{}', '{}', ?)`).run('2026-07-24T00:30:00.000Z');
+  store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json)
+    VALUES (?, 'ats-enterprise', 'truncated', 1, 1, 1, 1, 0, ?)`).run(runId, JSON.stringify({ truncated: true, capHit: 'maxJobsPerBoard', recordsNotExamined: 4 }));
+  finishCrawlRun(store, runId, {
+    status: 'completed_with_failures',
+    telemetry: { sourceDurations: { 'ats-enterprise': 4321 } },
+    clock: { now: () => '2026-07-24T00:45:00.000Z' },
+  });
+  store.close();
+
+  const source = buildScheduleHealthReport({ databasePath, now: new Date(now) }).schedules.morning.sourceTelemetry['ats-enterprise'];
+  assert.deepEqual(source, {
+    status: 'truncated',
+    truncated: true,
+    capHit: 'maxJobsPerBoard',
+    recordsNotExamined: 4,
+    durationMs: 4321,
+  });
+});
+
+test('reports a source with no truncation signals as clean', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-source-clean-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'morning', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'morning', clock: { now: () => '2026-07-24T00:30:00.000Z' } });
+  store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, updated_at)
+    VALUES ('ats-warm', 'ats-warm', 'direct', '{}', '{}', ?)`).run('2026-07-24T00:30:00.000Z');
+  store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json)
+    VALUES (?, 'ats-warm', 'succeeded', 1, 1, 1, 1, 0, '{}')`).run(runId);
+  finishCrawlRun(store, runId, {
+    status: 'completed',
+    telemetry: { sourceDurations: { 'ats-warm': 9 } },
+    clock: { now: () => '2026-07-24T00:45:00.000Z' },
+  });
+  store.close();
+
+  const source = buildScheduleHealthReport({ databasePath, now: new Date(now) }).schedules.morning.sourceTelemetry['ats-warm'];
+  assert.deepEqual(source, {
+    status: 'succeeded',
+    truncated: false,
+    capHit: null,
+    recordsNotExamined: null,
+    durationMs: 9,
+  });
+});

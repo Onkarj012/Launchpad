@@ -126,11 +126,15 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
       ...entry.candidate,
       scoringStatus: scoreState(entry).status,
       scoringQueueReason: scoreState(entry).status === 'scoring-failed' ? 'INVALID_MATCH_SCORE' : 'MATCH_SCORE_REQUIRED',
+      ...(scoreState(entry).status === 'scoring-failed' && (entry.candidate.scoringError || entry.candidate.scoringFailureReason)
+        ? { scoringFailureReason: entry.candidate.scoringError || entry.candidate.scoringFailureReason }
+        : {}),
       autoSuggest: false,
     })),
     scoredCount: scored.length,
     unscoredCount: scoringQueue.filter((entry) => scoreState(entry).status === 'unscored').length,
     scoringFailedCount: scoringQueue.filter((entry) => scoreState(entry).status === 'scoring-failed').length,
+    readyCount: ready.length,
     minimum,
     preferred: Math.min(preferred, maximum),
     maximum,

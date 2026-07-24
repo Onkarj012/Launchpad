@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { performance } from 'node:perf_hooks';
 import {
   ACTIONED_STATES,
   LIFECYCLE_STATES,
@@ -501,6 +502,7 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
   if (started.idempotent) return { ...snapshot(store, runId), idempotent: true };
   try {
     const at = nowFrom(clock);
+    const sourceDurations = {};
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
       const initialCursor = priorState.sources?.[source.id]?.cursor;
@@ -508,7 +510,9 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
       if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
+        const sourceStartedAt = performance.now();
         const result = await fetchSource(store, source, runId, priorState, config, clock);
+        sourceDurations[source.id] = Math.max(0, Math.round(performance.now() - sourceStartedAt));
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -526,7 +530,7 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     transitionStage(store, runId, 'fetch', 'committed', { clock });
     transitionStage(store, runId, 'commit', 'running', { clock });
     finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
-    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry }, clock });
+    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations }, clock });
     return { ...snapshot(store, runId), idempotent: false };
   } catch (error) {
     failCrawlRun(store, runId, error, { clock });

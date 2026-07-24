@@ -18,7 +18,32 @@ function durationMs(row) {
   return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null;
 }
 
-function toRunSummary(row) {
+function nullableNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sourceTelemetryFor(db, runId, runTelemetry = {}) {
+  if (!runId) return {};
+  const persisted = runTelemetry.workflow?.sourceTelemetry ?? runTelemetry.sources ?? {};
+  const rows = db?.prepare('SELECT * FROM source_telemetry WHERE run_id = ? ORDER BY source_id').all(runId) ?? [];
+  const byId = new Map(rows.map((row) => [row.source_id, row]));
+  const sourceIds = new Set([...Object.keys(persisted), ...rows.map((row) => row.source_id)]);
+  return Object.fromEntries([...sourceIds].sort().map((sourceId) => {
+    const row = byId.get(sourceId);
+    const details = parseJson(row?.details_json, {});
+    const source = persisted[sourceId] ?? {};
+    return [sourceId, {
+      status: row?.status ?? source.status ?? 'unknown',
+      truncated: Boolean(source.truncated ?? details.truncated),
+      capHit: source.capHit ?? details.capHit ?? null,
+      recordsNotExamined: source.recordsNotExamined ?? details.recordsNotExamined ?? null,
+      durationMs: nullableNumber(runTelemetry.sourceDurations?.[sourceId]),
+    }];
+  }));
+}
+
+function toRunSummary(row, sourceTelemetry = {}) {
   if (!row) return null;
   const counts = parseJson(row.counts_json, {});
   const telemetry = parseJson(row.telemetry_json, {});
@@ -34,6 +59,7 @@ function toRunSummary(row) {
     counts,
     sourceYield: workflow.sourceYield ?? null,
     verificationQueueLength: Array.isArray(workflow.verificationQueue) ? workflow.verificationQueue.length : null,
+    sourceTelemetry,
   };
 }
 
@@ -69,8 +95,8 @@ export function buildScheduleHealthReport({ databasePath, now = new Date() } = {
       const lastSuccessfulRow = db
         ? db.prepare("SELECT * FROM crawl_runs WHERE schedule = ? AND status IN ('completed','completed_with_failures') ORDER BY started_at DESC LIMIT 1").get(schedule)
         : null;
-      const lastRun = toRunSummary(lastRunRow);
-      const lastSuccessfulRun = toRunSummary(lastSuccessfulRow);
+      const lastRun = toRunSummary(lastRunRow, sourceTelemetryFor(db, lastRunRow?.run_id, parseJson(lastRunRow?.telemetry_json, {})));
+      const lastSuccessfulRun = toRunSummary(lastSuccessfulRow, sourceTelemetryFor(db, lastSuccessfulRow?.run_id, parseJson(lastSuccessfulRow?.telemetry_json, {})));
       const classification = classifyScheduleRun({
         schedule,
         now,
@@ -83,6 +109,7 @@ export function buildScheduleHealthReport({ databasePath, now = new Date() } = {
         lastSuccessfulRun,
         durationMs: lastRun?.durationMs ?? null,
         sourceFailures: sourceFailureCount(db, lastRun?.runId),
+        sourceTelemetry: lastRun?.sourceTelemetry ?? {},
         counts: countsFor(lastRun),
         classification,
       };

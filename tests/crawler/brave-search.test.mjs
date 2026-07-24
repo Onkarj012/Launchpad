@@ -283,3 +283,42 @@ test('SearXNG healthy-empty zero-result is distinct from unresponsive-engine deg
   assert.equal(degraded.manifest.telemetry.degradedQueries, 1);
   assert.deepEqual(degraded.manifest.telemetry.unresponsiveEngines, [['google', 'timeout'], ['brave', 'too many requests']]);
 });
+
+test('reports response status and unresponsive engines per SearXNG query', async () => {
+  const result = await discoverBraveSearch({
+    provider: 'searxng',
+    queries: ['healthy query', 'blocked query'],
+    transport: async (query) => query === 'blocked query'
+      ? { status: 206, body: { results: [], unresponsive_engines: [['brave', 'timeout']] } }
+      : { status: 200, body: { results: [], unresponsive_engines: [] } },
+  });
+
+  assert.deepEqual(result.manifest.telemetry.queryDiagnostics, [
+    {
+      query: 'healthy query', status: 'success', responseStatus: 200, responseStatuses: [200],
+      engineHealth: 'healthy-empty', engineListStatus: 'present', unresponsiveEngines: [], results: 0,
+    },
+    {
+      query: 'blocked query', status: 'degraded', responseStatus: 206, responseStatuses: [206],
+      engineHealth: 'degraded', engineListStatus: 'present', unresponsiveEngines: [['brave', 'timeout']], results: 0,
+    },
+  ]);
+  assert.equal(result.receipts[1].responseStatus, 206);
+});
+
+test('malformed or absent SearXNG engine lists degrade cleanly to explicit diagnostics', async () => {
+  const result = await discoverBraveSearch({
+    provider: 'searxng',
+    queries: ['absent list', 'malformed list'],
+    transport: async (query) => query === 'absent list'
+      ? { status: 200, body: { results: [] } }
+      : { status: 200, body: { results: [], unresponsive_engines: { brave: 'timeout' } } },
+  });
+
+  assert.deepEqual(result.manifest.telemetry.queryDiagnostics.map(({ query, status, engineHealth, engineListStatus, unresponsiveEngines }) => ({
+    query, status, engineHealth, engineListStatus, unresponsiveEngines,
+  })), [
+    { query: 'absent list', status: 'success', engineHealth: 'healthy-empty', engineListStatus: 'absent', unresponsiveEngines: [] },
+    { query: 'malformed list', status: 'success', engineHealth: 'healthy-empty', engineListStatus: 'malformed', unresponsiveEngines: [] },
+  ]);
+});

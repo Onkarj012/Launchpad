@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runDailyNormal } from '../../crawler/daily-runner.mjs';
+import { crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
+import { openCrawlerStore } from '../../crawler/run.mjs';
+import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -100,6 +102,10 @@ function runOptions(config, transport, overrides = {}) {
   };
 }
 
+function emptyLegacyFixtures() {
+  return Object.fromEntries(NORMAL_SOURCE_LANES.filter((lane) => lane.kind !== 'india-portal-search').map((lane) => [lane.id, { candidates: [], manifest: { status: 'empty' } }]));
+}
+
 test('crawler-v2 atsWarm observations feed reverse-ats-warm into the real Normal pipeline', async () => {
   const { config } = testConfig({
     warmBoards: [{ slug: 'crawler-board', company: 'Crawler Company' }],
@@ -113,7 +119,10 @@ test('crawler-v2 atsWarm observations feed reverse-ats-warm into the real Normal
   // land in the scoring queue rather than the shortlist (ticket 06).
   assert.deepEqual(result.scoringQueue.map((candidate) => candidate.company), ['Crawler Company']);
   assert.equal(result.scoringQueue[0].normalLaneId, 'reverse-ats-warm');
-  assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'reverse-ats-warm').fetched, 1);
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'reverse-ats-warm');
+  assert.equal(manifest.fetched, 1);
+  assert.equal(manifest.required, true);
+  assert.equal(manifest.optional, false);
 });
 
 test('tracked warm-set observations feed tracked-ats into the real Normal pipeline', async () => {
@@ -196,8 +205,8 @@ test('lanes outside crawler-v2 and tracked ATS stay truthfully unavailable', asy
 
   assert.equal(manifest.status, 'unavailable');
   assert.equal(manifest.attempted, false);
-  assert.equal(manifest.reasonCode, 'SOURCE_FUNCTION_UNAVAILABLE');
-  assert.ok(result.shortfall.failedLanes.includes('portal-foundit'));
+  assert.equal(manifest.reasonCode, 'PORTAL_REQUIRES_LIVE_INJECTION');
+  assert.equal(result.shortfall.failedLanes.includes('portal-foundit'), false);
 });
 
 test('an empty tracked warm set produces an attempted empty lane without transport calls', async () => {
@@ -210,4 +219,478 @@ test('an empty tracked warm set produces an attempted empty lane without transpo
   assert.equal(manifest.attempted, true);
   assert.equal(manifest.status, 'empty');
   assert.equal(manifest.fetched, 0);
+});
+
+test('unified daily mode exposes every new optional lane in the scored pool', async () => {
+  const { config } = testConfig();
+  const laneIds = ['expanded-ats', 'structured-career-pages', 'web-discovery', 'connector-inbox'];
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: Object.fromEntries(laneIds.map((laneId, index) => [laneId, {
+      candidates: [rawPortalJob(700 + index, { company: `${laneId} company` })],
+      manifest: { status: 'ok', source: 'unified-fixture' },
+    }])),
+  }));
+
+  assert.equal(result.counts.scored, laneIds.length);
+  for (const laneId of laneIds) {
+    const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === laneId);
+    assert.equal(manifest.fetched, 1);
+    assert.equal(manifest.optional, true);
+    assert.ok(result.shortlist.some((candidate) => candidate.normalLaneId === laneId));
+  }
+});
+
+test('unconfigured unified crawler lanes remain optional without degrading an otherwise empty run', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+  }));
+
+  assert.equal(result.outcome.status, 'ok');
+  for (const laneId of ['expanded-ats', 'structured-career-pages', 'web-discovery', 'connector-inbox']) {
+    const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === laneId);
+    assert.equal(manifest.status, 'unavailable');
+    assert.equal(manifest.optional, true);
+    assert.equal(result.shortfall.failedLanes.includes(laneId), false);
+  }
+});
+
+test('a failing optional crawler lane reports its failure while another lane still delivers', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'structured-career-pages': {
+        candidates: [rawPortalJob(801, { company: 'Career Page Company' })],
+        manifest: { status: 'ok' },
+      },
+    },
+    sourceFunctions: {
+      'expanded-ats': () => { throw new Error('expanded ATS fixture failed'); },
+    },
+  }));
+
+  const failed = result.sourceManifests.find(({ sourceId }) => sourceId === 'expanded-ats');
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.errors, ['expanded ATS fixture failed']);
+  assert.ok(result.shortfall.failedLanes.includes('expanded-ats'));
+  assert.deepEqual(result.shortlist.map((candidate) => candidate.company), ['Career Page Company']);
+});
+
+test('a partial optional lane does not degrade the run, but a failed optional lane does', async () => {
+  const { config } = testConfig();
+  const partial = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'structured-career-pages': {
+        candidates: [rawPortalJob(802, { company: 'Partial Career Page Company' })],
+        manifest: { status: 'degraded', errors: ['one source failed'] },
+      },
+    },
+  }));
+  assert.equal(partial.outcome.status, 'ok');
+  assert.equal(partial.shortfall.failedLanes.includes('structured-career-pages'), false);
+  assert.deepEqual(partial.sourceManifests.find(({ sourceId }) => sourceId === 'structured-career-pages').errors, ['one source failed']);
+
+  const failed = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'structured-career-pages': {
+        candidates: [],
+        manifest: { status: 'failed', errors: ['all sources failed'] },
+      },
+    },
+  }));
+  assert.equal(failed.outcome.status, 'degraded');
+  assert.ok(failed.shortfall.failedLanes.includes('structured-career-pages'));
+});
+
+test('warm-ATS failure messages retain provider, board, and code provenance', async () => {
+  const { config } = testConfig({ trackedBoards: ['warm-failure-board'] });
+  const result = await runDailyNormal(runOptions(config, async () => {
+    throw new Error('warm transport failed');
+  }));
+
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats');
+  assert.deepEqual(manifest.errors, ['greenhouse: warm-failure-board: TRANSPORT_ERROR: warm transport failed']);
+});
+
+test('unmapped crawler source ids feed web-discovery and remain visible without stopping the run', async () => {
+  const crawlerFixture = crawlerLaneFixtures({
+    observations: [rawPortalJob(803, { company: 'Unmapped Source Company', sourceId: 'future-source' })],
+    failures: [{ sourceId: 'future-source', message: 'future source failed' }],
+    sourceTelemetry: { 'future-source': { attempts: 1, fetched: 1 } },
+  })['web-discovery'];
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'web-discovery': crawlerFixture,
+    },
+  }));
+
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery');
+  assert.deepEqual(manifest.unmappedSourceIds, ['future-source']);
+  assert.equal(manifest.fetched, 1);
+  assert.equal(result.outcome.status, 'ok');
+});
+
+test('re-running the unified run id against the same durable store is idempotent', async () => {
+  const { config } = testConfig({
+    warmBoards: [{ slug: 'idempotent-board', company: 'Idempotent Company' }],
+  });
+  const store = openCrawlerStore(config.databasePath);
+  const calls = [];
+  try {
+    const options = runOptions(config, fakeTransport({ 'idempotent-board': [greenhouseJob(901, 'idempotent-board')] }, calls), {
+      store,
+      runId: 'daily-idempotent',
+    });
+    await runDailyNormal(options);
+    await runDailyNormal(options);
+    const observationCount = store.prepare('SELECT COUNT(*) AS count FROM job_observations WHERE run_id = ?').get('daily-idempotent-crawler-v2').count;
+    assert.equal(observationCount, 1);
+    assert.equal(calls.length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('an unscored eligible candidate fails the unified run before shortlist delivery', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      'portal-naukri': {
+        candidates: [rawPortalJob(1001, { matchScore: undefined })],
+        manifest: { status: 'ok' },
+      },
+    },
+  }));
+
+  assert.equal(result.outcome.status, 'fatal');
+  assert.deepEqual(result.shortlist, []);
+  assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
+  assert.match(result.outcome.errors[0].message, /unscored=1/);
+});
+
+test('a scoring failure fails the unified run and surfaces its cause', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      'portal-naukri': {
+        candidates: [rawPortalJob(1002, { scoringFailed: true, scoringError: 'rubric service unavailable' })],
+        manifest: { status: 'ok' },
+      },
+    },
+  }));
+
+  assert.equal(result.outcome.status, 'fatal');
+  assert.deepEqual(result.shortlist, []);
+  assert.equal(result.scoringQueue[0].scoringStatus, 'scoring-failed');
+  assert.equal(result.scoringQueue[0].scoringFailureReason, 'rubric service unavailable');
+  assert.match(result.outcome.errors[0].message, /rubric service unavailable/);
+});
+
+test('the run maximum is applied after all candidates receive Match Score', async () => {
+  const { config } = testConfig();
+  const candidates = Array.from({ length: 21 }, (_, index) => rawPortalJob(1100 + index, {
+    company: `Cap Company ${index}`,
+    matchScore: index === 20 ? 99 : 60,
+  }));
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      'portal-naukri': { candidates, manifest: { status: 'ok' } },
+    },
+  }));
+
+  assert.equal(result.counts.eligible, 21);
+  assert.equal(result.counts.scored, 21);
+  assert.equal(result.counts.selected, 20);
+  assert.ok(result.shortlist.some((candidate) => candidate.company === 'Cap Company 20' && candidate.matchScore === 99));
+  assert.ok(result.shortlist.every((candidate) => Number.isFinite(candidate.matchScore) && Number.isFinite(candidate.conversionScore)));
+});
+
+test('reconciliation reports eligible, scored, ready, and selected counts with named causes', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      'portal-naukri': {
+        candidates: [
+          rawPortalJob(1201, { company: 'Reconciliation Scored' }),
+          rawPortalJob(1202, { company: 'Reconciliation Unscored', matchScore: undefined }),
+        ],
+        manifest: { status: 'ok' },
+      },
+    },
+  }));
+
+  assert.deepEqual(
+    {
+      eligible: result.reconciliation.eligible,
+      scored: result.reconciliation.scored,
+      ready: result.reconciliation.ready,
+      selected: result.reconciliation.selected,
+    },
+    { eligible: 2, scored: 1, ready: 2, selected: 0 },
+  );
+  assert.match(result.reconciliation.line, /eligible=2; scored=1; ready=2; selected=0/);
+  assert.match(result.reconciliation.line, /readyToScored:UNSCORED=1/);
+});
+
+test('the unified run reads the v4 snapshot by default and suppresses matching roles', async () => {
+  const { root, config } = testConfig({
+    warmBoards: [{ slug: 'snapshot-board', company: 'Snapshot Company' }],
+  });
+  const snapshotPath = path.join(root, 'v4-history-snapshot.json');
+  writeFileSync(snapshotPath, JSON.stringify({
+    generatedAt: NOW,
+    rows: [{ company: 'Snapshot Company', title: 'AI Engineer', location: 'Pune, India', state: 'applied' }],
+  }));
+  config.v4HistorySnapshotPath = snapshotPath;
+
+  const result = await runDailyNormal(runOptions(
+    config,
+    fakeTransport({ 'snapshot-board': [greenhouseJob(1301, 'snapshot-board')] }),
+  ));
+
+  assert.equal(result.v4HistorySnapshot.status, 'loaded');
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.historicalSuppressions.length, 1);
+  assert.equal(result.counts.historicalSuppressed, 1);
+});
+
+test('snapshot status is surfaced in daily telemetry for loaded, missing, stale, and malformed files', async () => {
+  const outcomes = [
+    ['loaded', { generatedAt: NOW, rows: [] }],
+    ['missing', null],
+    ['stale', { generatedAt: '2026-01-01T00:00:00.000Z', rows: [] }],
+    ['malformed', { notRows: true }],
+  ];
+
+  for (const [status, payload] of outcomes) {
+    const { root, config } = testConfig();
+    const snapshotPath = path.join(root, `${status}.json`);
+    if (payload) writeFileSync(snapshotPath, JSON.stringify(payload));
+    config.v4HistorySnapshotPath = snapshotPath;
+    const result = await runDailyNormal(runOptions(config, fakeTransport({})));
+    assert.equal(result.telemetry.v4HistorySnapshot.status, status);
+  }
+});
+
+test('a stale snapshot warns and still supplies historical rows', async () => {
+  const { root, config } = testConfig({
+    warmBoards: [{ slug: 'stale-board', company: 'Stale Company' }],
+  });
+  const snapshotPath = path.join(root, 'stale.json');
+  writeFileSync(snapshotPath, JSON.stringify({
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    rows: [{ company: 'Stale Company', title: 'AI Engineer', location: 'Pune, India', state: 'rejected' }],
+  }));
+  config.v4HistorySnapshotPath = snapshotPath;
+
+  const result = await runDailyNormal(runOptions(
+    config,
+    fakeTransport({ 'stale-board': [greenhouseJob(1302, 'stale-board')] }),
+  ));
+
+  assert.equal(result.v4HistorySnapshot.status, 'stale');
+  assert.match(result.v4HistorySnapshot.warning, /stale/);
+  assert.equal(result.historicalSuppressions.length, 1);
+  assert.equal(result.outcome.fatal, false);
+});
+
+test('missing or malformed snapshots supply no history and do not fail the run', async () => {
+  for (const payload of [null, '{not json']) {
+    const { root, config } = testConfig();
+    const snapshotPath = path.join(root, 'bad-snapshot.json');
+    if (payload === null) {
+      config.v4HistorySnapshotPath = snapshotPath;
+    } else {
+      writeFileSync(snapshotPath, payload);
+      config.v4HistorySnapshotPath = snapshotPath;
+    }
+
+    const result = await runDailyNormal(runOptions(
+      config,
+      fakeTransport({}),
+      {
+        sourceFixtures: {
+          'portal-naukri': {
+            candidates: [rawPortalJob(1303, { company: 'New Company' })],
+            manifest: { status: 'ok' },
+          },
+        },
+      },
+    ));
+
+    assert.equal(result.v4HistorySnapshot.status, payload === null ? 'missing' : 'malformed');
+    assert.equal(result.historicalSuppressions.length, 0);
+    assert.equal(result.outcome.fatal, false);
+  }
+});
+
+test('unified daily run reports SearXNG health per query in the web-discovery lane', async () => {
+  const { config } = testConfig();
+  config.sources.searxng = {
+    enabled: true,
+    endpoint: 'http://127.0.0.1:8080',
+    dailyBudget: 2,
+    perQueryResultCap: 10,
+    queries: ['healthy query', 'blocked query'],
+  };
+  const result = await runDailyNormal(runOptions(config, async (url) => {
+    const query = new URL(url).searchParams.get('q');
+    return query === 'blocked query'
+      ? { status: 206, body: JSON.stringify({ results: [], unresponsive_engines: [['brave', 'timeout']] }) }
+      : { status: 200, body: JSON.stringify({ results: [], unresponsive_engines: [] }) };
+  }));
+
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery');
+  assert.deepEqual(manifest.telemetry.queryDiagnostics.map(({ query, responseStatus, status, engineHealth, unresponsiveEngines }) => ({
+    query, responseStatus, status, engineHealth, unresponsiveEngines,
+  })), [
+    { query: 'healthy query', responseStatus: 200, status: 'success', engineHealth: 'healthy-empty', unresponsiveEngines: [] },
+    { query: 'blocked query', responseStatus: 206, status: 'degraded', engineHealth: 'degraded', unresponsiveEngines: [['brave', 'timeout']] },
+  ]);
+});
+
+test('a capped enterprise source remains visibly truncated in the unified run', async () => {
+  const { config } = testConfig();
+  config.sources.enterprise = {
+    boards: [{ provider: 'workday', company: 'Capped Enterprise', url: 'https://capped.wd1.myworkdayjobs.com/jobs' }],
+    maxPages: 1,
+    maxJobsPerBoard: 1,
+  };
+  const result = await runDailyNormal(runOptions(config, async (url, options) => {
+    assert.equal(options.method, 'POST');
+    return { status: 200, headers: {}, body: JSON.stringify({ total: 2, jobPostings: [
+      { title: 'AI Engineer', externalPath: '/job/1', locations: ['Pune, India'], postedOn: NOW, jobReqId: 'WD-1' },
+      { title: 'Backend Engineer', externalPath: '/job/2', locations: ['Pune, India'], postedOn: NOW, jobReqId: 'WD-2' },
+    ] }) };
+  }));
+
+  const telemetry = result.crawlerV2Telemetry['ats-enterprise'];
+  assert.equal(telemetry.status, 'truncated');
+  assert.equal(telemetry.truncated, true);
+  assert.equal(telemetry.naturalTerminal, false);
+  assert.equal(telemetry.capHit, 'maxJobsPerBoard');
+  assert.equal(telemetry.recordsNotExamined, 1);
+});
+
+test('Indian portal lanes are optional and explain that live injection is required', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+  }));
+  for (const laneId of ['portal-naukri', 'portal-foundit', 'portal-hirist', 'portal-cutshort', 'portal-instahyre', 'portal-peerlist', 'portal-linkedin-jobs']) {
+    const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === laneId);
+    assert.equal(manifest.optional, true);
+    assert.equal(manifest.required, false);
+    assert.equal(manifest.reasonCode, 'PORTAL_REQUIRES_LIVE_INJECTION');
+  }
+});
+
+test('no portal injection is healthy and does not create portal shortfall reasons', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+  }));
+  assert.equal(result.outcome.status, 'ok');
+  assert.equal(result.outcome.degraded, false);
+  assert.equal(result.shortfall.failedLanes.some((laneId) => laneId.startsWith('portal-')), false);
+  assert.equal(result.shortfall.emptyLanes.some((laneId) => laneId.startsWith('portal-')), false);
+  assert.equal(result.shortfall.reasons.some((reason) => /portal-/i.test(reason)), false);
+});
+
+test('live-injected portal candidates retain their portal manifest and verification handling', async () => {
+  const { config } = testConfig();
+  const unresolved = rawPortalJob(1301, {
+    originalApplicationUrl: null,
+    originalApplicationEvidence: null,
+    applicationResolution: { status: 'Unresolved', evidence: null },
+    sourceKind: 'aggregator',
+  });
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [unresolved], manifest: { status: 'ok', fixture: 'live-injected' } },
+    },
+  }));
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'portal-naukri');
+  assert.equal(manifest.fixture, 'live-injected');
+  assert.equal(manifest.fetched, 1);
+  assert.equal(manifest.optional, true);
+  assert.equal(result.verificationQueue[0].provider, 'naukri');
+  assert.equal(result.shortlist.length, 0);
+});
+
+test('a resolved portal lead is scored in web-discovery with its surfacing provider retained', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': {
+        candidates: [rawPortalJob(1302, {
+          provider: 'greenhouse',
+          sourceKind: 'ats-direct',
+          originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/1302',
+          originalApplicationEvidence: 'resolved employer ATS listing',
+          applicationResolution: { status: 'Resolved Original', evidence: 'resolved employer ATS listing' },
+        })],
+        manifest: { status: 'ok' },
+      },
+    },
+  }));
+  assert.equal(result.counts.scored, 1);
+  assert.equal(result.shortlist.length, 1);
+  assert.equal(result.shortlist[0].normalLaneId, 'web-discovery');
+  assert.equal(result.shortlist[0].provider, 'naukri');
+  assert.equal(result.shortlist[0].discoveryProvider, 'naukri');
+  assert.equal(result.plannedNotionOperations[0].payload.provider, 'naukri');
+  assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery').fetched, 1);
+});
+
+test('an unresolved portal lead stays in verification and cannot be selected', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-foundit': {
+        candidates: [rawPortalJob(1303, {
+          originalApplicationUrl: null,
+          originalApplicationEvidence: null,
+          applicationResolution: { status: 'Unresolved', evidence: null },
+          sourceKind: 'aggregator',
+        })],
+        manifest: { status: 'ok' },
+      },
+    },
+  }));
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.verificationQueue.length, 1);
+  assert.equal(result.verificationQueue[0].provider, 'foundit');
+  assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
+});
+
+test('the unified result invokes the canary recorder at the daily-run seam', async () => {
+  const { config } = testConfig();
+  const records = [];
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    canaryStore: {
+      readRuns: () => records,
+      append: (record) => records.push(record),
+    },
+    sourceFixtures: {
+      'portal-naukri': { candidates: [rawPortalJob(1401)], manifest: { status: 'ok' } },
+    },
+  }));
+
+  assert.deepEqual(result.deliveryCanary.counts, {
+    eligible: result.counts.eligible,
+    scoredPool: result.counts.scored,
+    ready: result.counts.ready,
+    shortlist: result.counts.selected,
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].runId, result.runId);
 });

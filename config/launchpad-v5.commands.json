@@ -3,7 +3,7 @@
   "defaultMode": "normal",
   "modes": ["normal", "startup", "remote"],
   "commands": {
-    "morning": { "invocation": "/morning", "module": "job-pull/normal-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
+    "morning": { "invocation": "/morning", "module": "crawler/daily-runner.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
     "morning-startup": { "invocation": "/morning startup", "module": "job-pull/startup-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
     "morning-remote": { "invocation": "/morning remote", "module": "job-pull/remote-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
     "make-applications": { "invocation": "/make-applications", "module": "resume-v5/resume-queue.mjs", "writes": "v5-application-resume-state-only", "manualAction": "Make Resume remains user-owned" },

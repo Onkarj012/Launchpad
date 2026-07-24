@@ -93,6 +93,11 @@ function unresponsiveEngines(body, provider) {
     .filter((pair) => Array.isArray(pair) && pair.length >= 2)
     .map(([engine, reason]) => [engine, reason]);
 }
+function engineListStatus(body, provider) {
+  if (provider !== 'searxng') return 'not-applicable';
+  if (!Object.hasOwn(body ?? {}, 'unresponsive_engines')) return 'absent';
+  return Array.isArray(body.unresponsive_engines) ? 'present' : 'malformed';
+}
 function sparseResults(rows, resultCap) {
   const requested = Math.max(0, Number(resultCap));
   return rows.length === 0 || (requested > 1 && rows.length <= Math.floor(requested / 2));
@@ -178,7 +183,7 @@ export async function discoverBraveSearch({
     unresponsiveEngines: [], unresponsiveEngineEvents: [], direct: 0, leads: 0,
     unresolved: 0, resolverPromotions: 0,
     country, cacheHits: 0, cacheMisses: 0, pagesFetched: 0, maxPages,
-    consumedCredits: 0, engineHealth: null,
+    consumedCredits: 0, engineHealth: null, queryDiagnostics: [],
   };
   const uniqueQueries = []; const queryKeys = new Set();
   for (const query of queries) { const key = query.toLocaleLowerCase('en-US').replace(/\s+/g, ' ').trim(); if (queryKeys.has(key)) telemetry.duplicateQueries += 1; else { queryKeys.add(key); uniqueQueries.push(query); } }
@@ -188,12 +193,19 @@ export async function discoverBraveSearch({
   for (const [queryIndex, query] of budgetQueries.entries()) {
     if (skipRemaining) {
       telemetry.queriesSkipped += 1;
-      receipts.push({ query, attempts: 0, status: 'skipped', reason: telemetry.skippedReason, resultCap: perQueryResultCap, results: 0, observations: 0, unresponsiveEngines: [], pages: 0 });
+      const queryDiagnostic = {
+        query, status: 'skipped', responseStatus: null, responseStatuses: [],
+        engineHealth: 'skipped', engineListStatus: provider === 'searxng' ? 'absent' : 'not-applicable',
+        unresponsiveEngines: [], results: 0,
+      };
+      telemetry.queryDiagnostics.push(queryDiagnostic);
+      receipts.push({ ...queryDiagnostic, attempts: 0, reason: telemetry.skippedReason, resultCap: perQueryResultCap, observations: 0, pages: 0 });
       continue;
     }
     telemetry.budgetUsed += 1;
     let response; let attempts = 0; let outcome = 'terminal'; let reason = null;
-    let body = null; let rows = []; let engineErrors = [];
+    let body = null; let rows = []; let engineErrors = []; let engineStatus = provider === 'searxng' ? 'absent' : 'not-applicable';
+    let responseStatus = null; const responseStatuses = [];
     let pagesFetchedForQuery = 0;
     const observationsBeforeQuery = observations.length;
     for (let page = 0; page < maxPages; page += 1) {
@@ -218,6 +230,8 @@ export async function discoverBraveSearch({
           outcome = 'terminal'; break;
         }
         const status = Number(response?.status ?? 200);
+        responseStatus = Number.isFinite(status) ? status : null;
+        if (responseStatus != null) responseStatuses.push(responseStatus);
         if (status >= 200 && status < 300) {
           outcome = 'success';
           if (enableCache) cache.set(key, response);
@@ -233,14 +247,17 @@ export async function discoverBraveSearch({
       if (!Array.isArray(pageRows)) { outcome = 'malformed'; telemetry.malformedResponses += 1; break; }
       pagesFetchedForQuery += 1;
       telemetry.pagesFetched += 1;
-      engineErrors = unresponsiveEngines(body, provider);
-      const isDegraded = engineErrors.length > 0 && sparseResults(pageRows, perQueryResultCap);
+      const pageEngineErrors = unresponsiveEngines(body, provider);
+      engineErrors = [...engineErrors, ...pageEngineErrors.filter((pair) => !engineErrors.some((existing) => existing[0] === pair[0] && existing[1] === pair[1]))];
+      const pageEngineStatus = engineListStatus(body, provider);
+      if (pageEngineStatus === 'malformed' || (pageEngineStatus === 'present' && engineStatus === 'absent')) engineStatus = pageEngineStatus;
+      const isDegraded = pageEngineErrors.length > 0 && sparseResults(pageRows, perQueryResultCap);
       if (isDegraded) {
         outcome = 'degraded';
         if (page === 0) telemetry.degradedQueries += 1;
-        for (const pair of engineErrors) if (!telemetry.unresponsiveEngines.some((existing) => existing[0] === pair[0] && existing[1] === pair[1])) telemetry.unresponsiveEngines.push(pair);
-        telemetry.unresponsiveEngineEvents.push({ query, page, engines: engineErrors });
-        if (queryIndex === 0 && page === 0 && fullyDegraded(engineErrors, pageRows, { ...options, perQueryResultCap })) {
+        for (const pair of pageEngineErrors) if (!telemetry.unresponsiveEngines.some((existing) => existing[0] === pair[0] && existing[1] === pair[1])) telemetry.unresponsiveEngines.push(pair);
+        telemetry.unresponsiveEngineEvents.push({ query, page, engines: pageEngineErrors });
+        if (queryIndex === 0 && page === 0 && fullyDegraded(pageEngineErrors, pageRows, { ...options, perQueryResultCap })) {
           skipRemaining = true;
           telemetry.skippedReason = 'first-query-fully-degraded';
         }
@@ -279,11 +296,23 @@ export async function discoverBraveSearch({
       if (outcome === 'degraded' && skipRemaining) break;
     }
     telemetry.consumedCredits = telemetry.budgetUsed;
+    const queryEngineHealth = provider === 'searxng'
+      ? engineErrors.length > 0 && sparseResults(rows, perQueryResultCap)
+        ? 'degraded'
+        : rows.length === 0 ? 'healthy-empty' : 'ok'
+      : rows.length === 0 ? 'empty' : 'ok';
+    const queryDiagnostic = {
+      query, status: outcome, responseStatus, responseStatuses,
+      engineHealth: queryEngineHealth, engineListStatus: engineStatus,
+      unresponsiveEngines: engineErrors,
+      results: outcome === 'success' || outcome === 'degraded' ? Math.min(rows.length, perQueryResultCap) : 0,
+    };
+    telemetry.queryDiagnostics.push(queryDiagnostic);
     receipts.push({
-      query, attempts, status: outcome, reason, resultCap: perQueryResultCap,
+      ...queryDiagnostic, attempts, reason, resultCap: perQueryResultCap,
       results: outcome === 'success' || outcome === 'degraded' ? Math.min(rows.length, perQueryResultCap) : 0,
       observations: outcome === 'success' || outcome === 'degraded' ? observations.length - observationsBeforeQuery : 0,
-      unresponsiveEngines: engineErrors, pages: pagesFetchedForQuery, country,
+      pages: pagesFetchedForQuery, country,
     });
   }
   const executedQueries = receipts.length - telemetry.queriesSkipped;

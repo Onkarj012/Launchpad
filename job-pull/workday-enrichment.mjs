@@ -25,15 +25,21 @@ function markUnverified(candidate) {
 /** Enrich Workday candidates in place with verified start dates and JD text. */
 export async function enrichWorkdayCandidates(
   candidates,
-  { now = Date.now(), ctx = makeHttpCtx(), concurrency = 4, cache = new Map() } = {},
+  { now = Date.now(), ctx = makeHttpCtx(), concurrency = 4, cache = new Map(), maxRequests = 50 } = {},
 ) {
   void now;
   if (!Array.isArray(candidates)) return candidates;
   const workdayCandidates = candidates.filter((candidate) => candidate?.provider === 'workday');
   const limit = Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 4) : 4;
   const httpCtx = ctx ?? makeHttpCtx();
+  const budget = Math.max(0, Number.isFinite(Number(maxRequests)) ? Number(maxRequests) : 50);
+  const selected = workdayCandidates.slice(0, budget);
+  for (const candidate of workdayCandidates.slice(budget)) {
+    markUnverified(candidate);
+    candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: 'budget-exhausted' } };
+  }
 
-  await parallelEach(workdayCandidates, limit, async (candidate) => {
+  await parallelEach(selected, limit, async (candidate) => {
     const key = canonicalizeUrl(candidate.canonicalUrl ?? candidate.url) ?? candidate.url;
     let detailPromise = cache.get(key);
     if (!detailPromise) {

@@ -8,7 +8,7 @@ import {
   crawlerDiscoveryPlan,
   runCrawlerOperator,
 } from '../../crawler/operator.mjs';
-import { parseDiscoveryProfileArgs } from '../../crawler/cli.mjs';
+import { main, parseDiscoveryProfileArgs } from '../../crawler/cli.mjs';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -59,6 +59,22 @@ test('CLI and plan plumbing preserve defaults and expose explicit profile flags'
   });
   assert.equal(plan.profile.mode, 'startup');
   assert.equal(plan.profile.locationPreset, 'pune');
+});
+
+test('daily command invokes the unified runner and emits its operator result', async () => {
+  let received = null;
+  let emitted = null;
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-1'], {
+    dailyRunner: async (options) => {
+      received = options;
+      return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
+    },
+    emit: (result) => { emitted = result; },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(received.runId, 'command-daily-1');
+  assert.equal(received.config.schemaVersion, 'LaunchpadCrawlerConfigV1');
+  assert.equal(emitted.outcome.status, 'ok');
 });
 
 test('operator passes profile metadata into workflow config and result metadata', async () => {

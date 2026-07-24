@@ -47,6 +47,7 @@ Usage:
   node crawler/cli.mjs validate [--config FILE]
   node crawler/cli.mjs plan [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE]
   node crawler/cli.mjs run [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE] [--run-id ID]
+  node crawler/cli.mjs daily [morning] [--config FILE] [--env production|live-test|dev] [--run-id ID]
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
   node crawler/cli.mjs install-schedule [--dry-run]
   node crawler/cli.mjs schedule-health [--config FILE]
@@ -469,6 +470,7 @@ export async function runCrawlerOperator({
   locationPreset = 'india',
   transport = defaultHttpTransport,
   clock = {},
+  store: suppliedStore = null,
 } = {}) {
   validateCrawlerConfig(config);
   crawlerSchedulePlan(config, schedule);
@@ -478,7 +480,7 @@ export async function runCrawlerOperator({
   const resolver = createCrawlerRunResolver({ config, transport, runAt });
   const databasePath = path.resolve(config.databasePath);
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-  const store = openCrawlerStore(databasePath);
+  const store = suppliedStore ?? openCrawlerStore(databasePath);
   try {
     const policy = loadJobPullPolicy();
     const lifecycleRows = readOpportunityLedger(config.opportunityLedgerPath).rows;
@@ -599,6 +601,6 @@ export async function runCrawlerOperator({
       operator: { databasePath, schedule, configVersion: config.schemaVersion, profile },
     };
   } finally {
-    store.close();
+    if (!suppliedStore) store.close();
   }
 }
