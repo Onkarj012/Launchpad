@@ -326,7 +326,11 @@ export async function runCrawlerOperator({
   try {
     const policy = loadJobPullPolicy();
     const lifecycleRows = readOpportunityLedger(config.opportunityLedgerPath).rows;
-    const historicalRows = readV4HistorySnapshot(config.v4HistorySnapshotPath).rows;
+    const v4Snapshot = readV4HistorySnapshot(config.v4HistorySnapshotPath, {
+      maxAgeDays: config.v4HistorySnapshotMaxAgeDays,
+      now: runAt,
+    });
+    const historicalRows = v4Snapshot.rows;
     const prepareEntry = (candidate) => {
       const eligibility = classifyCandidate(candidate, policy);
       const freshness = classifyFreshness(candidate, { now: runAt, ...policy.freshness });
@@ -345,6 +349,7 @@ export async function runCrawlerOperator({
       clock,
       priorLifecycleRows: lifecycleRows,
       historicalRows,
+      v4Snapshot,
       sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},
@@ -383,6 +388,7 @@ export async function runCrawlerOperator({
           clock,
           priorLifecycleRows: lifecycleRows,
           historicalRows,
+          v4Snapshot,
           sourcePlans: [sourcePlan('commercial-rescue', 'commercial-rescue', 'commercial-rescue', async () => ({
             observations: commercial.records.map((record) => normalizeCandidate({
               ...record,
@@ -418,7 +424,18 @@ export async function runCrawlerOperator({
     } else {
       result.commercialRescue = { invoked: false, status: 'disabled', records: [] };
     }
-    return { ...result, profile, operator: { databasePath, schedule, configVersion: config.schemaVersion, profile } };
+    return {
+      ...result,
+      v4Snapshot: result.v4Snapshot ?? {
+        status: v4Snapshot.status,
+        path: v4Snapshot.path,
+        generatedAt: v4Snapshot.generatedAt,
+        rowCount: v4Snapshot.rowCount,
+        error: v4Snapshot.error ?? null,
+      },
+      profile,
+      operator: { databasePath, schedule, configVersion: config.schemaVersion, profile },
+    };
   } finally {
     store.close();
   }

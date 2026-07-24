@@ -59,6 +59,73 @@ const isVerificationReason = (reason) => VERIFICATION_REASON_PATTERNS.some((patt
 const isPlaceholderCompany = (company) => PLACEHOLDER_COMPANIES.has(normalizeText(company))
   || /^(?:unknown|unresolved)(?:\s+(?:company|employer|organization))?$/.test(normalizeText(company));
 
+const ACTIONED_HISTORY_STATES = new Set(['applied', 'contacted', 'interviewing', 'rejected']);
+const SURFACED_HISTORY_STATES = new Set(['surfaced', 'cooldown']);
+
+function emptyV4SnapshotTelemetry() {
+  return { status: 'missing', path: null, generatedAt: null, rowCount: 0, error: null };
+}
+
+function normalizeV4SnapshotTelemetry(v4Snapshot) {
+  if (!v4Snapshot || typeof v4Snapshot !== 'object') return emptyV4SnapshotTelemetry();
+  const status = ['missing', 'stale', 'malformed', 'loaded'].includes(v4Snapshot.status)
+    ? v4Snapshot.status
+    : (v4Snapshot.missing ? 'missing' : 'loaded');
+  return {
+    status,
+    path: v4Snapshot.path ?? null,
+    generatedAt: v4Snapshot.generatedAt ?? null,
+    rowCount: Number.isFinite(Number(v4Snapshot.rowCount))
+      ? Number(v4Snapshot.rowCount)
+      : Array.isArray(v4Snapshot.rows) ? v4Snapshot.rows.length : 0,
+    error: v4Snapshot.error ?? null,
+  };
+}
+
+function historyStateOf(value) {
+  return normalizeText(value?.historicalState ?? value?.state ?? value?.status ?? value?.action_state ?? value?.actionState);
+}
+
+/**
+ * Report novelty decisions by authority source. Does not re-decide novelty —
+ * only tallies codes already produced by identity + historical suppression.
+ */
+function buildNoveltyBreakdown({ entries, historicalSuppressed, newlyActionableCount }) {
+  const breakdown = {
+    productionObservation: 0,
+    surfacedHistory: 0,
+    actionedHistory: 0,
+    newlyActionable: number(newlyActionableCount),
+  };
+  for (const item of asArray(historicalSuppressed)) {
+    const state = historyStateOf(item);
+    if (ACTIONED_HISTORY_STATES.has(state)) breakdown.actionedHistory += 1;
+    else breakdown.surfacedHistory += 1;
+  }
+  for (const entry of asArray(entries)) {
+    const identity = entry?.identity || candidateOf(entry)?._crawlerIdentity || {};
+    const code = String(identity.code || entry?.novelty?.code || '');
+    if (code === 'NEWLY_ACTIONABLE' || entry?.novelty?.newlyActionable === true) continue;
+    if (code.startsWith('SUPPRESSED_')) {
+      const state = normalizeText(code.replace(/^SUPPRESSED_/, ''));
+      if (ACTIONED_HISTORY_STATES.has(state)) {
+        if (identity.authority === 'external_lifecycle_data') breakdown.actionedHistory += 1;
+        else breakdown.productionObservation += 1;
+      } else if (SURFACED_HISTORY_STATES.has(state)) {
+        if (identity.authority === 'external_lifecycle_data') breakdown.surfacedHistory += 1;
+        else breakdown.productionObservation += 1;
+      } else {
+        breakdown.productionObservation += 1;
+      }
+      continue;
+    }
+    if (identity.authority === 'crawler_identity_only' && identity.novelty === 'not_new' && code !== 'NEW_TO_ME' && code !== 'CLOSURE') {
+      breakdown.productionObservation += 1;
+    }
+  }
+  return breakdown;
+}
+
 function entryReasons(entry, selection) {
   const candidate = candidateOf(entry);
   const eligibility = entry?.eligibility || candidate.eligibility || {};
@@ -153,6 +220,7 @@ export async function crawlWorkflow({
   priorJobs = [],
   priorLifecycleRows = [],
   historicalRows = [],
+  v4Snapshot = null,
   sourcePlans = [],
   careerSites = [],
   careerOptions = {},
@@ -168,6 +236,7 @@ export async function crawlWorkflow({
   if (typeof prepareEntry !== 'undefined' && typeof prepareEntry !== 'function') throw new TypeError('prepareEntry must be a function');
 
   const runAt = nowAt(clock);
+  const v4SnapshotTelemetry = normalizeV4SnapshotTelemetry(v4Snapshot);
   const durableJobs = readCrawlerRunData(store, runId).jobs;
   const knownJobsByKey = new Map();
   for (const row of [...durableJobs, ...asArray(priorJobs)]) {
@@ -284,7 +353,14 @@ export async function crawlWorkflow({
   });
   const historicalResult = filterHistoricalCandidates(entries.map((entry) => candidateOf(entry)), historicalRows);
   const keptCandidates = new Set(historicalResult.kept);
-  const historicalSuppressedEntries = entries.filter((entry) => !keptCandidates.has(candidateOf(entry)));
+  const historicalAmbiguousCandidates = new Set(
+    asArray(historicalResult.ambiguous).map((item) => item.candidate).filter(Boolean),
+  );
+  const historicalSuppressedEntries = entries.filter((entry) => {
+    const candidate = candidateOf(entry);
+    return !keptCandidates.has(candidate) && !historicalAmbiguousCandidates.has(candidate);
+  });
+  const historicalAmbiguousEntries = entries.filter((entry) => historicalAmbiguousCandidates.has(candidateOf(entry)));
   const nonHistoricalEntries = entries.filter((entry) => keptCandidates.has(candidateOf(entry)));
   const selection = selectDailyReserve(nonHistoricalEntries, reserveOptions);
   const selectedCandidates = new Set(selection.reserve.map((item) => item.candidate));
@@ -306,6 +382,11 @@ export async function crawlWorkflow({
   const newlyActionableCount = nonHistoricalEntries.filter((entry) => entry.identity?.code === 'NEWLY_ACTIONABLE'
     || entry.novelty?.newlyActionable === true
     || entry.novelty?.code === 'NEWLY_ACTIONABLE').length;
+  const noveltyBreakdown = buildNoveltyBreakdown({
+    entries,
+    historicalSuppressed: historicalResult.suppressed,
+    newlyActionableCount,
+  });
   const unresolvedLeads = [];
   const verificationKeys = new Set();
   const verificationQueue = [];
@@ -334,6 +415,19 @@ export async function crawlWorkflow({
     verificationQueue.push(item);
   };
   for (const item of (persistedWorkflow?.verificationQueue ?? verificationFromSources)) addVerification(item);
+  // Historical ambiguous matches: fail closed to verification, never auto-suppress or auto-merge.
+  for (const entry of historicalAmbiguousEntries) {
+    const candidate = candidateOf(entry);
+    const key = candidateKey(candidate);
+    if (key && verificationKeys.has(key)) continue;
+    if (key) verificationKeys.add(key);
+    verificationQueue.push({
+      ...verificationRecord(entry, ['AMBIGUOUS_HISTORICAL_COLLISION']),
+      reasons: ['AMBIGUOUS_HISTORICAL_COLLISION'],
+      code: 'AMBIGUOUS_COLLISION',
+      evidence: asArray(historicalResult.ambiguous).find((item) => item.candidate === candidate)?.evidence ?? null,
+    });
+  }
   for (const entry of nonHistoricalEntries) {
     if (entry.identity?.code === 'AMBIGUOUS_COLLISION') {
       addVerification(entry, candidateOf(entry));
@@ -403,6 +497,7 @@ export async function crawlWorkflow({
     verification: verificationQueue.length,
     rejected: rejectedTotal,
     historicalSuppressed: historicalResult.suppressed.length,
+    historicalAmbiguous: historicalResult.ambiguous?.length ?? 0,
     newlyActionable: newlyActionableCount,
     surfaced: selection.reserve.length,
     fetched: funnel.lifecycle.fetched,
@@ -410,17 +505,23 @@ export async function crawlWorkflow({
     normalized: funnel.lifecycle.normalized,
     eligible: funnel.lifecycle.eligible,
     selected: funnel.lifecycle.selected,
+    novelty: noveltyBreakdown,
   };
   if (!durable.idempotent) {
     const workflowTelemetry = {
       ...durable.telemetry,
+      v4Snapshot: jsonSafe(v4SnapshotTelemetry),
+      novelty: jsonSafe(noveltyBreakdown),
       workflow: {
         verificationQueue: jsonSafe(verificationQueue),
         unresolvedLeads: jsonSafe(unresolvedLeads),
         historicalSuppressions: jsonSafe(historicalResult.suppressed),
+        historicalAmbiguous: jsonSafe(historicalResult.ambiguous),
         sourceTelemetry: jsonSafe(sourceTelemetry),
         sourceYield: jsonSafe(sourceYield),
         funnel: jsonSafe(funnel),
+        v4Snapshot: jsonSafe(v4SnapshotTelemetry),
+        novelty: jsonSafe(noveltyBreakdown),
       },
     };
     const status = durable.run.status;
@@ -445,7 +546,10 @@ export async function crawlWorkflow({
     verificationQueue: jsonSafe(verificationQueue),
     unresolvedLeads: jsonSafe(unresolvedLeads),
     historicalSuppressions: jsonSafe(historicalResult.suppressed),
+    historicalAmbiguous: jsonSafe(historicalResult.ambiguous),
     counts: workflowCounts,
+    novelty: jsonSafe(noveltyBreakdown),
+    v4Snapshot: jsonSafe(v4SnapshotTelemetry),
     funnel: jsonSafe(persistedWorkflow?.funnel ?? funnel),
     reserve: selection.reserve,
     shortlist: selection.shortlist,

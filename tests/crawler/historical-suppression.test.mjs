@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildHistoricalSuppressionIndex,
+  filterHistoricalCandidates,
   suppressHistoricalCandidate,
 } from '../../crawler/historical-suppression.mjs';
 
@@ -86,4 +87,25 @@ test('fails closed when different unique keys point to different historical rows
 
   assert.equal(result.suppressed, false);
   assert.equal(result.code, 'AMBIGUOUS_COLLISION');
+});
+
+test('filterHistoricalCandidates routes ambiguous matches to verification, not suppress or keep', () => {
+  const candidate = {
+    provider: 'lever',
+    providerJobId: 'same',
+    company: 'Ambiguous Co',
+    title: 'AI Engineer',
+    location: 'Pune',
+    canonicalUrl: 'https://jobs.example.test/ambiguous',
+  };
+  const result = filterHistoricalCandidates([candidate], [
+    { provider: 'lever', providerJobId: 'same', company: 'One', title: 'Engineer', location: 'Pune', state: 'applied' },
+    { provider: 'lever', providerJobId: 'same', company: 'Two', title: 'Engineer', location: 'Pune', state: 'rejected' },
+  ]);
+
+  assert.equal(result.kept.length, 0);
+  assert.equal(result.suppressed.length, 0);
+  assert.equal(result.ambiguous.length, 1);
+  assert.equal(result.ambiguous[0].code, 'AMBIGUOUS_COLLISION');
+  assert.equal(result.ambiguous[0].candidate, candidate);
 });

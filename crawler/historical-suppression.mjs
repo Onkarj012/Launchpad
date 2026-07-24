@@ -162,20 +162,36 @@ export function suppressHistoricalCandidate(candidate, index) {
 
 /**
  * Convenience seam for mode runners: split candidates into those that survive
- * v4 suppression and those suppressed, with the historical identity that
- * caused each suppression recorded for operator evidence. Read-only against
- * v4 rows; an empty/missing historicalRows list is a no-op (nothing suppressed).
+ * v4 suppression, those suppressed, and those with ambiguous historical matches.
+ * Ambiguous collisions never auto-suppress or auto-merge — callers must route
+ * them to verification (fail closed). Read-only against v4 rows; an
+ * empty/missing historicalRows list is a no-op (nothing suppressed).
  */
 export function filterHistoricalCandidates(candidates = [], historicalRows = []) {
   const list = Array.isArray(candidates) ? candidates : [];
   const rows = Array.isArray(historicalRows) ? historicalRows : [];
-  if (!rows.length) return { kept: list, suppressed: [], index: null };
+  if (!rows.length) return { kept: list, suppressed: [], ambiguous: [], index: null };
 
   const index = buildHistoricalSuppressionIndex(rows);
   const kept = [];
   const suppressed = [];
+  const ambiguous = [];
   for (const candidate of list) {
     const result = suppressHistoricalCandidate(candidate, index);
+    if (result.code === 'AMBIGUOUS_COLLISION') {
+      ambiguous.push({
+        company: candidate?.company ?? null,
+        title: candidate?.title ?? null,
+        canonicalUrl: candidate?.canonicalUrl ?? candidate?.discoveryUrl ?? candidate?.originalApplicationUrl ?? candidate?.applicationUrl ?? candidate?.url ?? null,
+        code: result.code,
+        identity: result.identity,
+        evidence: result.evidence,
+        candidate,
+        immutable: true,
+        v4Writes: false,
+      });
+      continue;
+    }
     if (!result.suppressed) { kept.push(candidate); continue; }
     suppressed.push({
       company: candidate?.company ?? null,
@@ -191,5 +207,5 @@ export function filterHistoricalCandidates(candidates = [], historicalRows = [])
       v4Writes: false,
     });
   }
-  return { kept, suppressed, index };
+  return { kept, suppressed, ambiguous, index };
 }

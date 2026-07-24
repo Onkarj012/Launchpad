@@ -260,6 +260,7 @@
       "maxCostUsd": 5
     }
   },
+  "v4HistorySnapshotMaxAgeDays": 30,
   "sourceYield": {
     "minimumFetchedForReview": 100,
     "minimumRunsForPause": 3
