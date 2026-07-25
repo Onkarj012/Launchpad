@@ -318,6 +318,12 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
   const description = detail.description || candidate.description || null;
   const location = detail.location || candidate.location || null;
   const experience = detail.experience || candidate.experience || { minYears: null, maxYears: null, evidence: null };
+  const runAtMs = Date.parse(String(runAt ?? ''));
+  const startDateMs = Date.parse(String(detail.providerStartDate ?? ''));
+  const hasUsableStartDate = Boolean(detail.providerStartDate && !Number.isNaN(startDateMs) && (Number.isNaN(runAtMs) || startDateMs <= runAtMs));
+  const postedAt = hasUsableStartDate
+    ? detail.providerStartDate
+    : candidate.postedAt;
   const next = normalizeCandidate({
     ...candidate,
     url: applicationUrl,
@@ -327,7 +333,7 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
     location,
     description,
     jobId: requisitionId,
-    postedAt: candidate.postedAt,
+    postedAt,
     discoveredAt: candidate.discoveredAt || runAt,
     crawledAt: runAt,
     applicationUrl,
@@ -346,7 +352,9 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
       providerPostedOn: detail.providerPostedOn,
       freshness: candidate.evidence?.freshness?.kind === 'workday-postedOn'
         ? candidate.evidence.freshness
-        : { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
+        : hasUsableStartDate
+          ? { kind: 'workday-startDate', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn, detailUrl }
+          : { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
     },
   }, { runAt, provider: 'workday' });
   next.classification = candidate.classification;
@@ -594,7 +602,8 @@ export async function discoverEnterpriseAts({
         const next = nextUrl(provider, payload, endpointUrl, page);
         endpointUrl = next && !visited.has(next) ? next : null;
       }
-      if (endpointUrl && !source.truncated && !source.interrupted) state.__cursor = { ...(state.__cursor || {}), [boardKey]: { endpointUrl, page, workdayReceived } };
+      if (source.truncated) state.__cursor = { ...(state.__cursor || {}), [boardKey]: { endpointUrl: endpointUrl || board.url, page, workdayReceived } };
+      else if (endpointUrl && !source.truncated && !source.interrupted) state.__cursor = { ...(state.__cursor || {}), [boardKey]: { endpointUrl, page, workdayReceived } };
       else if (!endpointUrl && !source.truncated && !source.interrupted && state.__cursor) delete state.__cursor[boardKey];
       if (!endpointUrl && !source.truncated && !source.interrupted) source.naturalTerminal = true;
     }

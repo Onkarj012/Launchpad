@@ -14,13 +14,18 @@ async function parallelEach(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
 }
 
-function markUnverified(candidate) {
-  candidate.postedAt = null;
-  candidate.evidence = {
-    ...candidate.evidence,
-    freshness: { kind: 'workday-unverified' },
-  };
-  candidate.liveness = { status: 'Not Verified', checkedAt: null, evidence: null };
+// Board identity for budget sharing: explicit key when present, else host plus
+// first path segment of the posting URL (e.g. acme.wd1.myworkdayjobs.com/Careers).
+function boardKeyOf(candidate) {
+  const explicit = candidate.boardKey ?? candidate.board ?? candidate.source;
+  if (explicit) return explicit;
+  try {
+    const parsed = new URL(candidate.canonicalUrl ?? candidate.url);
+    const [firstSegment] = parsed.pathname.split('/').filter(Boolean);
+    return firstSegment ? `${parsed.host}/${firstSegment}` : parsed.host;
+  } catch {
+    return null;
+  }
 }
 
 /** Enrich Workday candidates in place with verified start dates and JD text. */
@@ -28,19 +33,34 @@ export async function enrichWorkdayCandidates(
   candidates,
   { now = Date.now(), ctx = makeHttpCtx(), concurrency = 4, cache = new Map(), maxRequests = 50 } = {},
 ) {
-  void now;
   if (!Array.isArray(candidates)) return candidates;
   const workdayCandidates = candidates.filter((candidate) => candidate?.provider === 'workday');
   const limit = Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 4) : 4;
   const httpCtx = ctx ?? makeHttpCtx();
   const budget = Math.max(0, Number.isFinite(Number(maxRequests)) ? Number(maxRequests) : 50);
-  const ordered = workdayCandidates
-    .map((candidate, index) => ({ candidate, index, indiaLocated: WORKDAY_DEFAULT_LOCATION_KEYWORDS.some((keyword) => String(candidate.location ?? '').toLowerCase().includes(keyword)) }))
-    .sort((a, b) => Number(b.indiaLocated) - Number(a.indiaLocated) || a.index - b.index)
-    .map(({ candidate }) => candidate);
+  const boardGroups = new Map();
+  workdayCandidates.forEach((candidate, index) => {
+    const key = boardKeyOf(candidate);
+    const indiaLocated = WORKDAY_DEFAULT_LOCATION_KEYWORDS.some((keyword) => String(candidate.location ?? '').toLowerCase().includes(keyword));
+    if (!boardGroups.has(key)) boardGroups.set(key, []);
+    boardGroups.get(key).push({ candidate, index, indiaLocated });
+  });
+  for (const group of boardGroups.values()) {
+    group.sort((a, b) => Number(b.indiaLocated) - Number(a.indiaLocated) || a.index - b.index);
+  }
+  const ordered = [];
+  for (let round = 0; ordered.length < workdayCandidates.length; round++) {
+    let drawn = false;
+    for (const group of boardGroups.values()) {
+      if (round < group.length) {
+        ordered.push(group[round].candidate);
+        drawn = true;
+      }
+    }
+    if (!drawn) break;
+  }
   const selected = ordered.slice(0, budget);
   for (const candidate of ordered.slice(budget)) {
-    markUnverified(candidate);
     candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: 'budget-exhausted' } };
   }
 
@@ -55,8 +75,8 @@ export async function enrichWorkdayCandidates(
     let detail;
     try {
       detail = await detailPromise;
-    } catch {
-      markUnverified(candidate);
+    } catch (err) {
+      candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'failed', reason: err?.constructor?.name ?? 'Error' } };
       return;
     }
 
@@ -67,7 +87,10 @@ export async function enrichWorkdayCandidates(
     }
 
     const parsedStartDate = detail?.startDate == null ? NaN : Date.parse(detail.startDate);
-    if (!Number.isNaN(parsedStartDate)) {
+    const nowMs = Number(now);
+    const hasUsableStartDate = Boolean(detail?.startDate && !Number.isNaN(parsedStartDate)
+      && (Number.isNaN(nowMs) || parsedStartDate <= nowMs));
+    if (hasUsableStartDate) {
       candidate.postedAt = new Date(parsedStartDate).toISOString();
       candidate.evidence = {
         ...candidate.evidence,
@@ -75,7 +98,7 @@ export async function enrichWorkdayCandidates(
       };
       return;
     }
-    markUnverified(candidate);
+    candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'succeeded', freshnessContribution: 'none' } };
   });
 
   return candidates;

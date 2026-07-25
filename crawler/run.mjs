@@ -240,7 +240,7 @@ function telemetryFor(db, runId) {
 function sourceState(value, fallback = null) {
   const parsed = typeof value === 'string' ? json(value, null) : value;
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.scanStatus === 'string') {
-    return { cursor: parsed.scanStatus === 'interrupted' ? parsed.cursor ?? null : null, state: parsed };
+    return { cursor: ['interrupted', 'truncated'].includes(parsed.scanStatus) ? parsed.cursor ?? null : null, state: parsed };
   }
   return { cursor: fallback ?? parsed ?? null, state: { scanStatus: 'legacy' } };
 }
@@ -410,6 +410,7 @@ function persistObservation(store, source, runId, observation, observedAt) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(job_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       latest_updated_at = COALESCE(excluded.latest_updated_at, jobs.latest_updated_at),
+      original_posted_at = COALESCE(jobs.original_posted_at, excluded.original_posted_at),
       inferred_repost_at = COALESCE(excluded.inferred_repost_at, jobs.inferred_repost_at),
       closed_at = COALESCE(excluded.closed_at, jobs.closed_at),
       latest_fingerprint = excluded.latest_fingerprint,
@@ -427,14 +428,15 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
   const persisted = sourceState(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
   const sourceCapabilities = source.capabilities ?? {};
   const previousState = persisted.state;
-  const cursor = sourceCapabilities.newestFirst && previousState.scanStatus !== 'interrupted'
+  const cursor = sourceCapabilities.newestFirst && !['interrupted', 'truncated'].includes(previousState.scanStatus)
     ? null
     : persisted.cursor;
   const telemetry = {
     status: 'running', attempts: 0, fetched: 0, changed: 0, observations: 0,
     startingCursor: cursor,
-    cursorReset: Boolean(sourceCapabilities.newestFirst && previousState.scanStatus !== 'interrupted' && (previousState.scanStatus !== 'legacy' || persisted.cursor != null)),
-    cursorContinued: Boolean(cursor != null && previousState.scanStatus === 'interrupted'),
+    continuationCursor: null,
+    cursorReset: Boolean(sourceCapabilities.newestFirst && !['interrupted', 'truncated'].includes(previousState.scanStatus) && (previousState.scanStatus !== 'legacy' || persisted.cursor != null)),
+    cursorContinued: Boolean(cursor != null && ['interrupted', 'truncated'].includes(previousState.scanStatus)),
     naturalTerminal: false, interrupted: false, truncated: false, newestPostingAt: null,
     consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
   };
@@ -461,7 +463,8 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
       telemetry.recordsNotExamined = manifest.recordsNotExamined ?? null;
       telemetry.newestPostingAt = newestPostingAt(observations, manifest);
       telemetry.consecutiveZeroNewRuns = telemetry.changed === 0 ? Number(previousState.consecutiveZeroNewRuns ?? 0) + 1 : 0;
-      const nextCursor = interrupted ? result?.cursor ?? cursor : null;
+      const nextCursor = interrupted || manifest.truncated ? result?.cursor ?? cursor : null;
+      telemetry.continuationCursor = nextCursor;
       store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(nextCursor, {
         scanStatus: interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'completed',
         naturalTerminal: Boolean(naturalTerminal),
@@ -499,9 +502,11 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
   if (!store) throw new TypeError('crawlRun requires an open crawler store');
   if (!runId) throw new TypeError('crawlRun requires runId for durable idempotency');
   const started = startCrawlRun(store, { runId, schedule, config, clock });
-  if (started.idempotent) return { ...snapshot(store, runId), idempotent: true };
+  if (started.idempotent) return { ...snapshot(store, runId), idempotent: true, newlyDated: 0 };
   try {
     const at = nowFrom(clock);
+    const undatedBefore = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
+    backfillOriginalPostedAt(store);
     const sourceDurations = {};
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
@@ -516,9 +521,11 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined }), t.error ?? null);
+          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined }), t.error ?? null);
       }
     }
+    const undatedAfter = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
+    const newlyDated = Math.max(0, undatedBefore - undatedAfter);
     const telemetry = telemetryFor(store, runId);
     const counts = Object.values(telemetry).reduce((total, source) => ({
       fetched: total.fetched + source.fetched,
@@ -531,11 +538,28 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     transitionStage(store, runId, 'commit', 'running', { clock });
     finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
     finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations }, clock });
-    return { ...snapshot(store, runId), idempotent: false };
+    return { ...snapshot(store, runId), idempotent: false, newlyDated };
   } catch (error) {
     failCrawlRun(store, runId, error, { clock });
     throw error;
   }
+}
+
+// Fill undated jobs from their latest durable dated observation and return the number filled.
+export function backfillOriginalPostedAt(store) {
+  const result = store.prepare(`UPDATE jobs
+    SET original_posted_at = (
+      SELECT posted_at FROM job_observations
+      WHERE job_observations.job_key = jobs.job_key AND posted_at IS NOT NULL
+      ORDER BY observed_at DESC
+      LIMIT 1
+    )
+    WHERE original_posted_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM job_observations
+        WHERE job_observations.job_key = jobs.job_key AND posted_at IS NOT NULL
+      )`).run();
+  return Number(result.changes);
 }
 
 export function readCrawlerState(store) {

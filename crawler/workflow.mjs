@@ -477,6 +477,37 @@ export async function crawlWorkflow({
     (sum, row) => sum + number(row?.fetched ?? row?.attempted ?? row?.detail?.fetched),
     0,
   );
+  const sourceHealth = Object.fromEntries(Object.entries(sourceTelemetry || {}).map(([sourceId, telemetry]) => {
+    const health = {
+      status: telemetry?.status ?? null,
+      naturalTerminal: telemetry?.naturalTerminal === true,
+      truncated: telemetry?.truncated === true,
+      capHit: telemetry?.capHit ?? null,
+      recordsNotExamined: telemetry?.recordsNotExamined ?? null,
+    };
+    if (telemetry?.continuationCursor != null) health.cursor = telemetry.continuationCursor;
+    else if (telemetry?.startingCursor != null) health.cursor = telemetry.startingCursor;
+    if (telemetry?.detail?.telemetry?.workdayDetail) health.workdayDetail = telemetry.detail.telemetry.workdayDetail;
+    const boards = asArray(telemetry?.detail?.sources).map((board) => {
+      const boardHealth = {
+        board: board?.board ?? null,
+        provider: board?.provider ?? null,
+        status: board?.status ?? null,
+        naturalTerminal: board?.naturalTerminal === true,
+        truncated: board?.truncated === true,
+        capHit: board?.capHit ?? null,
+        recordsNotExamined: board?.recordsNotExamined ?? null,
+      };
+      const boardContinuationCursor = board?.continuationCursor
+        ?? telemetry?.continuationCursor?.__cursor?.[board?.board]
+        ?? telemetry?.continuationCursor?.[board?.board];
+      if (boardContinuationCursor != null) boardHealth.cursor = boardContinuationCursor;
+      else if (board?.startingCursor != null) boardHealth.cursor = board.startingCursor;
+      return boardHealth;
+    });
+    if (boards.length) health.boards = boards;
+    return [sourceId, health];
+  }));
   const funnel = buildFunnelReport({
     observations: funnelObservations,
     lifecycle: {
@@ -490,7 +521,9 @@ export async function crawlWorkflow({
       ready: selection.shortlist.length,
       selected: selection.shortlist.length,
       newlyActionable: newlyActionableCount,
+      newlyDated: durable.newlyDated,
     },
+    sourceHealth,
   });
   const workflowCounts = {
     ready: selection.shortlist.length,

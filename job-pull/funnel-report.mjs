@@ -7,6 +7,8 @@
  * Narrative text is derived only from stored counters.
  */
 
+import { WORKDAY_DEFAULT_LOCATION_KEYWORDS } from '../crawler/ats-enterprise.mjs';
+
 const number = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 
 /** Policy gate order for first-failure assignment (master_prompt §2 hard gates). */
@@ -114,8 +116,9 @@ function blankAlsoFailed() {
  * @param {object} input
  * @param {Array} input.observations - classified entries with eligibility/freshness/suppression
  * @param {object} [input.lifecycle] - optional precomputed lifecycle counts
+ * @param {object} [input.sourceHealth] - optional source and board health telemetry
  */
-export function buildFunnelReport({ observations = [], lifecycle = {} } = {}) {
+export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHealth = {} } = {}) {
   const normalized = observations.length;
   const firstFailures = EMPTY_FIRST_FAILURES();
   const firstFailureCodes = {};
@@ -128,6 +131,8 @@ export function buildFunnelReport({ observations = [], lifecycle = {} } = {}) {
     Rejected: 0,
     workdayUncorroborated: 0,
   };
+  const freshnessClassesByProvider = {};
+  const indiaHiringCompanyKeys = new Set();
 
   let eligible = 0;
   let historicallySuppressed = 0;
@@ -135,15 +140,35 @@ export function buildFunnelReport({ observations = [], lifecycle = {} } = {}) {
   let selected = 0;
 
   for (const entry of observations) {
+    const candidate = entry.candidate || {};
     const freshness = entry.freshness || {};
+    const provider = String(candidate.provider ?? '').trim() || 'unknown';
+    if (!freshnessClassesByProvider[provider]) {
+      freshnessClassesByProvider[provider] = {
+        Hot: 0,
+        Active: 0,
+        Backfill: 0,
+        VerifyQueue: 0,
+        Rejected: 0,
+        workdayUncorroborated: 0,
+      };
+    }
+    const providerFreshnessClasses = freshnessClassesByProvider[provider];
     if (freshness.window && Object.prototype.hasOwnProperty.call(freshnessClasses, freshness.window)) {
       freshnessClasses[freshness.window] += 1;
+      providerFreshnessClasses[freshness.window] += 1;
     }
     if (freshness.workdayUncorroborated === true
       || freshness.code === 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE') {
       freshnessClasses.workdayUncorroborated += 1;
+      providerFreshnessClasses.workdayUncorroborated += 1;
     }
     if (entry.eligibility?.eligible === true) eligible += 1;
+    const indiaLocated = WORKDAY_DEFAULT_LOCATION_KEYWORDS.some((keyword) => String(candidate.location ?? '').toLowerCase().includes(keyword));
+    const companyKey = String(candidate.company ?? '').trim().toLowerCase();
+    if (entry.eligibility?.eligible === true && indiaLocated && companyKey) {
+      indiaHiringCompanyKeys.add(companyKey);
+    }
     if (entry.historicalSuppressed === true
       || entry.suppression?.code === 'HISTORICAL_SUPPRESSED') {
       historicallySuppressed += 1;
@@ -173,7 +198,10 @@ export function buildFunnelReport({ observations = [], lifecycle = {} } = {}) {
     eligible: number(lifecycle.eligible ?? eligible),
     freshnessClassified: normalized,
     freshnessClasses,
+    freshnessClassesByProvider,
+    indiaHiringCompanies: indiaHiringCompanyKeys.size,
     newlyActionable: number(lifecycle.newlyActionable ?? 0),
+    newlyDated: number(lifecycle.newlyDated ?? 0),
     newlyActionableTracked: lifecycle.newlyActionable != null,
     historicalSuppressed: number(lifecycle.historicalSuppressed ?? historicallySuppressed),
     suppressedCooldown: number(lifecycle.suppressedCooldown ?? firstFailures.suppressedCooldown),
@@ -195,6 +223,7 @@ export function buildFunnelReport({ observations = [], lifecycle = {} } = {}) {
     firstFailures,
     firstFailureCodes,
     alsoFailed,
+    sourceHealth,
     reconciliation: {
       normalized,
       firstFailureTotal,

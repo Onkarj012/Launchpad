@@ -77,3 +77,26 @@ test('undated Workday rows with unverified evidence still route to VerifyQueue',
   assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
   assert.equal(result.verifyQueue, true);
 });
+
+test('detail-hydrated Workday rows with startDate evidence are classified by their date', () => {
+  const result = classifyFreshness({
+    provider: 'workday',
+    postedAt: '2026-07-14T08:00:00.000Z',
+    evidence: { freshness: { kind: 'workday-startDate', detailUrl: 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/job/Pune/Engineer_Pune' } },
+  }, { now });
+  assert.equal(result.window, 'Hot');
+  assert.equal(result.eligible, true);
+  assert.equal(result.code, 'FRESHNESS_HOT_0_72H');
+  assert.equal(result.verifyQueue, undefined);
+});
+
+test('Workday rows with an unbounded postedOn label stay undated in VerifyQueue', () => {
+  const result = classifyFreshness({
+    provider: 'workday',
+    postedAt: null,
+    evidence: { freshness: { kind: 'workday-postedOn-unbounded', label: 'Posted 30+ Days Ago' } },
+  }, { now });
+  assert.equal(result.window, 'VerifyQueue');
+  assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
+  assert.equal(result.verifyQueue, true);
+});

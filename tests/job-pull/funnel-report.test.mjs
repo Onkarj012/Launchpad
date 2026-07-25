@@ -252,3 +252,126 @@ test('runPipeline funnel distinguishes backfill-already-seen from cooldown and e
   assert.match(result.funnel.narrative, /cooldown suppressions 0/);
   assert.match(result.funnel.narrative, /Workday uncorroborated 1/);
 });
+
+test('funnel reports freshness classes by provider and preserves global tallies', () => {
+  const observations = [
+    { candidate: { provider: 'greenhouse' }, freshness: { window: 'Hot' } },
+    { candidate: { provider: 'greenhouse' }, freshness: { window: 'Active' } },
+    { candidate: { provider: 'workday' }, freshness: { window: 'VerifyQueue', workdayUncorroborated: true } },
+    { candidate: { provider: 'workday' }, freshness: { window: 'Rejected' } },
+    { candidate: {}, freshness: { window: 'Backfill' } },
+  ];
+  const report = buildFunnelReport({ observations });
+
+  assert.deepEqual(report.lifecycle.freshnessClassesByProvider, {
+    greenhouse: { Hot: 1, Active: 1, Backfill: 0, VerifyQueue: 0, Rejected: 0, workdayUncorroborated: 0 },
+    workday: { Hot: 0, Active: 0, Backfill: 0, VerifyQueue: 1, Rejected: 1, workdayUncorroborated: 1 },
+    unknown: { Hot: 0, Active: 0, Backfill: 1, VerifyQueue: 0, Rejected: 0, workdayUncorroborated: 0 },
+  });
+  for (const key of Object.keys(report.lifecycle.freshnessClasses)) {
+    const total = Object.values(report.lifecycle.freshnessClassesByProvider)
+      .reduce((sum, classes) => sum + classes[key], 0);
+    assert.equal(total, report.lifecycle.freshnessClasses[key], key);
+  }
+});
+
+test('funnel counts distinct India hiring companies from eligible entries only', () => {
+  const report = buildFunnelReport({ observations: [
+    { candidate: { company: 'Acme Labs', location: 'Pune' }, eligibility: { eligible: true } },
+    { candidate: { company: ' acme labs ', location: 'India' }, eligibility: { eligible: true } },
+    { candidate: { company: 'India Only Ineligible', location: 'Bengaluru' }, eligibility: { eligible: false } },
+    { candidate: { company: 'Foreign Co', location: 'London' }, eligibility: { eligible: true } },
+  ] });
+
+  assert.equal(report.lifecycle.indiaHiringCompanies, 1);
+});
+
+test('funnel report defaults new inputs without changing existing fields', () => {
+  const report = buildFunnelReport({
+    observations: [{
+      candidate: { provider: 'greenhouse' },
+      eligibility: { eligible: true },
+      freshness: { window: 'Hot' },
+      ready: true,
+      selected: true,
+    }],
+  });
+  const {
+    freshnessClassesByProvider,
+    indiaHiringCompanies,
+    newlyDated,
+    ...legacyLifecycle
+  } = report.lifecycle;
+  const { sourceHealth, ...reportWithoutSourceHealth } = report;
+  const legacyReport = { ...reportWithoutSourceHealth, lifecycle: legacyLifecycle };
+
+  assert.equal(newlyDated, 0);
+  assert.deepEqual(freshnessClassesByProvider, { greenhouse: {
+    Hot: 1, Active: 0, Backfill: 0, VerifyQueue: 0, Rejected: 0, workdayUncorroborated: 0,
+  } });
+  assert.equal(indiaHiringCompanies, 0);
+  assert.deepEqual(sourceHealth, {});
+  assert.deepEqual(legacyReport, {
+    schemaVersion: 'LaunchpadFunnelReportV1',
+    lifecycle: {
+      ...legacyLifecycle,
+    },
+    firstFailures: {
+      geo: 0, title: 0, experience: 0, employment: 0, salary: 0, liveness: 0,
+      verifyQueue: 0, freshnessRejected: 0, historicalSuppressed: 0,
+      suppressedBackfillAlreadySeen: 0, suppressedCooldown: 0, suppressedActioned: 0,
+      suppressedRejected: 0, notSelected: 0, selected: 1,
+    },
+    firstFailureCodes: { SELECTED: 1 },
+    alsoFailed: {
+      byBucket: {
+        geo: 0, title: 0, experience: 0, employment: 0, salary: 0, liveness: 0,
+        verifyQueue: 0, freshnessRejected: 0, historicalSuppressed: 0,
+        suppressedBackfillAlreadySeen: 0, suppressedCooldown: 0, suppressedActioned: 0,
+        suppressedRejected: 0, notSelected: 0, selected: 0,
+      },
+      byCode: {},
+      total: 0,
+    },
+    reconciliation: { normalized: 1, firstFailureTotal: 1, ok: true, delta: 0 },
+    narrative: 'Fetched 1 records; source-filtered 1; normalized observations 1.\nEligible 1; verify-queue 0 (Workday uncorroborated 0); ready 1; selected 1.\nNewly actionable not yet tracked: 0.\nFirst-failure exits (mutually exclusive, sum=1): selected=1.\nAlso failed (overlapping evidence, not in first-failure totals): none.\nHistorical suppressions 0; cooldown suppressions 0; previously-observed backfill suppressions 0.\nReconciliation OK: first-failure total 1 equals normalized 1.',
+  });
+});
+
+test('funnel report preserves natural exhaustion and truncation in source health', () => {
+  const sourceHealth = {
+    enterprise: {
+      status: 'ok',
+      naturalTerminal: true,
+      truncated: false,
+      capHit: null,
+      recordsNotExamined: null,
+      boards: [
+        { board: 'Natural Board', provider: 'workday', status: 'ok', naturalTerminal: true, truncated: false, recordsNotExamined: null },
+        { board: 'Truncated Board', provider: 'workday', status: 'ok', naturalTerminal: false, truncated: true, recordsNotExamined: 7 },
+      ],
+    },
+  };
+  const report = buildFunnelReport({ sourceHealth });
+
+  assert.deepEqual(report.sourceHealth, sourceHealth);
+  assert.equal(report.sourceHealth.enterprise.boards[0].naturalTerminal, true);
+  assert.equal(report.sourceHealth.enterprise.boards[0].truncated, false);
+  assert.equal(report.sourceHealth.enterprise.boards[1].naturalTerminal, false);
+  assert.equal(report.sourceHealth.enterprise.boards[1].truncated, true);
+  assert.equal(report.sourceHealth.enterprise.boards[1].recordsNotExamined, 7);
+});
+
+test('funnel reconciliation math remains exact for a fixed input', () => {
+  const report = buildFunnelReport({ observations: [
+    { eligibility: { geo: { pass: false, code: 'GEO_REJECTED' } }, freshness: { window: 'Hot' } },
+    { selected: true, freshness: { window: 'Active' } },
+  ] });
+
+  assert.deepEqual(report.reconciliation, {
+    normalized: 2,
+    firstFailureTotal: 2,
+    ok: true,
+    delta: 0,
+  });
+});

@@ -198,6 +198,19 @@ test('pagination is capped and a listing without a trustworthy URL is skipped', 
   assert.ok(result.provenance.transportInjected);
 });
 
+test('non-Workday truncation by the per-board job cap persists a continuation cursor', async () => {
+  const boardUrl = 'https://phenom.example/jobs';
+  const nextUrl = 'https://phenom.example/jobs?page=2';
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'phenom', company: 'Phenom Co', url: boardUrl }], maxPages: 1, maxJobsPerBoard: 1, runAt,
+    transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ jobs: [
+      { title: 'Phenom Engineer 1', id: 'P-1', url: '/job/p-1', datePosted: '2026-07-22' },
+      { title: 'Phenom Engineer 2', id: 'P-2', url: '/job/p-2', datePosted: '2026-07-22' },
+    ], next: nextUrl }) }),
+  });
+  assert.deepEqual(result.conditionalState.__cursor['Phenom Co'], { endpointUrl: nextUrl, page: 1, workdayReceived: 0 });
+});
+
 test('Workday: large tenant paginates past the first 20 postings via offset, bounded by maxPages', async () => {
   const totalPostings = 55;
   const calls = [];
@@ -452,7 +465,7 @@ test('Workday DETAIL concurrency and per-run budget are respected and reported i
   assert.equal(skippedBudget.length, 2);
 });
 
-test('hydrated Workday candidate with only provider dates cannot reach Hot/Active freshness', async () => {
+test('hydrated Workday candidate with a parseable start date is corroborated and classified by that date', async () => {
   const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
   const transport = async (url, options) => {
     if (options?.detail || options?.method === 'GET') {
@@ -495,12 +508,39 @@ test('hydrated Workday candidate with only provider dates cannot reach Hot/Activ
     transport, runAt, maxPages: 1, ...WORKDAY_DETAIL_OPTS,
   });
   const candidate = result.observations[0];
-  assert.equal(candidate.evidence.freshness?.kind, 'workday-unverified');
+  assert.equal(candidate.evidence.freshness?.kind, 'workday-startDate');
+  assert.equal(candidate.postedAt, '2026-07-22T00:00:00.000Z');
   const freshness = classifyFreshness(candidate, { now: runAt });
-  assert.equal(freshness.window, 'VerifyQueue');
-  assert.equal(freshness.eligible, false);
-  assert.notEqual(freshness.window, 'Hot');
-  assert.notEqual(freshness.window, 'Active');
+  assert.equal(freshness.window, 'Hot');
+  assert.equal(freshness.eligible, true);
+});
+
+test('hydrated Workday candidate with an unparseable start date remains undated and unverified', async () => {
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  const transport = async (url, options) => options?.detail || options?.method === 'GET'
+    ? { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: {
+      title: 'Software Engineer', jobDescription: '<p>Build services in Pune.</p>', location: 'Pune, India', jobReqId: 'REQ-GARBAGE', canApply: true, posted: true, startDate: 'not-a-date',
+    } }) }
+    : { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'Software Engineer', externalPath: '/job/Pune/Software-Engineer_REQ-GARBAGE', locationsText: 'Pune, India', bulletFields: ['REQ-GARBAGE'] }] }) };
+
+  const result = await discoverEnterpriseAts({ boards: [{ provider: 'workday', company: 'Acme', url: listUrl }], transport, runAt, maxPages: 1, ...WORKDAY_DETAIL_OPTS });
+  const candidate = result.observations[0];
+  assert.equal(candidate.postedAt, null);
+  assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified', providerStartDate: null, providerPostedOn: null });
+});
+
+test('hydrated Workday candidate with a future start date remains undated and unverified', async () => {
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  const transport = async (url, options) => options?.detail || options?.method === 'GET'
+    ? { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: {
+      title: 'Software Engineer', jobDescription: '<p>Build services in Pune.</p>', location: 'Pune, India', jobReqId: 'REQ-FUTURE', canApply: true, posted: true, startDate: '2026-07-24',
+    } }) }
+    : { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'Software Engineer', externalPath: '/job/Pune/Software-Engineer_REQ-FUTURE', locationsText: 'Pune, India', bulletFields: ['REQ-FUTURE'] }] }) };
+
+  const result = await discoverEnterpriseAts({ boards: [{ provider: 'workday', company: 'Acme', url: listUrl }], transport, runAt, maxPages: 1, ...WORKDAY_DETAIL_OPTS });
+  const candidate = result.observations[0];
+  assert.equal(candidate.postedAt, null);
+  assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified', providerStartDate: '2026-07-24T00:00:00.000Z', providerPostedOn: null });
 });
 
 test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, and remains policy-evaluable', async () => {
