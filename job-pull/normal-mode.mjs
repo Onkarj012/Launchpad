@@ -133,7 +133,7 @@ function verificationRecord(candidate, eligibility) {
 function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
   return {
     schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode,
-    shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
+    shortlist: [], verificationQueue: details.verificationQueue || [], funnel: details.funnel || null, sourceManifests, sourceTelemetry: sourceManifests,
     plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
     scoringQueue: details.scoringQueue || [],
     scoring: details.scoring || null,
@@ -241,6 +241,12 @@ export async function runNormalMode({
       selected: incompleteScoring ? 0 : selection.selected.length,
       runFailed: incompleteScoring,
     });
+    const verifiedCandidates = new Set(pipeline.scoringCandidates.map((candidate) => candidate.canonicalUrl));
+    const verificationCandidates = [
+      ...pipeline.scoringCandidates,
+      ...sourceResults.flatMap((source) => source.candidates).filter((candidate) => !verifiedCandidates.has(candidate.canonicalUrl)),
+    ];
+    const verificationQueue = verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean);
     if (incompleteScoring) {
       const error = scoringGateError(selection);
       error.details = {
@@ -253,13 +259,15 @@ export async function runNormalMode({
           selectedCount: 0,
         },
         reconciliation,
+        verificationQueue,
+        funnel: pipeline.funnel,
         counts: {
           fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0),
           eligible: eligibleCount,
           scored: selection.scoredCount,
           ready: selection.readyCount,
           selected: 0,
-          verificationQueue: 0,
+          verificationQueue: verificationQueue.length,
           historicalSuppressed: historicalSuppressions.length,
           minimum: 10,
           preferred: 12,
@@ -285,12 +293,6 @@ export async function runNormalMode({
       if (notionGateway.kind !== 'fake-transactional-v5' || typeof notionGateway.executeWrites !== 'function') throw new NormalModeError('live or non-transactional gateway execution is disabled; inject the Issue03 fake gateway', 'notion');
       transaction = await notionGateway.executeWrites({ operations: plannedOperations });
     }
-    const verifiedCandidates = new Set(pipeline.scoringCandidates.map((candidate) => candidate.canonicalUrl));
-    const verificationCandidates = [
-      ...pipeline.scoringCandidates,
-      ...sourceResults.flatMap((source) => source.candidates).filter((candidate) => !verifiedCandidates.has(candidate.canonicalUrl)),
-    ];
-    const verificationQueue = verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean);
     for (const source of sourceResults) {
       source.manifest.selected = 0;
       source.manifest.selected += shortlist.filter((candidate) => candidate.normalLaneId === source.manifest.sourceId).length;
@@ -305,7 +307,7 @@ export async function runNormalMode({
     const missing = Math.max(0, 10 - shortlist.length);
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
-      scoringQueue: selection.scoringQueue,
+      scoringQueue: selection.scoringQueue, funnel: pipeline.funnel,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
       dedupInputs: {

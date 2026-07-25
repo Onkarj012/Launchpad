@@ -168,3 +168,31 @@ test('fatal core failure occurs before planning or transactional execution', asy
   assert.equal(gateway.plans.length, 0);
   assert.equal(gateway.events.length, 0);
 });
+
+test('fatal scoring gate surfaces the pipeline funnel report', async () => {
+  const result = await runNormalMode({
+    clock: () => NOW,
+    sourceFunctions: { 'tracked-ats': () => ({ records: [
+      raw(1, { matchScore: undefined }),
+      raw(2, { provider: 'workday', postedAt: null, url: 'https://acme.wd1.myworkdayjobs.com/Careers/job/Pune/REQ-VERIFY' }),
+    ] }) },
+    enrichmentBudget: 0,
+  });
+  assert.equal(result.outcome.fatal, true);
+  assert.ok(result.funnel);
+  assert.equal(result.funnel.reconciliation.ok, true);
+});
+
+test('fatal scoring gate preserves verification candidates', async () => {
+  const result = await runNormalMode({
+    clock: () => NOW,
+    sourceFunctions: { 'tracked-ats': () => ({ records: [
+      raw(1, { matchScore: undefined }),
+      raw(2, { provider: 'workday', postedAt: null, url: 'https://acme.wd1.myworkdayjobs.com/Careers/job/Pune/REQ-VERIFY' }),
+    ] }) },
+    enrichmentBudget: 0,
+  });
+  assert.equal(result.outcome.fatal, true);
+  assert.ok(result.verificationQueue.length > 0);
+  assert.equal(result.counts.verificationQueue, result.verificationQueue.length);
+});

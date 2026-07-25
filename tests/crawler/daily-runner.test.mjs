@@ -590,6 +590,15 @@ test('Indian portal lanes are optional and explain that live injection is requir
   }
 });
 
+test('unified daily result surfaces the Normal pipeline funnel report', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+  }));
+  assert.ok(result.funnel);
+  assert.equal(result.funnel.reconciliation.ok, true);
+});
+
 test('no portal injection is healthy and does not create portal shortfall reasons', async () => {
   const { config } = testConfig();
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
