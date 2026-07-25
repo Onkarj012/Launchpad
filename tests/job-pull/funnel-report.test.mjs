@@ -103,7 +103,7 @@ test('Workday uncorroborated dates route to verification-queue funnel counts', (
   const workday = classified(base(20, {
     provider: 'workday',
     postedAt: '2026-07-24T08:00:00.000Z',
-    evidence: { freshness: { kind: 'workday-postedOn' } },
+    evidence: { freshness: { kind: 'workday-unverified' } },
   }));
   assert.equal(workday.freshness.window, 'VerifyQueue');
   assert.equal(workday.freshness.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');

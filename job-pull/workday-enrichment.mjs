@@ -1,5 +1,6 @@
 import { makeHttpCtx } from '../career-ops/providers/_http.mjs';
 import { fetchWorkdayJobDetail } from '../career-ops/providers/workday.mjs';
+import { WORKDAY_DEFAULT_LOCATION_KEYWORDS } from '../crawler/ats-enterprise.mjs';
 import { canonicalizeUrl, extractExperienceYears, stripHtmlToText } from './candidate.mjs';
 
 async function parallelEach(items, limit, fn) {
@@ -33,8 +34,12 @@ export async function enrichWorkdayCandidates(
   const limit = Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 4) : 4;
   const httpCtx = ctx ?? makeHttpCtx();
   const budget = Math.max(0, Number.isFinite(Number(maxRequests)) ? Number(maxRequests) : 50);
-  const selected = workdayCandidates.slice(0, budget);
-  for (const candidate of workdayCandidates.slice(budget)) {
+  const ordered = workdayCandidates
+    .map((candidate, index) => ({ candidate, index, indiaLocated: WORKDAY_DEFAULT_LOCATION_KEYWORDS.some((keyword) => String(candidate.location ?? '').toLowerCase().includes(keyword)) }))
+    .sort((a, b) => Number(b.indiaLocated) - Number(a.indiaLocated) || a.index - b.index)
+    .map(({ candidate }) => candidate);
+  const selected = ordered.slice(0, budget);
+  for (const candidate of ordered.slice(budget)) {
     markUnverified(candidate);
     candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: 'budget-exhausted' } };
   }

@@ -18,10 +18,10 @@ export function classifyFreshness(candidateOrPostedAt, options = {}) {
   const candidate = candidateOrPostedAt && typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt : null;
   const isWorkday = candidate?.provider?.toLowerCase?.() === 'workday';
   const isPersonio = candidate?.provider?.toLowerCase?.() === 'personio';
-  const workdayHasVerifiedDate = candidate?.evidence?.freshness?.kind === 'workday-startDate';
+  const workdayHasVerifiedDate = ['workday-startDate', 'workday-postedOn'].includes(candidate?.evidence?.freshness?.kind);
   const rawPostedAt = candidate ? candidate.postedAt : candidateOrPostedAt;
-  // Workday postedOn is provider evidence requiring corroboration; alone it must
-  // never produce Hot/Active — route to VerifyQueue as explicit verification work.
+  // A four-tenant, 16-row Workday probe matched LIST postedOn to DETAIL startDate;
+  // see docs/research/workday-postedon-probe.md for the measured basis.
   const workdayUncorroborated = Boolean(isWorkday && !workdayHasVerifiedDate && rawPostedAt != null);
   const personioUncorroborated = Boolean(isPersonio && candidate?.evidence?.dateConfidence === 'provider-unverified' && rawPostedAt != null);
   const postedAt = (isWorkday && !workdayHasVerifiedDate) || personioUncorroborated

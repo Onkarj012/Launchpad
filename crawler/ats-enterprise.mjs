@@ -1,4 +1,5 @@
 import { extractExperienceYears, normalizeCandidate, stripHtmlToText } from '../job-pull/candidate.mjs';
+import { parsePostedOn } from '../career-ops/providers/workday.mjs';
 
 const SUPPORTED = new Set(['workday', 'successfactors', 'phenom', 'icims', 'jobvite', 'oracle', 'custom']);
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -115,14 +116,24 @@ function listRequisitionId(row) {
   return null;
 }
 
-function fields(provider, row, boardUrl) {
+function fields(provider, row, boardUrl, runAt) {
   const url = first(row.url, row.jobUrl, row.detailUrl, row.careerSiteUrl, row.applyUrl, row.applyurl, row.externalPath, row.jobPostingUrl, row.links?.self, row.links?.job);
   const title = first(row.title, row.jobTitle, row.jobtitle, row.name, row.role);
   const company = first(row.company, row.companyName, row.hiringOrganization?.name);
   const date = first(row.postedAt, row.datePosted, row.postingDate, row.postedOn, row.posteddate, row.createdAt, row.startDate);
+  const parsedDate = parseDate(date);
+  // Relative labels resolve against the run clock, not wall-clock at parse time: a long
+  // crawl would otherwise date "Posted Today" rows after runAt and trip FRESHNESS_FUTURE_POSTED_AT.
+  const runClock = Date.parse(String(runAt ?? ''));
+  const postedOnMs = provider === 'workday' && typeof date === 'string' && parsedDate === null
+    ? parsePostedOn(date, Number.isNaN(runClock) ? Date.now() : runClock)
+    : undefined;
   const id = listRequisitionId(row);
   return {
-    url: canonical(url, boardUrl), title: clean(title), company: clean(company), postedAt: parseDate(date), id: id == null ? null : String(id),
+    url: canonical(url, boardUrl), title: clean(title), company: clean(company), postedAt: postedOnMs === undefined ? parsedDate : new Date(postedOnMs).toISOString(), id: id == null ? null : String(id),
+    freshness: provider === 'workday'
+      ? postedOnMs === undefined ? { kind: 'workday-unverified' } : { kind: 'workday-postedOn', label: date }
+      : null,
     location: locationText(first(row.location, row.locations, row.locationsText, row.jobLocation, row.city)),
     description: clean(row.description || row.descriptionPlain || row.jobDescription),
     applicationUrl: canonical(first(row.applyUrl, row.applyurl, row.applicationUrl, row.externalUrl), boardUrl), provider,
@@ -131,7 +142,7 @@ function fields(provider, row, boardUrl) {
 }
 
 function candidateFrom(row, { provider, board, endpointUrl, page, runAt, parser }) {
-  const value = fields(provider, row, board.url);
+  const value = fields(provider, row, board.url, runAt);
   if (!value.url || !value.title) return { value: null, failure: { code: value.url ? 'LISTING_TITLE_MISSING' : 'LISTING_URL_MISSING', message: 'listing omitted because a trustworthy URL or title was absent' } };
   const classification = host(value.url) === host(board.url) ? 'direct' : 'lead';
   const candidate = normalizeCandidate({
@@ -140,7 +151,7 @@ function candidateFrom(row, { provider, board, endpointUrl, page, runAt, parser 
     applicationUrl: value.applicationUrl, originalApplicationEvidence: 'enterprise ATS observation', provider,
     source: endpointUrl, sourceKind: classification === 'direct' ? 'ats-direct' : 'aggregator',
     liveness: { status: value.postedAt ? 'Active' : 'Not Verified', checkedAt: runAt, evidence: 'enterprise-ats-feed' },
-    evidence: { classification, parser, provider, boardUrl: board.url, endpointUrl, page, verified: false, requisitionId: value.id },
+    evidence: { classification, parser, provider, boardUrl: board.url, endpointUrl, page, verified: false, requisitionId: value.id, ...(value.freshness ? { freshness: value.freshness } : {}) },
   }, { runAt, provider });
   candidate.classification = classification;
   candidate.provenance = { provider, boardUrl: board.url, endpointUrl, page, parser, transportInjected: true };
@@ -333,8 +344,9 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
       requisitionId,
       providerStartDate: detail.providerStartDate,
       providerPostedOn: detail.providerPostedOn,
-      // Mutable Workday dates stay uncorroborated; do not set workday-startDate.
-      freshness: { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
+      freshness: candidate.evidence?.freshness?.kind === 'workday-postedOn'
+        ? candidate.evidence.freshness
+        : { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
     },
   }, { runAt, provider: 'workday' });
   next.classification = candidate.classification;

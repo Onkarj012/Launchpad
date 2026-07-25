@@ -56,3 +56,24 @@ test('Workday source provenance cannot masquerade as a non-Workday provider', ()
   assert.equal(result.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');
   assert.equal(result.workdayUncorroborated, true);
 });
+
+test('bounded Workday postedOn evidence can reach Hot freshness', () => {
+  const result = classifyFreshness({
+    provider: 'workday',
+    postedAt: '2026-07-14T11:00:00.000Z',
+    evidence: { freshness: { kind: 'workday-postedOn', label: 'Posted Today' } },
+  }, { now });
+  assert.equal(result.window, 'Hot');
+  assert.equal(result.eligible, true);
+});
+
+test('undated Workday rows with unverified evidence still route to VerifyQueue', () => {
+  const result = classifyFreshness({
+    provider: 'workday',
+    postedAt: null,
+    evidence: { freshness: { kind: 'workday-unverified' } },
+  }, { now });
+  assert.equal(result.window, 'VerifyQueue');
+  assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
+  assert.equal(result.verifyQueue, true);
+});

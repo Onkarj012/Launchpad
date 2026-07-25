@@ -5,6 +5,7 @@ import {
   preselectWorkdayListRow,
   workdayDetailUrl,
 } from '../../crawler/ats-enterprise.mjs';
+import { parsePostedOn } from '../../career-ops/providers/workday.mjs';
 import { resolveJobIdentity } from '../../crawler/identity.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
 
@@ -15,6 +16,54 @@ const WORKDAY_DETAIL_OPTS = {
   detailConcurrency: 2,
   maxDetailRequestsPerRun: 20,
 };
+
+test('Workday postedOn parser uses the injected clock for today labels', () => {
+  const now = Date.parse('2026-07-25T12:00:00.000Z');
+  assert.equal(parsePostedOn('Posted Today', now), now);
+});
+
+test('Workday postedOn parser subtracts bounded day labels', () => {
+  const now = Date.parse('2026-07-25T12:00:00.000Z');
+  assert.equal(parsePostedOn('Posted 3 Days Ago', now), now - 3 * 86_400_000);
+});
+
+test('Workday postedOn parser leaves the unbounded bucket undated', () => {
+  assert.equal(parsePostedOn('Posted 30+ Days Ago', Date.parse('2026-07-25T12:00:00.000Z')), undefined);
+});
+
+test('Workday LIST labels date candidates and preserve postedOn provenance', async () => {
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: 'https://acme.wd1.myworkdayjobs.com/jobs' }],
+    transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/ai-engineer', postedOn: 'Posted Yesterday' }] }) }),
+    runAt, maxPages: 1,
+  });
+  const candidate = result.observations[0];
+  assert.ok(candidate.postedAt);
+  assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-postedOn', label: 'Posted Yesterday' });
+});
+
+test('Workday LIST "Posted Today" dates against runAt, not wall-clock', async () => {
+  const pastRunAt = '2026-07-20T04:30:00.000Z';
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: 'https://acme.wd1.myworkdayjobs.com/jobs' }],
+    transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/ai-engineer', postedOn: 'Posted Today' }] }) }),
+    runAt: pastRunAt, maxPages: 1,
+  });
+  // A long crawl must not date rows after runAt, or freshness trips FRESHNESS_FUTURE_POSTED_AT.
+  assert.equal(result.observations[0].postedAt, pastRunAt);
+  assert.equal(classifyFreshness(result.observations[0], { now: pastRunAt }).code, 'FRESHNESS_HOT_0_72H');
+});
+
+test('Workday LIST 30+ labels remain undated and unverified', async () => {
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: 'https://acme.wd1.myworkdayjobs.com/jobs' }],
+    transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/ai-engineer', postedOn: 'Posted 30+ Days Ago' }] }) }),
+    runAt, maxPages: 1,
+  });
+  const candidate = result.observations[0];
+  assert.equal(candidate.postedAt, null);
+  assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified' });
+});
 
 test('parses Workday postings, follows one bounded page, and preserves direct/lead provenance', async () => {
   // Real Workday CXS pagination: same endpoint URL every request, offset
@@ -566,9 +615,10 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
   assert.equal(result.telemetry.workdayDetail.succeeded, 2);
 
   // After hydration the candidate is evidence-rich enough for downstream policy,
-  // and uncorroborated Workday dates still land in VerifyQueue (not Hot/Active).
+  // and the LIST postedOn label dates it, so it is policy-evaluable rather than
+  // parked in VerifyQueue (see docs/research/workday-postedon-probe.md).
   const freshness = classifyFreshness(ase, { now: runAt });
-  assert.equal(freshness.window, 'VerifyQueue');
+  assert.equal(freshness.window, 'Backfill');
   const identity = resolveJobIdentity(ase);
   assert.equal(identity.identity.providerJobId, 'workday|r15032');
   assert.equal(identity.code, 'NEW_TO_ME');
