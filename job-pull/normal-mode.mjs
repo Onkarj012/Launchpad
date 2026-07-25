@@ -1,6 +1,6 @@
 import { assertValidConfig, assertValidConversionPlan, loadConfig, loadConversionPlan } from './config.mjs';
 import { buildPayloadRecord, candidateDedupKey } from './candidate.mjs';
-import { runPipeline } from './run.mjs';
+import { applyScores, runPipeline } from './run.mjs';
 import { createNoWriteNotionGateway } from './workflow.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
 import { runNormalSourcePlan } from './normal-sources.mjs';
@@ -202,7 +202,7 @@ export async function runNormalMode({
   mode = 'normal', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
-  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50,
+  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -210,6 +210,7 @@ export async function runNormalMode({
   let sourceResults = [];
   try {
     sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes });
+    sourceResults = applyScores(sourceResults, scores);
     await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates), { maxRequests: enrichmentBudget });
     const sourceManifests = sourceResults.map(({ manifest }) => manifest);
     const baseConfig = config || loadConfig();

@@ -129,6 +129,7 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
     const result = await dailyRunner({
       config,
       runId: value(argv, '--run-id'),
+      scores: value(argv, '--scores-json'),
       canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
     });
     emit(result);

@@ -694,3 +694,55 @@ test('the unified result invokes the canary recorder at the daily-run seam', asy
   assert.equal(records.length, 1);
   assert.equal(records[0].runId, result.runId);
 });
+
+test('scores supplied to the unified daily run merge before the scoring gate', async () => {
+  const { config } = testConfig();
+  const role = rawPortalJob(1501, { matchScore: undefined });
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [role], manifest: { status: 'ok' } },
+    },
+    scores: { scores: [{ canonicalUrl: role.url, matchScore: 80 }] },
+  }));
+
+  assert.equal(result.outcome.status, 'ok');
+  assert.equal(result.scoringQueue.length, 0);
+  assert.equal(result.shortlist[0].canonicalUrl, role.url);
+  assert.equal(result.shortlist[0].matchScore, 80);
+});
+
+test('a score for a canonical URL outside the unified pool is a no-op', async () => {
+  const { config } = testConfig();
+  const role = rawPortalJob(1502);
+  const withoutScores = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [role], manifest: { status: 'ok' } },
+    },
+  }));
+  const withUnmatchedScore = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [role], manifest: { status: 'ok' } },
+    },
+    scores: { scores: [{ canonicalUrl: 'https://not-in-the-pool.example.test/jobs/1', matchScore: 1 }] },
+  }));
+
+  assert.equal(withUnmatchedScore.outcome.status, 'ok');
+  assert.deepEqual(withUnmatchedScore.shortlist, withoutScores.shortlist);
+  assert.deepEqual(withUnmatchedScore.scoringQueue, withoutScores.scoringQueue);
+});
+
+test('omitting scores preserves the unified scoring gate', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      'portal-naukri': { candidates: [rawPortalJob(1503, { matchScore: undefined })], manifest: { status: 'ok' } },
+    },
+  }));
+
+  assert.equal(result.outcome.status, 'fatal');
+  assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
+  assert.match(result.outcome.errors[0].message, /unscored=1/);
+});

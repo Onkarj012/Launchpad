@@ -192,6 +192,7 @@ export async function runDailyNormal({
   conversionPlan,
   ledgerRows,
   opportunityLedgerRows,
+  scores,
   store,
   canaryStore,
   sourceFunctions = {},
@@ -238,6 +239,7 @@ export async function runDailyNormal({
     conversionPlan,
     ledgerRows,
     opportunityLedgerRows,
+    scores,
     includeCrawlerLanes: true,
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
