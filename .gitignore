@@ -23,3 +23,7 @@ config/crawler-v2-live-test.json
 *.synctex.gz
 .local/
 .scratch/
+
+# t3 app icon assets (local only)
+icon/
+t3.json
