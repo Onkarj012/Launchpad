@@ -2,6 +2,7 @@ import path from 'node:path';
 import { evidenceUrls } from './evidence.mjs';
 import { outreachDuplicateKey } from './idempotency.mjs';
 import { assertContactApproval } from './review.mjs';
+import { runOutreachTransaction } from './transaction.mjs';
 
 export const OUTREACH_DEPTHS = Object.freeze(['deep', 'light']);
 
@@ -151,7 +152,17 @@ export async function storeOutreachDraft({ gateway, draft } = {}) {
     const existing = await gateway.listRows('outreach', { filter: duplicateFilter(draft.duplicateKey) });
     if (existing?.length) return { status: 'duplicate', duplicateKey: draft.duplicateKey, page: existing[0], draft };
   }
-  const page = await gateway.createPage('outreach', draft.values, { children: draft.children });
+  const transaction = await runOutreachTransaction({
+    gateway,
+    key: `outreach-create:${draft.duplicateKey}`,
+    target: 'outreach',
+    steps: [{
+      name: 'create-outreach',
+      apply: () => gateway.createPage('outreach', draft.values, { children: draft.children }),
+      verify: (page) => Boolean(page?.id ?? page?.pageId),
+    }],
+  });
+  const page = transaction.results[0];
   return { status: 'created', duplicateKey: draft.duplicateKey, page, draft };
 }
 

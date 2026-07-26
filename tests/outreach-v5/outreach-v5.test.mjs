@@ -310,3 +310,30 @@ test('contact review requires human person and channel approval and enforces sup
   assert.deepEqual(suppressed.suppression.reasons, ['PERSON_SILENCE_WINDOW', 'COMPANY_SILENCE_WINDOW']);
   assert.throws(() => approveContactReview({ card: suppressed, approval: approvalFor(currentContact) }), (error) => error.code === 'CONTACT_SUPPRESSED');
 });
+
+test('partial send confirmation rolls back Outreach and Application state', async () => {
+  const gateway = createFakeGateway();
+  const app = application('atomic-send', 90, { outreachState: null, nextAction: null });
+  gateway.pages.applications.push({ id: app.id, values: { outreachState: null, nextAction: null } });
+  const currentContact = reviewedContact('atomic-send');
+  const draft = buildOutreachDraft({ application: app, contact: currentContact, approval: approvalFor(currentContact) });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const createPage = gateway.createPage;
+  gateway.createPage = async (target, values, options) => {
+    if (target === 'activity') throw new Error('synthetic activity failure');
+    return createPage(target, values, options);
+  };
+  await assert.rejects(() => confirmManualSend({
+    gateway,
+    outreach: { ...draft, id: stored.page.id },
+    application: app,
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: OUTREACH_FIXTURE_NOW },
+    now: OUTREACH_FIXTURE_NOW,
+  }), (error) => error.code === 'TRANSACTION_ABORTED');
+  assert.equal(gateway.pages.outreach[0].values.sent, false);
+  assert.equal(gateway.pages.outreach[0].values.sentAt, null);
+  assert.equal(gateway.pages.outreach[0].values.draftState, 'Draft');
+  assert.equal(gateway.pages.applications[0].values.outreachState, null);
+  assert.equal(gateway.pages.applications[0].values.nextAction, null);
+  assert.equal(gateway.pages.activity.length, 0);
+});

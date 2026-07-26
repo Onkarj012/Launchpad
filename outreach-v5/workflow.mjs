@@ -4,6 +4,7 @@ import { evidenceUrls } from './evidence.mjs';
 import { assertManualOutcomeConfirmation, assertManualSendConfirmation, outreachActivityKey } from './idempotency.mjs';
 import { researchContact } from './research.mjs';
 import { approveContactReview, buildContactReviewCard } from './review.mjs';
+import { runOutreachTransaction } from './transaction.mjs';
 
 export class OutreachWorkflowError extends Error {
   constructor(message, code = 'OUTREACH_WORKFLOW_ERROR', details = null) {
@@ -140,8 +141,9 @@ export async function confirmManualSend({ gateway, outreach, application, confir
   if (existing?.length) return { status: 'noop', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: existing[0].id ?? null };
 
   const nextEligibleContact = addDays(initialSentAt, dueOffset);
-  await gateway.updatePage('outreach', outreach.id, { sent: true, sentAt, nextEligibleContact, draftState: 'Sent' });
-  const activity = await gateway.createPage('activity', {
+  const outreachUpdate = { sent: true, sentAt, nextEligibleContact, draftState: 'Sent' };
+  const applicationUpdate = { outreachState: stage === 'Follow-up 1' ? 'Follow-up 1 Sent' : 'Sent', nextAction: stage === 'Follow-up 2' ? 'Close' : stage === 'Follow-up 1' ? 'Follow-up 2' : 'Follow-up 1' };
+  const activityValues = {
     name: `${eventType} — ${outreach.person}`,
     application: [application.id],
     eventType,
@@ -150,13 +152,41 @@ export async function confirmManualSend({ gateway, outreach, application, confir
     idempotencyKey: eventKey,
     actionState: 'Confirmed',
     notes: `Manual confirmation: ${confirmation.confirmedBy ?? confirmation.source ?? confirmation.note}`,
+  };
+  const transaction = await runOutreachTransaction({
+    gateway,
+    key: `send-confirmation:${eventKey}`,
+    target: 'outreach-send-confirmation',
+    steps: [
+      {
+        name: 'update-outreach',
+        apply: () => gateway.updatePage('outreach', outreach.id, outreachUpdate),
+        rollback: () => gateway.updatePage('outreach', outreach.id, {
+          sent: outreach.sent ?? false,
+          sentAt: outreach.sentAt ?? null,
+          nextEligibleContact: outreach.nextEligibleContact ?? null,
+          draftState: outreach.draftState ?? 'Draft',
+        }),
+      },
+      {
+        name: 'update-application',
+        apply: () => gateway.updatePage('applications', application.id, applicationUpdate),
+        rollback: () => gateway.updatePage('applications', application.id, {
+          outreachState: application.outreachState ?? null,
+          nextAction: application.nextAction ?? null,
+        }),
+      },
+      {
+        name: 'create-activity',
+        apply: () => gateway.createPage('activity', activityValues),
+        verify: (page) => Boolean(page?.id ?? page?.pageId),
+      },
+    ],
   });
+  const activity = transaction.results[2];
   const sequence = { ...outreach, sent: true, sentAt: initialSentAt };
   const activityHistory = [...(existing ?? []), { eventType, eventAt: sentAt }];
   const derived = deriveOutreachState({ application, sequence, activities: activityHistory, now });
-  if (typeof gateway.updatePage === 'function') {
-    await gateway.updatePage('applications', application.id, { outreachState: derived.state, nextAction: derived.nextAction });
-  }
   return { status: 'confirmed', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(activity), sentAt, nextEligibleContact, derived, evidenceUrls: evidenceUrls({ publicEvidence: outreach.publicEvidence ?? [] }) };
 }
 
@@ -171,8 +201,9 @@ export async function recordOutreachOutcome({ gateway, outreach, application, re
   const existing = typeof gateway.listRows === 'function' ? await gateway.listRows('activity', { filter: activityFilter(eventKey) }) : [];
   if (existing?.length) return { status: 'noop', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: existing[0].id ?? null };
   const observedAt = confirmation.observedAt ? nowIso(confirmation.observedAt) : nowIso(now);
-  await gateway.updatePage('outreach', outreach.id, { response: normalizedResponse, outcome: outcome ?? normalizedResponse, nextEligibleContact: null, draftState: 'Stopped' });
-  const activity = await gateway.createPage('activity', {
+  const outreachUpdate = { response: normalizedResponse, outcome: outcome ?? normalizedResponse, nextEligibleContact: null, draftState: 'Stopped' };
+  const applicationUpdate = { outreachState: 'Stopped', nextAction: null };
+  const activityValues = {
     name: `Outreach response — ${outreach.person}`,
     application: [application.id],
     eventType: 'Response',
@@ -180,8 +211,38 @@ export async function recordOutreachOutcome({ gateway, outreach, application, re
     idempotencyKey: eventKey,
     actionState: 'Confirmed',
     notes: `${normalizedResponse}. Confirmed by ${confirmation.confirmedBy ?? confirmation.source ?? confirmation.note}`,
+  };
+  const transaction = await runOutreachTransaction({
+    gateway,
+    key: `outcome-confirmation:${eventKey}`,
+    target: 'outreach-outcome',
+    steps: [
+      {
+        name: 'stop-outreach',
+        apply: () => gateway.updatePage('outreach', outreach.id, outreachUpdate),
+        rollback: () => gateway.updatePage('outreach', outreach.id, {
+          response: outreach.response ?? null,
+          outcome: outreach.outcome ?? null,
+          nextEligibleContact: outreach.nextEligibleContact ?? null,
+          draftState: outreach.draftState ?? 'Draft',
+        }),
+      },
+      {
+        name: 'stop-application',
+        apply: () => gateway.updatePage('applications', application.id, applicationUpdate),
+        rollback: () => gateway.updatePage('applications', application.id, {
+          outreachState: application.outreachState ?? null,
+          nextAction: application.nextAction ?? null,
+        }),
+      },
+      {
+        name: 'record-response',
+        apply: () => gateway.createPage('activity', activityValues),
+        verify: (page) => Boolean(page?.id ?? page?.pageId),
+      },
+    ],
   });
-  await gateway.updatePage('applications', application.id, { outreachState: 'Stopped', nextAction: null });
+  const activity = transaction.results[2];
   return { status: 'confirmed', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(activity), observedAt };
 }
 
