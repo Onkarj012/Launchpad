@@ -13,6 +13,7 @@ import { runLinkedInRescue } from './job-pull/linkedin-rescue-mode.mjs';
 import { prepareApifyRecords } from './job-pull/apify-prepare.mjs';
 import { readMakeResumeQueue, readAppliedQueue } from './resume-v5/queue-reader.mjs';
 import { processMakeResumeQueue } from './resume-v5/resume-queue.mjs';
+import { runProductionResumeBuilder } from './resume-v5/production-builder.mjs';
 import { syncAppliedApplications } from './resume-v5/application-sync.mjs';
 import { prepareOutreach, persistOutreach } from './outreach-v5/workflow.mjs';
 import { assertValidManifest, loadManifest } from './notion-v5/manifest.mjs';
@@ -219,6 +220,10 @@ export async function runNoWriteRehearsal() {
     legacyFallback: false,
     localSimulationWrites: gateway.updates.length + gateway.activities.length + gateway.outreach.length,
   };
+}
+
+export async function runProductionResumeCommand(options = {}) {
+  return runProductionResumeBuilder(options);
 }
 
 export async function main(argv = process.argv.slice(2)) {

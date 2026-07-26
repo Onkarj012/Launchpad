@@ -71,6 +71,7 @@ export function applicationFromPage(row) {
     jdLink: textValue(valueFrom(row, 'jdLink')),
     canonicalUrl: evidencePacket?.canonicalUrl ?? textValue(valueFrom(row, 'jdLink')),
     originalApplicationUrl: textValue(valueFrom(row, 'originalApplicationUrl')),
+    applicationReady: booleanValue(valueFrom(row, 'applicationReady')),
     applicationIdentity: evidencePacket?.identity ?? null,
     provider: evidencePacket?.provider ?? textValue(valueFrom(row, 'provider')),
     requisitionId: evidencePacket?.requisitionId ?? textValue(valueFrom(row, 'sourceJobId')),
