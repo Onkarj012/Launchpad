@@ -3,7 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertLiveManifest, isLegacyNotionId, isNotionIdentifier, isPlaceholderIdentifier, loadManifest, normalizeNotionId, targetFor } from './manifest.mjs';
 import { assertValidViewDefinitions, buildDatabaseProperties, mapProperties, readPropertyValue, storeKeyForTarget, V5_SCHEMA, V5_STORE_KEYS } from './schema.mjs';
-import { createTransactionJournal, redactSensitive, runReservedBatch, structuredError } from './transaction.mjs';
+import { createTransactionJournal, redactSensitive, runDurableTransaction, runReservedBatch, structuredError } from './transaction.mjs';
+import { evidencePacketValues } from '../resume-v5/application-evidence.mjs';
 
 export const NOTION_V5_API_VERSION = '2025-09-03';
 export const NOTION_V5_API_BASE = 'https://api.notion.com/v1';
@@ -80,9 +81,11 @@ function applicationValues(application = {}) {
   const role = application.role ?? application.Role;
   const company = application.companyName ?? application.Company;
   const status = application.status ?? application.Status;
+  const evidenceValues = application.evidencePacket ? evidencePacketValues(application.evidencePacket) : {};
   return {
     name: application.name ?? application.Name ?? [role, company].filter(Boolean).join(' — '), role,
-    jdLink: application.jdLink ?? application['JD Link'], originalApplicationUrl: application.originalApplicationUrl ?? application['Original Application URL'],
+    jdLink: application.jdLink ?? application['JD Link'],
+    originalApplicationUrl: application.originalApplicationUrl ?? application['Original Application URL'],
     applicationResolution: application.applicationResolution ?? application['Application Resolution'], applicationReady: application.applicationReady ?? application['Application Ready'],
     postedDate: application.postedDate ?? application['Posted Date'] ?? application['Posted At'], discoveredAt: application.discoveredAt ?? application['Discovered At'], crawledAt: application.crawledAt ?? application['Crawled At'],
     freshnessTier: application.freshnessTier ?? application['Freshness Tier'] ?? application['Freshness Window'], status: status === 'Discovered' ? 'Ready' : status,
@@ -100,6 +103,7 @@ function applicationValues(application = {}) {
     stipendPeriod: application.stipendPeriod ?? application['Stipend Period'], stipendMonthlyAmount: application.stipendMonthlyAmount ?? application['Stipend Monthly Amount'],
     stipendRaw: application.stipendRaw ?? application['Stipend Raw'], stipendEvidence: application.stipendEvidence ?? application['Stipend Evidence'],
     stipendTier: application.stipendTier ?? application['Stipend Tier'], freshness: application.freshness ?? application.Freshness, readiness: application.readiness ?? application.Readiness,
+    ...evidenceValues,
   };
 }
 
@@ -311,6 +315,25 @@ export class NotionV5Gateway {
     }
   }
 
+  async runTransaction({ key, target = 'applications', work } = {}) {
+    const durableJournal = this.journal ?? (this.live && this.journalPath ? createTransactionJournal({ journalPath: this.journalPath }) : null);
+    if (!durableJournal) throw new NotionV5Error('durable transaction requires an explicit external journal path', { code: 'JOURNAL_PATH_REQUIRED', stage: 'preflight', target });
+    return runDurableTransaction({
+      journal: durableJournal,
+      key,
+      target,
+      work: async (context) => {
+        this.activeJournal = durableJournal;
+        this.activeTransactionKey = String(key);
+        try { return await work(context); }
+        finally {
+          this.activeTransactionKey = null;
+          this.activeJournal = null;
+        }
+      },
+    });
+  }
+
   async findOrCreateCompany(company = {}) {
     const name = nonEmpty(company.name ?? company.Name ?? company.company ?? company.Company);
     if (!name) throw new NotionV5Error('company name is required', { code: 'COMPANY_REQUIRED', stage: 'company' });
@@ -326,9 +349,33 @@ export class NotionV5Gateway {
     return { page, id: page.id, created: true, canonicalDomain: domain };
   }
 
-  async writeApplication({ application = {}, company = {} } = {}) {
+  async findApplicationByRequisition(application = {}, { companyPageId = null } = {}) {
+    const values = application.evidencePacket ? evidencePacketValues(application.evidencePacket) : applicationValues(application);
+    const provider = nonEmpty(values.provider);
+    const sourceJobId = nonEmpty(values.sourceJobId);
+    if (!provider || !sourceJobId) throw new NotionV5Error('requisition-aware application reconciliation requires provider and source job id', { code: 'REQUISITION_IDENTITY_REQUIRED', stage: 'application' });
+    const rows = await this.listRows('applications', {
+      filter: {
+        and: [
+          { property: V5_SCHEMA.stores.applications.properties.provider.name, select: { equals: provider } },
+          { property: V5_SCHEMA.stores.applications.properties.sourceJobId.name, rich_text: { equals: sourceJobId } },
+          ...(companyPageId ? [{ property: V5_SCHEMA.stores.applications.properties.company.name, relation: { contains: companyPageId } }] : []),
+        ],
+      },
+    });
+    return [...rows].sort((left, right) => String(left.id).localeCompare(String(right.id)))[0] ?? null;
+  }
+
+  async writeApplication({ application = {}, company = {}, reconcile = false } = {}) {
     const companyResult = await this.findOrCreateCompany({ name: company.name ?? company.Name ?? application.Company ?? application.company, ...company });
     this.assertScopedId(companyResult.id, 'page');
+    if (reconcile) {
+      const existing = await this.findApplicationByRequisition(application, { companyPageId: companyResult.id });
+      if (existing) {
+        const verification = await this.verifyRelation({ pageId: existing.id, store: 'applications', property: 'company', expectedPageId: companyResult.id });
+        return { page: existing, company: companyResult, relationVerified: verification.verified, reconciled: true };
+      }
+    }
     const page = await this.createPage('applications', { ...applicationValues(application), company: [companyResult.id] });
     const verification = await this.verifyRelation({ pageId: page.id, store: 'applications', property: 'company', expectedPageId: companyResult.id });
     return { page, company: companyResult, relationVerified: verification.verified };
