@@ -485,12 +485,10 @@ test('the unified run reads the v4 snapshot by default and suppresses matching r
   assert.equal(result.counts.historicalSuppressed, 1);
 });
 
-test('snapshot status is surfaced in daily telemetry for loaded, missing, stale, and malformed files', async () => {
+test('valid snapshot status is surfaced in daily telemetry for loaded and stale files', async () => {
   const outcomes = [
     ['loaded', { generatedAt: NOW, rows: [] }],
-    ['missing', null],
     ['stale', { generatedAt: '2026-01-01T00:00:00.000Z', rows: [] }],
-    ['malformed', { notRows: true }],
   ];
 
   for (const [status, payload] of outcomes) {
@@ -525,7 +523,7 @@ test('a stale snapshot warns and still supplies historical rows', async () => {
   assert.equal(result.outcome.fatal, false);
 });
 
-test('missing or malformed snapshots supply no history and do not fail the run', async () => {
+test('missing or malformed snapshots fail the daily preflight loudly', async () => {
   for (const payload of [null, '{not json']) {
     const { root, config } = testConfig();
     const snapshotPath = path.join(root, 'bad-snapshot.json');
@@ -536,22 +534,12 @@ test('missing or malformed snapshots supply no history and do not fail the run',
       config.v4HistorySnapshotPath = snapshotPath;
     }
 
-    const result = await runDailyNormal(runOptions(
-      config,
-      fakeTransport({}),
-      {
-        sourceFixtures: {
-          'portal-naukri': {
-            candidates: [rawPortalJob(1303, { company: 'New Company' })],
-            manifest: { status: 'ok' },
-          },
-        },
-      },
-    ));
-
-    assert.equal(result.v4HistorySnapshot.status, payload === null ? 'missing' : 'malformed');
-    assert.equal(result.historicalSuppressions.length, 0);
-    assert.equal(result.outcome.fatal, false);
+    await assert.rejects(
+      runDailyNormal(runOptions(config, fakeTransport({}))),
+      (error) => error.code === (payload === null
+        ? 'V4_HISTORY_SNAPSHOT_MISSING'
+        : 'V4_HISTORY_SNAPSHOT_MALFORMED'),
+    );
   }
 });
 
