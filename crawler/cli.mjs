@@ -126,8 +126,13 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
     return 0;
   }
   if (command === 'daily') {
+    const schedule = positional(argv)[1] ?? 'morning';
+    const profile = parseDiscoveryProfileArgs(argv, schedule);
     const result = await dailyRunner({
       config,
+      schedule,
+      mode: profile.mode,
+      locationPreset: profile.locationPreset,
       runId: value(argv, '--run-id'),
       scores: value(argv, '--scores-json'),
       // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
