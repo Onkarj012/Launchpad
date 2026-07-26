@@ -47,7 +47,7 @@ Usage:
   node crawler/cli.mjs validate [--config FILE]
   node crawler/cli.mjs plan [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE]
   node crawler/cli.mjs run [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE] [--run-id ID]
-  node crawler/cli.mjs daily [morning] [--config FILE] [--env production|live-test|dev] [--run-id ID] [--scores-json FILE] [--no-scorer]
+  node crawler/cli.mjs daily [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE] [--env production|live-test|dev] [--run-id ID] [--scores-json FILE] [--no-scorer]
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
   node crawler/cli.mjs install-schedule [--dry-run]
   node crawler/cli.mjs schedule-health [--config FILE]
