@@ -70,13 +70,17 @@ function guessedEmail(candidate) {
   return null;
 }
 
-function candidateForNormalization(candidate, application, source) {
+function candidateForNormalization(candidate, application, source, observedAt) {
   const guess = guessedEmail(candidate);
   const evidence = candidate.publicEvidence ?? candidate.evidence ?? candidate.evidenceUrls ?? candidate.evidenceUrl;
   const prepared = {
     ...candidate,
     source: candidate.source ?? source,
     publicEvidence: evidence,
+    // The observation date is when this evidence was actually read. A provider
+    // that reports its own date wins; otherwise the run clock is the honest
+    // answer, never a fabricated or back-dated value.
+    observedAt: candidate.observedAt ?? candidate.observationDate ?? observedAt,
   };
   if (guess) {
     delete prepared.email;
@@ -162,7 +166,7 @@ export async function runContactResearch({
         for (let index = 0; index < rawCandidates.length; index += 1) {
           const raw = rawCandidates[index];
           try {
-            const { prepared, guess } = candidateForNormalization(raw, application, source);
+            const { prepared, guess } = candidateForNormalization(raw, application, source, researchedAt);
             const contact = normalizeContactEvidence(prepared, { application, source });
             const rank = relevance(raw, source);
             const enriched = guess
