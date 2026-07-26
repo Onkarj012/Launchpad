@@ -106,6 +106,30 @@ test('manual scores use the no-JD clamp and JS Auto-Suggest instead of the model
   assert.equal(finalDescribed.autoSuggest, true);
 });
 
+test('final output records Match and Conversion score versions and raw inputs', () => {
+  const candidate = raw(403);
+  const sources = applyScores([{ candidates: [candidate], manifest: { sourceId: 'reverse-ats', errors: [] } }], [{
+    canonicalUrl: candidate.canonicalUrl,
+    matchScore: 90,
+    responseLikelihood: 18,
+    autoSuggest: false,
+  }]);
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 1, strictTarget: 1 } },
+    now,
+    runId: 'score-version-receipt',
+    sources,
+  });
+  const [{ candidate: output, payload }] = result.records;
+  assert.equal(output.matchScoreVersion, 'match-score-v1');
+  assert.equal(output.matchScoreInputs.source, 'manual-scores-json');
+  assert.equal(output.conversionScoreVersion, 'conversion-score-v2-final-match');
+  assert.equal(output.conversionInputs.matchScore, 90);
+  assert.equal(payload['Match Score Version'], output.matchScoreVersion);
+  assert.equal(payload['Conversion Score Version'], output.conversionScoreVersion);
+  assert.deepEqual(payload['Conversion Score Inputs'], output.conversionInputs);
+});
+
 test('run telemetry separates scored, unscored, scoring-failed, and selected candidates', () => {
   const scored = raw(201);
   const unscored = raw(202);

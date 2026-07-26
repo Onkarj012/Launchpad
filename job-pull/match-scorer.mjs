@@ -27,6 +27,7 @@ const MAX_DESCRIPTION_CHARS = 4000;
 // sum is the cap for description-less rows — Skill match and Domain relevance
 // are never guessed.
 const NO_DESCRIPTION_MAX_SCORE = 15 + 10 + 20;
+export const MATCH_SCORE_VERSION = 'match-score-v1';
 
 // The 04:30 launchd agent runs with a minimal environment; /opt/homebrew/bin is
 // very likely not on PATH, so the codex binary is resolved by absolute path.
@@ -148,7 +149,7 @@ function integerInRange(value, minimum, maximum) {
 // semantics, minus its original-application/contact side fields, which the
 // scorer never touches. Range-invalid output fails closed; it is never clamped
 // into the schema range and retained.
-export function mergeScoreRow(candidate, row) {
+export function mergeScoreRow(candidate, row, { source = 'scorer' } = {}) {
   const score = integerInRange(row?.matchScore ?? row?.score, 0, 100);
   const responseLikelihood = integerInRange(row?.responseLikelihood, 0, 20);
   if (score === null || responseLikelihood === null) {
@@ -176,6 +177,14 @@ export function mergeScoreRow(candidate, row) {
       strongestHook: hook ?? candidate.strongestHook,
       responseLikelihood,
       autoSuggest: autoSuggestFor(candidate, matchScore, responseLikelihood),
+      matchScoreVersion: MATCH_SCORE_VERSION,
+      matchScoreInputs: {
+        source,
+        descriptionAvailable,
+        rawMatchScore: score,
+        rawResponseLikelihood: responseLikelihood,
+        noDescriptionCapApplied: !descriptionAvailable && score > NO_DESCRIPTION_MAX_SCORE,
+      },
       scoringFailed: false,
       scoringFailureReason: null,
       scoringFailureStderr: null,
@@ -334,7 +343,7 @@ export async function scoreCandidates(candidates, {
         autoSuggest: false,
       };
     }
-    const merged = mergeScoreRow(candidate, row);
+    const merged = mergeScoreRow(candidate, row, { source: 'codex-scorer' });
     if (merged.failure) {
       failures.push({ canonicalUrl: candidate.canonicalUrl ?? null, ...merged.failure });
       return merged.candidate;

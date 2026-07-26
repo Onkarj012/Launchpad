@@ -13,6 +13,8 @@ const DEFAULT_BANDS = {
   manualInspect: 65,
 };
 
+export const CONVERSION_SCORE_VERSION = 'conversion-score-v2-final-match';
+
 function bounded(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -67,6 +69,28 @@ export function scoreConversion(candidate, { freshnessWindow = null, eligibility
   const responsibilitySignal = Number.isFinite(Number(signals.responsibilitiesAndStack))
     ? Number(signals.responsibilitiesAndStack)
     : matchScore;
+  const inputs = {
+    matchScore: Number.isFinite(candidate.matchScore) ? candidate.matchScore : null,
+    responsibilitiesAndStack: Number.isFinite(Number(signals.responsibilitiesAndStack))
+      ? Number(signals.responsibilitiesAndStack)
+      : null,
+    effectiveResponsibilitiesAndStack: responsibilitySignal,
+    freshnessWindow,
+    experienceEligibility: {
+      pass: eligibility?.experience?.pass === true,
+      strict: eligibility?.experience?.strict === true,
+      manualReview: eligibility?.experience?.manualReview === true,
+    },
+    indiaLocationEligibility: eligibility?.geo?.pass === true,
+    projectConnection: signals.projectConnection === true,
+    sourceCategory: candidate.sourceCategory ?? null,
+    humanContact: signals.humanContact === true,
+    originalApplicationUrl: candidate.originalApplicationUrl ?? null,
+    applicationResolutionStatus: candidate.applicationResolution?.status ?? null,
+    livenessStatus: candidate.liveness?.status ?? null,
+    weights,
+    bands,
+  };
   const factors = {
     responsibilitiesAndStack: Math.round(weights.responsibilitiesAndStack * bounded(responsibilitySignal, 0, 100) / 100),
     experienceEligibility: experiencePoints(eligibility, weights),
@@ -79,10 +103,26 @@ export function scoreConversion(candidate, { freshnessWindow = null, eligibility
   const score = Object.values(factors).reduce((total, value) => total + value, 0);
   const boundedScore = bounded(score, 0, 100);
   return {
+    version: CONVERSION_SCORE_VERSION,
     score: boundedScore,
     tier: conversionTier(boundedScore, bands),
     factors,
+    inputs,
     applicationReady,
     applicationReadiness: applicationReady ? 'Ready' : originalResolved ? 'Liveness Unverified' : 'Original Application Unresolved',
+  };
+}
+
+export function withConversionScore(candidate, options = {}) {
+  const conversion = scoreConversion(candidate, options);
+  return {
+    ...candidate,
+    conversionScore: conversion.score,
+    conversionTier: conversion.tier,
+    conversionFactors: conversion.factors,
+    conversionScoreVersion: conversion.version,
+    conversionInputs: conversion.inputs,
+    applicationReady: conversion.applicationReady,
+    applicationReadiness: conversion.applicationReadiness,
   };
 }

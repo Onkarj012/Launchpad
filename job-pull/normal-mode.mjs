@@ -10,6 +10,7 @@ import { readLedger } from './ledger.mjs';
 import { readOpportunityLedger } from './opportunity-ledger.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
+import { withConversionScore } from './conversion-score.mjs';
 
 export class NormalModeError extends Error {
   constructor(message, stage = 'normal-mode') { super(message); this.name = 'NormalModeError'; this.stage = stage; }
@@ -65,7 +66,11 @@ function v5Payload(candidate, runId) {
     workMode: candidate.workMode ? candidate.workMode[0].toUpperCase() + candidate.workMode.slice(1) : null,
     location: candidate.location,
     matchScore: candidate.matchScore,
+    matchScoreVersion: candidate.matchScoreVersion || null,
+    matchScoreInputs: candidate.matchScoreInputs || null,
     conversionScore: candidate.conversionScore,
+    conversionScoreVersion: candidate.conversionScoreVersion || null,
+    conversionInputs: candidate.conversionInputs || null,
     responseLikelihood: candidate.responseLikelihood,
     source: candidate.source,
     provider: candidate.provider,
@@ -322,7 +327,12 @@ export async function runNormalMode({
       scorer,
       { runId, runAt },
     );
-    const selectionEntries = scoredPool.map((candidate) => ({
+    const convertedPool = scoredPool.map((candidate) => withConversionScore(candidate, {
+      freshnessWindow: candidate.freshness?.window ?? null,
+      eligibility: candidate.eligibility ?? null,
+      policy: baseConversionPlan.conversionScore,
+    }));
+    const selectionEntries = convertedPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
     const selection = selectNormalApplications(selectionEntries, { maximumPerCompany: normalConfig.run.maximumPerCompany });

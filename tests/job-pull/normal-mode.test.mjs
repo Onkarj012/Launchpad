@@ -253,6 +253,8 @@ test('healthy scorer with one failed row of twelve delivers a degraded shortlist
   assert.equal(result.outcome.degraded, true);
   assert.equal(attemptedRows.length, 12);
   assert.equal(result.shortlist.length, 11);
+  assert.equal(result.shortlist[0].conversionScoreVersion, 'conversion-score-v2-final-match');
+  assert.equal(result.shortlist[0].conversionInputs.matchScore, 70);
   assert.equal(result.scoringQueue.length, 1);
   assert.equal(result.scoringQueue[0].canonicalUrl, attemptedRows[0].canonicalUrl);
   assert.equal(result.scoringQueue[0].scoringStatus, 'scoring-failed');

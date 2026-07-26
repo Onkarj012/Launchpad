@@ -9,7 +9,7 @@ import { annotateFreshness } from './freshness.mjs';
 import { deduplicateCandidates } from './dedup.mjs';
 import { selectCandidates } from './select.mjs';
 import { selectApplicationShortlist } from './select.mjs';
-import { scoreConversion } from './conversion-score.mjs';
+import { withConversionScore } from './conversion-score.mjs';
 import { readLedger } from './ledger.mjs';
 import { readOpportunityLedger, suppressionFor } from './opportunity-ledger.mjs';
 import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked.mjs';
@@ -167,7 +167,7 @@ export function applyScores(sources, scoreInput) {
     candidates: (source.candidates || []).map((candidate) => {
       const score = byUrl.get(candidate.canonicalUrl);
       if (!score) return candidate;
-      const normalizedScore = mergeScoreRow(candidate, score);
+      const normalizedScore = mergeScoreRow(candidate, score, { source: 'manual-scores-json' });
       const updated = {
         ...normalizedScore.candidate,
         originalApplicationUrl: score.originalApplicationUrl ?? score.originalApplyUrl ?? candidate.originalApplicationUrl,
@@ -212,27 +212,29 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     const eligibility = classifyCandidate(candidate, { ...config, salaryFloorLpa: conversionPlan.salaryFloorLpa });
     const guardedCandidate = {
       ...candidate,
+      matchScoreVersion: candidate.matchScoreVersion
+        ?? (Number.isFinite(candidate.matchScore) ? 'match-score-import-v1' : null),
+      matchScoreInputs: candidate.matchScoreInputs
+        ?? (Number.isFinite(candidate.matchScore)
+          ? { source: 'candidate-input', rawMatchScore: candidate.matchScore }
+          : null),
       autoSuggest: autoSuggestFor(
         { ...candidate, freshness, eligibility },
         candidate.matchScore,
         candidate.responseLikelihood,
       ),
     };
-    const conversion = scoreConversion(guardedCandidate, { freshnessWindow: freshness.window, eligibility, policy: conversionPlan.conversionScore });
-    const scoredCandidate = assertCandidate({
-      ...guardedCandidate,
-      conversionScore: conversion.score,
-      conversionTier: conversion.tier,
-      conversionFactors: conversion.factors,
-      applicationReady: conversion.applicationReady,
-      applicationReadiness: conversion.applicationReadiness,
-    });
+    const scoredCandidate = assertCandidate(withConversionScore(guardedCandidate, {
+      freshnessWindow: freshness.window,
+      eligibility,
+      policy: conversionPlan.conversionScore,
+    }));
     const entry = {
       candidate: scoredCandidate,
       freshness,
       eligibility,
       selectionTier: eligibility.tier,
-      conversionTier: conversion.tier,
+      conversionTier: scoredCandidate.conversionTier,
       freshnessWindow: freshness.window,
       roleFamily: eligibility.roleFamily,
       companyKey: eligibility.companyKey,

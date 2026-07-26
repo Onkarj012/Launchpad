@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConversionPlan, validateConversionPlan } from '../../job-pull/config.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
-import { conversionTier, scoreConversion } from '../../job-pull/conversion-score.mjs';
+import { conversionTier, scoreConversion, withConversionScore } from '../../job-pull/conversion-score.mjs';
 
 const conversionPlan = loadConversionPlan();
 
@@ -70,4 +70,26 @@ test('unverified unresolved aggregators receive no readiness points and are not 
   assert.equal(scored.applicationReady, false);
   assert.equal(scored.factors.directOrVcSource, 0);
   assert.equal(scored.applicationReadiness, 'Original Application Unresolved');
+});
+
+test('recomputing after final Match Score changes the conversion tier', () => {
+  const low = withConversionScore(candidate({
+    matchScore: 40,
+    sourceKind: 'aggregator',
+    sourceCategory: 'aggregator',
+    conversionSignals: {},
+  }), {
+    freshnessWindow: 'Hot',
+    eligibility: strictIndiaEligibility,
+    policy: conversionPlan.conversionScore,
+  });
+  const high = withConversionScore({ ...low, matchScore: 100 }, {
+    freshnessWindow: 'Hot',
+    eligibility: strictIndiaEligibility,
+    policy: conversionPlan.conversionScore,
+  });
+  assert.equal(low.conversionTier, 'skip');
+  assert.equal(high.conversionTier, 'inspect');
+  assert.ok(high.conversionScore > low.conversionScore);
+  assert.equal(high.conversionInputs.matchScore, 100);
 });
