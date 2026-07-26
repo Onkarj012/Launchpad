@@ -45,6 +45,8 @@ export function validateConfig(config) {
     if (run.strictTarget !== 10) errors.push('run.strictTarget must remain 10');
     if (run.maximumPerCompany !== 2) errors.push('run.maximumPerCompany must remain 2');
     if (run.maximumFamilyShare !== 0.4) errors.push('run.maximumFamilyShare must remain 0.4');
+    if (run.normalMatchScoreFloor !== 65) errors.push('run.normalMatchScoreFloor must remain 65');
+    if (run.stretchMatchScoreFloor !== 50) errors.push('run.stretchMatchScoreFloor must remain 50');
   }
 
   const freshness = config.freshness;

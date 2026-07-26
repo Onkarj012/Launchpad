@@ -415,7 +415,7 @@ test('the run maximum is applied after all candidates receive Match Score', asyn
   const { config } = testConfig();
   const candidates = Array.from({ length: 21 }, (_, index) => rawPortalJob(1100 + index, {
     company: `Cap Company ${index}`,
-    matchScore: index === 20 ? 99 : 60,
+    matchScore: index === 20 ? 99 : 70,
   }));
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
     sourceFixtures: {
@@ -734,7 +734,7 @@ test('scores supplied to the unified daily run merge before the scoring gate', a
       ...emptyLegacyFixtures(),
       'portal-naukri': { candidates: [role], manifest: { status: 'ok' } },
     },
-    scores: { scores: [{ canonicalUrl: role.url, matchScore: 80 }] },
+    scores: { scores: [{ canonicalUrl: role.url, matchScore: 80, responseLikelihood: 14 }] },
   }));
 
   assert.equal(result.outcome.status, 'ok');

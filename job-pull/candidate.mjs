@@ -321,6 +321,7 @@ export function validateCandidate(candidate) {
     if (!isIsoTimestamp(candidate[field])) errors.push(`${field} must be a full ISO-8601 timestamp or null`);
   }
   if (candidate.jobId != null && typeof candidate.jobId !== 'string') errors.push('jobId must be a string or null');
+  if (candidate.requisitionId != null && typeof candidate.requisitionId !== 'string') errors.push('requisitionId must be a string or null');
   if (candidate.provider != null && typeof candidate.provider !== 'string') errors.push('provider must be a string or null');
   if (candidate.source != null && typeof candidate.source !== 'string') errors.push('source must be a string or null');
   if (candidate.description != null && typeof candidate.description !== 'string') errors.push('description must be a string or null');
@@ -360,6 +361,7 @@ export function normalizeCandidate(raw, options = {}) {
     source,
     provider,
     jobId: raw.jobId == null && raw.id == null ? null : String(raw.jobId ?? raw.id),
+    requisitionId: nonEmptyString(raw.requisitionId ?? raw.requisition_id ?? raw.reqId ?? raw.req_id),
     company: nonEmptyString(raw.company ?? raw.companyName),
     title: nonEmptyString(raw.title ?? raw.role),
     location: preserveText(raw.location),
@@ -435,7 +437,11 @@ export function buildPayloadRecord(candidate, selection = {}) {
     'Source Provider': candidate.provider,
     Liveness: candidate.liveness.status,
     'Match Score': candidate.matchScore,
+    'Match Score Version': candidate.matchScoreVersion ?? null,
+    'Match Score Inputs': candidate.matchScoreInputs ?? null,
     'Conversion Score': candidate.conversionScore,
+    'Conversion Score Version': candidate.conversionScoreVersion ?? null,
+    'Conversion Score Inputs': candidate.conversionInputs ?? null,
     'Conversion Factors': candidate.conversionFactors,
     Rationale: candidate.rationale,
     Hook: candidate.hook,

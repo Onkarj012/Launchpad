@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MatchScorerError, createCodexScorer, execCodex, scoreCandidates } from '../../job-pull/match-scorer.mjs';
@@ -208,4 +208,91 @@ test('production scorer ignores user config, sets reasoning effort, and honors t
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('-c'), calls[0].args.indexOf('-c') + 2), ['-c', 'model_reasoning_effort=medium']);
   assert.equal(calls[0].options.timeout, 4321);
   assert.equal(calls[1].options.timeout, 99);
+});
+
+test('chunk artifacts are run-isolated and stale output is removed before spawn', async () => {
+  const workDir = mkdtempSync(path.join(os.tmpdir(), 'launchpad-match-scorer-isolation-'));
+  const outputFiles = [];
+  const outputWasAbsent = [];
+  const execFileImpl = (binary, args, options, callback) => {
+    const outputFile = args[args.indexOf('-o') + 1];
+    outputFiles.push(outputFile);
+    outputWasAbsent.push(!existsSync(outputFile));
+    writeFileSync(outputFile, JSON.stringify({ scores: [scoreRow({ canonicalUrl: candidate(outputFiles.length).canonicalUrl })] }));
+    callback(null, '', '');
+  };
+  const scorer = createCodexScorer({ codexBinary: process.execPath, workDir, execFileImpl });
+  await scorer([candidate(1)], { runId: 'run-a' });
+  await scorer([candidate(2)], { runId: 'run-a' });
+  await scorer([candidate(3)], { runId: 'run-b' });
+  assert.equal(outputFiles[0], outputFiles[1]);
+  assert.notEqual(outputFiles[0], outputFiles[2]);
+  assert.deepEqual(outputWasAbsent, [true, true, true]);
+});
+
+test('spawn failure is a broken scorer and preserves captured stderr', async () => {
+  const scorer = createCodexScorer({
+    codexBinary: process.execPath,
+    workDir: mkdtempSync(path.join(os.tmpdir(), 'launchpad-match-scorer-spawn-')),
+    execFileImpl: (binary, args, options, callback) => callback(
+      { code: 'ENOENT', message: 'spawn failed' },
+      '',
+      'launchd could not execute codex',
+    ),
+  });
+  const result = await scorer([candidate(1)], { runId: 'spawn-run' });
+  assert.equal(result.degraded, true);
+  assert.equal(result.reasonCode, 'SCORER_SPAWN_FAILED');
+  assert.deepEqual(result.failures, [{
+    canonicalUrl: candidate(1).canonicalUrl,
+    reason: 'SCORER_SPAWN_FAILED',
+    stderr: 'launchd could not execute codex',
+  }]);
+  assert.equal(result.scored[0].scoringFailureReason, 'SCORER_SPAWN_FAILED');
+});
+
+test('range validation accepts clean integer strings and fails invalid rows without clamping', async () => {
+  const rows = [candidate(1), candidate(2)];
+  const scoreChunk = fakeScoreChunk((jobs) => [
+    scoreRow(jobs[0], { matchScore: '91', responseLikelihood: '18' }),
+    scoreRow(jobs[1], { matchScore: 91, responseLikelihood: 78 }),
+  ]);
+  const result = await scoreCandidates(rows, { scoreChunk });
+  assert.equal(result.scored[0].matchScore, 91);
+  assert.equal(result.scored[0].responseLikelihood, 18);
+  assert.equal(result.scored[1].matchScore, null);
+  assert.equal(result.scored[1].scoringFailureReason, 'SCORER_INVALID_RANGE');
+  assert.deepEqual(result.failures, [{
+    canonicalUrl: candidate(2).canonicalUrl,
+    reason: 'SCORER_INVALID_RANGE',
+    stderr: null,
+  }]);
+});
+
+test('whole-scoring deadline bounds the batch and scorer input carries available evidence metadata', async () => {
+  let scoringRow;
+  const scoreChunk = fakeScoreChunk((rows) => {
+    [scoringRow] = rows;
+    return new Promise(() => {});
+  });
+  const result = await scoreCandidates([candidate(1, {
+    description: 'x'.repeat(5000),
+    sourceKind: 'ats-direct',
+    companyStage: 'Scale-up',
+    companyStageEvidence: 'verified company profile',
+    companySize: 120,
+    companySizeEvidence: 'verified headcount',
+  })], {
+    scoreChunk,
+    runAt: '2026-07-26T04:30:00.000Z',
+    wholeTimeoutMs: 10,
+  });
+  assert.equal(result.reasonCode, 'SCORER_DEADLINE_EXCEEDED');
+  assert.equal(result.degraded, true);
+  assert.equal(scoringRow.runAt, '2026-07-26T04:30:00.000Z');
+  assert.equal(scoringRow.sourceKind, 'ats-direct');
+  assert.equal(scoringRow.companyStageEvidence, 'verified company profile');
+  assert.equal(scoringRow.companySizeEvidence, 'verified headcount');
+  assert.equal(scoringRow.descriptionIncludedChars, 4000);
+  assert.equal(scoringRow.descriptionTruncated, true);
 });

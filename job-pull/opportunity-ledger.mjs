@@ -10,8 +10,9 @@ export const OPPORTUNITY_COLUMNS = [
   'dedup_key', 'company', 'role', 'canonical_url', 'provider',
   'first_surfaced_at', 'last_surfaced_at', 'times_surfaced', 'action_state', 'action_at',
 ];
-export const ACTION_STATES = ['none', 'applied', 'contacted', 'interviewing', 'rejected'];
-const ACTIONED_STATES = new Set(['applied', 'contacted', 'interviewing']);
+export const ACTION_STATES = ['none', 'applied', 'contacted', 'interviewing', 'rejected', 'withdrawn', 'offer'];
+const ACTIONED_STATES = new Set(['applied', 'contacted', 'interviewing', 'offer']);
+const TERMINAL_STATES = new Set(['rejected', 'withdrawn']);
 const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class OpportunityLedgerError extends Error {
@@ -104,7 +105,7 @@ function validTimestamp(value) {
 export function suppressionFor(row, nowIso) {
   const actionState = row?.action_state || 'none';
   if (ACTIONED_STATES.has(actionState)) return { suppressed: true, code: 'SUPPRESSED_ACTIONED' };
-  if (actionState === 'rejected') return { suppressed: true, code: 'SUPPRESSED_REJECTED' };
+  if (TERMINAL_STATES.has(actionState)) return { suppressed: true, code: 'SUPPRESSED_REJECTED' };
   if (actionState !== 'none') throw new OpportunityLedgerError(`invalid action_state ${actionState}`);
   if (!validTimestamp(nowIso)) throw new OpportunityLedgerError(`invalid suppression clock: ${nowIso}`);
   if (!validTimestamp(row?.last_surfaced_at)) return { suppressed: false, code: '' };
@@ -151,6 +152,17 @@ export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUN
     atomicWrite(ledgerPath, rows);
     return { path: ledgerPath, rows: recorded };
   });
+}
+
+export function recordDeliveryCommit(candidates, {
+  deliveryCommitted = false,
+  path: ledgerPath = DEFAULT_OPPORTUNITY_LEDGER_PATH,
+  now = new Date().toISOString(),
+} = {}) {
+  if (!Array.isArray(candidates)) throw new OpportunityLedgerError('recordDeliveryCommit requires an array of candidates');
+  if (deliveryCommitted !== true) return { path: ledgerPath, committed: false, rows: [] };
+  const recorded = recordSurfaced(candidates, { path: ledgerPath, now });
+  return { ...recorded, committed: true };
 }
 
 export function markAction({ key, url, state, path: ledgerPath = DEFAULT_OPPORTUNITY_LEDGER_PATH, now = new Date().toISOString() } = {}) {

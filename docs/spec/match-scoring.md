@@ -114,6 +114,12 @@ scoring queue is built and before selection.
 | `responseLikelihood` | integer 0–20 | rubric sub-score; feeds the Auto-Suggest rule |
 | `autoSuggest` | boolean | `score ≥ 80 AND window ∈ {Hot, Active} AND tier = Strict AND responseLikelihood ≥ 14` |
 | `descriptionAvailable` | boolean | see below |
+| `seniorityDecision` | eligible, ineligible, uncertain | abstaining classifier output |
+| `requirementKind` | enum | total-professional, technology-specific, domain-specific, preferred, or ambiguous |
+| `minimumYears` | number or null | minimum from the quoted requirement |
+| `evidenceQuote` | string | exact literal JD substring; empty only when no years statement exists |
+| `confidence` | number 0–1 | classifier confidence |
+| `reasonCode` | string | stable seniority decision reason |
 
 **`descriptionAvailable` is load-bearing.** Skill match (35) and Domain relevance (20)
 both require reading the JD. Workday rows only receive JD text via
@@ -123,9 +129,28 @@ unknown stays unknown.
 
 ### Range validation
 
-Range validation and numeric-string coercion live in JavaScript, not the JSON Schema.
-This was measured because codex-cli 0.145.0 hangs indefinitely when `minimum` or
-`maximum` are present in the schema.
+Ranges are enforced twice: `minimum`/`maximum` in the JSON Schema are the first layer,
+and JavaScript re-validates every returned row as the authoritative layer
+(`matchScore` 0-100, `responseLikelihood` 0-20). A range-invalid row fails with
+`SCORER_INVALID_RANGE`; it is never clamped into range and retained.
+
+An earlier revision removed the schema range keywords on the theory that codex-cli
+0.145.0 hangs on them. That was measured directly and is false. Seven timed trials
+against real job rows, using production flags and the real chunk-file prompt: 1 row
+with ranges 12.7s, 5 rows 28.2s, 10 rows 33.5s — all valid JSON with every value in
+range. A probe *without* the range keywords returned `responseLikelihood: 78`, outside
+the intended 0-20. The keywords therefore stay, and the JS layer stays with them.
+
+The whole-scoring deadline is derived from that measurement rather than guessed:
+33.5s worst case x 2 headroom x 5 chunks is roughly 335s, rounded to 360s.
+
+Seniority output is validated independently of JSON Schema. A non-empty
+`evidenceQuote` must be a literal substring of the JD, and a years value requires a
+quote. Invalid model evidence rejects that row. Deterministic postconditions always
+reject an explicit total-professional minimum of three or more years, while
+technology-specific, domain-specific, and ambiguous requirements can abstain into the
+verification queue. Assessments are cached by JD fingerprint, prompt version, and
+model version.
 
 ---
 
@@ -155,9 +180,11 @@ With an in-run scorer, `unscored` should always be 0, so that gate stops firing 
 own. But `scoringFailed > 0` → fatal means one transient failure kills a run that found
 48 good jobs.
 
-Proposed: fail the run only when the scorer is **broken** — auth failure, binary missing,
-or >50% of chunks failed. Otherwise drop the failed rows, report them in `funnel`, and
-deliver the rest.
+Fail the run only when the scorer is **broken** — auth failure, binary missing, spawn
+failure, whole-run deadline, or more than 50% of attempted rows failed. Failed-row share
+is authoritative because candidate failures and reconciliation are row-level, and the
+final chunk can be smaller than earlier chunks. Otherwise drop the failed rows, retain
+their exact reason code and captured stderr in the receipt, and deliver the rest.
 
 ---
 

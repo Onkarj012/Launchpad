@@ -3,12 +3,16 @@ import { buildPayloadRecord, candidateDedupKey } from './candidate.mjs';
 import { applyScores, runPipeline } from './run.mjs';
 import { createNoWriteNotionGateway } from './workflow.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
+import { repairReadinessPool } from './normal-readiness-repair.mjs';
 import { runNormalSourcePlan } from './normal-sources.mjs';
 import { selectNormalApplications } from './normal-selection.mjs';
 import { readLedger } from './ledger.mjs';
 import { readOpportunityLedger } from './opportunity-ledger.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
+import { withConversionScore } from './conversion-score.mjs';
+import { classifySeniorityPool } from './seniority-classifier.mjs';
+import { classifyCandidate } from './eligibility.mjs';
 
 export class NormalModeError extends Error {
   constructor(message, stage = 'normal-mode') { super(message); this.name = 'NormalModeError'; this.stage = stage; }
@@ -64,7 +68,19 @@ function v5Payload(candidate, runId) {
     workMode: candidate.workMode ? candidate.workMode[0].toUpperCase() + candidate.workMode.slice(1) : null,
     location: candidate.location,
     matchScore: candidate.matchScore,
+    matchScoreVersion: candidate.matchScoreVersion || null,
+    matchScoreInputs: candidate.matchScoreInputs || null,
+    seniorityDecision: candidate.seniorityAssessment?.seniorityDecision || null,
+    seniorityRequirementKind: candidate.seniorityAssessment?.requirementKind || null,
+    seniorityMinimumYears: candidate.seniorityAssessment?.minimumYears ?? null,
+    seniorityEvidenceQuote: candidate.seniorityAssessment?.evidenceQuote || null,
+    seniorityConfidence: candidate.seniorityAssessment?.confidence ?? null,
+    seniorityReasonCode: candidate.seniorityAssessment?.reasonCode || null,
+    seniorityPromptVersion: candidate.seniorityAssessment?.promptVersion || null,
+    seniorityModelVersion: candidate.seniorityAssessment?.modelVersion || null,
     conversionScore: candidate.conversionScore,
+    conversionScoreVersion: candidate.conversionScoreVersion || null,
+    conversionInputs: candidate.conversionInputs || null,
     responseLikelihood: candidate.responseLikelihood,
     source: candidate.source,
     provider: candidate.provider,
@@ -97,6 +113,7 @@ function provenanceFor(candidate, runId) {
     location: candidate.location,
     citizenshipEvidence: candidate.citizenshipEvidence || candidate.remoteEligibility?.evidence || null,
     experience: candidate.experience,
+    seniority: candidate.seniorityAssessment || null,
     employment: candidate.employment,
     feesBonds: candidate.feeBondEvidence || null,
     liveness: candidate.liveness,
@@ -134,9 +151,16 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
   return {
     schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode,
     shortlist: [], verificationQueue: details.verificationQueue || [], funnel: details.funnel || null, sourceManifests, sourceTelemetry: sourceManifests,
-    plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
+    plannedNotionOperations: [], transaction: null, historicalSuppressions: [], historicalAmbiguous: [],
     scoringQueue: details.scoringQueue || [],
     scoring: details.scoring || null,
+    readinessRepair: details.readinessRepair || null,
+    repairQueue: details.repairQueue || [],
+    stretchShortage: details.stretchShortage || [],
+    selectionExclusions: details.selectionExclusions || [],
+    strictComposition: details.strictComposition || null,
+    familyComposition: details.familyComposition || null,
+    seniority: details.seniority || null,
     reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
@@ -151,15 +175,16 @@ function reconciliationLine({ eligible, scored, ready, selected, causes }) {
   return `eligible=${eligible}; scored=${scored}; ready=${ready}; selected=${selected}; causes=${causeText || 'none'}`;
 }
 
-function buildReconciliation({ eligible, historicalSuppressed, selection, selected, runFailed = false }) {
+function buildReconciliation({ eligible, historicalSuppressed, historicalAmbiguous = 0, selection, selected, runFailed = false }) {
   const ready = selection.readyCount;
   const scored = selection.scoredCount;
-  const notReady = Math.max(0, eligible - historicalSuppressed - ready);
+  const notReady = Math.max(0, eligible - historicalSuppressed - historicalAmbiguous - ready);
   const readyNotScored = Math.max(0, ready - scored);
   const selectedGap = Math.max(0, scored - selected);
   const causes = {
     eligibleToReady: {
       HISTORICAL_SUPPRESSION: historicalSuppressed,
+      HISTORICAL_AMBIGUOUS_COLLISION: historicalAmbiguous,
       NOT_APPLICATION_READY: notReady,
     },
     readyToScored: {
@@ -167,7 +192,9 @@ function buildReconciliation({ eligible, historicalSuppressed, selection, select
       SCORING_FAILED: selection.scoringFailedCount,
     },
     scoredToSelected: {
-      ...(runFailed ? { RUN_FAILED_INCOMPLETE_SCORING: selectedGap } : { SELECTION_RULES: selectedGap }),
+      ...(runFailed
+        ? { RUN_FAILED_INCOMPLETE_SCORING: selectedGap }
+        : selection.reconciliationCounts),
     },
   };
   return {
@@ -188,14 +215,21 @@ function buildReconciliation({ eligible, historicalSuppressed, selection, select
 // Broken-scorer reason codes, read from job-pull/match-scorer.mjs: a missing
 // binary and an auth failure abort the batch before it starts, and repeated
 // invalid output means the scorer cannot produce usable scores at all.
-const BROKEN_SCORER_REASON_CODES = new Set(['SCORER_BINARY_MISSING', 'SCORER_AUTH_FAILED', 'SCORER_OUTPUT_INVALID', 'SCORER_TIMEOUT']);
+const BROKEN_SCORER_REASON_CODES = new Set([
+  'SCORER_BINARY_MISSING',
+  'SCORER_BINARY_NOT_ABSOLUTE',
+  'SCORER_AUTH_FAILED',
+  'SCORER_OUTPUT_INVALID',
+  'SCORER_TIMEOUT',
+  'SCORER_SPAWN_FAILED',
+  'SCORER_DEADLINE_EXCEEDED',
+]);
 
 /**
  * Gate policy (docs/spec/match-scoring.md §6): the run fails only when the
  * scorer is genuinely broken — a run-level reason code, or more than half the
- * batch lost. A failed chunk records one failure per row, so the failed-row
- * share tracks the failed-chunk share; past half, the scorer is broken, not
- * unlucky.
+ * attempted rows lost. Row share is authoritative because failures and
+ * reconciliation are row-level and a final chunk may be smaller.
  */
 function scorerIsBroken(telemetry) {
   if (telemetry.degraded === true && BROKEN_SCORER_REASON_CODES.has(telemetry.reasonCode)) return true;
@@ -230,18 +264,31 @@ function hasUsableMatchScore(candidate) {
  * scorer only sees rows that still lack a usable Match Score — a --scores-json
  * manual override always wins on any row it covers.
  */
-async function scorePoolInRun(candidates, scorer) {
+async function scorePoolInRun(candidates, scorer, { runId, runAt } = {}) {
   if (typeof scorer !== 'function') return { pool: candidates, telemetry: null };
   const unscored = candidates.filter((candidate) => !hasUsableMatchScore(candidate));
   if (!unscored.length) return { pool: candidates, telemetry: { attempted: 0, chunks: 0, failures: [], degraded: false, reasonCode: null } };
-  const scoring = await scorer(unscored);
+  const scoring = await scorer(unscored, { runId, runAt });
   const merged = new Map((Array.isArray(scoring?.scored) ? scoring.scored : []).map((candidate) => [candidate.canonicalUrl, candidate]));
+  const failures = Array.isArray(scoring?.failures) ? scoring.failures : [];
+  const failuresByUrl = new Map(failures.map((failure) => [failure.canonicalUrl, failure]));
   return {
-    pool: candidates.map((candidate) => merged.get(candidate.canonicalUrl) ?? candidate),
+    pool: candidates.map((candidate) => {
+      const scored = merged.get(candidate.canonicalUrl);
+      const failure = failuresByUrl.get(candidate.canonicalUrl);
+      return failure ? {
+        ...(scored ?? candidate),
+        matchScore: null,
+        autoSuggest: false,
+        scoringFailed: true,
+        scoringFailureReason: failure.reason,
+        scoringFailureStderr: failure.stderr ?? null,
+      } : scored ?? candidate;
+    }),
     telemetry: {
       attempted: unscored.length,
       chunks: Number.isFinite(Number(scoring?.chunks)) ? Number(scoring.chunks) : 0,
-      failures: Array.isArray(scoring?.failures) ? scoring.failures : [],
+      failures,
       degraded: scoring?.degraded === true,
       reasonCode: scoring?.reasonCode ?? null,
     },
@@ -254,6 +301,9 @@ export async function runNormalMode({
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
   historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer,
+  seniorityClassifier = null, seniorityCache = null, seniorityPromptVersion, seniorityModelVersion,
+  readinessRepairer = null, readinessRepairMaxRequests = 20, readinessRepairDeadlineMs = 30_000,
+  runDeadlineAt = null, monotonicClock = Date.now,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -263,6 +313,20 @@ export async function runNormalMode({
     sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes });
     sourceResults = applyScores(sourceResults, scores);
     await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates), { maxRequests: enrichmentBudget });
+    const seniority = await classifySeniorityPool(
+      sourceResults.flatMap((source) => source.candidates),
+      {
+        classifyModel: seniorityClassifier,
+        ...(seniorityCache ? { cache: seniorityCache } : {}),
+        ...(seniorityPromptVersion ? { promptVersion: seniorityPromptVersion } : {}),
+        ...(seniorityModelVersion ? { modelVersion: seniorityModelVersion } : {}),
+      },
+    );
+    let seniorityIndex = 0;
+    sourceResults = sourceResults.map((source) => ({
+      ...source,
+      candidates: source.candidates.map(() => seniority.pool[seniorityIndex++]),
+    }));
     const sourceManifests = sourceResults.map(({ manifest }) => manifest);
     const baseConfig = config || loadConfig();
     const baseConversionPlan = conversionPlan || loadConversionPlan();
@@ -278,12 +342,60 @@ export async function runNormalMode({
     });
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
-    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer);
-    const selectionEntries = scoredPool.map((candidate) => ({
+    const {
+      kept: nonHistoricalCandidates,
+      suppressed: historicalSuppressions,
+      ambiguous: historicalAmbiguous,
+    } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
+    const readinessRepair = await repairReadinessPool(nonHistoricalCandidates, {
+      repairCandidate: readinessRepairer,
+      maxRequests: readinessRepairMaxRequests,
+      now: runAt,
+      maximumDurationMs: readinessRepairDeadlineMs,
+      deadlineAtMs: runDeadlineAt == null ? null : Date.parse(runDeadlineAt),
+      monotonicClock,
+    });
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(
+      readinessRepair.scorerPool,
+      scorer,
+      { runId, runAt },
+    );
+    // A scorer opinion arrives after the first eligibility pass. Re-apply the
+    // same deterministic gate before selection so a late uncertain/ineligible
+    // adjudication cannot remain application-ready.
+    const finalScoredPool = scoredPool.map((candidate) => {
+      const seniorityAssessment = candidate.seniorityScoringOpinion || candidate.seniorityAssessment;
+      if (!seniorityAssessment || seniorityAssessment === candidate.seniorityAssessment) return candidate;
+      const assessedCandidate = { ...candidate, seniorityAssessment };
+      return {
+        ...assessedCandidate,
+        eligibility: classifyCandidate(assessedCandidate, {
+          ...normalConfig,
+          salaryFloorLpa: baseConversionPlan.salaryFloorLpa,
+        }),
+      };
+    });
+    const seniorityTelemetry = {
+      ...seniority.telemetry,
+      scoringOpinions: finalScoredPool.filter((candidate) => candidate.seniorityScoringOpinion).length,
+      postScoringUncertain: finalScoredPool.filter((candidate) => candidate.seniorityAssessment?.seniorityDecision === 'uncertain').length,
+      postScoringIneligible: finalScoredPool.filter((candidate) => candidate.seniorityAssessment?.seniorityDecision === 'ineligible').length,
+    };
+    const convertedPool = finalScoredPool.map((candidate) => withConversionScore(candidate, {
+      freshnessWindow: candidate.freshness?.window ?? null,
+      eligibility: candidate.eligibility ?? null,
+      policy: baseConversionPlan.conversionScore,
+    }));
+    const selectionEntries = convertedPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
-    const selection = selectNormalApplications(selectionEntries, { maximumPerCompany: normalConfig.run.maximumPerCompany });
+    const selection = selectNormalApplications(selectionEntries, {
+      maximumPerCompany: normalConfig.run.maximumPerCompany,
+      maximumFamilyShare: normalConfig.run.maximumFamilyShare,
+      strictTarget: normalConfig.run.strictTarget,
+      scoreFloor: normalConfig.run.normalMatchScoreFloor,
+      stretchFloor: normalConfig.run.stretchMatchScoreFloor,
+    });
     const eligibleCount = pipeline.scoringCandidates.length;
     const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
     const scorerRan = scorerTelemetry !== null;
@@ -297,20 +409,60 @@ export async function runNormalMode({
     const reconciliation = buildReconciliation({
       eligible: eligibleCount,
       historicalSuppressed: historicalSuppressions.length,
+      historicalAmbiguous: historicalAmbiguous.length,
       selection,
       selected: incompleteScoring ? 0 : selection.selected.length,
       runFailed: incompleteScoring,
     });
-    const verifiedCandidates = new Set(pipeline.scoringCandidates.map((candidate) => candidate.canonicalUrl));
+    const verifiedCandidates = new Set(finalScoredPool.map((candidate) => candidate.canonicalUrl));
     const verificationCandidates = [
-      ...pipeline.scoringCandidates,
+      ...finalScoredPool,
       ...sourceResults.flatMap((source) => source.candidates).filter((candidate) => !verifiedCandidates.has(candidate.canonicalUrl)),
     ];
-    const verificationQueue = verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean);
+    const verificationRows = [
+      ...verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean),
+      ...readinessRepair.rejected.map((record) => ({
+        company: record.company,
+        title: record.title,
+        discoveryUrl: record.discoveryUrl,
+        originalApplicationUrl: record.originalApplicationUrl,
+        provider: record.provider,
+        source: record.source,
+        applicationResolution: record.applicationResolution,
+        liveness: record.liveness,
+        reasons: record.blockers,
+        evidence: { readinessRepair: record },
+        dedupKey: record.canonicalUrl,
+      })),
+      ...historicalAmbiguous.map((collision) => ({
+        company: collision.company,
+        title: collision.title,
+        discoveryUrl: collision.candidate?.discoveryUrl || collision.canonicalUrl,
+        originalApplicationUrl: collision.candidate?.originalApplicationUrl || null,
+        provider: collision.candidate?.provider || null,
+        source: collision.candidate?.source || null,
+        applicationResolution: collision.candidate?.applicationResolution || null,
+        liveness: collision.candidate?.liveness || null,
+        reasons: ['AMBIGUOUS_HISTORICAL_COLLISION'],
+        evidence: collision.evidence,
+        dedupKey: candidateDedupKey(collision.candidate),
+      })),
+    ];
+    const verificationQueue = [...new Map(verificationRows.map((record) => [
+      record.discoveryUrl || record.dedupKey,
+      record,
+    ])).values()];
     if (incompleteScoring) {
       const error = scoringGateError(selection, scorerRan ? scorerTelemetry : null);
       error.details = {
         scoringQueue: selection.scoringQueue,
+        readinessRepair: readinessRepair.telemetry,
+        repairQueue: readinessRepair.repairQueue,
+        stretchShortage: selection.stretch,
+        selectionExclusions: selection.exclusions,
+        strictComposition: selection.strictComposition,
+        familyComposition: selection.familyComposition,
+        seniority: seniorityTelemetry,
         scoring: {
           required: true,
           scoredCount: selection.scoredCount,
@@ -330,9 +482,14 @@ export async function runNormalMode({
           selected: 0,
           verificationQueue: verificationQueue.length,
           historicalSuppressed: historicalSuppressions.length,
+          historicalAmbiguous: historicalAmbiguous.length,
           minimum: 10,
           preferred: 12,
           maximum: 20,
+          stretch: selection.stretch.length,
+          belowFloor: selection.scorePolicy.belowFloorCount,
+          strictSelected: selection.strictComposition.selected,
+          strictShortfall: selection.strictComposition.shortfall,
           unscored: selection.unscoredCount,
           scoringFailed: selection.scoringFailedCount,
         },
@@ -369,8 +526,16 @@ export async function runNormalMode({
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
       scoringQueue: selection.scoringQueue, funnel: pipeline.funnel,
+      readinessRepair: readinessRepair.telemetry, repairQueue: readinessRepair.repairQueue,
+      stretchShortage: selection.stretch,
+      selectionExclusions: selection.exclusions,
+      strictComposition: selection.strictComposition,
+      familyComposition: selection.familyComposition,
+      scorePolicy: selection.scorePolicy,
+      seniority: seniorityTelemetry,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
+      historicalAmbiguous,
       dedupInputs: {
         committedLedgerRows: effectiveLedgerRows.length,
         opportunityLedgerRows: effectiveOpportunityLedgerRows.length,
@@ -378,7 +543,12 @@ export async function runNormalMode({
       shortfall: {
         minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing,
         preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes,
-        reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)],
+        reasons: [
+          ...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []),
+          ...(selection.strictComposition.shortfall ? [`STRICT_COMPOSITION_SHORTFALL:${selection.strictComposition.shortfall}`] : []),
+          ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`),
+          ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`),
+        ],
         linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' },
       },
       outcome: { status: failedLanes.length || scoringDropped ? 'degraded' : 'ok', fatal: false, degraded: failedLanes.length > 0 || scoringDropped, errors: sourceManifests.map(issueFor).filter(Boolean) },
@@ -386,7 +556,7 @@ export async function runNormalMode({
       ...(scorerTelemetry
         ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } }
         : {}),
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, stretch: selection.stretch.length, belowFloor: selection.scorePolicy.belowFloorCount, strictSelected: selection.strictComposition.selected, strictShortfall: selection.strictComposition.shortfall, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, historicalAmbiguous: historicalAmbiguous.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, companyCounts: selection.companyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
     };
   } catch (error) {
     return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error, error.details);

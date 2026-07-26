@@ -68,12 +68,15 @@ export function classifyCandidateEvidence(candidate, eligibility = null) {
   const experience = candidate?.experience || {};
   const citizenship = candidate?.remoteEligibility || candidate?.citizenship || { status: 'Not Verified', evidence: null };
   const employment = candidate?.employment || { type: null, paid: null, evidence: null };
+  const seniority = candidate?.seniorityAssessment || eligibility?.experience?.seniority || null;
   const hardFailures = [];
   if (!resolution.ready) hardFailures.push(...resolution.reasons);
   if (livenessStatus !== 'Active') hardFailures.push(livenessStatus === 'Expired' ? 'LIVENESS_EXPIRED' : 'LIVENESS_NOT_VERIFIED');
   if (feesOrBonds) hardFailures.push('FEES_OR_BOND_CONCERN');
   if (eligibility?.reasons?.length) hardFailures.push(...eligibility.reasons);
   if (eligibility?.experience?.manualReview === true) hardFailures.push('EXPERIENCE_NOT_VERIFIED');
+  if (seniority?.seniorityDecision === 'uncertain') hardFailures.push(seniority.reasonCode || 'SENIORITY_UNCERTAIN_VERIFY');
+  if (seniority?.accepted === false) hardFailures.push(seniority.reasonCode || 'SENIORITY_MODEL_OUTPUT_INVALID');
   return {
     resolution,
     liveness,
@@ -82,13 +85,18 @@ export function classifyCandidateEvidence(candidate, eligibility = null) {
     employment: { type: employment.type ?? null, paid: employment.paid ?? null, evidence: employment.evidence ?? null },
     feesOrBonds: { status: feesOrBonds ? 'Concern' : 'None observed', evidence: feesOrBonds },
     location: eligibility?.geo || { status: 'Not Verified', evidence: candidate?.location || null },
+    seniority,
     hardFailures: [...new Set(hardFailures)],
   };
 }
 
 export function applicationReadiness(candidate, eligibility = null) {
   const evidence = classifyCandidateEvidence(candidate, eligibility);
-  const policyPass = eligibility ? eligibility.eligible === true && eligibility.experience?.manualReview !== true : true;
+  const seniorityPass = evidence.seniority?.seniorityDecision !== 'uncertain'
+    && evidence.seniority?.accepted !== false;
+  const policyPass = eligibility
+    ? eligibility.eligible === true && eligibility.experience?.manualReview !== true && seniorityPass
+    : seniorityPass;
   const finalReady = Boolean(evidence.resolution.ready && evidence.liveness.pass && !evidence.feesOrBonds.evidence && policyPass);
   return {
     ready: finalReady,

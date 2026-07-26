@@ -9,15 +9,16 @@ import { annotateFreshness } from './freshness.mjs';
 import { deduplicateCandidates } from './dedup.mjs';
 import { selectCandidates } from './select.mjs';
 import { selectApplicationShortlist } from './select.mjs';
-import { scoreConversion } from './conversion-score.mjs';
+import { withConversionScore } from './conversion-score.mjs';
 import { readLedger } from './ledger.mjs';
-import { readOpportunityLedger, recordSurfaced, suppressionFor } from './opportunity-ledger.mjs';
+import { readOpportunityLedger, suppressionFor } from './opportunity-ledger.mjs';
 import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked.mjs';
 import { runReverseAtsScan, reverseAtsCandidatesFromFixture } from './adapters/reverse-ats.mjs';
 import { importPublicSearchCandidates } from './adapters/public-search.mjs';
 import { importIndeedCandidates, indeedUnavailable } from './adapters/indeed.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { buildFunnelReport } from './funnel-report.mjs';
+import { autoSuggestFor, mergeScoreRow } from './match-scorer.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CAREER_OPS_DIR = path.resolve(MODULE_DIR, '../career-ops');
@@ -166,13 +167,9 @@ export function applyScores(sources, scoreInput) {
     candidates: (source.candidates || []).map((candidate) => {
       const score = byUrl.get(candidate.canonicalUrl);
       if (!score) return candidate;
+      const normalizedScore = mergeScoreRow(candidate, score, { source: 'manual-scores-json' });
       const updated = {
-        ...candidate,
-        matchScore: Number.isFinite(Number(score.matchScore ?? score.score)) ? Number(score.matchScore ?? score.score) : candidate.matchScore,
-        rationale: typeof score.rationale === 'string' ? score.rationale : candidate.rationale,
-        hook: typeof (score.strongestHook ?? score.hook) === 'string' ? (score.strongestHook ?? score.hook) : candidate.hook,
-        strongestHook: typeof (score.strongestHook ?? score.hook) === 'string' ? (score.strongestHook ?? score.hook) : candidate.strongestHook,
-        responseLikelihood: Number.isFinite(Number(score.responseLikelihood)) ? Number(score.responseLikelihood) : candidate.responseLikelihood,
+        ...normalizedScore.candidate,
         originalApplicationUrl: score.originalApplicationUrl ?? score.originalApplyUrl ?? candidate.originalApplicationUrl,
         originalApplicationEvidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence,
         applicationResolution: (score.originalApplicationUrl ?? score.originalApplyUrl)
@@ -183,7 +180,6 @@ export function applyScores(sources, scoreInput) {
           humanContact: score.humanContact === true || candidate.conversionSignals?.humanContact === true,
           projectConnection: score.projectConnection === true || candidate.conversionSignals?.projectConnection === true,
         },
-        autoSuggest: score.autoSuggest === true,
       };
       return assertCandidate(updated);
     }),
@@ -214,21 +210,31 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       backfillMaximumDays: config.freshness.backfillMaximumDays,
     }).freshness;
     const eligibility = classifyCandidate(candidate, { ...config, salaryFloorLpa: conversionPlan.salaryFloorLpa });
-    const conversion = scoreConversion(candidate, { freshnessWindow: freshness.window, eligibility, policy: conversionPlan.conversionScore });
-    const scoredCandidate = assertCandidate({
+    const guardedCandidate = {
       ...candidate,
-      conversionScore: conversion.score,
-      conversionTier: conversion.tier,
-      conversionFactors: conversion.factors,
-      applicationReady: conversion.applicationReady,
-      applicationReadiness: conversion.applicationReadiness,
-    });
+      matchScoreVersion: candidate.matchScoreVersion
+        ?? (Number.isFinite(candidate.matchScore) ? 'match-score-import-v1' : null),
+      matchScoreInputs: candidate.matchScoreInputs
+        ?? (Number.isFinite(candidate.matchScore)
+          ? { source: 'candidate-input', rawMatchScore: candidate.matchScore }
+          : null),
+      autoSuggest: autoSuggestFor(
+        { ...candidate, freshness, eligibility },
+        candidate.matchScore,
+        candidate.responseLikelihood,
+      ),
+    };
+    const scoredCandidate = assertCandidate(withConversionScore(guardedCandidate, {
+      freshnessWindow: freshness.window,
+      eligibility,
+      policy: conversionPlan.conversionScore,
+    }));
     const entry = {
       candidate: scoredCandidate,
       freshness,
       eligibility,
       selectionTier: eligibility.tier,
-      conversionTier: conversion.tier,
+      conversionTier: scoredCandidate.conversionTier,
       freshnessWindow: freshness.window,
       roleFamily: eligibility.roleFamily,
       companyKey: eligibility.companyKey,
@@ -241,7 +247,6 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     }
     return entry;
   });
-  const scoringCandidates = classified.filter((entry) => entry.eligibility.eligible && entry.freshness.eligible);
   const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
   const suppressionCounts = {
     SUPPRESSED_ACTIONED: 0,
@@ -262,7 +267,8 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     else selectionPool.push(entry);
   }
   const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
-  const selection = selectCandidates(selectionPool, config);
+  const scoringCandidates = selectionPool;
+  const selection = selectCandidates(scoringCandidates, config);
   const applicationShortlist = selectApplicationShortlist(selection.selected, config);
   const verifyQueue = classified
     .filter((entry) => entry.freshness.verifyQueue)
@@ -305,9 +311,6 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     if (!validation.valid) throw new RunError(`payload validation failed for ${candidate.canonicalUrl}: ${validation.errors.join(', ')}`);
     return { candidate, payload };
   });
-  if (!dryRun) {
-    recordSurfaced(records.map((record) => record.candidate), { path: opportunityLedgerPath, now });
-  }
   const sourceCounts = manifests.map((manifest) => ({ ...manifest }));
   const funnel = buildFunnelReport({
     observations: classified,
