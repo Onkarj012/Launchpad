@@ -1,0 +1,173 @@
+%-------------------------
+% BASE 4 — Fresher variant (no Experience section)
+% Same format/macros as Master_Resume_ATS.tex. Projects: Stride, StockXpert, GovBench.
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{cfr-lm}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=-0.5mm]\small}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+\fontfamily{cmr}\selectfont
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {\raisebox{0.0\height}{\footnotesize \faPhone}\ +91-\phone}\\
+  {AI / Full-Stack Software Engineer} & \href{mailto:\emaila}{\raisebox{0.0\height}{\footnotesize \faEnvelope}\ {\emaila}} \\
+  {Pune, Maharashtra} & \href{https://\github}{\raisebox{0.0\height}{\footnotesize \faGithub}\ {\github}} \\
+  {B.Tech Computer Science, PCCOE (9.08 CGPA)} & \href{https://\linkedin}{\raisebox{0.0\height}{\footnotesize \faLinkedin}\ {\linkedin}}
+\end{tabularx}
+\vspace{-5mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+\small{
+Final-year Computer Science student (9.08 CGPA) building production-grade AI systems end-to-end, from model architecture to deployed UI. Designed Stride, an AI-first adaptive wellness platform with five domain agents, multi-modal input, and a deterministic TDEE calorie engine. Built StockXpert, a hierarchical deep learning prediction system achieving a 12\% improvement in short-horizon return correlation across all 100 Nifty NSE equities. Open-sourced GovBench, an LLM governance benchmark evaluated across US, India, and EU legal systems. Proficient in Python, TypeScript, React, Next.js, FastAPI, Node.js, TensorFlow, RAG architectures, and agentic AI systems.
+}
+\vspace{-5mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.08 (up to 7th semester)}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+    \resumeSubheading
+      {Higher Secondary Certificate}{Score: 89.17\%}
+      {Shri Mhalsakant Junior College, Maharashtra State Board}{Jun 2022}
+  \resumeSubHeadingListEnd
+\vspace{-4mm}
+
+%-----------PROJECTS-----------------
+\section{\textbf{Projects}}
+\resumeSubHeadingListStart
+
+    \resumeProject
+      {Stride}{AI-First Adaptive Wellness Platform}
+      {Next.js, Tailwind CSS, Convex, OpenRouter, Agentic AI, Multi-modal LLM, Behavioral Memory Architecture}
+      {2026 -- Present}
+      \resumeItemListStart
+        \item {Architected a six-layer AI-first wellness system: multi-modal input capture (text, voice, image, barcode, nutrition labels), behavioral memory tracking preferences and adherence over time, an NLU layer for structured extraction, five specialised domain agents (diet, workout, sleep, hydration, habits) sharing memory, an analytics layer, and adaptive UX driven by behavioral signals.}
+        \item {Core architecture principle: AI handles understanding and intent extraction; a deterministic four-component TDEE calorie and macro calculator (BMR, NEAT, EAT, TEF) handles computation --- eliminating opaque LLM arithmetic errors while retaining natural-language input flexibility.}
+        \item {Designed adaptive UX driven by behavioral signals: casual users see streamlined logging, advanced users see detailed analytics, overwhelmed users see simplified interfaces --- all from the same codebase without user-managed preferences.}
+      \resumeItemListEnd
+    \vspace{-3.5mm}
+
+    \resumeProject
+      {StockXpert}{AI-Powered Deep Learning Equity Prediction Platform}
+      {Python, TensorFlow, FastAPI, Next.js, TypeScript, Tailwind CSS, Cloudflare R2, AWS}
+      {Nov 2025 -- Present}
+      \resumeItemListStart
+        \item {Architected a hierarchical deep learning system combining ResNet, GRU, Bi-LSTM, and multi-head attention to model cross-horizon price dependencies across all \textbf{100 Nifty NSE equities}, outperforming single-architecture baselines on directional accuracy.}
+        \item {Constructed a leakage-free feature pipeline from raw OHLCV data incorporating RSI, MACD, ADX, Bollinger Bands, SMA/EMA distance, and volatility indicators with strict temporal train/validation/test splits to prevent lookahead bias in feature engineering.}
+        \item {Designed a multi-objective Huber loss with directional regularisation and tail-event oversampling, achieving a \textbf{12\% improvement in short-horizon return correlation} over baseline and reducing directional error on high-volatility equities.}
+      \resumeItemListEnd
+    \vspace{-3.5mm}
+
+    \resumeProject
+      {GovBench}{LLM Governance \& Bias Evaluation Framework}
+      {Python, LLM Evaluation Pipelines, Sentiment Analysis, Hallucination Detection, AI Safety}
+      {Mar 2026 -- Present}
+      \resumeItemListStart
+        \item {Designed and open-sourced an LLM evaluation framework assessing model readiness for judicial and governmental deployment across \textbf{6 pillars}: demographic bias, procedural integrity, corruption resistance, jurisdictional awareness, transparency, and minority protection --- pillars chosen because MMLU-style benchmarks expose none of these failure modes.}
+        \item {Implemented controlled demographic isolation testing across \textbf{12 identity variants} per scenario with naturalistic (non-leading) prompting, measuring inherent bias in bail, sentencing, welfare, and immigration decisions across \textbf{US, India, and EU} legal systems.}
+        \item {Evaluated 4 production LLMs (Claude Sonnet 4.6, Gemini Flash Lite, DeepSeek V4, GPT-OSS 120B) across baseline, pressure, and adversarial stress modes; top performers scored \textbf{90\%+ overall} while revealing concrete failures in minority protection (GPT-OSS: \textbf{63\%}) and jurisdictional awareness (DeepSeek V4: \textbf{56.7\%}).}
+      \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+\vspace{-10mm}
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Objective-C, Java} \\
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML, CSS, Electron} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
+     \textbf{AI / ML}{: TensorFlow, RAG Pipelines, pgvector, BM25, Reciprocal Rank Fusion, LLM Evaluation, Agentic Workflows, Behavioral Memory, Multi-modal AI, Hallucination Detection, XGBoost, OpenRouter} \\
+     \textbf{LLM Providers}{: Anthropic Claude, OpenAI GPT, Gemini, Groq, Deepgram Nova-2, whisper.cpp} \quad \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub, macOS Distribution (notarisation, code signing)} \\
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

@@ -62,10 +62,20 @@ site:<ats-domain> "<role term>" ("Pune" OR "Hinjawadi" OR "Pimpri-Chinchwad")
 site:<ats-domain> "<role term>" ("remote India" OR "India remote" OR APAC OR worldwide)
 ```
 
+**One `site:` domain per query, always.** The WebSearch backend silently fails to honor `site:a OR site:b OR site:c` — it falls back to an unfiltered web search and returns off-domain junk (verified 2026-07-22: an Ashby+Greenhouse+Lever OR-combined query returned Wellfound/Indeed/Arc.dev listing pages, zero ATS-direct hits). Run one query per ATS domain, not a combined one.
+
+**A WebSearch hit only proves the posting was indexed at some point, not that it's fresh.** The engine's cache lags — a `site:linkedin.com/jobs/view` query on 2026-07-22 surfaced a 2023-dated NVIDIA internship posting with no recency signal in the snippet. Never trust a WebSearch snippet for `postedAt`; treat every hit as `VerifyQueue` until re-resolved through the source's own API:
+- Greenhouse: `GET https://boards-api.greenhouse.io/v1/boards/<slug>/jobs?content=true`
+- Lever: `GET https://api.lever.co/v0/postings/<slug>?mode=json`
+- Ashby: `GET https://api.ashbyhq.com/posting-api/job-board/<slug>` (find the job by matching the ID in the WebSearch URL against `jobUrl`)
+- Then read `publishedAt`/`postedOn`/`createdAt` from the response, not from search-result text. This is also how to recover a full JD description when `WebFetch` on the human-facing ATS page returns only a heading (Ashby/Greenhouse/Lever pages are client-rendered; `WebFetch` can't execute JS, the posting API can).
+
+Net effect: WebSearch's real value here is surfacing **which company/slug to check**, not proving freshness — freshness still has to come from the ATS API. It is structurally weak for hitting the Hot (0–72h) window; the reverse-warm-scan and Apify pulls stay the primary sources for that. Don't expect WebSearch to close a thin-inventory day on its own.
+
 ### Broad India/startup boards
 
-- `linkedin.com/jobs`
-- `naukri.com`
+- `linkedin.com/jobs/view` — the individual-posting path, not the bare `linkedin.com/jobs` search-hub path (which returns aggregate "N jobs in X" index pages with no JD, date, or usable link — confirmed 2026-07-22, four separate hub-page hits, zero usable candidates).
+- `naukri.com/job-listings-` — same logic: target the individual-listing URL pattern, not `naukri.com` bare.
 - `wellfound.com`
 - `instahyre.com`
 - untracked company career pages: `"careers" OR "we're hiring"`
@@ -73,7 +83,8 @@ site:<ats-domain> "<role term>" ("remote India" OR "India remote" OR APAC OR wor
 Templates:
 
 ```text
-site:<board> "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR internship) (Pune OR Hinjawadi OR PCMC)
+site:linkedin.com/jobs/view "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR internship) (Pune OR Hinjawadi OR PCMC)
+site:naukri.com/job-listings- "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR internship) (Pune OR "remote India")
 site:<board> "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR internship) ("remote India" OR APAC OR worldwide)
 ("careers" OR "we're hiring") "<role term>" (Pune OR "remote India" OR APAC) -site:linkedin.com -site:naukri.com
 ```

@@ -1,4 +1,10 @@
-export const FRESHNESS_WINDOWS = Object.freeze({ PRIMARY: 'Primary', EXTENDED: 'Extended', UNDATED: 'undated' });
+export const FRESHNESS_WINDOWS = Object.freeze({
+  HOT: 'Hot',
+  ACTIVE: 'Active',
+  BACKFILL: 'Backfill',
+  VERIFY_QUEUE: 'VerifyQueue',
+  REJECTED: 'Rejected',
+});
 
 function parseTimestamp(value) {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.getTime();
@@ -9,27 +15,55 @@ function parseTimestamp(value) {
 }
 
 export function classifyFreshness(candidateOrPostedAt, options = {}) {
-  const postedAt = typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt?.postedAt : candidateOrPostedAt;
+  const candidate = candidateOrPostedAt && typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt : null;
+  const isWorkday = candidate?.provider?.toLowerCase?.() === 'workday';
+  const isPersonio = candidate?.provider?.toLowerCase?.() === 'personio';
+  const workdayHasVerifiedDate = ['workday-startDate', 'workday-postedOn'].includes(candidate?.evidence?.freshness?.kind);
+  const rawPostedAt = candidate ? candidate.postedAt : candidateOrPostedAt;
+  // A four-tenant, 16-row Workday probe matched LIST postedOn to DETAIL startDate;
+  // see docs/research/workday-postedon-probe.md for the measured basis.
+  const workdayUncorroborated = Boolean(isWorkday && !workdayHasVerifiedDate && rawPostedAt != null);
+  const personioUncorroborated = Boolean(isPersonio && candidate?.evidence?.dateConfidence === 'provider-unverified' && rawPostedAt != null);
+  const postedAt = (isWorkday && !workdayHasVerifiedDate) || personioUncorroborated
+    ? null
+    : rawPostedAt;
   const nowValue = options.now ?? new Date().toISOString();
   const nowMs = parseTimestamp(nowValue);
   const postedMs = parseTimestamp(postedAt);
-  const primaryMaximumHours = options.primaryMaximumHours ?? options.primaryMaxHours ?? 24;
-  const extendedMaximumHours = options.extendedMaximumHours ?? options.extendedMaxHours ?? 72;
+  const hotMaximumHours = options.hotMaximumHours ?? 72;
+  const activeMaximumDays = options.activeMaximumDays ?? 7;
+  const backfillMaximumDays = options.backfillMaximumDays ?? 14;
   if (postedMs == null) {
-    return { eligible: true, window: FRESHNESS_WINDOWS.UNDATED, ageHours: null, code: 'FRESHNESS_UNDATED_KEPT', evidence: 'Not Verified' };
+    return {
+      eligible: false,
+      window: FRESHNESS_WINDOWS.VERIFY_QUEUE,
+      ageHours: null,
+      code: workdayUncorroborated
+        ? 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE'
+        : personioUncorroborated
+          ? 'FRESHNESS_PERSONIO_UNCORROBORATED_VERIFY_QUEUE'
+        : 'FRESHNESS_UNDATED_VERIFY_QUEUE',
+      evidence: workdayUncorroborated ? 'workday-postedOn-uncorroborated' : personioUncorroborated ? 'personio-provider-date-uncorroborated' : 'Not Verified',
+      verifyQueue: true,
+      workdayUncorroborated,
+      personioUncorroborated,
+    };
   }
   if (nowMs == null) throw new Error('freshness run clock must be a valid timestamp');
   const ageHours = (nowMs - postedMs) / 3_600_000;
   if (ageHours < 0) {
     return { eligible: false, window: null, ageHours, code: 'FRESHNESS_FUTURE_POSTED_AT', evidence: postedAt };
   }
-  if (ageHours <= primaryMaximumHours) {
-    return { eligible: true, window: FRESHNESS_WINDOWS.PRIMARY, ageHours, code: 'FRESHNESS_PRIMARY_0_24H', evidence: postedAt };
+  if (ageHours <= hotMaximumHours) {
+    return { eligible: true, window: FRESHNESS_WINDOWS.HOT, ageHours, code: 'FRESHNESS_HOT_0_72H', evidence: postedAt };
   }
-  if (ageHours <= extendedMaximumHours) {
-    return { eligible: true, window: FRESHNESS_WINDOWS.EXTENDED, ageHours, code: 'FRESHNESS_EXTENDED_24_72H', evidence: postedAt };
+  if (ageHours <= activeMaximumDays * 24) {
+    return { eligible: true, window: FRESHNESS_WINDOWS.ACTIVE, ageHours, code: 'FRESHNESS_ACTIVE_3_7D', evidence: postedAt };
   }
-  return { eligible: false, window: null, ageHours, code: 'FRESHNESS_OLDER_THAN_72H', evidence: postedAt };
+  if (ageHours <= backfillMaximumDays * 24) {
+    return { eligible: true, window: FRESHNESS_WINDOWS.BACKFILL, ageHours, code: 'FRESHNESS_BACKFILL_8_14D', evidence: postedAt, backfill: true };
+  }
+  return { eligible: false, window: FRESHNESS_WINDOWS.REJECTED, ageHours, code: 'FRESHNESS_OLDER_THAN_14D', evidence: postedAt };
 }
 
 export function annotateFreshness(candidate, options = {}) {

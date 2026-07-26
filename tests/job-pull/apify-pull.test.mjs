@@ -1,7 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readPath, mapItem, validateConfig, RunError } from '../../job-pull/apify-pull.mjs';
+import { readPath, mapItem, validateConfig, RunError, buildPreflight, parseArgs, pullAll, readConfig, selectProfiles } from '../../job-pull/apify-pull.mjs';
+import { prepareApifyRecords } from '../../job-pull/apify-prepare.mjs';
 import { prepare } from '../../job-pull/public-search-prepare.mjs';
+import { normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { runV5Workflow } from '../../job-pull/workflow.mjs';
+
+const CONFIG = readConfig('config/apify.json');
+
+function response(body, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
+}
+
+function successfulFetch(items = []) {
+  return async (url, options) => {
+    if (options?.method === 'POST') return response({ data: { id: 'run-1', status: 'RUNNING' } });
+    if (url.includes('/actor-runs/')) return response({ data: { id: 'run-1', status: 'SUCCEEDED', defaultDatasetId: 'dataset-1' } });
+    return response(items);
+  };
+}
 
 test('readPath resolves dot-paths, including nested objects and missing keys', () => {
   assert.equal(readPath({ a: { b: { c: 'x' } } }, 'a.b.c'), 'x');
@@ -41,6 +63,67 @@ test('mapItem shapes a raw dataset item into the RAW record contract', () => {
   assert.equal(mapItem(item, null, 'linkedin'), null);
 });
 
+test('mapItem preserves optional application and work-condition fields only when mapped', () => {
+  const record = mapItem({
+    url: 'https://example.test/1', company: 'Acme', title: 'AI Engineer', original: 'https://jobs.acme.test/1', salary: '₹10 LPA',
+  }, {
+    url: 'url', company: 'company', title: 'title', originalApplicationUrl: 'original', salary: 'salary',
+  }, 'naukri');
+  assert.equal(record.originalApplicationUrl, 'https://jobs.acme.test/1');
+  assert.equal(record.salary, '₹10 LPA');
+  assert.equal(record.equipment, undefined);
+});
+
+test('profile selection is explicit, stable, bounded, and disabled profiles remain invokable', () => {
+  assert.deepEqual(parseArgs(['--profile', 'naukri-fresher,hirist-fresher', '--out', 'raw.json']).profiles, ['naukri-fresher', 'hirist-fresher']);
+  assert.deepEqual(selectProfiles(CONFIG, []).map((actor) => actor.profile), []);
+  assert.deepEqual(selectProfiles(CONFIG, 'naukri-fresher').map((actor) => actor.profile), ['naukri-fresher']);
+  assert.equal(selectProfiles(CONFIG, 'naukri-fresher')[0].enabled, false);
+  assert.throws(() => selectProfiles(CONFIG, 'not-a-profile'), /unknown Apify rescue profile/);
+  assert.equal(CONFIG.actors.some((actor) => ['himalayas', 'remotive', 'we-work-remotely'].includes(actor.label)), false);
+});
+
+test('preflight reports expected scope and credit/runtime exposure without executing', () => {
+  const preflight = buildPreflight(CONFIG, ['linkedin-jobs', 'naukri-fresher']);
+  assert.equal(preflight.status, 'ready');
+  assert.deepEqual(preflight.selectedProfiles, ['linkedin-jobs', 'naukri-fresher']);
+  assert.equal(preflight.actorRuns, 2);
+  assert.equal(preflight.expectedScope.maxRecords, 250);
+  assert.equal(preflight.creditRuntimeExposure.tokenRequired, true);
+  assert.equal(preflight.creditRuntimeExposure.maxRuntimeSeconds, 1200);
+  assert.equal(buildPreflight(CONFIG).status, 'not-invoked');
+});
+
+test('mapItem and Apify preparation preserve actor, label, category, discovery URL, and original application provenance', () => {
+  const actor = {
+    profile: 'naukri-fresher', id: 'blackfalcondata~naukri-jobs-feed', label: 'naukri',
+    sourceCategory: 'india-niche', sourceKind: 'niche-public',
+    fieldMap: { url: 'portalUrl', discoveryUrl: 'portalUrl', company: 'company', title: 'title', description: 'description' },
+  };
+  const raw = {
+    portalUrl: 'https://naukri.example/jobs/1', company: 'Acme', title: 'AI Engineer', description: 'Build AI.',
+    originalApplicationUrl: 'https://careers.acme.example/jobs/1',
+    originalApplicationEvidence: 'Employer ATS URL supplied by portal detail.',
+  };
+  const mapped = mapItem(raw, actor, actor.label);
+  assert.equal(mapped.source, 'apify-naukri');
+  assert.equal(mapped.actorId, actor.id);
+  assert.equal(mapped.actorLabel, 'naukri');
+  assert.equal(mapped.sourceCategory, 'india-niche');
+  assert.equal(mapped.discoveryUrl, raw.portalUrl);
+  assert.equal(mapped.originalApplicationUrl, raw.originalApplicationUrl);
+  assert.equal(mapped.originalApplicationEvidence, raw.originalApplicationEvidence);
+
+  const prepared = prepareApifyRecords([{ ...mapped, postedAt: '2026-07-23' }]);
+  assert.equal(prepared.skipped.length, 0);
+  assert.equal(prepared.kept[0].source, 'apify-naukri');
+  assert.equal(prepared.kept[0].actorLabel, 'naukri');
+  assert.equal(prepared.kept[0].sourceCategory, 'india-niche');
+  assert.equal(prepared.kept[0].discoveryUrl, raw.portalUrl);
+  assert.equal(prepared.kept[0].originalApplicationUrl, raw.originalApplicationUrl);
+  assert.equal(prepared.kept[0].originalApplicationEvidence, raw.originalApplicationEvidence);
+});
+
 test('validateConfig rejects malformed actor entries and accepts a well-formed config', () => {
   assert.throws(() => validateConfig(null), RunError);
   assert.throws(() => validateConfig({ actors: 'nope' }), RunError);
@@ -51,7 +134,7 @@ test('validateConfig rejects malformed actor entries and accepts a well-formed c
     RunError,
   ); // missing fieldMap.title
 
-  const good = { actors: [{ id: 'acme~scraper', label: 'acme', fieldMap: { url: 'u', company: 'c', title: 't' } }] };
+  const good = { actors: [{ id: 'acme~scraper', profile: 'acme-test', label: 'acme', fieldMap: { url: 'u', company: 'c', title: 't' } }] };
   assert.equal(validateConfig(good), good);
 });
 
@@ -79,4 +162,134 @@ test('a mapped Apify record passes public-search-prepare.mjs unchanged', () => {
   assert.equal(result.kept[0].url, 'https://example.test/job/42');
   assert.equal(result.kept[0].company, 'Acme');
   assert.equal(result.kept[0].postedAt, '2026-07-15T00:00:00.000Z');
+});
+
+test('selected rescue pull reports honest success telemetry and does not run unselected profiles', async () => {
+  let calls = 0;
+  const result = await pullAll(CONFIG, 'token-fixture', {
+    profile: 'linkedin-jobs',
+    fetchImpl: async (...args) => { calls += 1; return successfulFetch([{ jobUrl: 'https://jobs.example/1', companyName: 'Acme', jobTitle: 'AI Engineer', jobDescription: 'Build AI.' }])(...args); },
+    pollIntervalMs: 0,
+    clock: () => 1000,
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.records.length, 1);
+  assert.deepEqual(result.summary['linkedin-jobs'], {
+    profile: 'linkedin-jobs', actorId: 'cheap_scraper~linkedin-job-scraper', label: 'linkedin', source: 'apify-linkedin',
+    sourceCategory: 'india-niche', status: 'ok', fetched: 1, prepared: 1, eligible: null, eligibleKnown: false,
+    latencyMs: 0, failureReason: null,
+  });
+  assert.equal(result.summary['naukri-fresher'], undefined);
+});
+
+test('duplicate actor IDs never cause a second Apify call and remain visible as degraded', async () => {
+  const config = {
+    rescue: { maxProfilesPerRun: 3, runTimeoutSeconds: 1 },
+    actors: [
+      { profile: 'one', id: 'same~actor', label: 'one', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } },
+      { profile: 'two', id: 'same~actor', label: 'two', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } },
+    ],
+  };
+  let calls = 0;
+  const result = await pullAll(config, 'token-fixture', {
+    profiles: ['one', 'two'],
+    fetchImpl: async (...args) => { calls += 1; return successfulFetch([{ url: 'https://jobs.example/1', company: 'Acme', title: 'AI Engineer' }])(...args); },
+    pollIntervalMs: 0,
+    clock: () => 1000,
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.status, 'degraded');
+  assert.equal(result.summary.two.status, 'not-run');
+  assert.equal(result.summary.two.failureReason, 'duplicate-actor-id');
+});
+
+test('missing token is unavailable, nonfatal, and makes no Apify calls', async () => {
+  let calls = 0;
+  const result = await pullAll(CONFIG, null, {
+    profile: 'foundit-fresher',
+    fetchImpl: async () => { calls += 1; throw new Error('must not call Apify'); },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.summary['foundit-fresher'].status, 'unavailable');
+  assert.equal(result.summary['foundit-fresher'].failureReason, 'missing-token');
+});
+
+test('timeout and partial actor failure are reported without hiding a healthy actor', async () => {
+  const timeoutConfig = {
+    rescue: { maxProfilesPerRun: 3, runTimeoutSeconds: 1 },
+    actors: [{ profile: 'slow', id: 'slow~actor', label: 'slow', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+  let time = 0;
+  const timeout = await pullAll(timeoutConfig, 'token-fixture', {
+    profile: 'slow',
+    fetchImpl: async (url, options) => options?.method === 'POST'
+      ? response({ data: { id: 'slow-run', status: 'RUNNING' } })
+      : response({ data: { id: 'slow-run', status: 'RUNNING' } }),
+    pollIntervalMs: 0,
+    runTimeoutMs: 1000,
+    clock: () => { const value = time; time += 1000; return value; },
+  });
+  assert.equal(timeout.status, 'failed');
+  assert.equal(timeout.summary.slow.failureReason, 'timeout');
+
+  const partialConfig = {
+    rescue: { maxProfilesPerRun: 3, runTimeoutSeconds: 1 },
+    actors: [
+      { profile: 'broken', id: 'broken~actor', label: 'broken', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } },
+      { profile: 'healthy', id: 'healthy~actor', label: 'healthy', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } },
+    ],
+  };
+  const partial = await pullAll(partialConfig, 'token-fixture', {
+    profiles: ['broken', 'healthy'],
+    fetchImpl: async (url, options) => options?.method === 'POST' && url.includes('broken')
+      ? response({ error: 'credits exhausted' }, 402)
+      : successfulFetch([{ url: 'https://jobs.example/2', company: 'Acme', title: 'Backend Engineer' }])(url, options),
+    pollIntervalMs: 0,
+    clock: () => 1000,
+  });
+  assert.equal(partial.status, 'degraded');
+  assert.equal(partial.summary.broken.failureReason, 'api-failure');
+  assert.equal(partial.summary.healthy.status, 'ok');
+  assert.equal(partial.records.length, 1);
+});
+
+test('dataset schema drift is a failed actor result, never a successful empty run', async () => {
+  const config = {
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1 },
+    actors: [{ profile: 'drifted', id: 'drifted~actor', label: 'drifted', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+  const result = await pullAll(config, 'token-fixture', {
+    profile: 'drifted',
+    fetchImpl: async (url, options) => options?.method === 'POST'
+      ? response({ data: { id: 'drift-run', status: 'SUCCEEDED', defaultDatasetId: 'drift-dataset' } })
+      : response({ unexpected: 'object' }),
+    pollIntervalMs: 0,
+    clock: () => '2026-07-23T06:30:00.000Z',
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.records.length, 0);
+  assert.equal(result.summary.drifted.failureReason, 'schema-drift');
+});
+
+test('daily normal/startup/remote contracts do not need a token or make Apify calls', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error('daily mode must not call Apify'); };
+  const candidate = normalizeCandidate({
+    url: 'https://jobs.example/1', company: 'Acme', title: 'AI Engineer', location: 'Pune',
+    postedAt: '2026-07-23T00:00:00.000Z', source: 'fixture', sourceKind: 'ats-direct', provider: 'greenhouse',
+    employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 }, liveness: { status: 'Active', evidence: 'fixture' },
+  });
+  try {
+    for (const mode of ['normal', 'startup', 'remote']) {
+      const result = runV5Workflow({ mode, clock: () => '2026-07-23T06:30:00.000Z', sourceResults: [{ candidates: [candidate], manifest: { sourceId: `fixture-${mode}`, errors: [] } }] });
+      assert.equal(result.mode, mode);
+      assert.equal(result.outcome.fatal, false);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls, 0);
 });

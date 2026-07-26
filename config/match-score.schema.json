@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MatchScoreResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scores"],
+  "properties": {
+    "scores": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["canonicalUrl", "matchScore", "rationale", "strongestHook", "responseLikelihood", "autoSuggest", "descriptionAvailable", "seniorityDecision", "requirementKind", "minimumYears", "evidenceQuote", "confidence", "reasonCode"],
+        "properties": {
+          "canonicalUrl": { "type": "string", "description": "Join key echoed exactly from the input job row." },
+          "matchScore": { "type": "integer", "description": "Rubric total (0-100)." },
+          "rationale": { "type": "string", "description": "One line explaining the score." },
+          "strongestHook": { "type": "string", "description": "Single strongest hook to lead the resume/email with." },
+          "responseLikelihood": { "type": "integer", "description": "Response Likelihood sub-score; feeds the Auto-Suggest rule." },
+          "autoSuggest": { "type": "boolean", "description": "Model opinion only; the pipeline recomputes Auto-Suggest from pipeline facts." },
+          "descriptionAvailable": { "type": "boolean", "description": "Whether JD text was present for this row." },
+          "seniorityDecision": { "type": "string", "enum": ["eligible", "ineligible", "uncertain"], "description": "Abstaining seniority eligibility decision." },
+          "requirementKind": { "type": "string", "enum": ["total-professional", "technology-specific", "domain-specific", "preferred", "ambiguous"], "description": "Meaning of the quoted years requirement." },
+          "minimumYears": { "type": ["number", "null"], "minimum": 0, "description": "Minimum years in the quoted requirement, or null when none exists." },
+          "evidenceQuote": { "type": "string", "description": "Exact literal substring from the JD, or empty when there is no years evidence." },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Classifier confidence." },
+          "reasonCode": { "type": "string", "description": "Stable seniority reason code." }
+        }
+      }
+    }
+  }
+}

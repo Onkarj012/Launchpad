@@ -2,17 +2,23 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { loadConfig, DEFAULT_CONFIG_PATH } from './config.mjs';
-import { assertCandidate, buildPayloadRecord, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
+import { loadConfig, loadConversionPlan, DEFAULT_CONFIG_PATH } from './config.mjs';
+import { assertCandidate, buildPayloadRecord, candidateDedupKey, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
 import { classifyCandidate } from './eligibility.mjs';
 import { annotateFreshness } from './freshness.mjs';
 import { deduplicateCandidates } from './dedup.mjs';
 import { selectCandidates } from './select.mjs';
+import { selectApplicationShortlist } from './select.mjs';
+import { withConversionScore } from './conversion-score.mjs';
 import { readLedger } from './ledger.mjs';
+import { readOpportunityLedger, suppressionFor } from './opportunity-ledger.mjs';
 import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked.mjs';
 import { runReverseAtsScan, reverseAtsCandidatesFromFixture } from './adapters/reverse-ats.mjs';
 import { importPublicSearchCandidates } from './adapters/public-search.mjs';
 import { importIndeedCandidates, indeedUnavailable } from './adapters/indeed.mjs';
+import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
+import { buildFunnelReport } from './funnel-report.mjs';
+import { autoSuggestFor, mergeScoreRow } from './match-scorer.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CAREER_OPS_DIR = path.resolve(MODULE_DIR, '../career-ops');
@@ -42,6 +48,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     runId: parseValue(argv, '--run-id', randomUUID()),
     configPath: parseValue(argv, '--config', DEFAULT_CONFIG_PATH),
     ledgerPath: parseValue(argv, '--ledger', null),
+    opportunityLedgerPath: parseValue(argv, '--opportunity-ledger', null),
     statePath: parseValue(argv, '--state', DEFAULT_STATE_PATH),
     lockPath: parseValue(argv, '--lock', DEFAULT_LOCK_PATH),
     careerOpsDir: parseValue(argv, '--career-ops-dir', DEFAULT_CAREER_OPS_DIR),
@@ -84,10 +91,17 @@ function withRunLock(lockPath, callback) {
   if (existsSync(lockPath)) throw new RunError(`run lock exists: ${lockPath}`);
   mkdirSync(path.dirname(lockPath), { recursive: true });
   writeFileSync(lockPath, `${process.pid}\n`, 'utf8');
-  try {
-    return callback();
-  } finally {
+  const release = () => {
     try { unlinkSync(lockPath); } catch { /* already removed */ }
+  };
+  try {
+    const result = callback();
+    if (result && typeof result.then === 'function') return result.finally(release);
+    release();
+    return result;
+  } catch (error) {
+    release();
+    throw error;
   }
 }
 
@@ -153,20 +167,26 @@ export function applyScores(sources, scoreInput) {
     candidates: (source.candidates || []).map((candidate) => {
       const score = byUrl.get(candidate.canonicalUrl);
       if (!score) return candidate;
+      const normalizedScore = mergeScoreRow(candidate, score, { source: 'manual-scores-json' });
       const updated = {
-        ...candidate,
-        matchScore: Number.isFinite(Number(score.matchScore ?? score.score)) ? Number(score.matchScore ?? score.score) : candidate.matchScore,
-        rationale: typeof score.rationale === 'string' ? score.rationale : candidate.rationale,
-        hook: typeof score.hook === 'string' ? score.hook : candidate.hook,
-        responseLikelihood: Number.isFinite(Number(score.responseLikelihood)) ? Number(score.responseLikelihood) : candidate.responseLikelihood,
-        autoSuggest: score.autoSuggest === true,
+        ...normalizedScore.candidate,
+        originalApplicationUrl: score.originalApplicationUrl ?? score.originalApplyUrl ?? candidate.originalApplicationUrl,
+        originalApplicationEvidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence,
+        applicationResolution: (score.originalApplicationUrl ?? score.originalApplyUrl)
+          ? { status: 'Resolved Original', evidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence ?? null }
+          : candidate.applicationResolution,
+        conversionSignals: {
+          ...(candidate.conversionSignals || {}),
+          humanContact: score.humanContact === true || candidate.conversionSignals?.humanContact === true,
+          projectConnection: score.projectConnection === true || candidate.conversionSignals?.projectConnection === true,
+        },
       };
       return assertCandidate(updated);
     }),
   }));
 }
 
-export function runPipeline({ config, now, runId, ledgerRows = [], sources = [], dryRun = true }) {
+export function runPipeline({ config, conversionPlan = loadConversionPlan(), now, runId, ledgerRows = [], opportunityLedgerRows = null, opportunityRows = null, opportunityLedgerPath, sources = [], dryRun = true }) {
   const allCandidates = sources.flatMap((source) => source.candidates || []);
   const manifests = sources.map((source) => ({ ...source.manifest }));
   for (const manifest of manifests) {
@@ -185,15 +205,36 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
   const classified = deduped.kept.map((candidate) => {
     const freshness = annotateFreshness(candidate, {
       now,
-      primaryMaximumHours: config.freshness.primaryMaximumHours,
-      extendedMaximumHours: config.freshness.extendedMaximumHours,
+      hotMaximumHours: config.freshness.hotMaximumHours,
+      activeMaximumDays: config.freshness.activeMaximumDays,
+      backfillMaximumDays: config.freshness.backfillMaximumDays,
     }).freshness;
-    const eligibility = classifyCandidate(candidate, config);
+    const eligibility = classifyCandidate(candidate, { ...config, salaryFloorLpa: conversionPlan.salaryFloorLpa });
+    const guardedCandidate = {
+      ...candidate,
+      matchScoreVersion: candidate.matchScoreVersion
+        ?? (Number.isFinite(candidate.matchScore) ? 'match-score-import-v1' : null),
+      matchScoreInputs: candidate.matchScoreInputs
+        ?? (Number.isFinite(candidate.matchScore)
+          ? { source: 'candidate-input', rawMatchScore: candidate.matchScore }
+          : null),
+      autoSuggest: autoSuggestFor(
+        { ...candidate, freshness, eligibility },
+        candidate.matchScore,
+        candidate.responseLikelihood,
+      ),
+    };
+    const scoredCandidate = assertCandidate(withConversionScore(guardedCandidate, {
+      freshnessWindow: freshness.window,
+      eligibility,
+      policy: conversionPlan.conversionScore,
+    }));
     const entry = {
-      candidate,
+      candidate: scoredCandidate,
       freshness,
       eligibility,
       selectionTier: eligibility.tier,
+      conversionTier: scoredCandidate.conversionTier,
       freshnessWindow: freshness.window,
       roleFamily: eligibility.roleFamily,
       companyKey: eligibility.companyKey,
@@ -206,19 +247,54 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
     }
     return entry;
   });
-  const scoringCandidates = classified.filter((entry) => entry.eligibility.eligible && entry.freshness.eligible);
-  const selection = selectCandidates(classified, config);
+  const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
+  const suppressionCounts = {
+    SUPPRESSED_ACTIONED: 0,
+    SUPPRESSED_REJECTED: 0,
+    SUPPRESSED_COOLDOWN_7D: 0,
+    SUPPRESSED_BACKFILL_ALREADY_SEEN: 0,
+  };
+  const selectionPool = [];
+  for (const entry of classified) {
+    if (!entry.eligibility.eligible || !entry.freshness.eligible) continue;
+    const key = candidateDedupKey(entry.candidate);
+    const row = opportunityRowsForRun.find((candidate) => candidate.dedup_key === key);
+    const suppression = entry.freshness.backfill && row
+      ? { suppressed: true, code: 'SUPPRESSED_BACKFILL_ALREADY_SEEN' }
+      : row ? suppressionFor(row, now) : { suppressed: false, code: '' };
+    entry.suppression = suppression;
+    if (suppression.suppressed) suppressionCounts[suppression.code]++;
+    else selectionPool.push(entry);
+  }
+  const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
+  const scoringCandidates = selectionPool;
+  const selection = selectCandidates(scoringCandidates, config);
+  const applicationShortlist = selectApplicationShortlist(selection.selected, config);
+  const verifyQueue = classified
+    .filter((entry) => entry.freshness.verifyQueue)
+    .map((entry) => ({
+      company: entry.candidate.company,
+      title: entry.candidate.title,
+      canonicalUrl: entry.candidate.canonicalUrl,
+      provider: entry.candidate.provider,
+      code: entry.freshness.code,
+      workdayUncorroborated: entry.freshness.workdayUncorroborated === true,
+    }));
   const gateExclusions = classified
-    .filter((entry) => !entry.eligibility.eligible || !entry.freshness.eligible)
+    .filter((entry) => !entry.freshness.verifyQueue && (!entry.eligibility.eligible || !entry.freshness.eligible))
     .map((entry) => ({
       url: entry.candidate.canonicalUrl,
       code: !entry.freshness.eligible ? entry.freshness.code : entry.eligibility.reasons[0] || 'GATE_REJECTED',
       evidence: !entry.freshness.eligible ? entry.freshness.evidence : entry.eligibility.evidenceCodes,
     }));
   const selectedUrls = new Set(selection.selected.map((candidate) => candidate.canonicalUrl));
-  for (const candidate of selection.selected) {
-    const manifest = manifestForCandidate(manifests, candidate);
-    if (manifest) manifest.selected++;
+  for (const entry of classified) {
+    entry.selected = selectedUrls.has(entry.candidate.canonicalUrl);
+    entry.ready = entry.candidate.applicationReady === true;
+    if (entry.selected) {
+      const manifest = manifestForCandidate(manifests, entry.candidate);
+      if (manifest) manifest.selected++;
+    }
   }
   const strictCandidates = selection.selected.filter((candidate) => candidate.selectionTier === 'strict');
   const relaxedCandidates = selection.selected.filter((candidate) => candidate.selectionTier === 'relaxed');
@@ -236,6 +312,24 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
     return { candidate, payload };
   });
   const sourceCounts = manifests.map((manifest) => ({ ...manifest }));
+  const funnel = buildFunnelReport({
+    observations: classified,
+    lifecycle: {
+      fetched: allCandidates.length,
+      sourceFiltered: allCandidates.length,
+      eligible: classified.filter((entry) => entry.eligibility.eligible).length,
+      historicalSuppressed: 0,
+      suppressedCooldown: suppressionCounts.SUPPRESSED_COOLDOWN_7D,
+      suppressedBackfillAlreadySeen: suppressionCounts.SUPPRESSED_BACKFILL_ALREADY_SEEN,
+      suppressedActioned: suppressionCounts.SUPPRESSED_ACTIONED,
+      verifyQueue: verifyQueue.length,
+      workdayUncorroboratedVerifyQueue: classified.filter((entry) => entry.freshness.workdayUncorroborated === true
+        || entry.freshness.code === 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE').length,
+      ready: classified.filter((entry) => entry.ready).length,
+      selected: records.length,
+      newlyActionable: null,
+    },
+  });
   return {
     schemaVersion: 'JobPullRunV1',
     runId,
@@ -251,9 +345,18 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
       deduped: deduped.kept.length,
       duplicates: deduped.duplicates.length,
       selected: records.length,
+      scored: selection.scoredCount,
+      unscored: selection.unscoredCount,
+      scoringFailed: selection.scoringFailedCount,
       strictSelected: strictCandidates.length,
       relaxedSelected: relaxedCandidates.length,
+      verifyQueue: verifyQueue.length,
+      applicationShortlist: applicationShortlist.selected.length,
+      suppressed,
+      suppressedByCode: suppressionCounts,
+      workdayUncorroboratedVerifyQueue: funnel.lifecycle.workdayUncorroboratedVerifyQueue,
     },
+    funnel,
     strictShortfall: selection.strictShortfall,
     strictTarget: config.run.strictTarget,
     targetRange: [config.run.minimumTotal, config.run.maximumTotal],
@@ -262,6 +365,9 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
       companyCounts: selection.companyCounts,
       exclusions: selection.exclusions,
     },
+    applicationShortlist,
+    suppression: { count: suppressed, byCode: suppressionCounts },
+    verifyQueue,
     exclusionAudit: {
       gate: gateExclusions,
       duplicate: deduped.duplicates.map((duplicate) => ({ url: duplicate.candidate.canonicalUrl, code: duplicate.code, evidence: duplicate.evidence })),
@@ -270,10 +376,13 @@ export function runPipeline({ config, now, runId, ledgerRows = [], sources = [],
     sourceManifests: sourceCounts,
     fingerprintCoverage: deduped.fingerprintCoverage,
     scoring: {
-      required: scoringCandidates.some((entry) => entry.candidate.matchScore == null),
-      scoredCount: scoringCandidates.filter((entry) => entry.candidate.matchScore != null).length,
-      unscoredCount: scoringCandidates.filter((entry) => entry.candidate.matchScore == null).length,
+      required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0,
+      scoredCount: selection.scoredCount,
+      unscoredCount: selection.unscoredCount,
+      scoringFailedCount: selection.scoringFailedCount,
+      selectedCount: records.length,
     },
+    scoringQueue: selection.scoringQueue,
     scoringCandidates: scoringCandidates.map((entry) => ({
       ...entry.candidate,
       eligibility: entry.eligibility,
@@ -325,6 +434,12 @@ function discover(options) {
   return sources;
 }
 
+function hasNetworkAvailable(options) {
+  // Both ATS sources are fixture-backed in this mode, and the optional sources
+  // are also fixture-backed or absent, so enrichment must remain offline-safe.
+  return !(options.dryRun && options.trackedJson && options.reverseJson);
+}
+
 function outputResult(result, outputPath, manifestPath) {
   const text = `${JSON.stringify(result, null, 2)}\n`;
   if (outputPath) {
@@ -333,7 +448,7 @@ function outputResult(result, outputPath, manifestPath) {
   }
   if (manifestPath) {
     mkdirSync(path.dirname(manifestPath), { recursive: true });
-    writeFileSync(manifestPath, JSON.stringify({ runId: result.runId, runAt: result.runAt, sourceManifests: result.sourceManifests, counts: result.counts }, null, 2) + '\n', 'utf8');
+    writeFileSync(manifestPath, JSON.stringify({ runId: result.runId, runAt: result.runAt, sourceManifests: result.sourceManifests, counts: result.counts, verifyQueue: result.verifyQueue }, null, 2) + '\n', 'utf8');
   }
   return text;
 }
@@ -353,17 +468,18 @@ Manual, no-Notion discovery. Options:
   --now ISO                   injected run clock
   --output FILE               write the complete local result JSON
   --manifest-out FILE         write source telemetry JSON
-  --config FILE --ledger FILE --state FILE --force
+  --config FILE --ledger FILE --opportunity-ledger FILE --state FILE --force
 `);
 }
 
-export function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help) {
     printHelp();
     return 0;
   }
   const config = loadConfig(options.configPath);
+  const conversionPlan = loadConversionPlan();
   const ledgerPath = options.ledgerPath || undefined;
   const ledgerRows = readLedger(ledgerPath).rows;
   const runState = readState(options.statePath);
@@ -371,9 +487,15 @@ export function main(argv = process.argv.slice(2)) {
   if (config.run.onceDaily && runState.lastRunDate === runDate && !options.force && !options.dryRun) {
     throw new RunError(`manual daily pull already ran on ${runDate}; use --force to override`);
   }
-  const execute = () => {
+  const execute = async () => {
     const sources = applyScores(discover(options), options.scoresJson);
-    const result = runPipeline({ config, now: options.now, runId: options.runId, ledgerRows, sources, dryRun: options.dryRun });
+    if (hasNetworkAvailable(options)) {
+      await enrichWorkdayCandidates(sources.flatMap((source) => source.candidates || []), {
+        now: Date.parse(options.now),
+      });
+    }
+    const opportunityLedgerPath = options.opportunityLedgerPath || undefined;
+    const result = runPipeline({ config, conversionPlan, now: options.now, runId: options.runId, ledgerRows, opportunityLedgerPath, sources, dryRun: options.dryRun });
     outputResult(result, options.outputPath, options.manifestPath);
     if (!options.dryRun) {
       mkdirSync(path.dirname(options.statePath), { recursive: true });
@@ -382,10 +504,10 @@ export function main(argv = process.argv.slice(2)) {
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     return 0;
   };
-  return withRunLock(options.lockPath, execute);
+  return await withRunLock(options.lockPath, execute);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try { process.exitCode = main(); }
+  try { process.exitCode = await main(); }
   catch (error) { console.error(`job-pull: ${error.message}`); process.exitCode = 1; }
 }

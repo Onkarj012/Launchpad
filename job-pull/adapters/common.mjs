@@ -37,8 +37,10 @@ export function readJsonInput(input, source) {
 
 export function deriveProvider(raw, fallback = null) {
   if (typeof raw.provider === 'string' && raw.provider.trim()) return raw.provider.trim().toLowerCase();
-  const source = String(raw.source || '').toLowerCase();
-  for (const provider of ['greenhouse', 'lever', 'ashby', 'workday']) if (source.includes(provider)) return provider;
+  const source = `${String(raw.source || '')} ${String(raw.url || raw.canonicalUrl || '')}`.toLowerCase();
+  for (const provider of ['greenhouse', 'lever', 'ashby', 'workday', 'workable', 'smartrecruiters', 'breezy', 'recruitee']) {
+    if (source.includes(provider)) return provider;
+  }
   return fallback;
 }
 
@@ -75,10 +77,15 @@ export function normalizeSourceRecords(records, options = {}) {
 }
 
 function optionsForRecord(raw, options) {
+  const provider = deriveProvider(raw, raw.provider ?? options.provider);
+  const sourceKind = raw.sourceKind ?? (['greenhouse', 'lever', 'ashby', 'workday', 'workable', 'smartrecruiters', 'breezy', 'recruitee'].includes(provider)
+    ? 'ats-direct'
+    : options.sourceKind);
   return {
     source: raw.source ?? options.source,
-    provider: deriveProvider(raw, raw.provider ?? options.provider),
-    sourceKind: raw.sourceKind ?? options.sourceKind,
+    provider,
+    sourceKind,
+    sourceCategory: raw.sourceCategory ?? options.sourceCategory,
     runAt: options.runAt,
     currentFeedIsLive: options.currentFeedIsLive ?? false,
   };

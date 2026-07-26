@@ -68,6 +68,9 @@ site:<ats-domain> "<role term>" ("remote India" OR "India remote" OR APAC OR wor
 - `naukri.com`
 - `wellfound.com`
 - `instahyre.com`
+- `cutshort.io` (also covered structurally via the `cutshort` Apify actor below — WebSearch is the fallback when `APIFY_TOKEN` is unset)
+- `peerlist.io/jobs` — no Apify actor exists for this; WebSearch/direct-browse only
+- `hirist.tech` (also covered via the `hirist` Apify actor)
 - untracked company career pages: `"careers" OR "we're hiring"`
 
 Templates:
@@ -81,6 +84,22 @@ site:<board> "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR i
 Internship queries must include `(paid OR stipend OR salary)`; the actual JD must still provide pay evidence.
 
 Excluded: `internshala.com` — stale/unreliable postings.
+
+### VC portfolio boards
+
+No Apify actor exists for these. Verified 2026-07-21: Peak XV, Accel, Blume, and Khosla all run the same "Powered by Consider" board platform, and Lightspeed confirms the same `?locations=` filter pattern — fetch these URLs directly instead of a `site:` WebSearch. Direct fetch avoids the SPA-indexing-lag problem `site:` search has on these boards (see the freshness note below): fewer missed listings, no snippet-only dates.
+
+- `https://careers.peakxv.com/jobs?q=<role term>&locations=India`
+- `https://jobs.accel.com/jobs?q=<role term>&locations=India`
+- `https://jobs.blume.vc/jobs?q=<role term>`
+- `https://jobs.lsvp.com/jobs?q=<role term>&locations=India` (confirmed pattern via a live `Gurgaon, India` filter)
+- `https://jobs.khoslaventures.com/jobs?q=<role term>`
+- `https://www.ycombinator.com/jobs/role/<role-slug>/india` — YC uses per-role path segments, not a `?q=` param; e.g. `/jobs/role/software-engineer/india`
+- `https://indianstartups.work` — real aggregator, organized by VC fund and company, not query-searchable; browse and scan for role matches instead of templating a query
+
+Fetch each URL directly (WebFetch or equivalent), not a WebSearch `site:` query — these are client-rendered boards a search engine may not have freshly indexed.
+
+A VC-board hit is a lead, not an apply-ready source: always resolve to the portfolio company's own career page/ATS link before it enters the shortlist, same as any other aggregator-tier discovery.
 
 ## Geo evidence
 
@@ -122,7 +141,9 @@ A 404/empty slug is logged and skipped. Flag repeated failures for manual prunin
 
 ## Public feeds
 
-Prioritize providers with usable dates and explicit geo: Jobicy, We Work Remotely, The Muse, JobStreet/SEEK, Glints, Remotive, Himalayas, EchoJobs, Hacker News. RemoteOK/Working Nomads results lacking exact dates cannot enter curated output until date enrichment succeeds.
+Prioritize providers with usable dates and explicit geo: Jobicy, We Work Remotely, The Muse, JobStreet/SEEK, Glints, Remotive, Himalayas, EchoJobs, Hacker News. RemoteOK/Working Nomads results lacking exact dates cannot enter curated output until date enrichment succeeds. We Work Remotely, Remotive, and Himalayas are also available structurally via Apify (see below) — prefer the Apify path when `APIFY_TOKEN` is set, WebSearch as fallback.
+
+No Apify actor exists for Arc (`arc.dev`), Uplers, or Contra — WebSearch/direct-browse only. Arc and Uplers apply the same explicit-India-eligibility check as any remote board; Contra is contract/independent work, not full-time — tag and score accordingly, it does not count toward the full-time application shortlist.
 
 ## Indeed
 
@@ -130,7 +151,7 @@ Indeed is optional until MCP is connected. Probe availability; if missing, repor
 
 ## Apify structured board pull (optional)
 
-Optional layer for LinkedIn/Naukri/Wellfound/YC via `config/apify.json`-configured Apify actors — a structured alternative to WebSearch for boards that don't expose a public feed. Requires `APIFY_TOKEN` in the environment; skip entirely and report `source unavailable` when unset.
+Optional layer for LinkedIn/Naukri/Wellfound/YC/Foundit/Internshala/Hirist/Cutshort/Himalayas/Remotive/We Work Remotely via `config/apify.json`-configured Apify actors — a structured alternative to WebSearch for boards that don't expose a public feed. Requires `APIFY_TOKEN` in the environment; skip entirely and report `source unavailable` when unset.
 
 ```bash
 node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json

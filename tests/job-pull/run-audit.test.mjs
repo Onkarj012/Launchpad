@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../../job-pull/config.mjs';
-import { normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { applyScores, localRunDate, runPipeline } from '../../job-pull/run.mjs';
 import { classifyMiss } from '../../job-pull/audit.mjs';
 
@@ -12,7 +12,8 @@ function raw(index, { title = 'AI Engineer', postedAt = '2026-07-14T08:00:00.000
   return normalizeCandidate({
     url: `https://jobs.example.test/${index}`, source: 'greenhouse-full', sourceKind: 'ats-direct', provider: 'greenhouse', id: String(index),
     company: `Company ${index}`, title, location, postedAt, employment: { type: 'full-time' }, experience,
-    liveness: { status: 'Active', evidence: 'fixture' },
+    description: 'Build production Python, FastAPI, and applied AI systems.',
+    liveness: { status: 'Active', evidence: 'fixture' }, matchScore: 80 - (index % 20),
   });
 }
 
@@ -34,7 +35,32 @@ test('run pipeline emits strict/fallback records, manifests, caps, and payload-s
   assert.equal(result.strictShortfall, 0);
   assert.equal(result.records.every((record) => record.payload['Apply?'] === false), true);
   assert.equal(result.records.every((record) => record.payload.Status === 'Discovered'), true);
+  assert.equal(result.applicationShortlist.selected.every((candidate) => candidate.applicationReady), true);
+  assert.equal(result.applicationShortlist.selected.length, 10);
   assert.deepEqual(result.sourceManifests[0].providers, ['greenhouse', 'lever', 'ashby', 'workday']);
+});
+
+test('undated candidates are surfaced in verifyQueue and never selected or rejected', () => {
+  const candidate = raw(100, { postedAt: null });
+  const result = runPipeline({
+    config,
+    now,
+    runId: 'verify-queue-fixture',
+    sources: [{ candidates: [candidate], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.deepEqual(result.verifyQueue, [{
+    company: candidate.company,
+    title: candidate.title,
+    canonicalUrl: candidate.canonicalUrl,
+    provider: candidate.provider,
+    code: 'FRESHNESS_UNDATED_VERIFY_QUEUE',
+    workdayUncorroborated: false,
+  }]);
+  assert.equal(result.counts.selected, 0);
+  assert.equal(result.counts.verifyQueue, 1);
+  assert.equal(result.selection.exclusions.length, 0);
+  assert.equal(result.exclusionAudit.gate.length, 0);
+  assert.equal(result.scoringCandidates.length, 0);
 });
 
 test('score merge preserves agent scoring and daily date uses India timezone', () => {
@@ -46,10 +72,101 @@ test('score merge preserves agent scoring and daily date uses India timezone', (
     hook: 'Lead with shipped agent systems',
     responseLikelihood: 16,
     autoSuggest: true,
+    originalApplicationUrl: 'https://jobs.example.test/99/apply',
+    humanContact: true,
+    projectConnection: true,
   }]);
   assert.equal(sources[0].candidates[0].matchScore, 87);
-  assert.equal(sources[0].candidates[0].autoSuggest, true);
+  assert.equal(sources[0].candidates[0].autoSuggest, false);
+  assert.equal(sources[0].candidates[0].applicationResolution.status, 'Resolved Original');
+  assert.equal(sources[0].candidates[0].conversionSignals.humanContact, true);
   assert.equal(localRunDate('2026-07-14T20:00:00.000Z', config.timezone), '2026-07-15');
+});
+
+test('manual scores use the no-JD clamp and JS Auto-Suggest instead of the model boolean', () => {
+  const noJd = raw(401);
+  noJd.description = null;
+  const described = raw(402);
+  const sources = applyScores([{ candidates: [noJd, described], manifest: { sourceId: 'reverse-ats', errors: [] } }], [
+    { canonicalUrl: noJd.canonicalUrl, matchScore: 95, responseLikelihood: 18, autoSuggest: true },
+    { canonicalUrl: described.canonicalUrl, matchScore: 90, responseLikelihood: 18, autoSuggest: false },
+  ]);
+  assert.equal(sources[0].candidates[0].matchScore, 45);
+  assert.equal(sources[0].candidates[0].autoSuggest, false);
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 2, strictTarget: 1 } },
+    now,
+    runId: 'manual-score-guardrails',
+    sources,
+  });
+  const finalNoJd = result.scoringCandidates.find((candidate) => candidate.canonicalUrl === noJd.canonicalUrl);
+  const finalDescribed = result.scoringCandidates.find((candidate) => candidate.canonicalUrl === described.canonicalUrl);
+  assert.equal(finalNoJd.matchScore, 45);
+  assert.equal(finalNoJd.autoSuggest, false);
+  assert.equal(finalDescribed.autoSuggest, true);
+});
+
+test('final output records Match and Conversion score versions and raw inputs', () => {
+  const candidate = raw(403);
+  const sources = applyScores([{ candidates: [candidate], manifest: { sourceId: 'reverse-ats', errors: [] } }], [{
+    canonicalUrl: candidate.canonicalUrl,
+    matchScore: 90,
+    responseLikelihood: 18,
+    autoSuggest: false,
+  }]);
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 1, strictTarget: 1 } },
+    now,
+    runId: 'score-version-receipt',
+    sources,
+  });
+  const [{ candidate: output, payload }] = result.records;
+  assert.equal(output.matchScoreVersion, 'match-score-v1');
+  assert.equal(output.matchScoreInputs.source, 'manual-scores-json');
+  assert.equal(output.conversionScoreVersion, 'conversion-score-v2-final-match');
+  assert.equal(output.conversionInputs.matchScore, 90);
+  assert.equal(payload['Match Score Version'], output.matchScoreVersion);
+  assert.equal(payload['Conversion Score Version'], output.conversionScoreVersion);
+  assert.deepEqual(payload['Conversion Score Inputs'], output.conversionInputs);
+});
+
+test('run telemetry separates scored, unscored, scoring-failed, and selected candidates', () => {
+  const scored = raw(201);
+  const unscored = raw(202);
+  delete unscored.matchScore;
+  const failed = { ...raw(203), scoringFailed: true };
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 3, strictTarget: 1 } },
+    now,
+    runId: 'scoring-telemetry-fixture',
+    sources: [{ candidates: [scored, unscored, failed], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.equal(result.counts.scored, 1);
+  assert.equal(result.counts.unscored, 1);
+  assert.equal(result.counts.scoringFailed, 1);
+  assert.equal(result.counts.selected, 1);
+  assert.deepEqual(result.scoring, { required: true, scoredCount: 1, unscoredCount: 1, scoringFailedCount: 1, selectedCount: 1 });
+});
+
+test('suppression totals equal the roles removed from the scoring pool', () => {
+  const actioned = raw(301);
+  const cooldown = raw(302);
+  const available = raw(303);
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 3, strictTarget: 1 } },
+    now,
+    runId: 'suppression-reconciliation-fixture',
+    opportunityLedgerRows: [
+      { dedup_key: candidateDedupKey(actioned), action_state: 'applied' },
+      { dedup_key: candidateDedupKey(cooldown), action_state: 'none', last_surfaced_at: '2026-07-13T12:00:00.000Z' },
+    ],
+    sources: [{ candidates: [actioned, cooldown, available], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.equal(result.counts.gatePassing, 3);
+  assert.equal(result.suppression.count, 2);
+  assert.equal(result.scoringCandidates.length, 1);
+  assert.equal(result.counts.gatePassing - result.scoringCandidates.length, result.suppression.count);
+  assert.equal(result.scoringCandidates[0].canonicalUrl, available.canonicalUrl);
 });
 
 test('audit classifies supplied misses without discovery', () => {

@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig } from '../../job-pull/config.mjs';
+import { loadConfig, loadConversionPlan } from '../../job-pull/config.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 
 const config = loadConfig();
+const conversionPolicy = { ...config, salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
+const explicitFloorPolicy = { ...config, salaryFloorLpa: 8 };
 
 function candidate(overrides = {}) {
   return normalizeCandidate({
@@ -35,14 +37,48 @@ test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote - India' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - APAC' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).geo.pass, true);
-  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).geo.code, 'GEO_REMOTE_SCOPE_NOT_VERIFIED');
-  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, 'relaxed');
+  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
+  assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, null);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - US only' }), config).geo.pass, false);
   assert.equal(classifyCandidate(candidate({ location: 'Remote worldwide, excluding India' }), config).geo.pass, false);
+  assert.equal(classifyCandidate(candidate({ location: 'Remote', remoteEligibility: { status: 'eligible', evidence: 'India permitted' } }), config).geo.pass, true);
+});
+
+test('explicit foreign remote locations cannot borrow India or global wording from the description', () => {
+  for (const location of ['USA, TN, Chattanooga, Remote', 'Remote - Lesser Poland, Poland', 'United Arab Emirates Remote', 'TR Remote', 'Remote: North America - East']) {
+    const result = classifyCandidate(candidate({
+      location,
+      description: 'Our global company also has teams in India.',
+    }), config);
+    assert.equal(result.geo.pass, false, location);
+    assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED', location);
+  }
+  assert.equal(classifyCandidate(candidate({
+    location: 'Remote',
+    description: 'Backed by Tiger Global; serving customers around the world.',
+  }), config).geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
+});
+
+test('a global location cannot override an explicit foreign residency requirement', () => {
+  const result = classifyCandidate(candidate({
+    title: 'Applied AI Engineer (Austria)',
+    location: 'Global',
+    description: 'This role is remote, but candidates must be based in Austria.',
+  }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED');
+  assert.match(result.geo.evidence, /must be based in Austria/i);
+});
+
+test('missing work mode and location never pass the India eligibility gate', () => {
+  const result = classifyCandidate(candidate({ location: null, workMode: null, description: 'Build reliable AI systems.' }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_NOT_VERIFIED');
+  assert.equal(result.eligible, false);
 });
 
 test('expanded target titles pass as strict roles', () => {
-  for (const title of ['Software Development Engineer', 'GenAI Developer', 'Member of Technical Staff']) {
+  for (const title of ['Software Development Engineer', 'GenAI Developer']) {
     const result = classifyCandidate(candidate({ title }), config);
     assert.equal(result.tier, 'strict', title);
   }
@@ -69,6 +105,17 @@ test('adjacent engineering stays fallback and off-target roles stay rejected', (
   assert.equal(classifyCandidate(candidate({ title: 'QA Engineer' }), config).eligible, false);
 });
 
+test('generic maintenance junior engineers are off-target while software and language developers remain targeted', () => {
+  for (const title of ['Junior Engineer II, SMT & THT Maintenance', 'Maintenance Junior Engineer - M/F/D']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.eligible, false, title);
+    assert.equal(result.title.code, 'TITLE_OFF_TARGET', title);
+  }
+  for (const title of ['Junior Software Engineer', 'Associate Software Engineer', 'Java Developer']) {
+    assert.equal(classifyCandidate(candidate({ title }), config).title.pass, true, title);
+  }
+});
+
 test('experience separates strict, relaxed, and hard rejection', () => {
   const strict = classifyCandidate(candidate({ experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' } }), config);
   const relaxed = classifyCandidate(candidate({ experience: { minYears: 2, maxYears: 2, evidence: '2 years' } }), config);
@@ -80,6 +127,28 @@ test('experience separates strict, relaxed, and hard rejection', () => {
   assert.equal(rejected.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
 });
 
+test('activity-worded experience requirements cannot bypass the hard minimum gate', () => {
+  for (const description of [
+    'What You Bring: 5-8 years building backend systems in Java.',
+    'Requirements: 3+ years developing production software.',
+  ]) {
+    const result = classifyCandidate(candidate({ experience: {}, description }), config);
+    assert.equal(result.eligible, false, description);
+    assert.equal(result.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+  }
+  const relaxed = classifyCandidate(candidate({
+    experience: {},
+    description: 'What experiences will help: 2-5 years of backend development with Python.',
+  }), config);
+  assert.equal(relaxed.experience.minYears, 2);
+  assert.equal(relaxed.experience.code, 'EXPERIENCE_RELAXED_UP_TO_2');
+  const unrelatedNumber = classifyCandidate(candidate({
+    experience: {},
+    description: 'Requirements: support at least 720p video output. Freshers welcome.',
+  }), config);
+  assert.equal(unrelatedNumber.experience.code, 'EXPERIENCE_FRESHER_EVIDENCE');
+});
+
 test('unknown evidence stays visible while only confirmed expiry fails liveness', () => {
   const unknown = normalizeCandidate({
     url: 'https://example.test/jobs/unknown', company: 'Example', title: 'AI Engineer', location: 'Pune',
@@ -89,5 +158,136 @@ test('unknown evidence stays visible while only confirmed expiry fails liveness'
   assert.equal(unknown.liveness.status, 'Not Verified');
   const classified = classifyCandidate(unknown, config);
   assert.equal(classified.eligible, true);
+  assert.equal(classified.tier, 'relaxed');
+  assert.equal(classified.experience.code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  assert.deepEqual(classified.relaxations, ['experience-not-stated']);
   assert.equal(classified.liveness.code, 'LIVENESS_NOT_VERIFIED');
+});
+
+test('region-qualified global wording does not grant remote eligibility', () => {
+  const result = classifyCandidate(candidate({ location: 'Remote', description: 'Work remotely anywhere within Europe.' }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
+});
+
+test('foreign work authorization hard-fails despite generic remote scope', () => {
+  const result = classifyCandidate(candidate({ location: 'Remote worldwide', description: 'Candidates must be authorized to work in the US.' }), config);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED');
+  assert.match(result.geo.evidence, /authorized to work in the US/i);
+});
+
+test('structured India location remains compatible with stray geo wording', () => {
+  const result = classifyCandidate(candidate({ location: 'India', description: 'Remote anywhere within Germany. Work authorization in India is accepted.' }), config);
+  assert.equal(result.geo.pass, true);
+  assert.equal(result.geo.mode, 'remote');
+});
+
+test('fresher evidence makes missing experience strict', () => {
+  const result = classifyCandidate(candidate({ experience: {}, description: 'This role welcomes freshers.' }), config);
+  assert.equal(result.experience.code, 'EXPERIENCE_FRESHER_EVIDENCE');
+  assert.equal(result.experience.evidence, 'freshers');
+  assert.equal(result.tier, 'strict');
+});
+
+test('missing experience without fresher evidence requires manual review', () => {
+  const result = classifyCandidate(candidate({ experience: {}, description: 'Build production services with Python.' }), config);
+  assert.equal(result.experience.code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  assert.equal(result.experience.manualReview, true);
+  assert.equal(result.tier, 'relaxed');
+  assert.deepEqual(result.relaxations, ['experience-not-stated']);
+});
+
+test('seniority markers hard-reject otherwise targeted titles', () => {
+  const result = classifyCandidate(candidate({ title: 'Senior AI Engineer' }), config);
+  assert.equal(result.eligible, false);
+  assert.equal(result.title.code, 'TITLE_SENIORITY_REJECT');
+});
+
+test('graduate titles with a seniority phrase use the graduate exception', () => {
+  const result = classifyCandidate(candidate({ title: 'Graduate Engineer - Team Lead track' }), config);
+  assert.equal(result.title.pass, true);
+  assert.equal(result.title.code, 'TITLE_TARGET');
+  assert.equal(result.tier, 'strict');
+});
+
+test('annual INR salary below an explicit floor is a hard rejection with evidence', () => {
+  const result = classifyCandidate(candidate({ salary: { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' } }), explicitFloorPolicy);
+  assert.equal(result.salary.pass, false);
+  assert.equal(result.salary.code, 'SALARY_BELOW_FLOOR');
+  assert.equal(result.salary.evidence, '₹6-7 lakh per annum');
+  assert.ok(result.reasons.includes('SALARY_BELOW_FLOOR'));
+});
+
+test('null or unset salary floor rejects nothing regardless of compensation evidence', () => {
+  const lowSalary = { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' };
+  for (const floor of [null, undefined]) {
+    const result = classifyCandidate(candidate({ salary: lowSalary }), { ...config, salaryFloorLpa: floor });
+    assert.equal(result.salary.pass, true, String(floor));
+    assert.equal(result.salary.code, 'SALARY_FLOOR_DISABLED', String(floor));
+    assert.equal(result.eligible, true, String(floor));
+  }
+  // Default conversion plan leaves the floor blank/unconfirmed.
+  assert.equal(conversionPolicy.salaryFloorLpa, null);
+  assert.equal(classifyCandidate(candidate({ salary: lowSalary }), conversionPolicy).salary.pass, true);
+});
+
+test('missing or ambiguous salary data passes through without invented evidence', () => {
+  const missing = classifyCandidate(candidate({ salary: {} }), explicitFloorPolicy);
+  const ambiguous = classifyCandidate(candidate({ salary: { maximum: 700000, currency: 'USD', period: 'annual' } }), explicitFloorPolicy);
+  assert.equal(missing.salary.pass, true);
+  assert.equal(missing.salary.evidence, null);
+  assert.equal(ambiguous.salary.pass, true);
+  assert.equal(ambiguous.salary.evidence, null);
+});
+
+test('explicit training fee or employment bond language is rejected with the matched evidence', () => {
+  const result = classifyCandidate(candidate({ description: 'Genuine payment required before joining and a service agreement bond of 2 years.' }), config);
+  assert.equal(result.employment.pass, false);
+  assert.equal(result.employment.code, 'EMPLOYMENT_TRAINING_FEE_OR_BOND');
+  assert.match(result.employment.evidence, /payment required before/i);
+  assert.ok(result.evidenceCodes.includes('EMPLOYMENT_TRAINING_FEE_OR_BOND'));
+});
+
+test('ordinary verification and notice language does not trigger the fee or bond filter', () => {
+  const result = classifyCandidate(candidate({ description: 'A background check may be completed during the notice period.' }), config);
+  assert.equal(result.employment.pass, true);
+  assert.notEqual(result.employment.code, 'EMPLOYMENT_TRAINING_FEE_OR_BOND');
+});
+
+test('new AI title families classify as strict AI roles', () => {
+  for (const title of [
+    'AI Product Engineer', 'Applied AI Engineer', 'AI Software Engineer', 'LLM Application Engineer',
+    'AI Automation Engineer', 'AI Integration Engineer', 'Junior AI Engineer', 'AI Solutions Engineer',
+  ]) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.tier, 'strict', title);
+    assert.equal(result.roleFamily, 'ai-llm-agentic', title);
+  }
+  const fullStack = classifyCandidate(candidate({ title: 'AI-Native Full Stack Engineer' }), config);
+  assert.equal(fullStack.tier, 'strict');
+  assert.equal(fullStack.roleFamily, 'full-stack-ai');
+});
+
+test('SDE I variants and Software Engineer I classify as general new-grad SWE', () => {
+  for (const title of ['SDE I', 'SDE-I', 'Software Engineer I']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.tier, 'strict', title);
+    assert.equal(result.roleFamily, 'general-new-grad-swe', title);
+  }
+});
+
+test('Founding Engineer and Product Engineer use AI context for family bucketing', () => {
+  for (const title of ['Founding Engineer', 'Product Engineer']) {
+    assert.equal(classifyCandidate(candidate({ title }), config).roleFamily, 'general-new-grad-swe', title);
+    assert.equal(classifyCandidate(candidate({ title, description: 'Build an LLM product for customers.' }), config).roleFamily, 'ai-llm-agentic', title);
+  }
+});
+
+test('seniority still rejects contextual new title families', () => {
+  for (const title of ['Senior Product Engineer', 'Founding Engineer - Lead']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.eligible, false, title);
+    assert.equal(result.title.code, 'TITLE_SENIORITY_REJECT', title);
+  }
 });

@@ -1,8 +1,9 @@
 %-------------------------
 % MASTER RESUME (ATS-CLEAN) — Onkar Jadhav
+% Content/evidence source of truth for all tailored resumes. NOT a layout template —
+% see resumes/templates/Onkar_Template.tex for the canonical tailoring layout.
 % Single-column, no icon fonts, no multicol, no tcolorbox, no two-column tabular.
 % Linear reading order so Greenhouse/Lever/Workday parsers extract every field.
-% Content is IDENTICAL to Master_Resume.tex — only layout changed for ATS parsing.
 %-------------------------
 
 \documentclass[a4paper,11pt]{article}
@@ -46,12 +47,12 @@
 
 %----------SUMMARY-----------------
 \section{Summary}
-Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across production AI systems, systems programming, and full-stack product engineering. Shipped Vaani, a notarised macOS dictation product with native C++/Obj-C addons, from concept to distributable release independently. Built Lore Engine, a production RAG platform with hybrid BM25 + pgvector retrieval over 6,000+ wiki pages and deploy-gated evaluation harnesses. Designed StockXpert, a hierarchical deep learning prediction system achieving a 12\% improvement in short-horizon return correlation across all 100 Nifty NSE equities. Open-sourced GovBench, an LLM governance benchmark evaluated across US, India, and EU legal systems. Currently building Stride, an AI-first adaptive wellness platform with five domain agents and multi-modal input, and PromptForge, an agentic prompt-engineering pipeline with cross-model benchmarking. Proficient in Python, TypeScript, React, Next.js, FastAPI, Node.js, TensorFlow, RAG architectures, and agentic AI systems.
+AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) with end-to-end ownership across production AI systems, systems programming, and full-stack product engineering. Shipped Vaani, a notarised macOS dictation product with native C++/Obj-C addons, from concept to distributable release independently. Built Lore Engine, a production RAG platform with hybrid BM25 + pgvector retrieval over 6,000+ wiki pages and deploy-gated evaluation harnesses. Designed StockXpert, a hierarchical deep learning prediction system achieving a 12\% improvement in short-horizon return correlation across all 100 Nifty NSE equities. Open-sourced GovBench, an LLM governance benchmark evaluated across US, India, and EU legal systems. Currently building Stride, an AI-first adaptive wellness platform with five domain agents and multi-modal input, and PromptForge, an agentic prompt-engineering pipeline with cross-model benchmarking. Proficient in Python, TypeScript, React, Next.js, FastAPI, Node.js, TensorFlow, RAG architectures, and agentic AI systems.
 
 %-----------EDUCATION-----------
 \section{Education}
 \entry{Bachelor of Technology in Computer Science}{Nov 2022 -- Jun 2026}
-\subentry{Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{CGPA: 9.08 (up to 7th semester)}
+\subentry{Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{CGPA: 9.17}
 \begin{itemize}
   \item Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming.
 \end{itemize}
@@ -62,7 +63,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
 %-----------EXPERIENCE-----------------
 \section{Experience}
 \entry{Stride --- AI-First Adaptive Wellness Platform}{April 2026 -- Present}
-\subentry{Founder \& Lead Engineer}{Remote}
+\subentry{Lead Engineer}{Remote}
 \begin{itemize}
   \item Architected and shipped Stride to production as sole engineer; running live with an early private user cohort actively driving iterative product feedback ahead of public beta.
   \item Architected a six-layer AI-first system: multi-modal input capture (text, voice, image, barcode, nutrition labels), a behavioral memory layer tracking preferences and adherence, an NLU layer for structured extraction, five specialised domain agents (diet, workout, sleep, hydration, habits) sharing memory, an analytics layer, and an adaptive UX layer driven by behavioral signals.
@@ -113,6 +114,13 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
   \item Emitted structured prompt outputs with metadata: token budget, latency profile, expected output shape, and version changelog --- enabling prompts to be reviewed and deployed like code.
 \end{itemize}
 
+%-----------PUBLICATIONS-----------------
+\section{Publications}
+\begin{itemize}
+  \item ``HybridSwingNet for Explainable Swing Trading Using Multi-Encoder Deep Learning and Confidence-Calibrated Signal Execution.'' \textit{Scientific Reports} (Nature Portfolio) --- co-author; accepted, in press, 2026.
+  \item G. Sambare, L. Deore, H. Itkar, \textbf{O. Jadhav}, S. Joshi. ``Stock Recommendations Leveraging AI/ML for Informed Long-Term Investment Decisions.'' \textit{International Conference on ICT for Sustainable Development (ICT4SD 2025)} --- Scopus-indexed (Springer).
+\end{itemize}
+
 %-----------TECHNICAL SKILLS-----------------
 \section{Technical Skills}
 \noindent
@@ -122,7 +130,7 @@ Final-year Computer Science student (9.08 CGPA) with end-to-end ownership across
 \textbf{AI / ML}: TensorFlow, RAG Pipelines, pgvector, BM25, Reciprocal Rank Fusion, LLM Evaluation, Agentic Workflows, Behavioral Memory, Multi-modal AI, Hallucination Detection, XGBoost, OpenRouter\\
 \textbf{LLM Providers}: Anthropic Claude, OpenAI GPT, Gemini, Groq, Deepgram Nova-2, whisper.cpp (local)\\
 \textbf{Databases}: PostgreSQL (+ pgvector), MongoDB, Convex\\
-\textbf{Cloud \& DevOps}: AWS, Cloudflare R2, Git, GitHub, macOS Distribution (notarisation, code signing)\\
+\textbf{Cloud \& DevOps}: AWS, Vercel, Docker, Cloudflare R2, Git, GitHub, macOS Distribution (notarisation, code signing)\\
 \textbf{Native / Systems}: C++, Objective-C, Node-API (native addons), Electron, macOS Accessibility API\\
 \textbf{System Design}: Event-driven architecture, async job pipelines, snapshot-first serving, hybrid retrieval, multi-agent coordination, adaptive UX systems
 
