@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   defaultHttpTransport,
   runCrawlerOperator,
@@ -10,6 +11,8 @@ import { runNormalMode } from '../job-pull/normal-mode.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
+import { dailyRunIdentity } from './scheduler.mjs';
+import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -167,7 +170,7 @@ function trackedFixture(result) {
   };
 }
 
-async function runCrawlerFull({ config, transport, clock, runId, store }) {
+async function runCrawlerFull({ config, transport, clock, runId, schedule, mode, locationPreset, store }) {
   const crawlerConfig = validateCrawlerConfig(config);
   const crawlerRunId = `${runId}-crawler-v2`;
   return runCrawlerOperator({
@@ -175,17 +178,23 @@ async function runCrawlerFull({ config, transport, clock, runId, store }) {
     transport,
     clock,
     runId: crawlerRunId,
-    schedule: 'morning',
-    mode: 'normal',
-    locationPreset: 'india',
+    schedule,
+    mode,
+    locationPreset,
     store,
   });
 }
 
-export async function runDailyNormal({
+async function runDailyNormalUnlocked({
   config,
+  configPath = null,
+  databasePath = null,
+  environment = null,
   transport = defaultHttpTransport,
   clock,
+  schedule = 'morning',
+  mode = 'normal',
+  locationPreset = 'india',
   runId,
   historicalV4Rows,
   notionGateway,
@@ -202,7 +211,7 @@ export async function runDailyNormal({
   laneInputs = {},
 } = {}) {
   const runAt = runAtFrom(clock);
-  const effectiveRunId = runId ?? `daily-normal-${runAt}`;
+  const effectiveRunId = runId ?? dailyRunIdentity({ schedule, at: runAt });
   const effectiveClock = crawlerClock(clock, runAt);
   const v4HistorySnapshot = readV4HistorySnapshot(config?.v4HistorySnapshotPath, {
     maxAgeDays: config?.v4HistorySnapshotMaxAgeDays,
@@ -217,6 +226,9 @@ export async function runDailyNormal({
     clock: effectiveClock,
     runAt,
     runId: effectiveRunId,
+    schedule,
+    mode,
+    locationPreset,
     store,
   });
   const trackedResult = await fetchWarmAts({
@@ -258,6 +270,9 @@ export async function runDailyNormal({
   });
   return {
     ...result,
+    crawlerV2Profile: crawlerResult.profile,
+    crawlerV2Operator: crawlerResult.operator,
+    crawlerV2Run: crawlerResult.run,
     crawlerV2Telemetry: Object.fromEntries(Object.entries(crawlerResult.sourceTelemetry ?? {}).map(([sourceId, telemetry]) => [sourceId, {
       ...telemetry,
       durationMs: crawlerResult.run?.telemetry?.sourceDurations?.[sourceId] ?? null,
@@ -268,7 +283,31 @@ export async function runDailyNormal({
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
     },
+    receipt: {
+      schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
+      configPath: configPath ? path.resolve(configPath) : null,
+      databasePath: path.resolve(databasePath ?? config.databasePath),
+      environment,
+      schedule,
+      mode,
+      locationPreset,
+      runId: effectiveRunId,
+      noAutoApply: true,
+      noAutoSend: true,
+    },
   };
+}
+
+export async function runDailyNormal(options = {}) {
+  const databasePath = options.databasePath ?? options.config?.databasePath;
+  return withCrawlerRunLock(
+    crawlerRunLockPath(databasePath),
+    () => runDailyNormalUnlocked(options),
+    {
+      runId: options.runId ?? null,
+      schedule: options.schedule ?? 'morning',
+    },
+  );
 }
 
 export default runDailyNormal;

@@ -15,7 +15,7 @@ Onkar Jadhav · onkarj012@gmail.com · +91-7058604679 · Pune, Maharashtra, Indi
 
 ## Public v5 workflow
 
-- The unified daily discovery-and-delivery path is `node crawler/cli.mjs daily` (the implementation is `crawler/daily-runner.mjs`); `/morning` delegates to it. Startup and remote commands remain focused source-emphasis modes, while Apify is explicit rescue only and default-off (`node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json`).
+- The unified daily discovery-and-delivery path is `node crawler/cli.mjs daily` (the implementation is `crawler/daily-runner.mjs`); `/morning` delegates to it. A bare daily command resolves the authoritative production config; use `--env dev` or `--env live-test` only for isolated fixtures and rehearsal. Startup and remote commands remain focused source-emphasis modes, while Apify is explicit rescue only and default-off (`node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json`).
 - `/quick-add` prepares one user-found lead for v5 verification.
 - `/make-applications` reads checked `Make Resume` rows through `resume-v5/queue-reader.mjs` and builds locally.
 - `/outreach` uses `outreach-v5/workflow.mjs` for free-first research and drafts.
