@@ -69,6 +69,13 @@ function harness(rows) {
       },
       compile: async ({ paths }) => { writeFileSync(paths.pdfPath, 'pdf'); },
       verify: async () => ({ status: 'PASS' }),
+      semanticVerify: async ({ artifact }) => ({
+        status: 'PASS',
+        ok: true,
+        verifierVersion: 'LaunchpadSemanticProvenanceV1',
+        artifactDigest: `fixture:${path.basename(artifact.pdfPath)}`,
+        mismatches: [],
+      }),
     },
   };
 }

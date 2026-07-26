@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readMakeResumeQueue } from './queue-reader.mjs';
 import { verifyResumeArtifact } from './artifact-state.mjs';
+import { SEMANTIC_VERIFIER_VERSION, verifySemanticArtifact } from './semantic-verifier.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TERMINAL_STATUSES = new Set(['Offer', 'Rejected', 'Withdrawn', 'Not Pursuing', 'Closed/Expired']);
@@ -178,6 +179,8 @@ async function buildOne(application, options) {
     author,
     compile,
     verify,
+    semanticVerify,
+    approvedEvidence,
     now,
     leaseMs,
   } = options;
@@ -186,7 +189,7 @@ async function buildOne(application, options) {
   const timestamp = isoNow(now);
   const statePath = receiptPath(stateRoot, application);
   const current = readReceipt(statePath);
-  if (application.resumeState !== 'Stale' && current?.state === 'Ready' && current.jdSha256 === application.jdSha256 && artifactFilesValid(current)) {
+  if (application.resumeState !== 'Stale' && current?.state === 'Ready' && current.jdSha256 === application.jdSha256 && current.semanticVerifierVersion === SEMANTIC_VERIFIER_VERSION && artifactFilesValid(current)) {
     return { applicationId: application.id, state: 'Ready', action: 'unchanged', artifact: artifactSummary(current.artifact), receiptPath: statePath };
   }
   if (current?.state === 'Building' && Date.parse(timestamp) - Date.parse(current.lease?.startedAt) <= leaseMs) {
@@ -194,6 +197,8 @@ async function buildOne(application, options) {
   }
   const reason = current?.jdSha256 && current.jdSha256 !== application.jdSha256
     ? 'JD_HASH_CHANGED'
+    : current?.state === 'Ready' && current.semanticVerifierVersion !== SEMANTIC_VERIFIER_VERSION
+      ? 'SEMANTIC_REBUILD_REQUIRED'
     : current?.state === 'Building' ? 'STALE_LEASE_RECOVERED' : application.resumeState === 'Stale' || current?.state === 'Stale' ? 'ARTIFACT_STALE' : 'ARTIFACT_ABSENT';
   const lease = { id: randomUUID(), startedAt: timestamp, expiresAt: new Date(Date.parse(timestamp) + leaseMs).toISOString() };
   atomicReceipt(statePath, {
@@ -223,6 +228,14 @@ async function buildOne(application, options) {
       matrixPath: paths.matrixPath,
       provenancePath: paths.provenancePath,
     };
+    const semanticVerification = await semanticVerify({ application, artifact, approvedEvidence });
+    if (!semanticVerification?.ok) {
+      throw new ProductionResumeBuilderError(
+        'semantic provenance requires human exception review',
+        'SEMANTIC_REVIEW_REQUIRED',
+        semanticVerification?.mismatches ?? null,
+      );
+    }
     const verification = await verifyResumeArtifact({
       application,
       artifact,
@@ -254,6 +267,9 @@ async function buildOne(application, options) {
       reason,
       artifact: persisted,
       verifier: verification.verification ?? null,
+      semanticVerifierVersion: semanticVerification.verifierVersion,
+      artifactDigest: semanticVerification.artifactDigest,
+      semanticVerification,
       verifiedAt: verification.verifiedAt,
       updatedAt: isoNow(now),
     });
@@ -268,12 +284,12 @@ async function buildOne(application, options) {
       state: 'Failed',
       lease: null,
       reason,
-      error: { code: error.code ?? 'PRODUCTION_RESUME_BUILD_FAILED', message: error.message },
+      error: { code: error.code ?? 'PRODUCTION_RESUME_BUILD_FAILED', message: error.message, details: error.details ?? null },
       updatedAt: isoNow(now),
     });
     try { await updateResumeState(gateway, application.id, 'Failed'); }
     catch (stateError) { error.stateError = { message: stateError.message }; }
-    return { applicationId: application.id, state: 'Failed', action: 'failed', reason, error: { code: error.code ?? 'PRODUCTION_RESUME_BUILD_FAILED', message: error.message }, stateError: error.stateError ?? null };
+    return { applicationId: application.id, state: 'Failed', action: 'failed', reason, error: { code: error.code ?? 'PRODUCTION_RESUME_BUILD_FAILED', message: error.message, details: error.details ?? null }, stateError: error.stateError ?? null };
   } finally {
     if (paths?.scratchDir) rmSync(paths.scratchDir, { recursive: true, force: true });
   }
@@ -297,6 +313,8 @@ export async function runProductionResumeBuilder({
   author,
   compile = createLocalCompileAdapter(),
   verify = createLocalVerifierAdapter(),
+  semanticVerify = verifySemanticArtifact,
+  approvedEvidence = null,
   concurrency = 2,
   leaseMs = DEFAULT_LEASE_MS,
   stateRoot = path.join(ROOT, 'resumes/sources/.launchpad-v5/artifacts'),
@@ -307,13 +325,13 @@ export async function runProductionResumeBuilder({
   pageSize = 100,
 } = {}) {
   if (typeof author !== 'function') throw new ProductionResumeBuilderError('a local evidence-backed author adapter is required', 'AUTHOR_ADAPTER_REQUIRED');
-  if (typeof compile !== 'function' || typeof verify !== 'function') throw new ProductionResumeBuilderError('compile and verify adapters are required', 'BUILD_ADAPTER_REQUIRED');
+  if (typeof compile !== 'function' || typeof verify !== 'function' || typeof semanticVerify !== 'function') throw new ProductionResumeBuilderError('compile and verify adapters are required', 'BUILD_ADAPTER_REQUIRED');
   if (![2, 3].includes(concurrency)) throw new ProductionResumeBuilderError('builder concurrency must be 2 or 3', 'CONCURRENCY_INVALID');
   mkdirSync(stateRoot, { recursive: true });
   mkdirSync(scratchRoot, { recursive: true });
   const queue = await readMakeResumeQueue({ gateway, pageSize });
   const results = await boundedMap(queue, concurrency, (application) => buildOne(application, {
-    gateway, stateRoot, scratchRoot, sourcesRoot, outputRoot, author, compile, verify, now, leaseMs,
+    gateway, stateRoot, scratchRoot, sourcesRoot, outputRoot, author, compile, verify, semanticVerify, approvedEvidence, now, leaseMs,
   }));
   const failed = results.filter((result) => result.state === 'Failed');
   return {
