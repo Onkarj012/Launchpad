@@ -14,6 +14,7 @@ import {
   createOriginalListingResolver,
 } from './original-listing-resolver.mjs';
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
+import { discoverTheirStack } from './theirstack.mjs';
 import { discoverYcJobs } from './yc-discovery.mjs';
 import { buildVcWatchlistRequests, loadVcPortfolioWatchlist } from './vc-portfolio-watchlist.mjs';
 import { runCommercialRescue } from './commercial-rescue.mjs';
@@ -39,6 +40,76 @@ import {
 } from './board-registry.mjs';
 
 export const CRAWLER_CONFIG_VERSION = 'LaunchpadCrawlerConfigV1';
+
+const THEIRSTACK_POSITIVE_INTEGER_FIELDS = Object.freeze([
+  'pageSize',
+  'maxQueriesPerRun',
+  'maxPagesPerQuery',
+  'maxItemsPerRun',
+  'maxCreditsPerRun',
+]);
+const THEIRSTACK_REQUIRED_FILTER_FIELDS = Object.freeze([
+  'posted_at_max_age_days',
+  'posted_at_gte',
+  'posted_at_lte',
+  'company_domain_or',
+  'company_linkedin_url_or',
+  'company_name_or',
+]);
+const THEIRSTACK_ADAPTER_FILTER_FIELDS = new Set([
+  'limit',
+  'offset',
+  'page',
+  'cursor',
+  'include_total_results',
+  'order_by',
+  'blur_company_data',
+]);
+const ENV_VAR_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
+
+function hasTheirStackConstraint(filters) {
+  return THEIRSTACK_REQUIRED_FILTER_FIELDS.some((field) => {
+    if (!Object.hasOwn(filters, field)) return false;
+    const value = filters[field];
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'string') return Boolean(value.trim());
+    return value !== null && value !== undefined;
+  });
+}
+
+function validateTheirStackConfig(theirStack) {
+  if (theirStack == null) return;
+  if (typeof theirStack !== 'object' || Array.isArray(theirStack)) throw new Error('sources.theirstack must be an object');
+  if (typeof theirStack.enabled !== 'boolean') throw new Error('sources.theirstack.enabled must be a boolean');
+  const apiKeyEnv = theirStack.apiKeyEnv ?? 'THEIRSTACK_API_KEY';
+  if (typeof apiKeyEnv !== 'string' || !ENV_VAR_NAME_RE.test(apiKeyEnv)) {
+    throw new Error('sources.theirstack.apiKeyEnv must be an uppercase environment variable name');
+  }
+  if (Object.hasOwn(theirStack, 'endpoint')) throw new Error('sources.theirstack.endpoint cannot override the fixed TheirStack endpoint');
+  for (const field of THEIRSTACK_POSITIVE_INTEGER_FIELDS) {
+    if (!Number.isInteger(theirStack[field]) || theirStack[field] <= 0) {
+      throw new Error(`sources.theirstack.${field} must be a positive integer`);
+    }
+  }
+  if (!Array.isArray(theirStack.queries)) throw new Error('sources.theirstack.queries must be an array');
+  const queryIds = new Set();
+  for (const [index, query] of theirStack.queries.entries()) {
+    if (!query || typeof query !== 'object' || Array.isArray(query)) throw new Error(`sources.theirstack.queries[${index}] must be an object`);
+    const id = typeof query.id === 'string' ? query.id.trim() : '';
+    if (!id) throw new Error(`sources.theirstack.queries[${index}].id must be nonempty`);
+    if (queryIds.has(id)) throw new Error(`sources.theirstack query id must be unique: ${id}`);
+    queryIds.add(id);
+    const filters = query.filters;
+    if (!filters || typeof filters !== 'object' || Array.isArray(filters)) {
+      throw new Error(`sources.theirstack.queries[${index}].filters must be an object`);
+    }
+    if (!hasTheirStackConstraint(filters)) {
+      throw new Error(`sources.theirstack.queries[${index}].filters must include a supported TheirStack constraint`);
+    }
+    const ownedField = Object.keys(filters).find((field) => THEIRSTACK_ADAPTER_FILTER_FIELDS.has(field));
+    if (ownedField) throw new Error(`sources.theirstack.queries[${index}].filters.${ownedField} is adapter-owned`);
+  }
+}
 
 export function buildCrawlerHelp() {
   return `Launchpad Crawler v2
@@ -68,6 +139,7 @@ export function validateCrawlerConfig(config) {
     if (config.sources[section] && !Array.isArray(config.sources[section].boards)) throw new Error(`sources.${section}.boards must be an array`);
   }
   if (config.sources.careerSites && !Array.isArray(config.sources.careerSites)) throw new Error('sources.careerSites must be an array');
+  validateTheirStackConfig(config.sources.theirstack);
   return config;
 }
 
@@ -276,6 +348,28 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     resolver,
   }), { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: ['indeed', 'apna', 'whatjobs'] } }));
+  if (schedule !== 'midday' && profile?.mode === 'normal' && sources.theirstack?.enabled) {
+    plans.push(sourcePlan('theirstack', 'connector-imports', 'theirstack', async ({ cursor } = {}) => {
+      const theirStackConfig = sources.theirstack;
+      const apiKey = process.env[theirStackConfig.apiKeyEnv ?? 'THEIRSTACK_API_KEY'];
+      return discoverTheirStack({
+        ...theirStackConfig,
+        queries: theirStackConfig.queries.map((query) => query.filters),
+        apiKey,
+        transport,
+        runAt,
+        cursor,
+      });
+    }, {
+      trustClass: 'aggregator',
+      capabilities: {
+        newestFirst: true,
+        paginated: true,
+        discoveryUrl: true,
+        creditsMetered: true,
+      },
+    }));
+  }
   if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async () => {
     const sourceFunctions = {};
     // yc and vc-portfolio-boards both need a search transport and an original-listing

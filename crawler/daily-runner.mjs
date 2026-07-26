@@ -87,6 +87,7 @@ export const CRAWLER_SOURCE_TO_NORMAL_LANE = Object.freeze({
   'remote-mode': 'native-remote-feeds',
   'indeed-inbox': 'indeed',
   'connector-inbox': 'connector-inbox',
+  theirstack: 'connector-inbox',
   'brave-search': 'web-discovery',
   'searxng-search': 'web-discovery',
   'india-startup': 'web-discovery',

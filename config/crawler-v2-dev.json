@@ -212,6 +212,39 @@
       "startup": ["startup"],
       "vc": ["Peak XV portfolio", "Accel portfolio", "Lightspeed portfolio", "Antler portfolio", "a16z portfolio"]
     },
+    "theirstack": {
+      "enabled": false,
+      "apiKeyEnv": "THEIRSTACK_API_KEY",
+      "pageSize": 25,
+      "maxQueriesPerRun": 2,
+      "maxPagesPerQuery": 1,
+      "maxItemsPerRun": 50,
+      "maxCreditsPerRun": 50,
+      "queries": [
+        {
+          "id": "india-ai-ml",
+          "filters": {
+            "posted_at_max_age_days": 14,
+            "job_country_code_or": ["IN"],
+            "job_title_pattern_or": ["\\bAI Engineer\\b", "\\bMachine Learning Engineer\\b", "\\bLLM Engineer\\b", "\\bGenerative AI Engineer\\b"],
+            "employment_statuses_or": ["full_time", "internship"],
+            "is_closed": false,
+            "property_exists_and": ["final_url"]
+          }
+        },
+        {
+          "id": "india-backend-swe",
+          "filters": {
+            "posted_at_max_age_days": 14,
+            "job_country_code_or": ["IN"],
+            "job_title_pattern_or": ["\\bBackend Engineer\\b", "\\bPython Engineer\\b", "\\bSoftware Engineer\\b", "\\bFull Stack Engineer\\b"],
+            "employment_statuses_or": ["full_time", "internship"],
+            "is_closed": false,
+            "property_exists_and": ["final_url"]
+          }
+        }
+      ]
+    },
     "indeed": {
       "enabled": false,
       "inboxDir": "connector-inbox/indeed"

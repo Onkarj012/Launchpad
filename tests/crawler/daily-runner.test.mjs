@@ -315,6 +315,21 @@ test('warm-ATS failure messages retain provider, board, and code provenance', as
   assert.deepEqual(manifest.errors, ['greenhouse: warm-failure-board: TRANSPORT_ERROR: warm transport failed']);
 });
 
+test('TheirStack maps to connector-inbox with provider and source telemetry retained', () => {
+  const fixture = crawlerLaneFixtures({
+    observations: [rawPortalJob(803, { company: 'TheirStack Company', provider: 'theirstack', sourceId: 'theirstack' })],
+    failures: [],
+    sourceTelemetry: { theirstack: { attempts: 1, fetched: 1, detail: { telemetry: { creditsUsed: 1 } } } },
+  })['connector-inbox'];
+
+  assert.ok(fixture);
+  assert.equal(fixture.candidates[0].provider, 'theirstack');
+  assert.equal(fixture.manifest.unmappedSourceIds, undefined);
+  assert.deepEqual(fixture.manifest.telemetry.sourceIds, ['theirstack']);
+  assert.equal(fixture.manifest.telemetry.sources.theirstack.fetched, 1);
+  assert.equal(fixture.manifest.telemetry.sources.theirstack.detail.telemetry.creditsUsed, 1);
+});
+
 test('unmapped crawler source ids feed web-discovery and remain visible without stopping the run', async () => {
   const crawlerFixture = crawlerLaneFixtures({
     observations: [rawPortalJob(803, { company: 'Unmapped Source Company', sourceId: 'future-source' })],

@@ -20,6 +20,28 @@ import { WWR_FEED_URL } from '../../job-pull/remote-adapters/weworkremotely.mjs'
 import { REMOTIVE_FEED_URL } from '../../job-pull/remote-adapters/remotive.mjs';
 import { REMOTEOK_FEED_URL } from '../../job-pull/remote-adapters/remoteok.mjs';
 
+function validTheirStackConfig(overrides = {}) {
+  return {
+    enabled: false,
+    apiKeyEnv: 'THEIRSTACK_API_KEY',
+    pageSize: 25,
+    maxQueriesPerRun: 2,
+    maxPagesPerQuery: 1,
+    maxItemsPerRun: 50,
+    maxCreditsPerRun: 50,
+    queries: [{ id: 'india-ai', filters: { posted_at_max_age_days: 14 } }],
+    ...overrides,
+  };
+}
+
+function crawlerConfigWithTheirStack(theirstack) {
+  return {
+    schemaVersion: 'LaunchpadCrawlerConfigV1',
+    databasePath: ':memory:',
+    sources: { theirstack },
+  };
+}
+
 test('operator help exposes validation, planning, discovery, and readiness commands', () => {
   const help = buildCrawlerHelp();
   for (const command of ['validate', 'plan', 'run', 'readiness']) assert.match(help, new RegExp(command));
@@ -32,6 +54,77 @@ test('configuration fails closed when durable paths or source sections are missi
     schemaVersion: 'LaunchpadCrawlerConfigV1',
     databasePath: ':memory:',
   }), /sources/);
+});
+
+test('TheirStack configuration validates disabled without credentials and rejects unsafe shapes', () => {
+  assert.doesNotThrow(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig())));
+
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({ enabled: 'yes' }))), /enabled/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({ apiKeyEnv: 'theirstack-key' }))), /apiKeyEnv/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({ endpoint: 'https://example.test' }))), /endpoint/);
+  for (const field of ['pageSize', 'maxQueriesPerRun', 'maxPagesPerQuery', 'maxItemsPerRun', 'maxCreditsPerRun']) {
+    assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({ [field]: 0 }))), new RegExp(field));
+    assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({ [field]: 1.5 }))), new RegExp(field));
+  }
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({ queries: {} }))), /queries/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({
+    queries: [{ id: ' ', filters: { posted_at_max_age_days: 14 } }],
+  }))), /id/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({
+    queries: [{ id: 'missing-filters' }],
+  }))), /filters/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({
+    queries: [{ id: 'same', filters: { posted_at_max_age_days: 14 } }, { id: 'same', filters: { company_name_or: ['Acme'] } }],
+  }))), /unique/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({
+    queries: [{ id: 'missing-constraint', filters: { job_country_code_or: ['IN'] } }],
+  }))), /constraint/);
+  assert.throws(() => validateCrawlerConfig(crawlerConfigWithTheirStack(validTheirStackConfig({
+    queries: [{ id: 'adapter-field', filters: { posted_at_max_age_days: 14, limit: 25 } }],
+  }))), /adapter-owned/);
+});
+
+test('TheirStack source plan is morning-normal only and defers credential use to fetch', async () => {
+  const theirstack = validTheirStackConfig({ enabled: true, apiKeyEnv: 'THEIRSTACK_TEST_API_KEY' });
+  const planArgs = {
+    config: { sources: { theirstack } },
+    transport: async () => ({ status: 200, body: JSON.stringify({ data: [], metadata: { total_results: 0, total_companies: 0, truncated_results: 0, truncated_companies: 0 } }) }),
+    runAt: '2026-07-24T10:00:00.000Z',
+    schedule: 'morning',
+    profile: { mode: 'normal' },
+  };
+
+  assert.equal(buildSourcePlans({ ...planArgs, config: { sources: { theirstack: { ...theirstack, enabled: false } } } }).some(({ id }) => id === 'theirstack'), false);
+  assert.equal(buildSourcePlans({ ...planArgs, schedule: 'midday' }).some(({ id }) => id === 'theirstack'), false);
+  assert.equal(buildSourcePlans({ ...planArgs, profile: { mode: 'startup' } }).some(({ id }) => id === 'theirstack'), false);
+
+  const calls = [];
+  const previous = process.env.THEIRSTACK_TEST_API_KEY;
+  try {
+    const plans = buildSourcePlans({
+      ...planArgs,
+      transport: async (url, options) => {
+        calls.push({ url, options });
+        return { status: 200, body: JSON.stringify({ data: [], metadata: { total_results: 0, total_companies: 0, truncated_results: 0, truncated_companies: 0 } }) };
+      },
+    });
+    const plan = plans.find(({ id }) => id === 'theirstack');
+    assert.ok(plan);
+    assert.equal(plan.lane, 'connector-imports');
+    assert.equal(plan.provider, 'theirstack');
+    assert.equal(plan.trustClass, 'aggregator');
+    assert.deepEqual(plan.capabilities, { newestFirst: true, paginated: true, discoveryUrl: true, creditsMetered: true });
+    assert.equal(calls.length, 0);
+
+    process.env.THEIRSTACK_TEST_API_KEY = 'test-key-not-real';
+    await plan.fetch({ cursor: null });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.Authorization, 'Bearer test-key-not-real');
+    assert.equal(JSON.parse(calls[0].options.body).posted_at_max_age_days, 14);
+  } finally {
+    if (previous === undefined) delete process.env.THEIRSTACK_TEST_API_KEY;
+    else process.env.THEIRSTACK_TEST_API_KEY = previous;
+  }
 });
 
 test('builds resolver-capable SearXNG and connector plans without network access', async () => {

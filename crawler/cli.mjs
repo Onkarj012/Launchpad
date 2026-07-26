@@ -73,6 +73,7 @@ function configuredSourceIds(config) {
   if (config.sources.careerSites?.length) ids.push('career-sites');
   if (config.sources.brave?.enabled) ids.push('brave-search');
   if (config.sources.searxng?.enabled) ids.push('searxng-search');
+  if (config.sources.theirstack?.enabled) ids.push('theirstack');
   if (config.sources.indeed?.enabled) ids.push('indeed-inbox');
   if (config.sources.indiaStartup?.enabled) ids.push('india-startup');
   return ids;
@@ -90,7 +91,10 @@ function localReadiness(config, args) {
   const evidenceFile = value(args, '--operational-evidence');
   const operationalEvidence = evidenceFile ? JSON.parse(fs.readFileSync(path.resolve(evidenceFile), 'utf8')) : null;
   const braveKeyName = config.sources.brave?.apiKeyEnv ?? 'BRAVE_SEARCH_API_KEY';
-  const credentialsAvailable = config.sources.brave?.enabled !== true || Boolean(process.env[braveKeyName]);
+  const theirStackKeyName = config.sources.theirstack?.apiKeyEnv ?? 'THEIRSTACK_API_KEY';
+  const braveCredentialsAvailable = config.sources.brave?.enabled !== true || Boolean(process.env[braveKeyName]);
+  const theirStackCredentialsAvailable = config.sources.theirstack?.enabled !== true || Boolean(process.env[theirStackKeyName]);
+  const credentialsAvailable = braveCredentialsAvailable && theirStackCredentialsAvailable;
   const evidence = buildLocalReadinessEvidence({
     testsPassed: runTests && testRun.status === 0,
     testTotal,
