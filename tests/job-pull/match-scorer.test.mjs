@@ -74,6 +74,27 @@ test('a merged candidate carries matchScore, rationale, hook, strongestHook and 
   assert.equal(original.matchScore, undefined);
 });
 
+test('an out-of-range matchScore becomes a failed row', async () => {
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, { matchScore: 150 })));
+  const result = await scoreCandidates([candidate(1)], { scoreChunk });
+  assert.deepEqual(result.failures, [{ canonicalUrl: candidate(1).canonicalUrl, reason: 'SCORER_INVALID_RANGE' }]);
+  assert.equal(result.scored[0].matchScore, undefined);
+});
+
+test('a string responseLikelihood of low becomes a failed row', async () => {
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, { responseLikelihood: 'low' })));
+  const result = await scoreCandidates([candidate(1)], { scoreChunk });
+  assert.deepEqual(result.failures, [{ canonicalUrl: candidate(1).canonicalUrl, reason: 'SCORER_INVALID_RANGE' }]);
+  assert.equal(result.scored[0].responseLikelihood, undefined);
+});
+
+test('a numeric-string matchScore is coerced to an integer', async () => {
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, { matchScore: '82' })));
+  const result = await scoreCandidates([candidate(1)], { scoreChunk });
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.scored[0].matchScore, 82);
+});
+
 test('a candidate without a description is flagged descriptionAvailable: false and capped at the honest partial score', async () => {
   const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, {
     matchScore: 90,
