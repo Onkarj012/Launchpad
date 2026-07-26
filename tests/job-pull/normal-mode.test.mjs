@@ -15,7 +15,7 @@ function raw(index, overrides = {}) {
     url: `https://portal.example.test/job/${index}`, company: `Company ${index}`, title: 'AI Engineer', location: 'Pune, India',
     postedAt: NOW, employment: { type: 'full-time', evidence: 'full-time' }, experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' },
     description: 'Build production AI systems with Python.',
-    liveness: { status: 'Active', checkedAt: NOW, evidence: 'employer page checked' }, matchScore: 80 - index,
+    liveness: { status: 'Active', checkedAt: NOW, evidence: 'employer page checked' }, matchScore: 90 - (index % 20),
     ...overrides,
   };
 }
@@ -24,6 +24,34 @@ function sourceFunction(lane, records) { return () => ({ records: records.map((r
 
 function allFunctions(recordsByLane = {}) {
   return Object.fromEntries(NORMAL_SOURCE_LANES.map((lane) => [lane.id, sourceFunction(lane, recordsByLane[lane.id] || [])]));
+}
+
+function selectionEntry(index, {
+  score = 80,
+  tier = 'strict',
+  window = 'Hot',
+  family = 'ai-llm-agentic',
+  company = `Company ${index}`,
+} = {}) {
+  const candidate = normalizeCandidate(raw(index, { company, matchScore: score }), {
+    runAt: NOW,
+    source: 'fixture',
+    sourceKind: 'ats-direct',
+    currentFeedIsLive: true,
+  });
+  return {
+    candidate,
+    eligibility: {
+      eligible: true,
+      strict: tier === 'strict',
+      relaxed: tier !== 'strict',
+      tier,
+      roleFamily: family,
+      relaxations: tier === 'strict' ? [] : ['fixture-fallback'],
+    },
+    freshness: { eligible: true, window, ageHours: window === 'Hot' ? 12 : window === 'Active' ? 96 : 240 },
+    roleFamily: family,
+  };
 }
 
 test('Normal attempts every lane independently, records optional/unavailable/failure, and never performs live access', async () => {
@@ -60,21 +88,98 @@ test('normalizes and preserves discovery/original evidence, while the readiness 
   assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
 });
 
-test('selection follows 24h, 72h, 3-7d, relaxed-fit, and relaxed-backfill waterfall without family quotas', () => {
-  const posted = (hours) => new Date(Date.parse(NOW) - hours * 3600000).toISOString();
+test('selection follows Strict then Fallback Hot, Active, and Backfill waterfall', () => {
   const entries = [
-    raw(1, { postedAt: posted(120), matchScore: 99, title: 'AI Engineer' }),
-    raw(2, { postedAt: posted(12), matchScore: 60, title: 'AI Engineer' }),
-    raw(3, { postedAt: posted(48), matchScore: 70, title: 'AI Engineer' }),
-    raw(4, { postedAt: posted(12), matchScore: 95, title: 'AI Engineer', experience: { minYears: 2, maxYears: 2, evidence: '2 years' } }),
-    raw(5, { postedAt: posted(12), matchScore: 90, title: 'Data Engineer' }),
-  ].map((candidate) => normalizeCandidate(candidate, { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true }));
-  const enriched = entries.map((candidate) => ({ candidate, eligibility: { eligible: true, strict: candidate.title === 'AI Engineer' && candidate.experience.minYears !== 2, relaxed: true, experience: { relaxed: candidate.experience.minYears === 2 }, title: { relaxed: candidate.title === 'Data Engineer' }, relaxations: [] }, freshness: { eligible: true, ageHours: (Date.parse(NOW) - Date.parse(candidate.postedAt)) / 3600000, window: 'Active' } }));
-  const result = selectNormalApplications(enriched, { maximumPerCompany: 10 });
-  assert.deepEqual(result.selected.map((candidate) => candidate.canonicalUrl), [entries[1], entries[2], entries[0], entries[3], entries[4]].map((candidate) => candidate.canonicalUrl));
-  assert.equal(result.selected[0].waterfallBand, 'strict-0-24h');
-  assert.equal(result.selected[1].waterfallBand, 'strict-24-72h');
-  assert.equal(result.familyCounts.unknown, 5);
+    selectionEntry(1, { score: 99, tier: 'strict', window: 'Backfill' }),
+    selectionEntry(2, { score: 66, tier: 'strict', window: 'Hot' }),
+    selectionEntry(3, { score: 70, tier: 'strict', window: 'Active' }),
+    selectionEntry(4, { score: 95, tier: 'relaxed', window: 'Hot' }),
+    selectionEntry(5, { score: 90, tier: 'relaxed', window: 'Active' }),
+    selectionEntry(6, { score: 98, tier: 'relaxed', window: 'Backfill' }),
+  ];
+  const result = selectNormalApplications(entries, { minimum: 1, preferred: 6, maximum: 6, maximumPerCompany: 10 });
+  assert.deepEqual(result.selected.map((candidate) => candidate.waterfallBand), [
+    'Strict Hot',
+    'Strict Active',
+    'Strict Backfill',
+    'Fallback Hot',
+    'Fallback Active',
+    'Fallback Backfill',
+  ]);
+  assert.equal(result.selected[2].selectionTier, 'Strict');
+  assert.equal(result.familyCounts['ai-llm-agentic'], 6);
+});
+
+test('normal score floor includes 65 and excludes 64 from the application-ready section', () => {
+  const result = selectNormalApplications([
+    selectionEntry(11, { score: 65 }),
+    selectionEntry(12, { score: 64 }),
+  ], { minimum: 1, preferred: 2, maximum: 2 });
+  assert.deepEqual(result.selected.map((candidate) => candidate.matchScore), [65]);
+  assert.equal(result.readyPoolCount, 1);
+  assert.equal(result.scorePolicy.normalFloor, 65);
+});
+
+test('scores 50-64 are labelled shortage-only and create no application operation', async () => {
+  const result = await runNormalMode({
+    clock: () => NOW,
+    sourceFunctions: allFunctions({ 'tracked-ats': [raw(13, { matchScore: 64 })] }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.plannedNotionOperations.length, 0);
+  assert.equal(result.stretchShortage.length, 1);
+  assert.equal(result.stretchShortage[0].selectionSection, 'Shortage-Only Stretch');
+  assert.equal(result.stretchShortage[0].applicationReady, false);
+});
+
+test('scores below 50 are excluded and reconciled by exact reason', () => {
+  const entry = selectionEntry(14, { score: 49 });
+  const result = selectNormalApplications([entry], { minimum: 1, preferred: 1, maximum: 1 });
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.stretch.length, 0);
+  assert.deepEqual(result.exclusions.map((item) => item.code), ['MATCH_SCORE_BELOW_50']);
+  assert.equal(result.exclusions[0].candidate.applicationReady, false);
+  assert.equal(result.reconciliationCounts.MATCH_SCORE_BELOW_50, 1);
+});
+
+test('a weak Fallback Hot role cannot displace a higher-quality Strict Backfill role', () => {
+  const strictBackfill = selectionEntry(15, { score: 65, tier: 'strict', window: 'Backfill' });
+  const fallbackHot = selectionEntry(16, { score: 99, tier: 'relaxed', window: 'Hot' });
+  const result = selectNormalApplications([fallbackHot, strictBackfill], {
+    minimum: 1,
+    preferred: 1,
+    maximum: 1,
+  });
+  assert.equal(result.selected[0].canonicalUrl, strictBackfill.candidate.canonicalUrl);
+  assert.equal(result.selected[0].waterfallBand, 'Strict Backfill');
+  assert.equal(result.selected[0].selectionTier, 'Strict');
+});
+
+test('company cap and family diversity are applied and every loss has a named reason', () => {
+  const entries = [
+    selectionEntry(21, { score: 99, company: 'Same Co', family: 'ai-llm-agentic' }),
+    selectionEntry(22, { score: 98, company: 'Same Co', family: 'ai-llm-agentic' }),
+    selectionEntry(23, { score: 97, company: 'Same Co', family: 'ai-llm-agentic' }),
+    selectionEntry(24, { score: 96, company: 'Other AI', family: 'ai-llm-agentic' }),
+    selectionEntry(25, { score: 95, company: 'Backend Co', family: 'backend-python' }),
+    selectionEntry(26, { score: 94, company: 'ML Co', family: 'ml' }),
+  ];
+  const result = selectNormalApplications(entries, {
+    minimum: 4,
+    preferred: 4,
+    maximum: 4,
+    maximumPerCompany: 2,
+    maximumFamilyShare: 0.5,
+  });
+  assert.equal(result.companyCounts['same co'], 2);
+  assert.deepEqual(result.familyCounts, { 'ai-llm-agentic': 2, 'backend-python': 1, ml: 1 });
+  assert.equal(result.familyComposition.met, true);
+  assert.deepEqual(
+    new Set(result.exclusions.map((item) => item.code)),
+    new Set(['SELECTION_COMPANY_CAP', 'SELECTION_FAMILY_DIVERSITY_TARGET']),
+  );
+  assert.equal(result.exclusions.length, entries.length - result.selected.length);
 });
 
 test('normal selection keeps unscored ready candidates out of the waterfall', () => {
@@ -271,7 +376,10 @@ test('healthy scorer with one failed row of twelve delivers a degraded shortlist
   assert.equal(recon.scored, 11);
   assert.equal(recon.selected, 11);
   assert.equal(recon.scored + recon.causes.readyToScored.UNSCORED + recon.causes.readyToScored.SCORING_FAILED, recon.ready);
-  assert.equal(recon.selected + recon.causes.scoredToSelected.SELECTION_RULES, recon.scored);
+  assert.equal(
+    recon.selected + Object.values(recon.causes.scoredToSelected).reduce((sum, count) => sum + count, 0),
+    recon.scored,
+  );
   assert.ok(recon.line.includes('selected=11'));
   assert.ok(recon.line.includes('readyToScored:SCORING_FAILED=1'));
 });

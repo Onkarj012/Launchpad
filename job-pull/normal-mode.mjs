@@ -145,6 +145,10 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
     scoring: details.scoring || null,
     readinessRepair: details.readinessRepair || null,
     repairQueue: details.repairQueue || [],
+    stretchShortage: details.stretchShortage || [],
+    selectionExclusions: details.selectionExclusions || [],
+    strictComposition: details.strictComposition || null,
+    familyComposition: details.familyComposition || null,
     reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
@@ -176,7 +180,9 @@ function buildReconciliation({ eligible, historicalSuppressed, historicalAmbiguo
       SCORING_FAILED: selection.scoringFailedCount,
     },
     scoredToSelected: {
-      ...(runFailed ? { RUN_FAILED_INCOMPLETE_SCORING: selectedGap } : { SELECTION_RULES: selectedGap }),
+      ...(runFailed
+        ? { RUN_FAILED_INCOMPLETE_SCORING: selectedGap }
+        : selection.reconciliationCounts),
     },
   };
   return {
@@ -335,7 +341,13 @@ export async function runNormalMode({
     const selectionEntries = convertedPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
-    const selection = selectNormalApplications(selectionEntries, { maximumPerCompany: normalConfig.run.maximumPerCompany });
+    const selection = selectNormalApplications(selectionEntries, {
+      maximumPerCompany: normalConfig.run.maximumPerCompany,
+      maximumFamilyShare: normalConfig.run.maximumFamilyShare,
+      strictTarget: normalConfig.run.strictTarget,
+      scoreFloor: normalConfig.run.normalMatchScoreFloor,
+      stretchFloor: normalConfig.run.stretchMatchScoreFloor,
+    });
     const eligibleCount = pipeline.scoringCandidates.length;
     const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
     const scorerRan = scorerTelemetry !== null;
@@ -398,6 +410,10 @@ export async function runNormalMode({
         scoringQueue: selection.scoringQueue,
         readinessRepair: readinessRepair.telemetry,
         repairQueue: readinessRepair.repairQueue,
+        stretchShortage: selection.stretch,
+        selectionExclusions: selection.exclusions,
+        strictComposition: selection.strictComposition,
+        familyComposition: selection.familyComposition,
         scoring: {
           required: true,
           scoredCount: selection.scoredCount,
@@ -421,6 +437,10 @@ export async function runNormalMode({
           minimum: 10,
           preferred: 12,
           maximum: 20,
+          stretch: selection.stretch.length,
+          belowFloor: selection.scorePolicy.belowFloorCount,
+          strictSelected: selection.strictComposition.selected,
+          strictShortfall: selection.strictComposition.shortfall,
           unscored: selection.unscoredCount,
           scoringFailed: selection.scoringFailedCount,
         },
@@ -458,6 +478,11 @@ export async function runNormalMode({
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
       scoringQueue: selection.scoringQueue, funnel: pipeline.funnel,
       readinessRepair: readinessRepair.telemetry, repairQueue: readinessRepair.repairQueue,
+      stretchShortage: selection.stretch,
+      selectionExclusions: selection.exclusions,
+      strictComposition: selection.strictComposition,
+      familyComposition: selection.familyComposition,
+      scorePolicy: selection.scorePolicy,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
       historicalAmbiguous,
@@ -468,7 +493,12 @@ export async function runNormalMode({
       shortfall: {
         minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing,
         preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes,
-        reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)],
+        reasons: [
+          ...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []),
+          ...(selection.strictComposition.shortfall ? [`STRICT_COMPOSITION_SHORTFALL:${selection.strictComposition.shortfall}`] : []),
+          ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`),
+          ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`),
+        ],
         linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' },
       },
       outcome: { status: failedLanes.length || scoringDropped ? 'degraded' : 'ok', fatal: false, degraded: failedLanes.length > 0 || scoringDropped, errors: sourceManifests.map(issueFor).filter(Boolean) },
@@ -476,7 +506,7 @@ export async function runNormalMode({
       ...(scorerTelemetry
         ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } }
         : {}),
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, historicalAmbiguous: historicalAmbiguous.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, stretch: selection.stretch.length, belowFloor: selection.scorePolicy.belowFloorCount, strictSelected: selection.strictComposition.selected, strictShortfall: selection.strictComposition.shortfall, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, historicalAmbiguous: historicalAmbiguous.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, companyCounts: selection.companyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
     };
   } catch (error) {
     return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error, error.details);
