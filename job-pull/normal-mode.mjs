@@ -192,14 +192,21 @@ function buildReconciliation({ eligible, historicalSuppressed, historicalAmbiguo
 // Broken-scorer reason codes, read from job-pull/match-scorer.mjs: a missing
 // binary and an auth failure abort the batch before it starts, and repeated
 // invalid output means the scorer cannot produce usable scores at all.
-const BROKEN_SCORER_REASON_CODES = new Set(['SCORER_BINARY_MISSING', 'SCORER_AUTH_FAILED', 'SCORER_OUTPUT_INVALID', 'SCORER_TIMEOUT']);
+const BROKEN_SCORER_REASON_CODES = new Set([
+  'SCORER_BINARY_MISSING',
+  'SCORER_BINARY_NOT_ABSOLUTE',
+  'SCORER_AUTH_FAILED',
+  'SCORER_OUTPUT_INVALID',
+  'SCORER_TIMEOUT',
+  'SCORER_SPAWN_FAILED',
+  'SCORER_DEADLINE_EXCEEDED',
+]);
 
 /**
  * Gate policy (docs/spec/match-scoring.md §6): the run fails only when the
  * scorer is genuinely broken — a run-level reason code, or more than half the
- * batch lost. A failed chunk records one failure per row, so the failed-row
- * share tracks the failed-chunk share; past half, the scorer is broken, not
- * unlucky.
+ * attempted rows lost. Row share is authoritative because failures and
+ * reconciliation are row-level and a final chunk may be smaller.
  */
 function scorerIsBroken(telemetry) {
   if (telemetry.degraded === true && BROKEN_SCORER_REASON_CODES.has(telemetry.reasonCode)) return true;
@@ -234,18 +241,31 @@ function hasUsableMatchScore(candidate) {
  * scorer only sees rows that still lack a usable Match Score — a --scores-json
  * manual override always wins on any row it covers.
  */
-async function scorePoolInRun(candidates, scorer) {
+async function scorePoolInRun(candidates, scorer, { runId, runAt } = {}) {
   if (typeof scorer !== 'function') return { pool: candidates, telemetry: null };
   const unscored = candidates.filter((candidate) => !hasUsableMatchScore(candidate));
   if (!unscored.length) return { pool: candidates, telemetry: { attempted: 0, chunks: 0, failures: [], degraded: false, reasonCode: null } };
-  const scoring = await scorer(unscored);
+  const scoring = await scorer(unscored, { runId, runAt });
   const merged = new Map((Array.isArray(scoring?.scored) ? scoring.scored : []).map((candidate) => [candidate.canonicalUrl, candidate]));
+  const failures = Array.isArray(scoring?.failures) ? scoring.failures : [];
+  const failuresByUrl = new Map(failures.map((failure) => [failure.canonicalUrl, failure]));
   return {
-    pool: candidates.map((candidate) => merged.get(candidate.canonicalUrl) ?? candidate),
+    pool: candidates.map((candidate) => {
+      const scored = merged.get(candidate.canonicalUrl);
+      const failure = failuresByUrl.get(candidate.canonicalUrl);
+      return failure ? {
+        ...(scored ?? candidate),
+        matchScore: null,
+        autoSuggest: false,
+        scoringFailed: true,
+        scoringFailureReason: failure.reason,
+        scoringFailureStderr: failure.stderr ?? null,
+      } : scored ?? candidate;
+    }),
     telemetry: {
       attempted: unscored.length,
       chunks: Number.isFinite(Number(scoring?.chunks)) ? Number(scoring.chunks) : 0,
-      failures: Array.isArray(scoring?.failures) ? scoring.failures : [],
+      failures,
       degraded: scoring?.degraded === true,
       reasonCode: scoring?.reasonCode ?? null,
     },
@@ -297,7 +317,11 @@ export async function runNormalMode({
       deadlineAtMs: runDeadlineAt == null ? null : Date.parse(runDeadlineAt),
       monotonicClock,
     });
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(readinessRepair.scorerPool, scorer);
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(
+      readinessRepair.scorerPool,
+      scorer,
+      { runId, runAt },
+    );
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));

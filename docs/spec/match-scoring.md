@@ -149,9 +149,11 @@ With an in-run scorer, `unscored` should always be 0, so that gate stops firing 
 own. But `scoringFailed > 0` → fatal means one transient failure kills a run that found
 48 good jobs.
 
-Proposed: fail the run only when the scorer is **broken** — auth failure, binary missing,
-or >50% of chunks failed. Otherwise drop the failed rows, report them in `funnel`, and
-deliver the rest.
+Fail the run only when the scorer is **broken** — auth failure, binary missing, spawn
+failure, whole-run deadline, or more than 50% of attempted rows failed. Failed-row share
+is authoritative because candidate failures and reconciliation are row-level, and the
+final chunk can be smaller than earlier chunks. Otherwise drop the failed rows, retain
+their exact reason code and captured stderr in the receipt, and deliver the rest.
 
 ---
 

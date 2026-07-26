@@ -18,6 +18,7 @@ import { importPublicSearchCandidates } from './adapters/public-search.mjs';
 import { importIndeedCandidates, indeedUnavailable } from './adapters/indeed.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { buildFunnelReport } from './funnel-report.mjs';
+import { autoSuggestFor, mergeScoreRow } from './match-scorer.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CAREER_OPS_DIR = path.resolve(MODULE_DIR, '../career-ops');
@@ -166,13 +167,9 @@ export function applyScores(sources, scoreInput) {
     candidates: (source.candidates || []).map((candidate) => {
       const score = byUrl.get(candidate.canonicalUrl);
       if (!score) return candidate;
+      const normalizedScore = mergeScoreRow(candidate, score);
       const updated = {
-        ...candidate,
-        matchScore: Number.isFinite(Number(score.matchScore ?? score.score)) ? Number(score.matchScore ?? score.score) : candidate.matchScore,
-        rationale: typeof score.rationale === 'string' ? score.rationale : candidate.rationale,
-        hook: typeof (score.strongestHook ?? score.hook) === 'string' ? (score.strongestHook ?? score.hook) : candidate.hook,
-        strongestHook: typeof (score.strongestHook ?? score.hook) === 'string' ? (score.strongestHook ?? score.hook) : candidate.strongestHook,
-        responseLikelihood: Number.isFinite(Number(score.responseLikelihood)) ? Number(score.responseLikelihood) : candidate.responseLikelihood,
+        ...normalizedScore.candidate,
         originalApplicationUrl: score.originalApplicationUrl ?? score.originalApplyUrl ?? candidate.originalApplicationUrl,
         originalApplicationEvidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence,
         applicationResolution: (score.originalApplicationUrl ?? score.originalApplyUrl)
@@ -183,7 +180,6 @@ export function applyScores(sources, scoreInput) {
           humanContact: score.humanContact === true || candidate.conversionSignals?.humanContact === true,
           projectConnection: score.projectConnection === true || candidate.conversionSignals?.projectConnection === true,
         },
-        autoSuggest: score.autoSuggest === true,
       };
       return assertCandidate(updated);
     }),
@@ -214,9 +210,17 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       backfillMaximumDays: config.freshness.backfillMaximumDays,
     }).freshness;
     const eligibility = classifyCandidate(candidate, { ...config, salaryFloorLpa: conversionPlan.salaryFloorLpa });
-    const conversion = scoreConversion(candidate, { freshnessWindow: freshness.window, eligibility, policy: conversionPlan.conversionScore });
-    const scoredCandidate = assertCandidate({
+    const guardedCandidate = {
       ...candidate,
+      autoSuggest: autoSuggestFor(
+        { ...candidate, freshness, eligibility },
+        candidate.matchScore,
+        candidate.responseLikelihood,
+      ),
+    };
+    const conversion = scoreConversion(guardedCandidate, { freshnessWindow: freshness.window, eligibility, policy: conversionPlan.conversionScore });
+    const scoredCandidate = assertCandidate({
+      ...guardedCandidate,
       conversionScore: conversion.score,
       conversionTier: conversion.tier,
       conversionFactors: conversion.factors,

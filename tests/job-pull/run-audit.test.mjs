@@ -12,6 +12,7 @@ function raw(index, { title = 'AI Engineer', postedAt = '2026-07-14T08:00:00.000
   return normalizeCandidate({
     url: `https://jobs.example.test/${index}`, source: 'greenhouse-full', sourceKind: 'ats-direct', provider: 'greenhouse', id: String(index),
     company: `Company ${index}`, title, location, postedAt, employment: { type: 'full-time' }, experience,
+    description: 'Build production Python, FastAPI, and applied AI systems.',
     liveness: { status: 'Active', evidence: 'fixture' }, matchScore: 80 - (index % 20),
   });
 }
@@ -76,10 +77,33 @@ test('score merge preserves agent scoring and daily date uses India timezone', (
     projectConnection: true,
   }]);
   assert.equal(sources[0].candidates[0].matchScore, 87);
-  assert.equal(sources[0].candidates[0].autoSuggest, true);
+  assert.equal(sources[0].candidates[0].autoSuggest, false);
   assert.equal(sources[0].candidates[0].applicationResolution.status, 'Resolved Original');
   assert.equal(sources[0].candidates[0].conversionSignals.humanContact, true);
   assert.equal(localRunDate('2026-07-14T20:00:00.000Z', config.timezone), '2026-07-15');
+});
+
+test('manual scores use the no-JD clamp and JS Auto-Suggest instead of the model boolean', () => {
+  const noJd = raw(401);
+  noJd.description = null;
+  const described = raw(402);
+  const sources = applyScores([{ candidates: [noJd, described], manifest: { sourceId: 'reverse-ats', errors: [] } }], [
+    { canonicalUrl: noJd.canonicalUrl, matchScore: 95, responseLikelihood: 18, autoSuggest: true },
+    { canonicalUrl: described.canonicalUrl, matchScore: 90, responseLikelihood: 18, autoSuggest: false },
+  ]);
+  assert.equal(sources[0].candidates[0].matchScore, 45);
+  assert.equal(sources[0].candidates[0].autoSuggest, false);
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 2, strictTarget: 1 } },
+    now,
+    runId: 'manual-score-guardrails',
+    sources,
+  });
+  const finalNoJd = result.scoringCandidates.find((candidate) => candidate.canonicalUrl === noJd.canonicalUrl);
+  const finalDescribed = result.scoringCandidates.find((candidate) => candidate.canonicalUrl === described.canonicalUrl);
+  assert.equal(finalNoJd.matchScore, 45);
+  assert.equal(finalNoJd.autoSuggest, false);
+  assert.equal(finalDescribed.autoSuggest, true);
 });
 
 test('run telemetry separates scored, unscored, scoring-failed, and selected candidates', () => {
