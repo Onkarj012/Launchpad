@@ -3,6 +3,7 @@ import { deriveOutreachState } from './cadence.mjs';
 import { evidenceUrls } from './evidence.mjs';
 import { assertManualOutcomeConfirmation, assertManualSendConfirmation, outreachActivityKey } from './idempotency.mjs';
 import { researchContact } from './research.mjs';
+import { approveContactReview, buildContactReviewCard } from './review.mjs';
 
 export class OutreachWorkflowError extends Error {
   constructor(message, code = 'OUTREACH_WORKFLOW_ERROR', details = null) {
@@ -40,18 +41,17 @@ function activityFilter(key) {
 
 function pageId(page) { return page?.id ?? page?.pageId ?? null; }
 
-function approvedContact(research, approval) {
-  if (approval?.approved !== true) return null;
+function candidateForApproval(research, approval) {
   const candidate = research.candidates.find(({ contact }) => {
     const personMatches = String(approval.personId ?? '').trim() === String(contact.personId);
     const channelMatches = String(approval.channel ?? '').trim() === String(contact.recommendedChannel);
     return personMatches && channelMatches;
   });
-  return candidate?.contact ?? null;
+  return candidate?.contact ?? research.recommendedCandidate;
 }
 
 /** Research and draft without any send-capable connector. */
-export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = false, paidApproval = null, contactApprovals = {} } = {}) {
+export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = false, paidApproval = null, contactApprovals = {}, contactHistories = {} } = {}) {
   const eligible = applications.filter((application) => application?.id && !terminal(application)).sort((a, b) => score(b) - score(a) || String(a.id).localeCompare(String(b.id)));
   const results = [];
   for (let index = 0; index < eligible.length; index += 1) {
@@ -62,15 +62,25 @@ export async function prepareOutreach({ applications = [], providers = {}, deepL
       continue;
     }
     const approval = contactApprovals[application.id] ?? null;
-    const contact = approvedContact(research, approval);
-    if (!contact) {
-      results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: 'contact-review-required', research });
+    const contact = candidateForApproval(research, approval);
+    const history = contactHistories[application.id] ?? {};
+    const reviewCard = buildContactReviewCard({ application, contact, personHistory: history.person ?? [], companyHistory: history.company ?? [], activeSequences: history.activeSequences ?? [], now });
+    if (!approval?.approved) {
+      results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: 'contact-review-required', research, reviewCard });
+      continue;
+    }
+    let approved;
+    try {
+      approved = approveContactReview({ card: reviewCard, approval });
+    } catch (error) {
+      results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: error.code === 'CONTACT_SUPPRESSED' ? 'contact-suppressed' : 'contact-review-required', research, reviewCard, error: { code: error.code, message: error.message } });
       continue;
     }
     try {
       const draft = buildOutreachDraft({
         application,
         contact,
+        approval: approved,
         depth: index < deepLimit ? 'deep' : 'light',
         channel: contact.recommendedChannel,
         attachmentExpected: typeof attachmentExpected === 'function' ? Boolean(attachmentExpected(application, contact)) : Boolean(attachmentExpected),

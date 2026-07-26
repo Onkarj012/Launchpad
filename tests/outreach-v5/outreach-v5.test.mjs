@@ -9,6 +9,7 @@ import { outreachActivityKey, outreachDuplicateKey } from '../../outreach-v5/ide
 import { researchContact } from '../../outreach-v5/research.mjs';
 import { normalizeNotionOutreachState, normalizeOutreachPage } from '../../outreach-v5/notion-normalizers.mjs';
 import { buildOutreachQueue } from '../../outreach-v5/queue.mjs';
+import { approveContactReview, buildContactReviewCard } from '../../outreach-v5/review.mjs';
 
 function notionProperty(type, value) {
   if (type === 'title' || type === 'rich_text') return { type, [type]: [{ plain_text: String(value) }] };
@@ -16,6 +17,21 @@ function notionProperty(type, value) {
   if (type === 'date') return { type, date: value ? { start: value } : null };
   if (type === 'select') return { type, select: value ? { name: value } : null };
   return { type, [type]: value };
+}
+
+function reviewedContact(id, overrides = {}) {
+  return contact(id, { observedAt: OUTREACH_FIXTURE_NOW, ...overrides });
+}
+
+function approvalFor(current, overrides = {}) {
+  return {
+    approved: true,
+    approvedBy: 'Onkar',
+    approvedAt: OUTREACH_FIXTURE_NOW,
+    personId: current.personId,
+    channel: current.recommendedChannel,
+    ...overrides,
+  };
 }
 
 test('contact research is free-first, records public evidence, and leaves missing email blank', async () => {
@@ -161,7 +177,7 @@ test('outreach identity is deterministic for application x person x channel', ()
 
 test('deep personalization is capped at six and lighter paths cover the remainder', async () => {
   const apps = Array.from({ length: 8 }, (_, index) => application(`app-${index}`, 100 - index));
-  const contactApprovals = Object.fromEntries(apps.map((app) => [app.id, { approved: true, personId: app.id, channel: 'LinkedIn' }]));
+  const contactApprovals = Object.fromEntries(apps.map((app) => [app.id, approvalFor(reviewedContact(app.id))]));
   const prepared = await prepareOutreach({ applications: apps, providers: providersFor(), contactApprovals, deepLimit: 6, now: OUTREACH_FIXTURE_NOW });
   assert.equal(prepared.status, 'ready');
   assert.equal(prepared.deepCount, 6);
@@ -172,18 +188,21 @@ test('deep personalization is capped at six and lighter paths cover the remainde
 
 test('attachment preparation requires exact Ready resume state and matching role artifact', () => {
   const base = application('resume-app', 95, { resumeState: 'Not Started' });
+  const currentContact = reviewedContact('resume-app');
+  const approval = approvalFor(currentContact);
   const artifact = { applicationId: 'resume-app', company: base.companyName, role: base.role, pdfPath: '/tmp/role.pdf', state: 'Ready' };
-  assert.throws(() => buildOutreachDraft({ application: base, contact: contact('resume-app'), attachmentExpected: true, resumeArtifact: artifact }), (error) => error.code === 'RESUME_NOT_READY');
+  assert.throws(() => buildOutreachDraft({ application: base, contact: currentContact, approval, attachmentExpected: true, resumeArtifact: artifact }), (error) => error.code === 'RESUME_NOT_READY');
   const ready = { ...base, resumeState: 'Ready' };
-  assert.throws(() => buildOutreachDraft({ application: ready, contact: contact('resume-app'), attachmentExpected: true, resumeArtifact: { ...artifact, role: 'Different Role' } }), (error) => error.code === 'RESUME_ROLE_MISMATCH');
-  const draft = buildOutreachDraft({ application: ready, contact: contact('resume-app'), attachmentExpected: true, resumeArtifact: artifact });
+  assert.throws(() => buildOutreachDraft({ application: ready, contact: currentContact, approval, attachmentExpected: true, resumeArtifact: { ...artifact, role: 'Different Role' } }), (error) => error.code === 'RESUME_ROLE_MISMATCH');
+  const draft = buildOutreachDraft({ application: ready, contact: currentContact, approval, attachmentExpected: true, resumeArtifact: artifact });
   assert.equal(draft.attachmentExpected, true);
   assert.match(draft.body, /attached the exact role-specific resume/);
 });
 
 test('draft storage keeps compact properties, full body, and prevents duplicate pages', async () => {
   const gateway = createFakeGateway();
-  const draft = buildOutreachDraft({ application: application('store-app'), contact: contact('store-app') });
+  const currentContact = reviewedContact('store-app');
+  const draft = buildOutreachDraft({ application: application('store-app'), contact: currentContact, approval: approvalFor(currentContact) });
   const first = await storeOutreachDraft({ gateway, draft });
   const second = await storeOutreachDraft({ gateway, draft });
   assert.equal(first.status, 'created');
@@ -197,7 +216,8 @@ test('manual send confirmation is the only path that changes Sent state and it i
   const gateway = createFakeGateway();
   const app = application('send-app');
   gateway.pages.applications.push({ id: app.id, values: { outreachState: null, nextAction: null } });
-  const draft = buildOutreachDraft({ application: app, contact: contact('send-app') });
+  const currentContact = reviewedContact('send-app');
+  const draft = buildOutreachDraft({ application: app, contact: currentContact, approval: approvalFor(currentContact) });
   const stored = await storeOutreachDraft({ gateway, draft });
   await assert.rejects(() => confirmManualSend({ gateway, outreach: { ...draft, id: stored.page.id }, application: app, confirmation: { confirmed: false }, now: OUTREACH_FIXTURE_NOW }), (error) => error.code === 'MANUAL_CONFIRMATION_REQUIRED');
   assert.equal(gateway.pages.outreach[0].values.sent, false);
@@ -215,7 +235,8 @@ test('a manually confirmed response stops the sequence, updates derived applicat
   const gateway = createFakeGateway();
   const app = application('response-app');
   gateway.pages.applications.push({ id: app.id, values: {} });
-  const draft = buildOutreachDraft({ application: app, contact: contact('response-app') });
+  const currentContact = reviewedContact('response-app');
+  const draft = buildOutreachDraft({ application: app, contact: currentContact, approval: approvalFor(currentContact) });
   const stored = await storeOutreachDraft({ gateway, draft });
   const outcome = await recordOutreachOutcome({
     gateway,
@@ -257,8 +278,8 @@ test('batch persistence preserves no-contact and draft-blocked outcomes without 
     applications: [application('ok'), application('blocked', 89, { resumeState: 'Not Started' })],
     providers: providersFor(),
     contactApprovals: {
-      ok: { approved: true, personId: 'ok', channel: 'LinkedIn' },
-      blocked: { approved: true, personId: 'blocked', channel: 'LinkedIn' },
+      ok: approvalFor(reviewedContact('ok')),
+      blocked: approvalFor(reviewedContact('blocked')),
     },
     attachmentExpected: (current) => current.id === 'blocked',
     now: OUTREACH_FIXTURE_NOW,
@@ -267,4 +288,25 @@ test('batch persistence preserves no-contact and draft-blocked outcomes without 
   assert.equal(persisted.status, 'partial');
   assert.equal(gateway.pages.outreach.length, 1);
   assert.equal(persisted.results.find((result) => result.applicationId === 'blocked').status, 'draft-blocked');
+});
+
+test('contact review requires human person and channel approval and enforces suppression', () => {
+  const app = application('review');
+  const currentContact = reviewedContact('review');
+  const card = buildContactReviewCard({ application: app, contact: currentContact, now: OUTREACH_FIXTURE_NOW });
+  assert.equal(card.application.id, app.id);
+  assert.equal(card.currentRole, 'Engineering Manager');
+  assert.equal(card.email.status, 'Missing');
+  assert.equal(card.evidence.observedAt, OUTREACH_FIXTURE_NOW);
+  assert.throws(() => buildOutreachDraft({ application: app, contact: currentContact }), (error) => error.code === 'CONTACT_APPROVAL_REQUIRED');
+  assert.throws(() => approveContactReview({ card, approval: approvalFor(currentContact, { channel: 'Email' }) }), (error) => error.code === 'APPROVED_CHANNEL_MISMATCH');
+  const suppressed = buildContactReviewCard({
+    application: app,
+    contact: currentContact,
+    personHistory: [{ personId: currentContact.personId, initialSentAt: '2026-07-20T12:00:00.000Z' }],
+    companyHistory: [{ companyName: app.companyName, initialSentAt: '2026-07-22T12:00:00.000Z' }],
+    now: OUTREACH_FIXTURE_NOW,
+  });
+  assert.deepEqual(suppressed.suppression.reasons, ['PERSON_SILENCE_WINDOW', 'COMPANY_SILENCE_WINDOW']);
+  assert.throws(() => approveContactReview({ card: suppressed, approval: approvalFor(currentContact) }), (error) => error.code === 'CONTACT_SUPPRESSED');
 });

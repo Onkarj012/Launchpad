@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { evidenceUrls } from './evidence.mjs';
 import { outreachDuplicateKey } from './idempotency.mjs';
+import { assertContactApproval } from './review.mjs';
 
 export const OUTREACH_DEPTHS = Object.freeze(['deep', 'light']);
 
@@ -94,10 +95,11 @@ export function bodyBlocks({ body, contact, application, attachment = null } = {
   return blocks;
 }
 
-export function buildOutreachDraft({ application, contact, depth = 'deep', channel = contact?.recommendedChannel, attachmentExpected = false, resumeArtifact = null, body = null } = {}) {
+export function buildOutreachDraft({ application, contact, approval, depth = 'deep', channel = contact?.recommendedChannel, attachmentExpected = false, resumeArtifact = null, body = null } = {}) {
   if (!application?.id) throw new OutreachDraftError('application id is required', 'APPLICATION_ID_REQUIRED');
   if (!contact?.name) throw new OutreachDraftError('contact is required', 'CONTACT_REQUIRED');
   if (!OUTREACH_DEPTHS.includes(depth)) throw new OutreachDraftError(`unsupported outreach depth: ${depth}`, 'DEPTH_INVALID');
+  assertContactApproval({ application, contact, channel, approval });
   const attachment = assertReadyResume({ application, resumeArtifact, attachmentExpected });
   const fullBody = text(body) ?? (depth === 'deep' ? deepBody({ application, contact, attachmentExpected }) : lightBody({ application, contact }));
   if (!fullBody) throw new OutreachDraftError('draft body is required', 'BODY_REQUIRED');
@@ -119,6 +121,7 @@ export function buildOutreachDraft({ application, contact, depth = 'deep', chann
     evidenceUrl: evidenceUrls(contact)[0] ?? null,
     attachmentExpected: Boolean(attachmentExpected),
     attachment,
+    contactApproval: approval,
     values: {
       name: `${company ?? 'Company'} | ${contact.name} | ${channel}`,
       application: [application.id],
