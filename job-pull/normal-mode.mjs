@@ -3,6 +3,7 @@ import { buildPayloadRecord, candidateDedupKey } from './candidate.mjs';
 import { applyScores, runPipeline } from './run.mjs';
 import { createNoWriteNotionGateway } from './workflow.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
+import { repairReadinessPool } from './normal-readiness-repair.mjs';
 import { runNormalSourcePlan } from './normal-sources.mjs';
 import { selectNormalApplications } from './normal-selection.mjs';
 import { readLedger } from './ledger.mjs';
@@ -137,6 +138,8 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
     plannedNotionOperations: [], transaction: null, historicalSuppressions: [], historicalAmbiguous: [],
     scoringQueue: details.scoringQueue || [],
     scoring: details.scoring || null,
+    readinessRepair: details.readinessRepair || null,
+    repairQueue: details.repairQueue || [],
     reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
@@ -255,6 +258,8 @@ export async function runNormalMode({
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
   historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer,
+  readinessRepairer = null, readinessRepairMaxRequests = 20, readinessRepairDeadlineMs = 30_000,
+  runDeadlineAt = null, monotonicClock = Date.now,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -284,7 +289,15 @@ export async function runNormalMode({
       suppressed: historicalSuppressions,
       ambiguous: historicalAmbiguous,
     } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer);
+    const readinessRepair = await repairReadinessPool(nonHistoricalCandidates, {
+      repairCandidate: readinessRepairer,
+      maxRequests: readinessRepairMaxRequests,
+      now: runAt,
+      maximumDurationMs: readinessRepairDeadlineMs,
+      deadlineAtMs: runDeadlineAt == null ? null : Date.parse(runDeadlineAt),
+      monotonicClock,
+    });
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(readinessRepair.scorerPool, scorer);
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
@@ -312,8 +325,21 @@ export async function runNormalMode({
       ...pipeline.scoringCandidates,
       ...sourceResults.flatMap((source) => source.candidates).filter((candidate) => !verifiedCandidates.has(candidate.canonicalUrl)),
     ];
-    const verificationQueue = [
+    const verificationRows = [
       ...verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean),
+      ...readinessRepair.rejected.map((record) => ({
+        company: record.company,
+        title: record.title,
+        discoveryUrl: record.discoveryUrl,
+        originalApplicationUrl: record.originalApplicationUrl,
+        provider: record.provider,
+        source: record.source,
+        applicationResolution: record.applicationResolution,
+        liveness: record.liveness,
+        reasons: record.blockers,
+        evidence: { readinessRepair: record },
+        dedupKey: record.canonicalUrl,
+      })),
       ...historicalAmbiguous.map((collision) => ({
         company: collision.company,
         title: collision.title,
@@ -328,10 +354,16 @@ export async function runNormalMode({
         dedupKey: candidateDedupKey(collision.candidate),
       })),
     ];
+    const verificationQueue = [...new Map(verificationRows.map((record) => [
+      record.discoveryUrl || record.dedupKey,
+      record,
+    ])).values()];
     if (incompleteScoring) {
       const error = scoringGateError(selection, scorerRan ? scorerTelemetry : null);
       error.details = {
         scoringQueue: selection.scoringQueue,
+        readinessRepair: readinessRepair.telemetry,
+        repairQueue: readinessRepair.repairQueue,
         scoring: {
           required: true,
           scoredCount: selection.scoredCount,
@@ -391,6 +423,7 @@ export async function runNormalMode({
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
       scoringQueue: selection.scoringQueue, funnel: pipeline.funnel,
+      readinessRepair: readinessRepair.telemetry, repairQueue: readinessRepair.repairQueue,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
       historicalAmbiguous,

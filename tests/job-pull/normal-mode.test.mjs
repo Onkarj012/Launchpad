@@ -14,6 +14,7 @@ function raw(index, overrides = {}) {
   return {
     url: `https://portal.example.test/job/${index}`, company: `Company ${index}`, title: 'AI Engineer', location: 'Pune, India',
     postedAt: NOW, employment: { type: 'full-time', evidence: 'full-time' }, experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' },
+    description: 'Build production AI systems with Python.',
     liveness: { status: 'Active', checkedAt: NOW, evidence: 'employer page checked' }, matchScore: 80 - index,
     ...overrides,
   };
