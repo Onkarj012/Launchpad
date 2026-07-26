@@ -109,6 +109,21 @@ function autoSuggestFor(candidate, matchScore, responseLikelihood) {
     && Number(responseLikelihood) >= 14;
 }
 
+function integerInRange(value, minimum, maximum) {
+  const number = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+  return Number.isInteger(number) && number >= minimum && number <= maximum ? number : null;
+}
+
+function normalizeScoreRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const matchScore = integerInRange(row.matchScore ?? row.score, 0, 100);
+  const responseLikelihood = integerInRange(row.responseLikelihood, 0, 20);
+  if (matchScore === null || responseLikelihood === null) return null;
+  return { ...row, matchScore, responseLikelihood };
+}
+
 // Candidate-level merge mirroring applyScores (job-pull/run.mjs:153) field
 // semantics, minus its original-application/contact side fields, which the
 // scorer never touches. Returns null when the row carries no usable score.
@@ -209,8 +224,16 @@ export async function scoreCandidates(candidates, { scoreChunk, chunkSize = DEFA
     }
     consecutiveInvalidOutput = 0;
     for (const row of scoreRows) {
-      if (row && typeof row.canonicalUrl === 'string' && row.canonicalUrl && !rowsByUrl.has(row.canonicalUrl)) {
-        rowsByUrl.set(row.canonicalUrl, row);
+      const normalized = normalizeScoreRow(row);
+      if (!normalized) {
+        const canonicalUrl = row?.canonicalUrl ?? null;
+        failures.push({ canonicalUrl, reason: 'SCORER_INVALID_RANGE' });
+        failedUrls.add(canonicalUrl);
+        if (canonicalUrl) rowsByUrl.delete(canonicalUrl);
+        continue;
+      }
+      if (normalized.canonicalUrl && typeof normalized.canonicalUrl === 'string' && !failedUrls.has(normalized.canonicalUrl) && !rowsByUrl.has(normalized.canonicalUrl)) {
+        rowsByUrl.set(normalized.canonicalUrl, normalized);
       }
     }
   }

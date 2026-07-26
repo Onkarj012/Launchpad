@@ -121,6 +121,12 @@ both require reading the JD. Workday rows only receive JD text via
 honestly scored — it must be capped, not guessed. `CLAUDE.md`: never fabricate evidence;
 unknown stays unknown.
 
+### Range validation
+
+Range validation and numeric-string coercion live in JavaScript, not the JSON Schema.
+This was measured because codex-cli 0.145.0 hangs indefinitely when `minimum` or
+`maximum` are present in the schema.
+
 ---
 
 ## 5. Risks
