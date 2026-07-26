@@ -72,6 +72,7 @@ export function evaluateContactSuppression({
   });
   const reasons = [];
   if (parallel) reasons.push('ACTIVE_PERSON_SEQUENCE');
+  if (parallel && text(parallel.channel) !== text(contact.recommendedChannel)) reasons.push('PARALLEL_PERSON_CHANNEL');
   if (samePerson.some((entry) => withinWindow(entry, timestamp, windows.personDays))) reasons.push('PERSON_SILENCE_WINDOW');
   if (sameCompany.some((entry) => withinWindow(entry, timestamp, windows.companyDays))) reasons.push('COMPANY_SILENCE_WINDOW');
   return Object.freeze({

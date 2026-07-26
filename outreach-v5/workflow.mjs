@@ -1,5 +1,5 @@
 import { buildOutreachDraft, storeOutreachDraft } from './draft.mjs';
-import { deriveOutreachState } from './cadence.mjs';
+import { deriveOutreachState, dueCadenceAction } from './cadence.mjs';
 import { evidenceUrls } from './evidence.mjs';
 import { assertManualOutcomeConfirmation, assertManualSendConfirmation, outreachActivityKey } from './idempotency.mjs';
 import { researchContact } from './research.mjs';
@@ -132,7 +132,11 @@ export async function confirmManualSend({ gateway, outreach, application, confir
   const eventType = stage === 'Initial' ? 'Initial Sent' : stage === 'Follow-up 1' ? 'Follow-up 1 Sent' : stage === 'Follow-up 2' ? 'Follow-up 2 Sent' : null;
   if (!eventType) throw new OutreachWorkflowError(`unsupported manual contact stage: ${stage}`, 'STAGE_INVALID');
   const sentAt = confirmation.sentAt ? nowIso(confirmation.sentAt) : nowIso(now);
-  const initialSentAt = stage === 'Initial' ? sentAt : outreach.initialSentAt ?? outreach.sentAt;
+  const action = dueCadenceAction({ application, sequence: outreach, activities: [...activities, ...(outreach.activities ?? [])], now: sentAt }).action;
+  if (action !== stage) {
+    throw new OutreachWorkflowError(`manual ${stage} confirmation is early or out of order; next allowed action is ${action ?? 'none'}`, 'CADENCE_ORDER_INVALID');
+  }
+  const initialSentAt = stage === 'Initial' ? sentAt : outreach.initialSentAt;
   if (!initialSentAt) throw new OutreachWorkflowError('follow-up confirmation requires the initial sent date', 'INITIAL_SENT_DATE_REQUIRED');
   const dueOffset = stage === 'Initial' ? 3 : stage === 'Follow-up 1' ? 10 : 17;
   const eventKey = outreachActivityKey({ duplicateKey: outreach.duplicateKey, eventType });
@@ -141,7 +145,7 @@ export async function confirmManualSend({ gateway, outreach, application, confir
   if (existing?.length) return { status: 'noop', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: existing[0].id ?? null };
 
   const nextEligibleContact = addDays(initialSentAt, dueOffset);
-  const outreachUpdate = { sent: true, sentAt, nextEligibleContact, draftState: 'Sent' };
+  const outreachUpdate = { sent: true, sentAt, initialSentAt, nextEligibleContact, draftState: 'Sent' };
   const applicationUpdate = { outreachState: stage === 'Follow-up 1' ? 'Follow-up 1 Sent' : 'Sent', nextAction: stage === 'Follow-up 2' ? 'Close' : stage === 'Follow-up 1' ? 'Follow-up 2' : 'Follow-up 1' };
   const activityValues = {
     name: `${eventType} — ${outreach.person}`,
@@ -150,6 +154,7 @@ export async function confirmManualSend({ gateway, outreach, application, confir
     eventAt: sentAt,
     dueAt: stage === 'Follow-up 2' ? addDays(initialSentAt, 17) : nextEligibleContact,
     idempotencyKey: eventKey,
+    outreachKey: outreach.duplicateKey,
     actionState: 'Confirmed',
     notes: `Manual confirmation: ${confirmation.confirmedBy ?? confirmation.source ?? confirmation.note}`,
   };
@@ -164,6 +169,7 @@ export async function confirmManualSend({ gateway, outreach, application, confir
         rollback: () => gateway.updatePage('outreach', outreach.id, {
           sent: outreach.sent ?? false,
           sentAt: outreach.sentAt ?? null,
+          initialSentAt: outreach.initialSentAt ?? null,
           nextEligibleContact: outreach.nextEligibleContact ?? null,
           draftState: outreach.draftState ?? 'Draft',
         }),
@@ -184,8 +190,8 @@ export async function confirmManualSend({ gateway, outreach, application, confir
     ],
   });
   const activity = transaction.results[2];
-  const sequence = { ...outreach, sent: true, sentAt: initialSentAt };
-  const activityHistory = [...(existing ?? []), { eventType, eventAt: sentAt }];
+  const sequence = { ...outreach, sent: true, sentAt, initialSentAt };
+  const activityHistory = [...activities, ...(outreach.activities ?? []), { eventType, eventAt: sentAt, outreachKey: outreach.duplicateKey }];
   const derived = deriveOutreachState({ application, sequence, activities: activityHistory, now });
   return { status: 'confirmed', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(activity), sentAt, nextEligibleContact, derived, evidenceUrls: evidenceUrls({ publicEvidence: outreach.publicEvidence ?? [] }) };
 }
@@ -209,6 +215,7 @@ export async function recordOutreachOutcome({ gateway, outreach, application, re
     eventType: 'Response',
     eventAt: observedAt,
     idempotencyKey: eventKey,
+    outreachKey: outreach.duplicateKey,
     actionState: 'Confirmed',
     notes: `${normalizedResponse}. Confirmed by ${confirmation.confirmedBy ?? confirmation.source ?? confirmation.note}`,
   };
@@ -249,7 +256,16 @@ export async function recordOutreachOutcome({ gateway, outreach, application, re
 export function deriveApplicationOutreachState({ application, sequences = [], activities = [], now = () => Date.now() } = {}) {
   if (!sequences.length) return { state: 'None', nextAction: null, nextEligibleContact: null, due: false };
   const ordered = [...sequences].sort((a, b) => String(a.duplicateKey ?? a.id).localeCompare(String(b.duplicateKey ?? b.id)));
-  const derived = ordered.map((sequence) => deriveOutreachState({ application, sequence, activities: activities.filter((activity) => !sequence.id || activity.outreachId === sequence.id || activity.duplicateKey === sequence.duplicateKey), now }));
+  const derived = ordered.map((sequence) => deriveOutreachState({
+    application,
+    sequence,
+    activities: activities.filter((activity) => (
+      activity.outreachId === sequence.id
+      || activity.outreachKey === sequence.duplicateKey
+      || activity.duplicateKey === sequence.duplicateKey
+    )),
+    now,
+  }));
   const active = derived.find((state) => state.state !== 'Stopped') ?? derived[0];
   return active;
 }

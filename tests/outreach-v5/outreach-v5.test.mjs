@@ -257,19 +257,27 @@ test('cadence produces Day 0/3/10/17 and stops on reply or closure', () => {
   assert.deepEqual(OUTREACH_CADENCE.map((item) => item.day), [0, 3, 10, 17]);
   const plan = cadencePlan({ initialSentAt: '2026-07-01T09:00:00.000Z' });
   assert.deepEqual(plan.map((item) => item.dueAt), ['2026-07-01T09:00:00.000Z', '2026-07-04T09:00:00.000Z', '2026-07-11T09:00:00.000Z', '2026-07-18T09:00:00.000Z']);
-  const before = deriveOutreachState({ application: application('cadence'), sequence: { sent: true, sentAt: '2026-07-01T09:00:00.000Z' }, now: '2026-07-04T09:00:00.000Z' });
+  const before = deriveOutreachState({ application: application('cadence'), sequence: { sent: true, initialSentAt: '2026-07-01T09:00:00.000Z' }, now: '2026-07-04T09:00:00.000Z' });
   assert.equal(before.nextAction, 'Follow-up 1');
   assert.equal(before.due, true);
-  const stopped = deriveOutreachState({ application: application('cadence'), sequence: { sent: true, sentAt: '2026-07-01T09:00:00.000Z', response: 'Replied' }, now: '2026-07-20T09:00:00.000Z' });
+  const stopped = deriveOutreachState({ application: application('cadence'), sequence: { sent: true, initialSentAt: '2026-07-01T09:00:00.000Z', response: 'Replied' }, now: '2026-07-20T09:00:00.000Z' });
   assert.equal(stopped.state, 'Stopped');
   assert.equal(stopped.nextAction, null);
-  const closed = dueCadenceAction({ application: application('cadence'), sequence: { sent: true, sentAt: '2026-07-01T09:00:00.000Z' }, activities: [
+  const closed = dueCadenceAction({ application: application('cadence'), sequence: { sent: true, initialSentAt: '2026-07-01T09:00:00.000Z' }, activities: [
     { eventType: 'Follow-up 1 Sent', eventAt: '2026-07-04T09:00:00.000Z' },
     { eventType: 'Follow-up 2 Sent', eventAt: '2026-07-11T09:00:00.000Z' },
   ], now: '2026-07-18T09:00:00.000Z' });
   assert.equal(closed.action, 'Close');
-  const silentClosure = dueCadenceAction({ application: application('cadence'), sequence: { sent: true, sentAt: '2026-07-01T09:00:00.000Z' }, now: '2026-07-18T09:00:00.000Z' });
+  const silentClosure = dueCadenceAction({ application: application('cadence'), sequence: { sent: true, initialSentAt: '2026-07-01T09:00:00.000Z' }, now: '2026-07-18T09:00:00.000Z' });
   assert.equal(silentClosure.action, 'Close');
+  const rawSequence = {
+    id: 'raw-cadence',
+    properties: {
+      'Sent?': notionProperty('checkbox', true),
+      'Initial Sent At': notionProperty('date', '2026-07-01T09:00:00.000Z'),
+    },
+  };
+  assert.equal(dueCadenceAction({ application: application('cadence'), sequence: rawSequence, now: '2026-07-04T09:00:00.000Z' }).action, 'Follow-up 1');
 });
 
 test('batch persistence preserves no-contact and draft-blocked outcomes without external writes', async () => {
@@ -336,4 +344,73 @@ test('partial send confirmation rolls back Outreach and Application state', asyn
   assert.equal(gateway.pages.applications[0].values.outreachState, null);
   assert.equal(gateway.pages.applications[0].values.nextAction, null);
   assert.equal(gateway.pages.activity.length, 0);
+});
+
+test('immutable initial cadence anchor survives follow-up and Activity identifies the exact sequence', async () => {
+  const gateway = createFakeGateway();
+  const app = application('cadence-send');
+  gateway.pages.applications.push({ id: app.id, values: {} });
+  const currentContact = reviewedContact('cadence-send');
+  const draft = buildOutreachDraft({ application: app, contact: currentContact, approval: approvalFor(currentContact) });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  await confirmManualSend({
+    gateway,
+    outreach: { ...draft, id: stored.page.id },
+    application: app,
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: '2026-07-01T09:00:00.000Z' },
+    now: '2026-07-01T09:00:00.000Z',
+  });
+  const sequence = { ...draft, ...gateway.pages.outreach[0].values, id: stored.page.id };
+  await confirmManualSend({
+    gateway,
+    outreach: sequence,
+    application: { ...app, ...gateway.pages.applications[0].values },
+    activities: gateway.pages.activity.map(({ values }) => values),
+    stage: 'Follow-up 1',
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: '2026-07-04T09:00:00.000Z' },
+    now: '2026-07-04T09:00:00.000Z',
+  });
+  assert.equal(gateway.pages.outreach[0].values.initialSentAt, '2026-07-01T09:00:00.000Z');
+  assert.equal(gateway.pages.outreach[0].values.sentAt, '2026-07-04T09:00:00.000Z');
+  assert.deepEqual(gateway.pages.activity.map(({ values }) => values.outreachKey), [draft.duplicateKey, draft.duplicateKey]);
+});
+
+test('early or out-of-order follow-up confirmation is rejected', async () => {
+  const gateway = createFakeGateway();
+  const app = application('cadence-order');
+  gateway.pages.applications.push({ id: app.id, values: {} });
+  const currentContact = reviewedContact('cadence-order');
+  const draft = buildOutreachDraft({ application: app, contact: currentContact, approval: approvalFor(currentContact) });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const sequence = { ...draft, id: stored.page.id, sent: true, sentAt: '2026-07-01T09:00:00.000Z', initialSentAt: '2026-07-01T09:00:00.000Z' };
+  await assert.rejects(() => confirmManualSend({
+    gateway,
+    outreach: sequence,
+    application: app,
+    stage: 'Follow-up 2',
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: '2026-07-04T09:00:00.000Z' },
+    now: '2026-07-04T09:00:00.000Z',
+  }), (error) => error.code === 'CADENCE_ORDER_INVALID');
+  await assert.rejects(() => confirmManualSend({
+    gateway,
+    outreach: sequence,
+    application: app,
+    stage: 'Follow-up 1',
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: '2026-07-02T09:00:00.000Z' },
+    now: '2026-07-02T09:00:00.000Z',
+  }), (error) => error.code === 'CADENCE_ORDER_INVALID');
+});
+
+test('the same person cannot run parallel Email and LinkedIn sequences', () => {
+  const app = application('parallel');
+  const currentContact = reviewedContact('parallel');
+  const card = buildContactReviewCard({
+    application: app,
+    contact: currentContact,
+    activeSequences: [{ personId: currentContact.personId, channel: 'Email', draftState: 'Sent' }],
+    now: OUTREACH_FIXTURE_NOW,
+  });
+  assert.ok(card.suppression.reasons.includes('ACTIVE_PERSON_SEQUENCE'));
+  assert.ok(card.suppression.reasons.includes('PARALLEL_PERSON_CHANNEL'));
+  assert.throws(() => approveContactReview({ card, approval: approvalFor(currentContact) }), (error) => error.code === 'CONTACT_SUPPRESSED');
 });

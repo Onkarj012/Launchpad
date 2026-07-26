@@ -111,6 +111,7 @@ export function normalizeOutreachPage(row = {}) {
     preview: text(value(row, 'preview', 'Preview')),
     sent: value(row, 'sent', 'Sent?') === true,
     sentAt: date(value(row, 'sentAt', 'Sent At')),
+    initialSentAt: date(value(row, 'initialSentAt', 'Initial Sent At')),
     response: text(value(row, 'response', 'Response')),
     outcome: text(value(row, 'outcome', 'Outcome')),
     nextEligibleContact: date(value(row, 'nextEligibleContact', 'Next Eligible Contact')),
@@ -132,6 +133,7 @@ export function normalizeActivityPage(row = {}) {
     dueAt: date(value(row, 'dueAt', 'Due At')),
     idempotencyKey: text(value(row, 'idempotencyKey', 'Idempotency Key')),
     actionState: text(value(row, 'actionState', 'Action State')),
+    outreachKey: text(value(row, 'outreachKey', 'Outreach Key')),
     notes: text(value(row, 'notes', 'Notes')),
   });
 }

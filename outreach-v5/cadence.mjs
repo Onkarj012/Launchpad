@@ -28,7 +28,21 @@ function eventType(activity) { return activity?.eventType ?? activity?.['Event T
 function eventAt(activity) { return activity?.eventAt ?? activity?.['Event At'] ?? activity?.values?.eventAt ?? null; }
 function responseOf(sequence) { return sequence?.response ?? sequence?.Response ?? sequence?.responseOutcome ?? sequence?.['Response Outcome'] ?? sequence?.outcome ?? null; }
 function sentOf(sequence) { return sequence?.sent === true || sequence?.['Sent?'] === true || sequence?.values?.sent === true; }
-function sentAtOf(sequence) { return sequence?.sentAt ?? sequence?.['Sent At'] ?? sequence?.values?.sentAt ?? null; }
+function initialSentAtOf(sequence, activities) {
+  return sequence?.initialSentAt
+    ?? sequence?.['Initial Sent At']
+    ?? sequence?.values?.initialSentAt
+    ?? eventAt(eventFor(activities, 'Initial Sent'))
+    ?? null;
+}
+
+function normalizeInputs(application, sequence, activities) {
+  return {
+    application: normalizeApplicationPage(application),
+    sequence: normalizeOutreachPage(sequence),
+    activities: activities.map(normalizeActivityPage),
+  };
+}
 
 export function stopReason({ application = {}, sequence = {}, activities = [] } = {}) {
   if (TERMINAL_APPLICATION_STATUSES.includes(application.status)) return application.status;
@@ -52,10 +66,11 @@ function eventFor(activities, type) {
 
 /** Derive the operator-facing state from Outreach plus append-only Activity. */
 export function deriveOutreachState({ application = {}, sequence = {}, activities = [], now = () => Date.now() } = {}) {
+  ({ application, sequence, activities } = normalizeInputs(application, sequence, activities));
   const stopped = stopReason({ application, sequence, activities });
-  if (stopped) return { state: 'Stopped', nextAction: null, nextEligibleContact: null, due: false, stopReason: stopped, cadence: cadencePlan({ initialSentAt: sentAtOf(sequence) }) };
+  if (stopped) return { state: 'Stopped', nextAction: null, nextEligibleContact: null, due: false, stopReason: stopped, cadence: cadencePlan({ initialSentAt: initialSentAtOf(sequence, activities) }) };
   const initial = sentOf(sequence) || Boolean(eventFor(activities, 'Initial Sent'));
-  const initialSentAt = sentAtOf(sequence) ?? eventAt(eventFor(activities, 'Initial Sent'));
+  const initialSentAt = initialSentAtOf(sequence, activities);
   if (!initial || !initialSentAt) return { state: 'Draft', nextAction: 'Send manually', nextEligibleContact: null, due: false, stopReason: null, cadence: cadencePlan() };
 
   const followup1 = Boolean(eventFor(activities, 'Follow-up 1 Sent'));
@@ -80,3 +95,4 @@ export function dueCadenceAction({ application = {}, sequence = {}, activities =
 export function cadenceActionForDay(day) {
   return OUTREACH_CADENCE.find((action) => action.day === day) ?? null;
 }
+import { normalizeActivityPage, normalizeApplicationPage, normalizeOutreachPage } from './notion-normalizers.mjs';
