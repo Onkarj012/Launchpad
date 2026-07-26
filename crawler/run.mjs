@@ -12,6 +12,8 @@ import {
 const SCHEMA_VERSION = 2;
 const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
 const STAGES = ['fetch', 'commit'];
+const ADAPTER_FAILURE_STATUSES = new Set(['degraded', 'failed', 'terminal', 'retryable', 'malformed', 'interrupted', 'timeout']);
+const ADAPTER_SUCCESS_STATUSES = new Set(['ok', 'empty', 'success', 'succeeded', 'not-modified', 'unchanged']);
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -254,9 +256,147 @@ function newestPostingAt(observations, manifest) {
   return manifest?.newestPostingAt ?? values.at(-1) ?? null;
 }
 
+function adapterFailureCode(failure) {
+  const raw = failure?.code ?? failure?.kind ?? failure?.retryClass ?? failure?.reasonCode ?? failure?.status ?? failure?.reason;
+  return String(raw || 'ADAPTER_FAILURE').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '') || 'ADAPTER_FAILURE';
+}
+
+function adapterFailureMessage(failure) {
+  if (typeof failure === 'string') return failure;
+  return String(failure?.message ?? failure?.error ?? failure?.reason ?? failure?.code ?? failure?.kind ?? failure?.status ?? 'adapter failure');
+}
+
+function expandAdapterFailure(value, defaults = {}) {
+  if (value == null || value === false || value === 0) return [];
+  if (Array.isArray(value)) return value.flatMap((failure) => expandAdapterFailure(failure, defaults));
+  if (typeof value === 'string') return [{ ...defaults, code: 'ADAPTER_ERROR', message: value }];
+  if (typeof value !== 'object') return [{ ...defaults, code: 'ADAPTER_FAILURE', message: String(value) }];
+  const nested = [
+    ...(Array.isArray(value.failures) ? value.failures : []),
+    ...(Array.isArray(value.errors) ? value.errors : []),
+  ];
+  if (nested.length) {
+    return nested.flatMap((failure) => expandAdapterFailure(failure, {
+      ...defaults,
+      provider: value.provider ?? defaults.provider,
+      board: value.board ?? value.company ?? value.sourceId ?? defaults.board,
+      url: value.url ?? value.endpoint ?? defaults.url,
+      statusCode: value.statusCode ?? (Number.isInteger(value.status) ? value.status : defaults.statusCode),
+    }));
+  }
+  return [{
+    ...defaults,
+    ...value,
+    code: adapterFailureCode(value),
+    message: adapterFailureMessage(value),
+  }];
+}
+
+function dedupeAdapterFailures(failures) {
+  const seen = new Set();
+  return failures.filter((failure) => {
+    const key = [
+      failure.provider, failure.board, failure.code, failure.message,
+      failure.url, failure.statusCode,
+    ].map((value) => String(value ?? '')).join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function adapterResultEvidence(result, observations) {
+  const manifest = result?.manifest ?? {};
+  const sources = Array.isArray(manifest.sources) ? manifest.sources : [];
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const failures = [
+    ...expandAdapterFailure(result?.failures),
+    ...expandAdapterFailure(Array.isArray(manifest.failures) ? manifest.failures : []),
+    ...expandAdapterFailure(manifest.errors),
+  ];
+  for (const source of sources) {
+    failures.push(...expandAdapterFailure(source?.failures, {
+      provider: source?.provider,
+      board: source?.board ?? source?.company ?? source?.sourceId,
+      url: source?.url,
+    }));
+    failures.push(...expandAdapterFailure(source?.errors, {
+      provider: source?.provider,
+      board: source?.board ?? source?.company ?? source?.sourceId,
+      url: source?.url,
+    }));
+    if (ADAPTER_FAILURE_STATUSES.has(String(source?.status || '').toLowerCase())
+      && !source?.failures?.length && !source?.errors?.length) {
+      failures.push(...expandAdapterFailure(source, {
+        provider: source?.provider,
+        board: source?.board ?? source?.company ?? source?.sourceId,
+        url: source?.url,
+      }));
+    }
+  }
+  const interrupted = Boolean(result?.interrupted || manifest.interrupted);
+  const truncated = Boolean(result?.truncated || manifest.truncated);
+  const explicitStatus = String(manifest.status || '').toLowerCase();
+  if (interrupted) failures.push({ code: 'INTERRUPTED', message: 'adapter scan interrupted' });
+  if (truncated) failures.push({ code: 'TRUNCATED', message: `adapter scan truncated${manifest.capHit ? ` at ${manifest.capHit}` : ''}` });
+  if (ADAPTER_FAILURE_STATUSES.has(explicitStatus) && !failures.length) {
+    failures.push({ code: adapterFailureCode({ status: explicitStatus }), message: `adapter reported ${explicitStatus}` });
+  }
+  const expectedFailures = Math.max(
+    0,
+    Number(manifest.failed ?? 0) || 0,
+    typeof manifest.failures === 'number' ? Number(manifest.failures) : 0,
+    Number(manifest.telemetry?.failed ?? 0) || 0,
+  );
+  while (failures.length < expectedFailures) failures.push({ code: 'ADAPTER_FAILURE', message: 'adapter reported a failed attempt' });
+  const normalizedFailures = dedupeAdapterFailures(failures.map((failure) => ({
+    ...failure,
+    code: adapterFailureCode(failure),
+    message: adapterFailureMessage(failure),
+  })));
+  const attempts = Math.max(
+    0,
+    Number(manifest.boardsAttempted ?? 0) || 0,
+    Number(manifest.attempted ?? 0) || 0,
+    Number(manifest.telemetry?.attempted ?? manifest.telemetry?.budgetUsed ?? 0) || 0,
+    sources.length,
+    results.length,
+    normalizedFailures.length || observations.length ? 1 : 0,
+  );
+  const declaredSuccesses = Math.max(
+    0,
+    Number(manifest.successes ?? manifest.succeeded ?? 0) || 0,
+    Number(manifest.telemetry?.succeeded ?? 0) || 0,
+    sources.filter((source) => ADAPTER_SUCCESS_STATUSES.has(String(source?.status || '').toLowerCase())).length,
+  );
+  const successes = declaredSuccesses || (attempts > 0 && !normalizedFailures.length ? attempts : Math.max(0, attempts - normalizedFailures.length));
+  const status = normalizedFailures.length
+    ? observations.length ? 'degraded' : 'failed'
+    : observations.length ? 'ok' : 'empty';
+  const failureHistogram = {};
+  for (const failure of normalizedFailures) failureHistogram[failure.code] = (failureHistogram[failure.code] ?? 0) + 1;
+  return { status, attempts, successes, failures: normalizedFailures, failureHistogram, interrupted, truncated };
+}
+
+export function sourceFailureHistogram(sourceTelemetry = {}, failures = []) {
+  const histogram = {};
+  for (const telemetry of Object.values(sourceTelemetry ?? {})) {
+    for (const [code, count] of Object.entries(telemetry?.failureHistogram ?? {})) {
+      histogram[code] = (histogram[code] ?? 0) + Number(count || 0);
+    }
+  }
+  if (!Object.keys(histogram).length) {
+    for (const failure of failures ?? []) {
+      const code = adapterFailureCode(failure);
+      histogram[code] = (histogram[code] ?? 0) + 1;
+    }
+  }
+  return histogram;
+}
+
 function snapshot(db, runId) {
   const run = runRow(db, runId);
-  return { run, stages: stagesFor(db, runId), telemetry: { sources: telemetryFor(db, runId) }, failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, message: row.message })) };
+  return { run, stages: stagesFor(db, runId), telemetry: { sources: telemetryFor(db, runId) }, failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, code: row.retry_class, host: row.host, statusCode: row.status_code, message: row.message })) };
 }
 
 function beginStage(db, runId, stage, at) {
@@ -490,16 +630,23 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
         }).duplicate) duplicates += 1;
       }
       const manifest = result?.manifest ?? {};
-      const interrupted = Boolean(result?.interrupted || manifest.interrupted);
-      const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
-      telemetry.status = interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'succeeded';
+      const evidence = adapterResultEvidence(result, observations);
+      const interrupted = evidence.interrupted;
+      const naturalTerminal = evidence.failures.length
+        ? false
+        : manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
+      telemetry.status = evidence.status;
       telemetry.observations = observations.length;
       telemetry.duplicates = duplicates;
       telemetry.fetched = Number(manifest.fetched ?? observations.length);
       telemetry.changed = Number(manifest.changed ?? observations.length - duplicates);
+      telemetry.adapterAttempts = evidence.attempts;
+      telemetry.adapterSuccesses = evidence.successes;
+      telemetry.adapterFailures = evidence.failures.length;
+      telemetry.failureHistogram = evidence.failureHistogram;
       telemetry.naturalTerminal = Boolean(naturalTerminal);
       telemetry.interrupted = interrupted;
-      telemetry.truncated = Boolean(manifest.truncated);
+      telemetry.truncated = evidence.truncated;
       telemetry.capHit = manifest.capHit ?? null;
       telemetry.recordsNotExamined = manifest.recordsNotExamined ?? null;
       telemetry.boardsConfigured = manifest.boardsConfigured ?? null;
@@ -508,12 +655,26 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
       telemetry.boardOmissions = manifest.omissions ?? [];
       telemetry.newestPostingAt = newestPostingAt(observations, manifest);
       telemetry.consecutiveZeroNewRuns = telemetry.changed === 0 ? Number(previousState.consecutiveZeroNewRuns ?? 0) + 1 : 0;
+      for (const failure of evidence.failures) {
+        store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+          VALUES (?, ?, 'fetch', ?, ?, ?, ?, ?, ?)`).run(
+          runId,
+          source.id,
+          Number(failure.attempt ?? attempt) || attempt,
+          failure.code,
+          sourceHost(failure.url) ?? sourceHost(source.url),
+          Number.isInteger(Number(failure.statusCode)) ? Number(failure.statusCode) : null,
+          failure.message,
+          nowFrom(clock),
+        );
+      }
       const nextCursor = sourceCapabilities.rotationPersistent
         ? result?.cursor ?? cursor
         : interrupted || manifest.truncated ? result?.cursor ?? cursor : null;
       telemetry.continuationCursor = nextCursor;
       store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(nextCursor, {
         scanStatus: interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'completed',
+        outcomeStatus: evidence.status,
         naturalTerminal: Boolean(naturalTerminal),
         truncated: Boolean(manifest.truncated),
         newestPostingAt: telemetry.newestPostingAt,
@@ -535,6 +696,10 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
     VALUES (?, ?, 'fetch', ?, ?, ?, ?, ?, ?)`).run(runId, source.id, telemetry.attempts, retryClass, sourceHost(source.url), lastError?.statusCode ?? null, message, nowFrom(clock));
   telemetry.status = 'failed';
   telemetry.error = message;
+  telemetry.adapterAttempts = telemetry.attempts;
+  telemetry.adapterSuccesses = 0;
+  telemetry.adapterFailures = 1;
+  telemetry.failureHistogram = { [adapterFailureCode({ retryClass })]: 1 };
   telemetry.interrupted = true;
   telemetry.naturalTerminal = false;
   telemetry.newestPostingAt = null;
@@ -562,14 +727,14 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
       store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
-      if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
+      if (!store.prepare("SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status IN ('ok', 'empty', 'succeeded')").get(runId, source.id)) {
         const sourceStartedAt = performance.now();
         const result = await fetchSource(store, source, runId, priorState, config, clock);
         sourceDurations[source.id] = Math.max(0, Math.round(performance.now() - sourceStartedAt));
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, ...(t.boardsConfigured == null ? {} : { boardsConfigured: t.boardsConfigured, boardsAttempted: t.boardsAttempted, boardsOmitted: t.boardsOmitted, boardOmissions: t.boardOmissions }) }), t.error ?? null);
+          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, adapterAttempts: t.adapterAttempts, adapterSuccesses: t.adapterSuccesses, adapterFailures: t.adapterFailures, failureHistogram: t.failureHistogram, ...(t.boardsConfigured == null ? {} : { boardsConfigured: t.boardsConfigured, boardsAttempted: t.boardsAttempted, boardsOmitted: t.boardsOmitted, boardOmissions: t.boardOmissions }) }), t.error ?? null);
       }
     }
     const undatedAfter = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
@@ -580,12 +745,12 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
       changed: total.changed + source.changed,
       observations: total.observations + source.observations,
       duplicates: total.duplicates + source.duplicates,
-      failed: total.failed + (source.status === 'failed' || source.status === 'interrupted' || source.status === 'truncated' ? 1 : 0),
+      failed: total.failed + (source.status === 'failed' || source.status === 'degraded' ? 1 : 0),
     }), { fetched: 0, changed: 0, observations: 0, duplicates: 0, failed: 0 });
     transitionStage(store, runId, 'fetch', 'committed', { clock });
     transitionStage(store, runId, 'commit', 'running', { clock });
     finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
-    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations }, clock });
+    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations, sourceFailureHistogram: sourceFailureHistogram(telemetry) }, clock });
     return { ...snapshot(store, runId), idempotent: false, newlyDated };
   } catch (error) {
     failCrawlRun(store, runId, error, { clock });

@@ -70,10 +70,11 @@ test('a crawl run persists schema, source state, observations, stages, and funne
     failed: 0,
   });
   assert.deepEqual(result.telemetry.sources.greenhouse, {
-    status: 'succeeded', attempts: 1, fetched: 1, observations: 1, changed: 1, duplicates: 0,
+    status: 'ok', attempts: 1, fetched: 1, observations: 1, changed: 1, duplicates: 0,
     startingCursor: { page: 3 }, continuationCursor: null, naturalTerminal: true, interrupted: false, truncated: false,
     newestPostingAt: '2026-07-22T10:00:00.000Z', cursorReset: false, cursorContinued: false,
     consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
+    adapterAttempts: 1, adapterSuccesses: 1, adapterFailures: 0, failureHistogram: {},
   });
   assert.equal(result.stages.fetch.status, 'committed');
   assert.equal(result.stages.commit.status, 'committed');
@@ -156,6 +157,63 @@ test('terminal source failures are recorded and rerunning the same idempotency k
   assert.equal(second.idempotent, true);
   assert.equal(calls, 1);
   assert.equal(readCrawlerState(store).failures.length, 1);
+  store.close();
+});
+
+test('all-board adapter timeouts persist as failed with a receipt histogram', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const result = await crawlRun({
+    store,
+    runId: 'all-board-timeout',
+    clock: fixedClock(),
+    sourcePlans: [{
+      id: 'ats-warm',
+      lane: 'ats',
+      fetch: async () => ({
+        observations: [],
+        failures: [
+          { provider: 'greenhouse', board: 'one', code: 'TIMEOUT', message: 'board one timed out' },
+          { provider: 'lever', board: 'two', code: 'TIMEOUT', message: 'board two timed out' },
+        ],
+        manifest: { boardsAttempted: 2, failed: 2 },
+      }),
+    }],
+  });
+
+  assert.equal(result.telemetry.sources['ats-warm'].status, 'failed');
+  assert.deepEqual(result.telemetry.sources['ats-warm'].failureHistogram, { TIMEOUT: 2 });
+  assert.deepEqual(result.run.telemetry.sourceFailureHistogram, { TIMEOUT: 2 });
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.failures.length, 2);
+  store.close();
+});
+
+test('adapter failures with candidates produce degraded source state', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const result = await crawlRun({
+    store,
+    runId: 'partial-board-timeout',
+    clock: fixedClock(),
+    sourcePlans: [{
+      id: 'ats-warm',
+      lane: 'ats',
+      fetch: async () => ({
+        observations: [{
+          providerJobId: 'partial-1',
+          canonicalUrl: 'https://jobs.example.test/partial-1',
+          title: 'AI Engineer',
+          company: 'Example',
+          location: 'Pune',
+        }],
+        failures: [{ provider: 'lever', board: 'two', code: 'TIMEOUT', message: 'board two timed out' }],
+        manifest: { boardsAttempted: 2, failed: 1 },
+      }),
+    }],
+  });
+
+  assert.equal(result.telemetry.sources['ats-warm'].status, 'degraded');
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.run.counts.observations, 1);
   store.close();
 });
 
@@ -405,7 +463,8 @@ test('interrupted newest-first scans continue from their saved cursor without re
   const first = await crawlRun({ store, runId: 'interrupted-1', sourcePlans, clock: fixedClock() });
   const second = await crawlRun({ store, runId: 'interrupted-2', sourcePlans, clock: fixedClock() });
 
-  assert.equal(first.telemetry.sources['interrupted-source'].status, 'interrupted');
+  assert.equal(first.telemetry.sources['interrupted-source'].status, 'degraded');
+  assert.equal(first.telemetry.sources['interrupted-source'].interrupted, true);
   assert.equal(second.telemetry.sources['interrupted-source'].cursorContinued, true);
   assert.deepEqual(cursors, [null, { page: 1 }]);
   assert.equal(readCrawlerState(store).observations.length, 2);

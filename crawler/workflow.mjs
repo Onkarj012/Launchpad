@@ -195,8 +195,10 @@ function sourceCursor(priorState, sourceId) {
 
 function sourceResult(result, telemetry = {}) {
   return {
+    ...result,
     observations: asArray(result?.observations),
     manifest: {
+      ...(result?.manifest ?? {}),
       fetched: Number(telemetry.attempted ?? telemetry.budgetUsed ?? result?.observations?.length ?? 0),
       changed: Number(telemetry.changed ?? result?.observations?.length ?? 0),
       telemetry,

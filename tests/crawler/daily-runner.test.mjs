@@ -294,7 +294,7 @@ test('a failing optional crawler lane reports its failure while another lane sti
   assert.deepEqual(result.shortlist.map((candidate) => candidate.company), ['Career Page Company']);
 });
 
-test('a partial optional lane does not degrade the run, but a failed optional lane does', async () => {
+test('a degraded material optional lane degrades the run, and a failed optional lane does too', async () => {
   const { config } = testConfig();
   const partial = await runDailyNormal(runOptions(config, fakeTransport({}), {
     sourceFixtures: {
@@ -305,7 +305,8 @@ test('a partial optional lane does not degrade the run, but a failed optional la
       },
     },
   }));
-  assert.equal(partial.outcome.status, 'ok');
+  assert.equal(partial.outcome.status, 'degraded');
+  assert.ok(partial.shortfall.degradedLanes.includes('structured-career-pages'));
   assert.equal(partial.shortfall.failedLanes.includes('structured-career-pages'), false);
   assert.deepEqual(partial.sourceManifests.find(({ sourceId }) => sourceId === 'structured-career-pages').errors, ['one source failed']);
 
@@ -330,6 +331,8 @@ test('warm-ATS failure messages retain provider, board, and code provenance', as
 
   const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats');
   assert.deepEqual(manifest.errors, ['greenhouse: warm-failure-board: TRANSPORT_ERROR: warm transport failed']);
+  assert.equal(manifest.status, 'failed');
+  assert.equal(result.outcome.status, 'degraded');
 });
 
 test('unmapped crawler source ids feed web-discovery and remain visible without stopping the run', async () => {
@@ -349,7 +352,7 @@ test('unmapped crawler source ids feed web-discovery and remain visible without 
   const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery');
   assert.deepEqual(manifest.unmappedSourceIds, ['future-source']);
   assert.equal(manifest.fetched, 1);
-  assert.equal(result.outcome.status, 'ok');
+  assert.equal(result.outcome.status, 'degraded');
 });
 
 test('re-running the unified run id against the same durable store is idempotent', async () => {
@@ -587,7 +590,7 @@ test('a capped enterprise source remains visibly truncated in the unified run', 
   }));
 
   const telemetry = result.crawlerV2Telemetry['ats-enterprise'];
-  assert.equal(telemetry.status, 'truncated');
+  assert.equal(telemetry.status, 'degraded');
   assert.equal(telemetry.truncated, true);
   assert.equal(telemetry.naturalTerminal, false);
   assert.equal(telemetry.capHit, 'maxJobsPerBoard');
@@ -719,6 +722,8 @@ test('the unified result invokes the canary recorder at the daily-run seam', asy
   });
   assert.equal(records.length, 1);
   assert.equal(records[0].runId, result.runId);
+  assert.deepEqual(records[0].sourceFailureHistogram, result.sourceFailureHistogram);
+  assert.deepEqual(result.deliveryCanary.sourceFailureHistogram, result.sourceFailureHistogram);
 });
 
 test('scores supplied to the unified daily run merge before the scoring gate', async () => {

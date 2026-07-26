@@ -10,6 +10,7 @@ import { runNormalMode } from '../job-pull/normal-mode.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
+import { sourceFailureHistogram } from './run.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -98,6 +99,31 @@ function failureMessages(failures) {
 function fixtureStatus(candidates, failures) {
   if (failures.length) return candidates.length ? 'degraded' : 'failed';
   return candidates.length ? 'ok' : 'empty';
+}
+
+function truthfulDailyOutcome(result) {
+  if (result.outcome?.fatal) return result;
+  const degradedSources = result.sourceManifests
+    .filter((manifest) => manifest.attempted !== false && manifest.status === 'degraded')
+    .map((manifest) => manifest.sourceId);
+  if (!degradedSources.length) return result;
+  const issues = result.sourceManifests
+    .filter((manifest) => degradedSources.includes(manifest.sourceId))
+    .map((manifest) => ({ sourceId: manifest.sourceId, status: manifest.status, errors: manifest.errors ?? [] }));
+  return {
+    ...result,
+    shortfall: {
+      ...result.shortfall,
+      degradedLanes: [...new Set([...(result.shortfall?.degradedLanes ?? []), ...degradedSources])],
+      reasons: [...new Set([...(result.shortfall?.reasons ?? []), ...degradedSources.map((sourceId) => `SOURCE_DEGRADED:${sourceId}`)])],
+    },
+    outcome: {
+      ...result.outcome,
+      status: 'degraded',
+      degraded: true,
+      errors: [...(result.outcome?.errors ?? []), ...issues],
+    },
+  };
 }
 
 export const CRAWLER_SOURCE_TO_NORMAL_LANE = Object.freeze({
@@ -251,7 +277,7 @@ export async function runDailyNormal({
   trackedResult.manifest.boardsConfigured = trackedPartition.configured.length;
   trackedResult.manifest.boardsOmitted += trackedPartition.omissions.length;
   trackedResult.manifest.omissions = [...trackedPartition.omissions, ...(trackedResult.manifest.omissions ?? [])];
-  const result = await runNormalMode({
+  const normalResult = await runNormalMode({
     clock: () => runAt,
     runId: effectiveRunId,
     sourceFunctions,
@@ -276,23 +302,31 @@ export async function runDailyNormal({
     includeCrawlerLanes: true,
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
+  const result = truthfulDailyOutcome(normalResult);
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
+  const failureHistogram = sourceFailureHistogram(crawlerResult.sourceTelemetry, crawlerResult.failures);
+  const canaryStoreWithFailures = canaryStore && {
+    readRuns: () => canaryStore.readRuns?.() ?? [],
+    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram }),
+  };
   const deliveryCanary = recordDeliveryCanary({
-    run: { ...result, v4HistorySnapshot: snapshotTelemetry },
+    run: { ...result, v4HistorySnapshot: snapshotTelemetry, sourceFailureHistogram: failureHistogram },
     clock: effectiveClock,
-    store: canaryStore,
+    store: canaryStoreWithFailures,
   });
   return {
     ...result,
+    sourceFailureHistogram: failureHistogram,
     crawlerV2Telemetry: Object.fromEntries(Object.entries(crawlerResult.sourceTelemetry ?? {}).map(([sourceId, telemetry]) => [sourceId, {
       ...telemetry,
       durationMs: crawlerResult.run?.telemetry?.sourceDurations?.[sourceId] ?? null,
     }])),
     v4HistorySnapshot: snapshotTelemetry,
-    deliveryCanary,
+    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram },
     telemetry: {
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
+      sourceFailureHistogram: failureHistogram,
     },
   };
 }
