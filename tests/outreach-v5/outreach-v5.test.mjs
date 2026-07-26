@@ -7,6 +7,16 @@ import { OUTREACH_CADENCE, cadencePlan, deriveOutreachState, dueCadenceAction } 
 import { confirmManualSend, prepareOutreach, persistOutreach, recordOutreachOutcome } from '../../outreach-v5/workflow.mjs';
 import { outreachActivityKey, outreachDuplicateKey } from '../../outreach-v5/idempotency.mjs';
 import { researchContact } from '../../outreach-v5/research.mjs';
+import { normalizeNotionOutreachState, normalizeOutreachPage } from '../../outreach-v5/notion-normalizers.mjs';
+import { buildOutreachQueue } from '../../outreach-v5/queue.mjs';
+
+function notionProperty(type, value) {
+  if (type === 'title' || type === 'rich_text') return { type, [type]: [{ plain_text: String(value) }] };
+  if (type === 'relation') return { type, relation: value.map((id) => ({ id })) };
+  if (type === 'date') return { type, date: value ? { start: value } : null };
+  if (type === 'select') return { type, select: value ? { name: value } : null };
+  return { type, [type]: value };
+}
 
 test('contact research is free-first, records public evidence, and leaves missing email blank', async () => {
   const providers = providersFor({ failure: true });
@@ -65,6 +75,80 @@ test('paid providers are disabled by default and guessed email evidence is rejec
   assert.deepEqual(paidCalls, []);
   assert.equal(result.rejected[0].code, 'EMAIL_EVIDENCE_REQUIRED');
   assert.equal(result.attempts.find(({ source }) => source === 'apollo').reason, 'paid-provider-disabled');
+});
+
+test('raw Notion rows normalize to the same stable outreach domain shape', () => {
+  const rawOutreach = {
+    id: 'outreach-raw',
+    properties: {
+      Name: notionProperty('title', 'Acme | Person | LinkedIn'),
+      Application: notionProperty('relation', ['app-raw']),
+      Person: notionProperty('rich_text', 'Person Raw'),
+      Channel: notionProperty('select', 'LinkedIn'),
+      'Contact URL': { type: 'url', url: 'https://www.linkedin.com/in/raw' },
+      'Sent?': notionProperty('checkbox', false),
+      'Duplicate Key': notionProperty('rich_text', 'sequence-raw'),
+      'Draft State': notionProperty('select', 'Draft'),
+    },
+  };
+  const domainOutreach = {
+    id: 'outreach-raw',
+    name: 'Acme | Person | LinkedIn',
+    applicationIds: ['app-raw'],
+    person: 'Person Raw',
+    channel: 'LinkedIn',
+    contactUrl: 'https://www.linkedin.com/in/raw',
+    sent: false,
+    duplicateKey: 'sequence-raw',
+    draftState: 'Draft',
+  };
+  assert.deepEqual(normalizeOutreachPage(rawOutreach), normalizeOutreachPage(domainOutreach));
+  const allStores = normalizeNotionOutreachState({
+    applications: [{ id: 'app-raw', properties: { Role: notionProperty('rich_text', 'AI Engineer') } }],
+    outreach: [rawOutreach],
+    activity: [{ id: 'activity-raw', properties: { Application: notionProperty('relation', ['app-raw']), 'Event Type': notionProperty('select', 'Initial Sent') } }],
+    companies: [{ id: 'company-raw', properties: { Name: notionProperty('title', 'Acme') } }],
+    referrals: [{ id: 'referral-raw', properties: { Application: notionProperty('relation', ['app-raw']), Person: notionProperty('rich_text', 'Referrer') } }],
+  });
+  assert.deepEqual(Object.fromEntries(Object.entries(allStores).map(([key, rows]) => [key, rows.length])), { applications: 1, outreach: 1, activity: 1, companies: 1, referrals: 1 });
+});
+
+test('outreach queue rejects terminal or unready rows and retains the complete evidence packet', () => {
+  const company = {
+    id: 'company-1',
+    name: 'Acme',
+    careerPageUrl: 'https://acme.example/careers',
+    canonicalDomain: 'acme.example',
+    lastVerified: OUTREACH_FIXTURE_NOW,
+  };
+  const evidence = {
+    role: 'AI Engineer',
+    companyIds: ['company-1'],
+    companyName: 'Acme',
+    status: 'Ready',
+    applicationReady: true,
+    makeResume: true,
+    resumeState: 'Ready',
+    hook: 'A verified company-specific hook.',
+    approvedProofPoint: 'A truthful approved proof point.',
+    originalApplicationUrl: 'https://acme.example/jobs/ai',
+    resumeArtifact: { applicationId: 'ready', company: 'Acme', role: 'AI Engineer', pdfPath: '/tmp/acme.pdf', state: 'Ready' },
+  };
+  const queue = buildOutreachQueue({
+    applications: [
+      { id: 'ready', ...evidence },
+      { id: 'terminal', ...evidence, status: 'Rejected' },
+      { id: 'unready', ...evidence, applicationReady: false },
+    ],
+    companies: [company],
+  });
+  assert.deepEqual(queue.ready.map(({ id }) => id), ['ready']);
+  assert.equal(queue.ready[0].approvedProofPoint, evidence.approvedProofPoint);
+  assert.equal(queue.ready[0].originalApplicationUrl, evidence.originalApplicationUrl);
+  assert.equal(queue.ready[0].resumeArtifact.pdfPath, '/tmp/acme.pdf');
+  assert.equal(queue.ready[0].companyEvidence.canonicalDomain, 'acme.example');
+  assert.ok(queue.blocked.find(({ applicationId }) => applicationId === 'terminal').blockers.includes('APPLICATION_TERMINAL'));
+  assert.ok(queue.blocked.find(({ applicationId }) => applicationId === 'unready').blockers.includes('APPLICATION_NOT_READY'));
 });
 
 test('outreach identity is deterministic for application x person x channel', () => {
