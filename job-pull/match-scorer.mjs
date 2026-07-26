@@ -8,7 +8,7 @@ export class MatchScorerError extends Error {
 }
 
 const DEFAULT_CHUNK_SIZE = 12;
-const DEFAULT_TIMEOUT_MS = 180000;
+const DEFAULT_TIMEOUT_MS = 180000; // Default remains under live latency measurement.
 const DEFAULT_WORK_DIR = path.join('.local', 'launchpad-crawler');
 const DEFAULT_SCHEMA_PATH = path.join('config', 'match-score.schema.json');
 const DEFAULT_MODEL = 'gpt-5.6-luna';
@@ -28,6 +28,12 @@ const CODEX_BINARY_CANDIDATES = Object.freeze([
 ]);
 
 const AUTH_FAILURE_PATTERN = /not logged in|unauthorized|forbidden|authentication|please log ?in|\b401\b|\b403\b/i;
+
+function resolveTimeoutMs(timeoutMs) {
+  if (timeoutMs !== undefined && timeoutMs !== null) return timeoutMs;
+  const configured = Number(process.env.MATCH_SCORER_TIMEOUT_MS);
+  return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_TIMEOUT_MS;
+}
 
 /** Resolve the codex binary by absolute path; never invoke a bare `codex`. */
 export function resolveCodexBinary(explicit = null) {
@@ -146,6 +152,7 @@ export async function scoreCandidates(candidates, { scoreChunk, chunkSize = DEFA
   let reasonCode = null;
   let aborted = false;
   let consecutiveInvalidOutput = 0;
+  let timedOutChunks = 0;
 
   const recordChunkFailure = (chunk, reason) => {
     for (const candidate of chunk) {
@@ -171,6 +178,7 @@ export async function scoreCandidates(candidates, { scoreChunk, chunkSize = DEFA
         aborted = true;
         continue;
       }
+      if (reason === 'SCORER_TIMEOUT') timedOutChunks++;
       recordChunkFailure(chunk, reason);
       if (reason === 'SCORER_OUTPUT_INVALID') {
         consecutiveInvalidOutput++;
@@ -207,6 +215,13 @@ export async function scoreCandidates(candidates, { scoreChunk, chunkSize = DEFA
     }
   }
 
+  // A timeout is run-level only when every attempted chunk hit the bound;
+  // partial timeout loss remains tolerant so successful chunks are delivered.
+  if (timedOutChunks > 0 && timedOutChunks === chunksAttempted) {
+    degraded = true;
+    reasonCode = 'SCORER_TIMEOUT';
+  }
+
   const scored = list.map((candidate) => {
     const row = rowsByUrl.get(candidate.canonicalUrl);
     if (!row) {
@@ -225,13 +240,15 @@ export async function scoreCandidates(candidates, { scoreChunk, chunkSize = DEFA
   return { scored, failures, chunks: chunksAttempted, degraded, reasonCode };
 }
 
-function execCodex(execFileImpl, binary, args, timeoutMs) {
+export function execCodex(execFileImpl, binary, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     execFileImpl(binary, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
         // A bounded timeout per chunk: a hung child cannot stall the 04:30 run.
         if (error.killed || error.signal === 'SIGTERM') {
-          reject(new MatchScorerError(`codex chunk timed out after ${timeoutMs}ms`, 'SCORER_TIMEOUT'));
+          const output = String(stderr ?? '').trim();
+          const detail = output ? output.slice(-2000) : 'no stderr';
+          reject(new MatchScorerError(`codex chunk timed out after ${timeoutMs}ms: ${detail}`, 'SCORER_TIMEOUT'));
           return;
         }
         if (typeof error.code === 'number') {
@@ -257,12 +274,14 @@ export function createCodexScorer({
   model = DEFAULT_MODEL,
   workDir = DEFAULT_WORK_DIR,
   schemaPath = DEFAULT_SCHEMA_PATH,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs,
+  reasoningEffort = 'low',
   execFileImpl = execFile,
 } = {}) {
   const binary = resolveCodexBinary(codexBinary);
   const resolvedWorkDir = path.resolve(workDir);
   const resolvedSchema = path.resolve(schemaPath);
+  const effectiveTimeoutMs = resolveTimeoutMs(timeoutMs);
 
   async function scoreChunk(rows, { chunkIndex = 0 } = {}) {
     if (!binary) throw new MatchScorerError('codex binary not found at any known absolute path; pass codexBinary or install codex', 'SCORER_BINARY_MISSING');
@@ -273,7 +292,9 @@ export function createCodexScorer({
     // argv array only — never a shell string, never interpolated job text.
     const args = [
       'exec',
+      '--ignore-user-config',
       '-m', model,
+      '-c', `model_reasoning_effort=${reasoningEffort}`,
       '-s', 'read-only',
       '--skip-git-repo-check',
       '--ephemeral',
@@ -281,7 +302,7 @@ export function createCodexScorer({
       '-o', outputFile,
       buildScoringPrompt(chunkFile, rows.length),
     ];
-    const { code, stderr } = await execCodex(execFileImpl, binary, args, timeoutMs);
+    const { code, stderr } = await execCodex(execFileImpl, binary, args, effectiveTimeoutMs);
     if (code !== 0) {
       const detail = stderr.split(/\r?\n/).find((line) => line.trim()) ?? 'no stderr';
       if (AUTH_FAILURE_PATTERN.test(stderr)) throw new MatchScorerError(`codex authentication failed: ${detail}`, 'SCORER_AUTH_FAILED');

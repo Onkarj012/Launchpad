@@ -130,6 +130,10 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
       config,
       runId: value(argv, '--run-id'),
       scores: value(argv, '--scores-json'),
+      // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
+      // --no-scorer preserves the offline pre-scorer behaviour for debugging/replay;
+      // --scores-json rows still win per-row inside normal-mode regardless.
+      scorer: argv.includes('--no-scorer') ? null : 'codex',
       canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
     });
     emit(result);

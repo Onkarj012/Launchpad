@@ -196,3 +196,122 @@ test('fatal scoring gate preserves verification candidates', async () => {
   assert.ok(result.verificationQueue.length > 0);
   assert.equal(result.counts.verificationQueue, result.verificationQueue.length);
 });
+
+test('healthy scorer with one failed row of twelve delivers a degraded shortlist and keeps the row in the scoring queue', async () => {
+  const records = Array.from({ length: 12 }, (_, index) => raw(index + 1, { matchScore: undefined }));
+  let attemptedRows = [];
+  const scorer = async (rows) => {
+    attemptedRows = rows;
+    return {
+      scored: rows.slice(1).map((candidate) => ({ ...candidate, matchScore: 70, rationale: 'fixture score', responseLikelihood: 15 })),
+      failures: [{ canonicalUrl: rows[0].canonicalUrl, reason: 'SCORER_EXEC_FAILED' }],
+      chunks: 1,
+      degraded: false,
+      reasonCode: null,
+    };
+  };
+  const result = await runNormalMode({
+    clock: () => NOW, scorer,
+    sourceFunctions: allFunctions({ 'tracked-ats': records }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.outcome.fatal, false);
+  assert.equal(result.outcome.status, 'degraded');
+  assert.equal(result.outcome.degraded, true);
+  assert.equal(attemptedRows.length, 12);
+  assert.equal(result.shortlist.length, 11);
+  assert.equal(result.scoringQueue.length, 1);
+  assert.equal(result.scoringQueue[0].canonicalUrl, attemptedRows[0].canonicalUrl);
+  assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
+  // Counts and reconciliation stay internally consistent on the degraded path:
+  // a non-zero shortlist now coexists with dropped scoring rows.
+  assert.equal(result.counts.selected, result.shortlist.length);
+  assert.equal(result.counts.unscored, result.scoringQueue.length);
+  assert.equal(result.counts.scored + result.counts.unscored + result.counts.scoringFailed, result.counts.ready);
+  const recon = result.reconciliation;
+  assert.equal(recon.eligible, 12);
+  assert.equal(recon.ready, 12);
+  assert.equal(recon.scored, 11);
+  assert.equal(recon.selected, 11);
+  assert.equal(recon.scored + recon.causes.readyToScored.UNSCORED + recon.causes.readyToScored.SCORING_FAILED, recon.ready);
+  assert.equal(recon.selected + recon.causes.scoredToSelected.SELECTION_RULES, recon.scored);
+  assert.ok(recon.line.includes('selected=11'));
+  assert.ok(recon.line.includes('readyToScored:UNSCORED=1'));
+});
+
+test('losing more than half the scoring batch is fatal even though the scorer responded', async () => {
+  const records = Array.from({ length: 36 }, (_, index) => raw(index + 1, { matchScore: undefined }));
+  const scorer = async (rows) => ({
+    scored: rows.slice(0, 12).map((candidate) => ({ ...candidate, matchScore: 70, rationale: 'fixture score' })),
+    // Two of three chunks failed: every row they carried lands in failures.
+    failures: rows.slice(12).map((candidate) => ({ canonicalUrl: candidate.canonicalUrl, reason: 'SCORER_EXEC_FAILED' })),
+    chunks: 3,
+    degraded: false,
+    reasonCode: null,
+  });
+  const result = await runNormalMode({
+    clock: () => NOW, scorer,
+    sourceFunctions: allFunctions({ 'tracked-ats': records }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.outcome.fatal, true);
+  assert.equal(result.outcome.status, 'fatal');
+  assert.equal(result.outcome.errors[0].stage, 'scoring');
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.scoringQueue.length, 24);
+  assert.equal(result.counts.unscored, 24);
+  assert.equal(result.counts.selected, 0);
+});
+
+test('a degraded scorer with a broken reason code is fatal even at a low failure share', async () => {
+  const records = Array.from({ length: 12 }, (_, index) => raw(index + 1, { matchScore: undefined }));
+  const scorer = async (rows) => ({
+    scored: rows.slice(0, 7).map((candidate) => ({ ...candidate, matchScore: 70, rationale: 'fixture score' })),
+    failures: rows.slice(7).map((candidate) => ({ canonicalUrl: candidate.canonicalUrl, reason: 'SCORER_AUTH_FAILED' })),
+    chunks: 1,
+    degraded: true,
+    reasonCode: 'SCORER_AUTH_FAILED',
+  });
+  const result = await runNormalMode({
+    clock: () => NOW, scorer,
+    sourceFunctions: allFunctions({ 'tracked-ats': records }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.outcome.fatal, true);
+  assert.equal(result.outcome.errors[0].stage, 'scoring');
+  assert.ok(result.outcome.errors[0].message.includes('SCORER_AUTH_FAILED'));
+  assert.equal(result.shortlist.length, 0);
+});
+
+test('a fully timed-out scorer fails with its run-level timeout reason in the receipt', async () => {
+  const records = Array.from({ length: 12 }, (_, index) => raw(index + 1, { matchScore: undefined }));
+  const scorer = async (rows) => ({
+    scored: [],
+    failures: rows.map((candidate) => ({ canonicalUrl: candidate.canonicalUrl, reason: 'SCORER_TIMEOUT' })),
+    chunks: 1,
+    degraded: true,
+    reasonCode: 'SCORER_TIMEOUT',
+  });
+  const result = await runNormalMode({
+    clock: () => NOW, scorer,
+    sourceFunctions: allFunctions({ 'tracked-ats': records }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.outcome.fatal, true);
+  assert.match(result.outcome.errors[0].message, /reason-code=SCORER_TIMEOUT/);
+  assert.doesNotMatch(result.outcome.errors[0].message, /reason-code=none/);
+});
+
+test('without a scorer an unscored row is still fatal (legacy all-or-nothing gate preserved)', async () => {
+  const result = await runNormalMode({
+    clock: () => NOW,
+    sourceFunctions: allFunctions({ 'tracked-ats': [raw(1, { matchScore: undefined }), raw(2)] }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.equal(result.outcome.fatal, true);
+  assert.equal(result.outcome.status, 'fatal');
+  assert.equal(result.outcome.errors[0].stage, 'scoring');
+  assert.equal(result.shortlist.length, 0);
+  assert.ok(result.scoring);
+  assert.equal('scorer' in result.scoring, false);
+});

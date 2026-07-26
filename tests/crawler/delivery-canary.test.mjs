@@ -48,6 +48,63 @@ test('records per-run counts and names every delta cause, including unattributed
   ]);
 });
 
+test('fully timed-out scoring loss is attributed to scorer infrastructure', () => {
+  const record = buildDeliveryCanary({ run: run({
+    counts: { eligible: 22, scored: 0, ready: 22, selected: 0 },
+    reconciliation: { causes: {
+      eligibleToReady: {},
+      readyToScored: { UNSCORED: 22, SCORING_FAILED: 0 },
+      scoredToSelected: {},
+    } },
+    scoring: { scorer: { degraded: true, reasonCode: 'SCORER_TIMEOUT' } },
+  }) });
+
+  assert.deepEqual(record.deltas[1].attributions, [{ cause: 'scorer infrastructure failure', count: 22 }]);
+  assert.equal(record.deltas[1].attributions.some((item) => item.cause === 'unattributed'), false);
+});
+
+test('scoring-failed rows on a degraded scorer are attributed to infrastructure', () => {
+  const record = buildDeliveryCanary({ run: run({
+    counts: { eligible: 6, scored: 0, ready: 6, selected: 0 },
+    reconciliation: { causes: {
+      eligibleToReady: {},
+      readyToScored: { UNSCORED: 0, SCORING_FAILED: 6 },
+      scoredToSelected: {},
+    } },
+    scoring: { scorer: { degraded: true } },
+  }) });
+
+  assert.deepEqual(record.deltas[1].attributions, [{ cause: 'scorer infrastructure failure', count: 6 }]);
+});
+
+test('mixed scoring losses use the full total without readiness attribution', () => {
+  const record = buildDeliveryCanary({ run: run({
+    counts: { eligible: 6, scored: 0, ready: 6, selected: 0 },
+    reconciliation: { causes: {
+      eligibleToReady: {},
+      readyToScored: { UNSCORED: 3, SCORING_FAILED: 3, READINESS: 0 },
+      scoredToSelected: {},
+    } },
+    scoring: { scorer: { degraded: true } },
+  }) });
+
+  assert.deepEqual(record.deltas[1].attributions, [{ cause: 'scorer infrastructure failure', count: 6 }]);
+});
+
+test('healthy scorer row failures are attributed to scoring failure', () => {
+  const record = buildDeliveryCanary({ run: run({
+    counts: { eligible: 6, scored: 0, ready: 6, selected: 0 },
+    reconciliation: { causes: {
+      eligibleToReady: {},
+      readyToScored: { UNSCORED: 0, SCORING_FAILED: 6 },
+      scoredToSelected: {},
+    } },
+    scoring: { scorer: { degraded: false } },
+  }) });
+
+  assert.deepEqual(record.deltas[1].attributions, [{ cause: 'scoring failure', count: 6 }]);
+});
+
 test('compares two or more recorded runs day over day', () => {
   const first = buildDeliveryCanary({ run: run() });
   const second = buildDeliveryCanary({

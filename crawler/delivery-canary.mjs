@@ -9,6 +9,8 @@ export const CANARY_CAUSES = Object.freeze([
   'company cap',
   'diversity',
   'shortfall',
+  'scorer infrastructure failure',
+  'scoring failure',
   'unattributed',
 ]);
 
@@ -27,6 +29,12 @@ function causeValue(causes, names) {
     if (causes?.[name] != null) return count(causes[name]);
   }
   return 0;
+}
+
+function causeTotal(causes, names) {
+  return names.reduce((total, name) => (
+    causes?.[name] != null ? total + count(causes[name]) : total
+  ), 0);
 }
 
 function allocate(delta, candidates) {
@@ -73,6 +81,11 @@ export function buildDeliveryCanary({ run, clock, previousRuns = [] } = {}) {
   const readyToScored = reconciliation.readyToScored ?? {};
   const scoredToSelected = reconciliation.scoredToSelected ?? {};
   const explicit = run.canaryAttribution ?? {};
+  const scoringLoss = causeTotal(readyToScored, ['UNSCORED', 'SCORING_FAILED']);
+  // Degraded infrastructure and healthy per-row failures are mutually exclusive labels.
+  const scoringFailureCause = run.scoring?.scorer?.degraded === true
+    ? 'scorer infrastructure failure'
+    : 'scoring failure';
   const delta = (from, to, candidates) => ({
     from,
     to,
@@ -92,6 +105,7 @@ export function buildDeliveryCanary({ run, clock, previousRuns = [] } = {}) {
         ['readiness', causeValue(eligibleToReady, ['NOT_APPLICATION_READY', 'READINESS'])],
       ]),
       delta('ready', 'scoredPool', [
+        [scoringFailureCause, scoringLoss],
         ['readiness', causeValue(readyToScored, ['READINESS'])],
       ]),
       delta('scoredPool', 'shortlist', [

@@ -77,6 +77,46 @@ test('daily command invokes the unified runner and emits its operator result', a
   assert.equal(emitted.outcome.status, 'ok');
 });
 
+test('daily command activates the codex scorer by default', async () => {
+  let received = null;
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-scorer-default'], {
+    dailyRunner: async (options) => {
+      received = options;
+      return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
+    },
+    emit: () => {},
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(received.scorer, 'codex');
+});
+
+test('daily --no-scorer passes no scorer to the runner', async () => {
+  let received = null;
+  const exitCode = await main(['daily', '--env', 'dev', '--no-scorer'], {
+    dailyRunner: async (options) => {
+      received = options;
+      return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
+    },
+    emit: () => {},
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(received.scorer, null);
+});
+
+test('daily --scores-json with --no-scorer passes the scores path through and no scorer', async () => {
+  let received = null;
+  const exitCode = await main(['daily', '--env', 'dev', '--scores-json', 'scores/manual.json', '--no-scorer'], {
+    dailyRunner: async (options) => {
+      received = options;
+      return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
+    },
+    emit: () => {},
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(received.scores, 'scores/manual.json');
+  assert.equal(received.scorer, null);
+});
+
 test('operator passes profile metadata into workflow config and result metadata', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-profile-'));
   const result = await runCrawlerOperator({

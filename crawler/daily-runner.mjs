@@ -7,6 +7,7 @@ import { fetchWarmAts } from './ats-warm.mjs';
 import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
 import { projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
 import { runNormalMode } from '../job-pull/normal-mode.mjs';
+import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 
@@ -193,6 +194,7 @@ export async function runDailyNormal({
   ledgerRows,
   opportunityLedgerRows,
   scores,
+  scorer = null,
   store,
   canaryStore,
   sourceFunctions = {},
@@ -240,6 +242,11 @@ export async function runDailyNormal({
     ledgerRows,
     opportunityLedgerRows,
     scores,
+    // Match scoring is opt-in: 'codex' constructs the real codex CLI scorer
+    // (production), an injected async function fakes it (tests). The default
+    // keeps the run byte-identical to the pre-scorer behaviour — offline, no
+    // child processes.
+    scorer: scorer === 'codex' ? createCodexScorer() : (scorer ?? undefined),
     includeCrawlerLanes: true,
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });

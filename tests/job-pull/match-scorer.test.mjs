@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MatchScorerError, createCodexScorer, scoreCandidates } from '../../job-pull/match-scorer.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { MatchScorerError, createCodexScorer, execCodex, scoreCandidates } from '../../job-pull/match-scorer.mjs';
 
 function candidate(index, overrides = {}) {
   return {
@@ -116,4 +119,72 @@ test('one failing chunk records its rows and does not abort the remaining chunks
   assert.equal(result.failures.length, 12);
   assert.ok(result.failures.every((failure) => failure.reason === 'SCORER_EXEC_FAILED'));
   assert.equal(result.scored.filter((merged) => typeof merged.matchScore === 'number').length, 13);
+});
+
+test('all timed-out chunks degrade the run with a SCORER_TIMEOUT reason code', async () => {
+  const candidates = Array.from({ length: 25 }, (_, index) => candidate(index + 1));
+  const scoreChunk = fakeScoreChunk(() => { throw new MatchScorerError('timed out', 'SCORER_TIMEOUT'); });
+  const result = await scoreCandidates(candidates, { scoreChunk });
+  assert.equal(scoreChunk.calls.length, 3);
+  assert.equal(result.chunks, 3);
+  assert.equal(result.degraded, true);
+  assert.equal(result.reasonCode, 'SCORER_TIMEOUT');
+  assert.equal(result.failures.length, 25);
+});
+
+test('one timed-out chunk among successful chunks remains a partial failure', async () => {
+  const candidates = Array.from({ length: 25 }, (_, index) => candidate(index + 1));
+  const scoreChunk = fakeScoreChunk((rows, { chunkIndex }) => {
+    if (chunkIndex === 1) throw new MatchScorerError('timed out', 'SCORER_TIMEOUT');
+    return rows.map((row) => scoreRow(row));
+  });
+  const result = await scoreCandidates(candidates, { scoreChunk });
+  assert.equal(scoreChunk.calls.length, 3);
+  assert.equal(result.degraded, false);
+  assert.equal(result.reasonCode, null);
+  assert.equal(result.failures.length, 12);
+  assert.equal(result.scored.filter((merged) => typeof merged.matchScore === 'number').length, 13);
+});
+
+test('timeout errors include a trimmed stderr tail or an explicit empty marker', async () => {
+  const stderr = `prefix\n${'x'.repeat(2500)}\n`;
+  await assert.rejects(
+    () => execCodex((binary, args, options, callback) => callback({ killed: true, signal: 'SIGTERM' }, '', stderr), '/bin/codex', [], 42),
+    (error) => {
+      assert.equal(error.reasonCode, 'SCORER_TIMEOUT');
+      assert.ok(error.message.endsWith('x'.repeat(2000)));
+      assert.ok(!error.message.endsWith('x'.repeat(2001)));
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => execCodex((binary, args, options, callback) => callback({ killed: true, signal: 'SIGTERM' }, '', ''), '/bin/codex', [], 42),
+    (error) => error.reasonCode === 'SCORER_TIMEOUT' && error.message.endsWith('no stderr'),
+  );
+});
+
+test('production scorer ignores user config, sets reasoning effort, and honors timeout precedence', async () => {
+  const workDir = mkdtempSync(path.join(os.tmpdir(), 'launchpad-match-scorer-'));
+  const previousTimeout = process.env.MATCH_SCORER_TIMEOUT_MS;
+  process.env.MATCH_SCORER_TIMEOUT_MS = '4321';
+  const calls = [];
+  const execFileImpl = (binary, args, options, callback) => {
+    calls.push({ binary, args, options });
+    const outputFile = args[args.indexOf('-o') + 1];
+    writeFileSync(outputFile, JSON.stringify({ scores: [scoreRow({ canonicalUrl: candidate(calls.length).canonicalUrl })] }));
+    callback(null, '', '');
+  };
+  try {
+    const scorer = createCodexScorer({ codexBinary: process.execPath, workDir, reasoningEffort: 'medium', execFileImpl });
+    await scorer([candidate(1)]);
+    const explicit = createCodexScorer({ codexBinary: process.execPath, workDir, timeoutMs: 99, execFileImpl });
+    await explicit([candidate(2)]);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.MATCH_SCORER_TIMEOUT_MS;
+    else process.env.MATCH_SCORER_TIMEOUT_MS = previousTimeout;
+  }
+  assert.ok(calls[0].args.includes('--ignore-user-config'));
+  assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('-c'), calls[0].args.indexOf('-c') + 2), ['-c', 'model_reasoning_effort=medium']);
+  assert.equal(calls[0].options.timeout, 4321);
+  assert.equal(calls[1].options.timeout, 99);
 });
