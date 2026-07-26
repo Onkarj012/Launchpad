@@ -77,15 +77,17 @@ test('a merged candidate carries matchScore, rationale, hook, strongestHook and 
 test('an out-of-range matchScore becomes a failed row', async () => {
   const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, { matchScore: 150 })));
   const result = await scoreCandidates([candidate(1)], { scoreChunk });
-  assert.deepEqual(result.failures, [{ canonicalUrl: candidate(1).canonicalUrl, reason: 'SCORER_INVALID_RANGE' }]);
-  assert.equal(result.scored[0].matchScore, undefined);
+  assert.deepEqual(result.failures, [{ canonicalUrl: candidate(1).canonicalUrl, reason: 'SCORER_INVALID_RANGE', stderr: null }]);
+  assert.equal(result.scored[0].matchScore, null);
+  assert.equal(result.scored[0].scoringFailureReason, 'SCORER_INVALID_RANGE');
 });
 
 test('a string responseLikelihood of low becomes a failed row', async () => {
   const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, { responseLikelihood: 'low' })));
   const result = await scoreCandidates([candidate(1)], { scoreChunk });
-  assert.deepEqual(result.failures, [{ canonicalUrl: candidate(1).canonicalUrl, reason: 'SCORER_INVALID_RANGE' }]);
-  assert.equal(result.scored[0].responseLikelihood, undefined);
+  assert.deepEqual(result.failures, [{ canonicalUrl: candidate(1).canonicalUrl, reason: 'SCORER_INVALID_RANGE', stderr: null }]);
+  assert.equal(result.scored[0].responseLikelihood, null);
+  assert.equal(result.scored[0].scoringFailureReason, 'SCORER_INVALID_RANGE');
 });
 
 test('a numeric-string matchScore is coerced to an integer', async () => {

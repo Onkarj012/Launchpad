@@ -148,14 +148,6 @@ function integerInRange(value, minimum, maximum) {
   return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
 }
 
-function normalizeScoreRow(row) {
-  if (!row || typeof row !== 'object') return null;
-  const matchScore = integerInRange(row.matchScore ?? row.score, 0, 100);
-  const responseLikelihood = integerInRange(row.responseLikelihood, 0, 20);
-  if (matchScore === null || responseLikelihood === null) return null;
-  return { ...row, matchScore, responseLikelihood };
-}
-
 // Candidate-level merge mirroring applyScores (job-pull/run.mjs:153) field
 // semantics, minus its original-application/contact side fields, which the
 // scorer never touches. Range-invalid output fails closed; it is never clamped
@@ -357,16 +349,11 @@ export async function scoreCandidates(candidates, {
     }
     consecutiveInvalidOutput = 0;
     for (const row of scoreRows) {
-      const normalized = normalizeScoreRow(row);
-      if (!normalized) {
-        const canonicalUrl = row?.canonicalUrl ?? null;
-        failures.push({ canonicalUrl, reason: 'SCORER_INVALID_RANGE' });
-        failedUrls.add(canonicalUrl);
-        if (canonicalUrl) rowsByUrl.delete(canonicalUrl);
-        continue;
-      }
-      if (normalized.canonicalUrl && typeof normalized.canonicalUrl === 'string' && !failedUrls.has(normalized.canonicalUrl) && !rowsByUrl.has(normalized.canonicalUrl)) {
-        rowsByUrl.set(normalized.canonicalUrl, normalized);
+      // Range validation is not applied here: mergeScoreRow owns it, so a
+      // range-invalid row keeps its named reason code and captured stderr
+      // instead of being dropped anonymously at collection time.
+      if (row && typeof row.canonicalUrl === 'string' && row.canonicalUrl && !failedUrls.has(row.canonicalUrl) && !rowsByUrl.has(row.canonicalUrl)) {
+        rowsByUrl.set(row.canonicalUrl, row);
       }
     }
   }
