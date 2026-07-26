@@ -19,6 +19,7 @@ import { dailyRunIdentity } from './scheduler.mjs';
 import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
 import { markJobsSurfaced, openCrawlerStore, sourceFailureHistogram } from './run.mjs';
 import { commitDailyReport } from './daily-report.mjs';
+import { computeCanaryVersion } from './canary-evaluator.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -398,6 +399,7 @@ async function runDailyNormalUnlocked({
     runId: effectiveRunId,
     noAutoApply: true,
     noAutoSend: true,
+    codeConfigVersion: computeCanaryVersion({ config }),
   };
   const preDeliveryResult = {
     ...result,
@@ -418,6 +420,7 @@ async function runDailyNormalUnlocked({
       crawlerDeadline,
     },
     receipt,
+    canaryVersion: receipt.codeConfigVersion,
   };
   if (preDeliveryResult.telemetry.dco) {
     const operations = preDeliveryResult.telemetry.dco.operations;
