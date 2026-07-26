@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertValidConfig, assertValidConversionPlan, loadConfig, loadConversionPlan } from './job-pull/config.mjs';
@@ -15,6 +16,7 @@ import { readMakeResumeQueue, readAppliedQueue } from './resume-v5/queue-reader.
 import { processMakeResumeQueue } from './resume-v5/resume-queue.mjs';
 import { runProductionResumeBuilder } from './resume-v5/production-builder.mjs';
 import { syncAppliedApplications } from './resume-v5/application-sync.mjs';
+import { deliverApplicationsV5 } from './resume-v5/application-delivery.mjs';
 import { prepareOutreach, persistOutreach } from './outreach-v5/workflow.mjs';
 import { assertValidManifest, loadManifest } from './notion-v5/manifest.mjs';
 import { assertValidViewDefinitions } from './notion-v5/schema.mjs';
@@ -190,13 +192,21 @@ export async function runNoWriteRehearsal() {
   const gateway = localGateway();
   const queued = await readMakeResumeQueue({ gateway });
   const applied = await readAppliedQueue({ gateway });
-  const artifactBase = path.join(root, 'tests/fixtures/resume-v5/Onkar_Jadhav_Acme_AI_Engineer');
-  const resume = await processMakeResumeQueue({
-    gateway,
-    build: async () => ({ applicationId: 'app-acme', company: 'Acme', role: 'AI Engineer', pdfPath: `${artifactBase}.pdf`, sourcePath: `${artifactBase}.tex`, matrixPath: `${artifactBase}.matrix.md`, provenancePath: `${artifactBase}.provenance.md` }),
-    verifyPdf: async () => ({ status: 'PASS' }),
-    now: () => REHEARSAL_NOW,
-  });
+  const fixtureBase = path.join(root, 'tests/fixtures/resume-v5/Onkar_Jadhav_Acme_AI_Engineer');
+  const rehearsalArtifactDirectory = mkdtempSync(path.join(os.tmpdir(), 'launchpad-v5-rehearsal-'));
+  const artifactBase = path.join(rehearsalArtifactDirectory, 'Onkar_Jadhav_Acme_AI_Engineer');
+  for (const suffix of ['.tex', '.matrix.md', '.provenance.md', '.pdf']) cpSync(`${fixtureBase}${suffix}`, `${artifactBase}${suffix}`);
+  let resume;
+  try {
+    resume = await processMakeResumeQueue({
+      gateway,
+      build: async () => ({ applicationId: 'app-acme', company: 'Acme', role: 'AI Engineer', pdfPath: `${artifactBase}.pdf`, sourcePath: `${artifactBase}.tex`, matrixPath: `${artifactBase}.matrix.md`, provenancePath: `${artifactBase}.provenance.md` }),
+      verifyPdf: async () => ({ status: 'PASS' }),
+      now: () => REHEARSAL_NOW,
+    });
+  } finally {
+    rmSync(rehearsalArtifactDirectory, { recursive: true, force: true });
+  }
   const sync = await syncAppliedApplications({ gateway, now: () => REHEARSAL_NOW });
   const outreach = await prepareOutreach({ applications: gateway.applications.map((row) => ({ ...row, resumeState: 'Ready' })), providers: { hiringAuthors: async () => ({ name: 'Jane Rao', currentRole: 'Hiring Manager', contactUrl: 'https://example.com/jane', publicEvidence: [{ url: 'https://example.com/team', kind: 'team page' }], recommendedChannel: 'LinkedIn' }) }, now: () => REHEARSAL_NOW, attachmentExpected: false });
   const outreachStored = await persistOutreach({ gateway, prepared: outreach });
@@ -224,6 +234,10 @@ export async function runNoWriteRehearsal() {
 
 export async function runProductionResumeCommand(options = {}) {
   return runProductionResumeBuilder(options);
+}
+
+export async function runApplicationDeliveryCommand(options = {}) {
+  return deliverApplicationsV5(options);
 }
 
 export async function main(argv = process.argv.slice(2)) {

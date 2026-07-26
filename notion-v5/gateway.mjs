@@ -349,9 +349,33 @@ export class NotionV5Gateway {
     return { page, id: page.id, created: true, canonicalDomain: domain };
   }
 
-  async writeApplication({ application = {}, company = {} } = {}) {
+  async findApplicationByRequisition(application = {}, { companyPageId = null } = {}) {
+    const values = application.evidencePacket ? evidencePacketValues(application.evidencePacket) : applicationValues(application);
+    const provider = nonEmpty(values.provider);
+    const sourceJobId = nonEmpty(values.sourceJobId);
+    if (!provider || !sourceJobId) throw new NotionV5Error('requisition-aware application reconciliation requires provider and source job id', { code: 'REQUISITION_IDENTITY_REQUIRED', stage: 'application' });
+    const rows = await this.listRows('applications', {
+      filter: {
+        and: [
+          { property: V5_SCHEMA.stores.applications.properties.provider.name, select: { equals: provider } },
+          { property: V5_SCHEMA.stores.applications.properties.sourceJobId.name, rich_text: { equals: sourceJobId } },
+          ...(companyPageId ? [{ property: V5_SCHEMA.stores.applications.properties.company.name, relation: { contains: companyPageId } }] : []),
+        ],
+      },
+    });
+    return [...rows].sort((left, right) => String(left.id).localeCompare(String(right.id)))[0] ?? null;
+  }
+
+  async writeApplication({ application = {}, company = {}, reconcile = false } = {}) {
     const companyResult = await this.findOrCreateCompany({ name: company.name ?? company.Name ?? application.Company ?? application.company, ...company });
     this.assertScopedId(companyResult.id, 'page');
+    if (reconcile) {
+      const existing = await this.findApplicationByRequisition(application, { companyPageId: companyResult.id });
+      if (existing) {
+        const verification = await this.verifyRelation({ pageId: existing.id, store: 'applications', property: 'company', expectedPageId: companyResult.id });
+        return { page: existing, company: companyResult, relationVerified: verification.verified, reconciled: true };
+      }
+    }
     const page = await this.createPage('applications', { ...applicationValues(application), company: [companyResult.id] });
     const verification = await this.verifyRelation({ pageId: page.id, store: 'applications', property: 'company', expectedPageId: companyResult.id });
     return { page, company: companyResult, relationVerified: verification.verified };
