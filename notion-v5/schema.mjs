@@ -90,6 +90,20 @@ export const V5_SCHEMA = Object.freeze({
   }),
 });
 
+// Runtime additions are intentionally separate from the provisioned v5
+// manifest contract. The live databases require a separately approved schema
+// update before these fields can be used against Notion.
+export const V5_RUNTIME_PROPERTIES = Object.freeze({
+  outreach: Object.freeze({
+    initialSentAt: field('Initial Sent At', 'date'),
+    gmailDraftId: field('Gmail Draft ID', 'rich_text'),
+    attachmentDigest: field('Attachment Digest', 'rich_text'),
+  }),
+  activity: Object.freeze({
+    outreachKey: field('Outreach Key', 'rich_text'),
+  }),
+});
+
 export const V5_VIEW_DEFINITIONS = Object.freeze([
   { name: 'Ready', store: 'applications', filter: { all: [{ property: 'applicationReady', checkbox: { equals: true } }, { property: 'status', select: { equals: 'Ready' } }] } },
   { name: 'Backfill', store: 'applications', filter: { property: 'selectionTier', select: { equals: 'Backfill' } } },
@@ -113,7 +127,9 @@ function getStore(storeKey) {
 function resolveProperty(storeKey, key) {
   const store = getStore(storeKey);
   if (store.properties[key]) return [key, store.properties[key]];
-  const match = Object.entries(store.properties).find(([, definition]) => definition.name === key);
+  const runtime = V5_RUNTIME_PROPERTIES[storeKey] ?? {};
+  if (runtime[key]) return [key, runtime[key]];
+  const match = Object.entries({ ...store.properties, ...runtime }).find(([, definition]) => definition.name === key);
   if (match) return match;
   throw new NotionV5SchemaError(`unknown property ${key} for ${store.name}`);
 }
