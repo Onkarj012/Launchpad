@@ -1,0 +1,119 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { MatchScorerError, createCodexScorer, scoreCandidates } from '../../job-pull/match-scorer.mjs';
+
+function candidate(index, overrides = {}) {
+  return {
+    canonicalUrl: `https://jobs.example.test/roles/${index}`,
+    title: 'AI Engineer',
+    company: `Company ${index}`,
+    location: 'Pune, India',
+    description: 'Build Python and FastAPI LLM services with RAG and pgvector.',
+    postedAt: '2026-07-24T06:30:00.000Z',
+    freshnessWindow: 'Hot',
+    selectionTier: 'strict',
+    ...overrides,
+  };
+}
+
+function scoreRow(row, overrides = {}) {
+  return {
+    canonicalUrl: row.canonicalUrl,
+    matchScore: 72,
+    rationale: 'Python/FastAPI stack overlap; new-grad friendly.',
+    strongestHook: 'Shipped a RAG support bot used in production.',
+    responseLikelihood: 12,
+    autoSuggest: false,
+    descriptionAvailable: true,
+    ...overrides,
+  };
+}
+
+function fakeScoreChunk(handler) {
+  const calls = [];
+  const scoreChunk = async (rows, context) => {
+    calls.push({ rows, context });
+    return handler(rows, context);
+  };
+  scoreChunk.calls = calls;
+  return scoreChunk;
+}
+
+test('chunking splits 25 candidates into three sequential calls (12/12/1)', async () => {
+  const candidates = Array.from({ length: 25 }, (_, index) => candidate(index + 1));
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row)));
+  const result = await scoreCandidates(candidates, { scoreChunk });
+  assert.equal(scoreChunk.calls.length, 3);
+  assert.deepEqual(scoreChunk.calls.map((call) => call.rows.length), [12, 12, 1]);
+  assert.equal(result.chunks, 3);
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.scored.length, 25);
+  assert.ok(result.scored.every((merged) => merged.matchScore === 72));
+});
+
+test('a merged candidate carries matchScore, rationale, hook, strongestHook and responseLikelihood', async () => {
+  const original = candidate(1);
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, {
+    matchScore: 88,
+    rationale: 'Exact stack match.',
+    strongestHook: 'Lead engineer on a shipped product.',
+    responseLikelihood: 17,
+  })));
+  const result = await scoreCandidates([original], { scoreChunk });
+  const [merged] = result.scored;
+  assert.equal(merged.matchScore, 88);
+  assert.equal(merged.rationale, 'Exact stack match.');
+  assert.equal(merged.hook, 'Lead engineer on a shipped product.');
+  assert.equal(merged.strongestHook, 'Lead engineer on a shipped product.');
+  assert.equal(merged.responseLikelihood, 17);
+  assert.equal(merged.title, 'AI Engineer');
+  assert.equal(merged.canonicalUrl, original.canonicalUrl);
+  assert.equal(original.matchScore, undefined);
+});
+
+test('a candidate without a description is flagged descriptionAvailable: false and capped at the honest partial score', async () => {
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, {
+    matchScore: 90,
+    descriptionAvailable: row.descriptionAvailable,
+  })));
+  const result = await scoreCandidates([candidate(1, { description: undefined })], { scoreChunk });
+  assert.equal(scoreChunk.calls[0].rows[0].descriptionAvailable, false);
+  assert.equal(result.scored[0].matchScore, 45);
+});
+
+test('autoSuggest is computed in JS from pipeline facts and never from the model boolean', async () => {
+  const freshStrict = candidate(1);
+  const backfill = candidate(2, { freshnessWindow: 'Backfill' });
+  const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, {
+    matchScore: 90,
+    responseLikelihood: 18,
+    autoSuggest: row.canonicalUrl === freshStrict.canonicalUrl ? false : true,
+  })));
+  const result = await scoreCandidates([freshStrict, backfill], { scoreChunk });
+  assert.equal(result.scored[0].autoSuggest, true);
+  assert.equal(result.scored[1].autoSuggest, false);
+});
+
+test('a missing codex binary degrades with an explicit reason code instead of throwing', async () => {
+  const scorer = createCodexScorer({ codexBinary: '/definitely/not/a/real/codex-binary' });
+  const result = await scorer([candidate(1)]);
+  assert.equal(result.degraded, true);
+  assert.equal(result.reasonCode, 'SCORER_BINARY_MISSING');
+  assert.deepEqual(result.failures, [{ canonicalUrl: 'https://jobs.example.test/roles/1', reason: 'SCORER_BINARY_MISSING' }]);
+  assert.equal(result.scored[0].matchScore, undefined);
+});
+
+test('one failing chunk records its rows and does not abort the remaining chunks', async () => {
+  const candidates = Array.from({ length: 25 }, (_, index) => candidate(index + 1));
+  const scoreChunk = fakeScoreChunk((rows, { chunkIndex }) => {
+    if (chunkIndex === 1) throw new MatchScorerError('codex exited 1: boom', 'SCORER_EXEC_FAILED');
+    return rows.map((row) => scoreRow(row));
+  });
+  const result = await scoreCandidates(candidates, { scoreChunk });
+  assert.equal(scoreChunk.calls.length, 3);
+  assert.equal(result.chunks, 3);
+  assert.equal(result.degraded, false);
+  assert.equal(result.failures.length, 12);
+  assert.ok(result.failures.every((failure) => failure.reason === 'SCORER_EXEC_FAILED'));
+  assert.equal(result.scored.filter((merged) => typeof merged.matchScore === 'number').length, 13);
+});
