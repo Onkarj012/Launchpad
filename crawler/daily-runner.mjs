@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   defaultHttpTransport,
   runCrawlerOperator,
@@ -11,6 +12,7 @@ import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
+import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -183,8 +185,11 @@ async function runCrawlerFull({ config, transport, clock, runId, schedule, mode,
   });
 }
 
-export async function runDailyNormal({
+async function runDailyNormalUnlocked({
   config,
+  configPath = null,
+  databasePath = null,
+  environment = null,
   transport = defaultHttpTransport,
   clock,
   schedule = 'morning',
@@ -278,7 +283,31 @@ export async function runDailyNormal({
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
     },
+    receipt: {
+      schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
+      configPath: configPath ? path.resolve(configPath) : null,
+      databasePath: path.resolve(databasePath ?? config.databasePath),
+      environment,
+      schedule,
+      mode,
+      locationPreset,
+      runId: effectiveRunId,
+      noAutoApply: true,
+      noAutoSend: true,
+    },
   };
+}
+
+export async function runDailyNormal(options = {}) {
+  const databasePath = options.databasePath ?? options.config?.databasePath;
+  return withCrawlerRunLock(
+    crawlerRunLockPath(databasePath),
+    () => runDailyNormalUnlocked(options),
+    {
+      runId: options.runId ?? null,
+      schedule: options.schedule ?? 'morning',
+    },
+  );
 }
 
 export default runDailyNormal;

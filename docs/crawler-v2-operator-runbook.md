@@ -20,6 +20,15 @@ node crawler/cli.mjs run midday --mode normal --location-preset pune --run-id YY
 
 Runs are discovery-only. They never apply, send, generate resumes, or write Notion records. Search and connector records remain verification leads until resolved to an original employer or ATS listing.
 
+The scheduled and documented manual daily entrypoint use the same authoritative production pair:
+
+```sh
+node crawler/cli.mjs daily morning --env production --mode normal --location-preset pune
+node crawler/cli.mjs daily midday --env production --mode normal --location-preset pune
+```
+
+The daily command derives its stable run identity from schedule and local India date. A bare `daily` also selects production; pass `--env dev` or `--env live-test` explicitly for isolated fixtures and local rehearsal. Every run receipt includes the resolved config and database paths. A second concurrent run against the same database is refused by the run lock.
+
 ## Recovery and interpretation
 
 - Reuse the same run ID to obtain an idempotent result.

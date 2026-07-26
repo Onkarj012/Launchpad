@@ -6,9 +6,17 @@ import {
 } from '../../crawler/discovery-profile.mjs';
 import {
   crawlerDiscoveryPlan,
+  loadCrawlerConfig,
   runCrawlerOperator,
 } from '../../crawler/operator.mjs';
-import { main, parseDiscoveryProfileArgs } from '../../crawler/cli.mjs';
+import {
+  AUTHORITATIVE_PRODUCTION,
+  main,
+  parseDiscoveryProfileArgs,
+  resolveCrawlerEnvironment,
+  validateCrawlerEnvironmentMapping,
+} from '../../crawler/cli.mjs';
+import { crawlerRunLockPath, withCrawlerRunLock } from '../../crawler/run-lock.mjs';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -133,4 +141,48 @@ test('operator passes profile metadata into workflow config and result metadata'
   assert.equal(result.profile.locationPreset, 'pune');
   assert.equal(result.operator.profile.mode, 'remote');
   assert.equal(result.operator.profile.locationPreset, 'pune');
+});
+
+test('production environment resolves the authoritative config and database pair', () => {
+  const selection = resolveCrawlerEnvironment(['daily', 'morning', '--env', 'production']);
+  const { config } = loadCrawlerConfig(selection.configPath);
+  assert.equal(selection.environment, 'production');
+  assert.equal(selection.configPath, AUTHORITATIVE_PRODUCTION.configPath);
+  assert.equal(validateCrawlerEnvironmentMapping({ ...selection, config }), AUTHORITATIVE_PRODUCTION.databasePath);
+});
+
+test('production environment rejects a live-test database path', () => {
+  assert.throws(() => validateCrawlerEnvironmentMapping({
+    environment: 'production',
+    configPath: AUTHORITATIVE_PRODUCTION.configPath,
+    config: { databasePath: '.local/launchpad-crawler/live-test.sqlite' },
+  }), /invalid production environment mapping/);
+});
+
+test('ambiguous environment mapping fails startup clearly', async () => {
+  await assert.rejects(
+    () => main(['validate', '--env', 'production', '--config', 'config/crawler-v2-dev.json']),
+    /ambiguous crawler environment mapping/,
+  );
+});
+
+test('daily receipt contains the resolved config and database paths', async () => {
+  let emitted = null;
+  await main(['daily', 'midday', '--env', 'dev'], {
+    dailyRunner: async () => ({ outcome: { status: 'ok' } }),
+    emit: (result) => { emitted = result; },
+  });
+  assert.equal(emitted.receipt.configPath, path.resolve('config/crawler-v2-dev.json'));
+  assert.equal(emitted.receipt.databasePath, path.resolve('.local/launchpad-crawler/dev.sqlite'));
+});
+
+test('a concurrent second crawler run is refused by the lock', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-run-lock-'));
+  const lockPath = crawlerRunLockPath(path.join(root, 'crawler.sqlite'));
+  withCrawlerRunLock(lockPath, () => {
+    assert.throws(
+      () => withCrawlerRunLock(lockPath, () => {}),
+      /crawler run refused: another run is already active/,
+    );
+  });
 });
