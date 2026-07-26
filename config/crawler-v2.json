@@ -303,7 +303,8 @@
     "maxRedirects": 5,
     "maxHosts": 4,
     "maxBytes": 2000000,
-    "maxRequests": 8
+    "maxRequests": 8,
+    "timeoutMs": 30000
   },
   "careerPageDiscovery": {
     "maxRedirects": 3,

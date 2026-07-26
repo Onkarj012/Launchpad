@@ -77,18 +77,173 @@ export function loadCrawlerConfig(file = 'config/crawler-v2.json') {
   return { config: withRegistryProjectedBoards(config), path: resolved };
 }
 
+function transportError(message, code, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+function responseHeader(headers, name) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') return headers.get(name);
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? String(headers[key]) : null;
+}
+
+async function boundedResponseBody(response, maxBytes) {
+  const declaredLength = Number(responseHeader(response?.headers, 'content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response?.body?.cancel?.();
+    throw transportError('response exceeds configured byte limit', 'RESPONSE_TOO_LARGE', {
+      byteLength: declaredLength,
+      maxBytes,
+      statusCode: Number(response?.status),
+    });
+  }
+  if (!response?.body || typeof response.body.getReader !== 'function') {
+    const body = typeof response?.text === 'function' ? await response.text() : '';
+    const byteLength = Buffer.byteLength(body);
+    if (byteLength > maxBytes) throw transportError('response exceeds configured byte limit', 'RESPONSE_TOO_LARGE', { byteLength, maxBytes, statusCode: Number(response?.status) });
+    return { body, byteLength };
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > maxBytes) {
+      const error = transportError('response exceeds configured byte limit', 'RESPONSE_TOO_LARGE', {
+        byteLength,
+        maxBytes,
+        statusCode: Number(response?.status),
+      });
+      await reader.cancel(error);
+      throw error;
+    }
+    chunks.push(decoder.decode(value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return { body: chunks.join(''), byteLength };
+}
+
+function requestAbortSignal(signal, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = Number(timeoutMs);
+  let timer = null;
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  if (Number.isFinite(timeout) && timeout > 0) {
+    timer = setTimeout(() => {
+      const error = transportError('request timed out', 'ETIMEDOUT');
+      controller.abort(error);
+    }, timeout);
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.('abort', abortFromCaller);
+    },
+  };
+}
+
 export async function defaultHttpTransport(url, options = {}) {
-  const timeoutMs = Number(options.timeoutMs ?? 10000);
-  const timeoutSignal = typeof AbortSignal?.timeout === 'function'
-    ? AbortSignal.timeout(Math.max(1, timeoutMs))
-    : undefined;
-  const response = await fetch(url, {
-    method: options.method ?? 'GET',
-    headers: options.headers,
-    body: options.body,
-    signal: options.signal ?? timeoutSignal,
-  });
-  return { status: response.status, headers: response.headers, body: await response.text() };
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const redirectMode = options.redirect ?? 'follow';
+  if (!['error', 'follow', 'manual'].includes(redirectMode)) throw new TypeError(`unsupported redirect mode: ${redirectMode}`);
+  const maxRedirects = Math.max(0, Number(options.maxRedirects ?? 10) || 0);
+  const maxRequests = Math.max(1, Number(options.maxRequests ?? maxRedirects + 1) || 1);
+  const maxHosts = Math.max(1, Number(options.maxHosts ?? 1) || 1);
+  const maxBytes = Math.max(0, Number(options.maxBytes ?? 2_000_000) || 0);
+  const allowedHosts = new Set((options.allowedHosts ?? []).map((value) => {
+    try { return new URL(value).host.toLowerCase(); } catch { return String(value).toLowerCase(); }
+  }));
+  const abort = requestAbortSignal(options.signal, options.timeoutMs ?? 10_000);
+  const redirectChain = [];
+  const hosts = new Set();
+  let current = new URL(url).toString();
+  let method = options.method ?? 'GET';
+  let body = options.body;
+  try {
+    for (let requestCount = 1; requestCount <= maxRequests; requestCount += 1) {
+      const currentUrl = new URL(current);
+      const currentHost = currentUrl.host.toLowerCase();
+      hosts.add(currentHost);
+      redirectChain.push(current);
+      const response = await fetchImpl(current, {
+        method,
+        headers: options.headers,
+        body,
+        signal: abort.signal,
+        redirect: 'manual',
+      });
+      const status = Number(response.status);
+      const location = responseHeader(response.headers, 'location');
+      const redirects = status >= 300 && status < 400 && location;
+      if (redirects) {
+        if (redirectMode === 'error') {
+          await response.body?.cancel?.();
+          throw transportError('redirect rejected by transport policy', 'REDIRECT_REJECTED', { statusCode: status, redirectChain: [...redirectChain] });
+        }
+        if (redirectMode === 'follow') {
+          const next = new URL(location, current).toString();
+          const nextUrl = new URL(next);
+          const nextHost = nextUrl.host.toLowerCase();
+          if (!['http:', 'https:'].includes(nextUrl.protocol)
+            || currentUrl.protocol === 'https:' && nextUrl.protocol !== 'https:') {
+            await response.body?.cancel?.();
+            throw transportError('redirect target violates transport protocol policy', 'REDIRECT_PROTOCOL_REJECTED', { statusCode: status, redirectChain: [...redirectChain, next] });
+          }
+          if (nextHost !== currentHost) {
+            const hostAllowed = allowedHosts.size ? allowedHosts.has(nextHost) : hosts.size < maxHosts;
+            if (!hostAllowed) {
+              await response.body?.cancel?.();
+              throw transportError('cross-host redirect rejected by transport policy', 'REDIRECT_HOST_REJECTED', { statusCode: status, redirectChain: [...redirectChain, next] });
+            }
+            if (!hosts.has(nextHost) && hosts.size >= maxHosts) {
+              await response.body?.cancel?.();
+              throw transportError('redirect host budget exceeded', 'REDIRECT_HOST_LIMIT', { statusCode: status, redirectChain: [...redirectChain, next] });
+            }
+          }
+          if (redirectChain.length > maxRedirects) {
+            await response.body?.cancel?.();
+            throw transportError('redirect limit exceeded', 'REDIRECT_LIMIT_EXCEEDED', { statusCode: status, redirectChain: [...redirectChain, next] });
+          }
+          if (requestCount >= maxRequests) {
+            await response.body?.cancel?.();
+            throw transportError('request limit exceeded while following redirects', 'REQUEST_LIMIT_EXCEEDED', { statusCode: status, redirectChain: [...redirectChain, next] });
+          }
+          await response.body?.cancel?.();
+          if (status === 303 || ((status === 301 || status === 302) && method === 'POST')) {
+            method = 'GET';
+            body = undefined;
+          }
+          current = next;
+          continue;
+        }
+      }
+      const bounded = await boundedResponseBody(response, maxBytes);
+      return {
+        status,
+        headers: response.headers,
+        body: bounded.body,
+        byteLength: bounded.byteLength,
+        url: current,
+        finalUrl: current,
+        redirected: redirectChain.length > 1,
+        redirectChain,
+        requestCount,
+      };
+    }
+    throw transportError('request limit exceeded', 'REQUEST_LIMIT_EXCEEDED', { redirectChain });
+  } finally {
+    abort.cleanup();
+  }
 }
 
 function sourcePlan(id, lane, provider, fetcher, metadata = {}) {
@@ -102,7 +257,10 @@ function resolverSettings(config) {
     ?? {};
   const settings = {};
   if (configured.maxRedirects != null) settings.maxRedirects = configured.maxRedirects;
+  if (configured.maxHosts != null) settings.maxHosts = configured.maxHosts;
   if (configured.maxBytes != null) settings.maxBytes = configured.maxBytes;
+  if (configured.maxRequests != null) settings.maxRequests = configured.maxRequests;
+  if (configured.timeoutMs != null) settings.timeoutMs = configured.timeoutMs;
   return settings;
 }
 

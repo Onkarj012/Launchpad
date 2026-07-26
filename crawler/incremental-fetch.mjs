@@ -37,7 +37,7 @@ export async function evaluateIncrementalResponse(response, prior = {}, { maxByt
   return { classification: prior.fingerprint === fingerprint ? 'unchanged' : 'changed', body, fingerprint, state };
 }
 
-export async function fetchIncrementally({ url, transport, state = {}, robots, userAgent = '*', limiter, hostLimiterOptions, retry = {}, maxBytes = 2_000_000, timeoutMs = 30_000, clock = {} } = {}) {
+export async function fetchIncrementally({ url, transport, state = {}, robots, userAgent = '*', limiter, hostLimiterOptions, retry = {}, maxBytes = 2_000_000, timeoutMs = 30_000, maxRedirects = 0, maxHosts = 1, maxRequests = maxRedirects + 1, signal, clock = {} } = {}) {
   const canonical = canonicalUrl(url);
   if (robots != null) {
     const decision = decideRobots(canonical, robots, userAgent);
@@ -51,14 +51,40 @@ export async function fetchIncrementally({ url, transport, state = {}, robots, u
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let response;
     try {
-      response = await hostLimiter.run(host, () => {
-        const request = transport(canonical, { headers: conditionalHeaders(state), signal: undefined });
-        if (!timeoutMs) return request;
+      response = await hostLimiter.run(host, async () => {
+        const controller = new AbortController();
+        const abortFromCaller = () => controller.abort(signal.reason);
+        if (signal?.aborted) abortFromCaller();
+        else signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+        const request = transport(canonical, {
+          headers: conditionalHeaders(state),
+          signal: controller.signal,
+          timeoutMs,
+          maxBytes,
+          maxRedirects,
+          maxHosts,
+          maxRequests,
+        });
+        if (!timeoutMs) {
+          try { return await request; }
+          finally { signal?.removeEventListener?.('abort', abortFromCaller); }
+        }
         let timerId;
         const schedule = typeof clock.setTimeout === 'function' ? clock.setTimeout.bind(clock) : setTimeout;
         const cancel = typeof clock.clearTimeout === 'function' ? clock.clearTimeout.bind(clock) : clearTimeout;
-        const timer = new Promise((_, reject) => { timerId = schedule(() => { const error = new Error('request timed out'); error.code = 'ETIMEDOUT'; reject(error); }, timeoutMs); });
-        return Promise.race([request, timer]).finally(() => cancel(timerId));
+        const timer = new Promise((_, reject) => {
+          timerId = schedule(() => {
+            const error = new Error('request timed out');
+            error.code = 'ETIMEDOUT';
+            controller.abort(error);
+            reject(error);
+          }, timeoutMs);
+        });
+        try { return await Promise.race([request, timer]); }
+        finally {
+          cancel(timerId);
+          signal?.removeEventListener?.('abort', abortFromCaller);
+        }
       });
     } catch (error) {
       if (classifyRetry({ error }).kind !== 'retryable' || attempt === maxAttempts) return { classification: 'terminal', reason: error.message };

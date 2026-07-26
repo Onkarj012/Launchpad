@@ -47,6 +47,12 @@ test('injected transport receives conditional headers and retries deterministica
   assert.equal(result.classification, 'not-modified');
   assert.equal(requests.length, 2);
   assert.equal(requests[0].options.headers['if-none-match'], '"v1"');
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
+  assert.equal(requests[0].options.timeoutMs, 30_000);
+  assert.equal(requests[0].options.maxBytes, 2_000_000);
+  assert.equal(requests[0].options.maxRedirects, 0);
+  assert.equal(requests[0].options.maxHosts, 1);
+  assert.equal(requests[0].options.maxRequests, 1);
   assert.equal(now, 50);
 });
 

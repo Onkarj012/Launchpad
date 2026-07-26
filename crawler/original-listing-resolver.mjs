@@ -460,9 +460,12 @@ export function classifyOriginalListingUrl(value) {
 function emptyTelemetry(budget) {
   return {
     requests: 0,
+    requestCount: 0,
     redirects: 0,
     hostsFollowed: 0,
     bytesObserved: 0,
+    finalUrl: null,
+    redirectChain: [],
     budget: { ...budget },
   };
 }
@@ -499,6 +502,10 @@ function looksMalformed(response, status) {
 
 function resolutionFailure(observation, reason, chain = [], extra = {}, telemetry = null) {
   const discoveryUrl = canonical(observation?.discoveryUrl ?? observation?.canonicalUrl ?? observation?.url);
+  const resolverTelemetry = telemetry || emptyTelemetry(DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET);
+  resolverTelemetry.requestCount = resolverTelemetry.requests;
+  resolverTelemetry.finalUrl = chain.at(-1) ?? resolverTelemetry.finalUrl;
+  resolverTelemetry.redirectChain = [...chain];
   const leadOnly = {
     title: text(observation?.title) ? FIELD_SOURCE_LEAD : null,
     description: text(observation?.description) || text(observation?.snippet) ? FIELD_SOURCE_LEAD : null,
@@ -518,7 +525,7 @@ function resolutionFailure(observation, reason, chain = [], extra = {}, telemetr
       leadOnly: true,
       ...extra,
     },
-    telemetry: telemetry || emptyTelemetry(DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET),
+    telemetry: resolverTelemetry,
   };
 }
 
@@ -629,6 +636,7 @@ export function createOriginalListingResolver({
   maxBytes,
   maxRequests,
   requestBudget,
+  timeoutMs = 30_000,
   config,
   budget,
 } = {}) {
@@ -665,6 +673,8 @@ export function createOriginalListingResolver({
       if (seen.has(current)) return resolutionFailure(observation, 'redirect-loop', chain, {}, telemetry);
       seen.add(current);
       chain.push(current);
+      telemetry.finalUrl = current;
+      telemetry.redirectChain = [...chain];
 
       const host = hostOf(current);
       if (host && !hosts.has(host)) {
@@ -682,9 +692,14 @@ export function createOriginalListingResolver({
       let response;
       try {
         telemetry.requests += 1;
+        telemetry.requestCount = telemetry.requests;
         response = await transport(current, {
           method: 'GET',
           redirect: 'manual',
+          timeoutMs,
+          maxHosts: hostLimit,
+          maxRequests: requestLimit,
+          maxRedirects: redirectLimit,
           maxBytes: byteLimit,
           purpose: 'original-listing-resolution',
           runAt,
@@ -777,7 +792,12 @@ export function createOriginalListingResolver({
         redirectChain: chain,
         providerFingerprint: fingerprint,
         shortlistEligible: true,
-        telemetry,
+        telemetry: {
+          ...telemetry,
+          requestCount: telemetry.requests,
+          finalUrl: current,
+          redirectChain: [...chain],
+        },
       };
     }
     return resolutionFailure(observation, 'resolver-bound-exhausted', chain, {}, telemetry);

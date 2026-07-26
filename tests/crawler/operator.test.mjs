@@ -9,6 +9,7 @@ import {
   listBraveQueries,
   buildCrawlerHelp,
   createCrawlerRunResolver,
+  defaultHttpTransport,
   runCrawlerOperator,
   validateCrawlerConfig,
 } from '../../crawler/operator.mjs';
@@ -68,7 +69,7 @@ test('builds resolver-capable SearXNG and connector plans without network access
 test('run resolver uses injected transport, preserves discoveryUrl, and fails closed', async () => {
   const requests = [];
   const resolve = createCrawlerRunResolver({
-    config: { sources: { originalListingResolver: { maxRedirects: 1, maxBytes: 1234 } } },
+    config: { sources: { originalListingResolver: { maxRedirects: 1, maxHosts: 2, maxBytes: 1234, maxRequests: 3, timeoutMs: 4567 } } },
     runAt: '2026-07-24T10:00:00.000Z',
     transport: async (url, options) => {
       requests.push({ url, options });
@@ -81,8 +82,72 @@ test('run resolver uses injected transport, preserves discoveryUrl, and fails cl
   assert.equal(result.discoveryUrl, 'https://www.indeed.com/viewjob?id=1');
   assert.equal(result.applicationResolution.status, 'Needs Verification');
   assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.maxRedirects, 1);
+  assert.equal(requests[0].options.maxHosts, 2);
   assert.equal(requests[0].options.maxBytes, 1234);
+  assert.equal(requests[0].options.maxRequests, 3);
+  assert.equal(requests[0].options.timeoutMs, 4567);
   assert.equal(requests[0].options.purpose, 'original-listing-resolution');
+});
+
+test('default transport rejects redirects outside the declared policy', async () => {
+  const source = 'https://source.example/jobs/1';
+  const target = 'https://other.example/jobs/1';
+  const fetchImpl = async () => new Response('', { status: 302, headers: { location: target } });
+
+  await assert.rejects(
+    defaultHttpTransport(source, { redirect: 'error', fetchImpl }),
+    (error) => error.code === 'REDIRECT_REJECTED',
+  );
+  await assert.rejects(
+    defaultHttpTransport(source, { redirect: 'follow', maxHosts: 1, fetchImpl }),
+    (error) => error.code === 'REDIRECT_HOST_REJECTED',
+  );
+});
+
+test('default transport manual mode reports the untouched redirect', async () => {
+  const source = 'https://source.example/jobs/1';
+  const target = 'https://other.example/jobs/1';
+  const calls = [];
+  const result = await defaultHttpTransport(source, {
+    redirect: 'manual',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response('', { status: 302, headers: { location: target } });
+    },
+  });
+
+  assert.equal(result.status, 302);
+  assert.equal(result.finalUrl, source);
+  assert.deepEqual(result.redirectChain, [source]);
+  assert.equal(result.requestCount, 1);
+  assert.equal(calls[0].options.redirect, 'manual');
+  assert.ok(calls[0].options.signal instanceof AbortSignal);
+});
+
+test('default transport cancels an oversized stream before full buffering', async () => {
+  let pulls = 0;
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(8));
+      if (pulls === 10) controller.close();
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  await assert.rejects(
+    defaultHttpTransport('https://source.example/jobs/1', {
+      maxBytes: 12,
+      fetchImpl: async () => new Response(body, { status: 200 }),
+    }),
+    (error) => error.code === 'RESPONSE_TOO_LARGE' && error.byteLength === 16,
+  );
+  assert.equal(cancelled, true);
+  assert.ok(pulls < 10);
 });
 
 test('operator runs a configured career-site discovery into durable SQLite', async () => {
