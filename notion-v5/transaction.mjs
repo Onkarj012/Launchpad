@@ -121,6 +121,18 @@ export class FileTransactionJournal {
     return this.state.entries[String(key)];
   }
 
+  recordProgress(key, progress = {}) {
+    const entry = this.#require(key);
+    const timestamp = nowIso(this.now);
+    this.state.entries[String(key)] = {
+      ...entry,
+      progress: { ...(entry.progress ?? {}), ...redactSensitive(progress) },
+      updatedAt: timestamp,
+    };
+    this.#persist();
+    return this.state.entries[String(key)];
+  }
+
   markVerified(key) { return this.#transition(key, 'verified'); }
   markCommitted(key) { return this.#transition(key, 'committed'); }
 
@@ -152,6 +164,35 @@ export class FileTransactionJournal {
 }
 
 export function createTransactionJournal(options = {}) { return new FileTransactionJournal(options); }
+
+export async function runDurableTransaction({ journal, key, target = null, work } = {}) {
+  if (!journal || typeof journal.reserve !== 'function' || typeof journal.recordProgress !== 'function') {
+    throw new NotionV5TransactionError('a durable transaction journal is required', null, 'JOURNAL_REQUIRED');
+  }
+  if (!key || typeof work !== 'function') throw new NotionV5TransactionError('transaction key and work callback are required');
+  const transactionKey = String(key);
+  const reservation = journal.reserve([{ key: transactionKey, target }]);
+  const existing = journal.get(transactionKey);
+  if (reservation.committedKeys.includes(transactionKey)) {
+    return { status: 'committed', skipped: true, key: transactionKey, result: existing?.progress?.result ?? null };
+  }
+  if (reservation.verifiedKeys.includes(transactionKey)) {
+    journal.markCommitted(transactionKey);
+    return { status: 'committed', skipped: true, key: transactionKey, result: existing?.progress?.result ?? null };
+  }
+  const recovering = reservation.pendingKeys.includes(transactionKey);
+  const checkpoint = async (progress) => journal.recordProgress(transactionKey, progress);
+  try {
+    const result = await work({ key: transactionKey, recovering, entry: journal.get(transactionKey), checkpoint });
+    journal.recordProgress(transactionKey, { result, lastError: null });
+    journal.markVerified(transactionKey);
+    journal.markCommitted(transactionKey);
+    return { status: 'committed', skipped: false, recovering, key: transactionKey, result };
+  } catch (error) {
+    journal.recordProgress(transactionKey, { lastError: structuredError(error) });
+    throw error;
+  }
+}
 
 export async function runReservedBatch({ items, reserve, write, verify, commit, abort, journal = null, keyOf = (item) => item.dedupKey ?? item.idempotencyKey ?? JSON.stringify(item) }) {
   if (!Array.isArray(items)) throw new NotionV5TransactionError('transaction items must be an array');

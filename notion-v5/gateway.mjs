@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertLiveManifest, isLegacyNotionId, isNotionIdentifier, isPlaceholderIdentifier, loadManifest, normalizeNotionId, targetFor } from './manifest.mjs';
 import { assertValidViewDefinitions, buildDatabaseProperties, mapProperties, readPropertyValue, storeKeyForTarget, V5_SCHEMA, V5_STORE_KEYS } from './schema.mjs';
-import { createTransactionJournal, redactSensitive, runReservedBatch, structuredError } from './transaction.mjs';
+import { createTransactionJournal, redactSensitive, runDurableTransaction, runReservedBatch, structuredError } from './transaction.mjs';
 
 export const NOTION_V5_API_VERSION = '2025-09-03';
 export const NOTION_V5_API_BASE = 'https://api.notion.com/v1';
@@ -309,6 +309,25 @@ export class NotionV5Gateway {
       this.activeTransactionKey = null;
       this.activeJournal = null;
     }
+  }
+
+  async runTransaction({ key, target = 'applications', work } = {}) {
+    const durableJournal = this.journal ?? (this.live && this.journalPath ? createTransactionJournal({ journalPath: this.journalPath }) : null);
+    if (!durableJournal) throw new NotionV5Error('durable transaction requires an explicit external journal path', { code: 'JOURNAL_PATH_REQUIRED', stage: 'preflight', target });
+    return runDurableTransaction({
+      journal: durableJournal,
+      key,
+      target,
+      work: async (context) => {
+        this.activeJournal = durableJournal;
+        this.activeTransactionKey = String(key);
+        try { return await work(context); }
+        finally {
+          this.activeTransactionKey = null;
+          this.activeJournal = null;
+        }
+      },
+    });
   }
 
   async findOrCreateCompany(company = {}) {
