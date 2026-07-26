@@ -267,7 +267,8 @@
     },
     "connectorInbox": {
       "enabled": false,
-      "inboxDir": "connector-inbox"
+      "inboxDir": "connector-inbox",
+      "providers": ["indeed", "apna", "whatjobs", "ziprecruiter", "dice", "jobs-and-careers"]
     },
     "startup": {
       "fixtures": {},

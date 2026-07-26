@@ -74,3 +74,76 @@ test('rejects invalid envelope schema and provider without throwing', () => {
   assert.match(result.quarantine[0].errors.join(' '), /schemaVersion/);
   assert.match(result.quarantine[0].errors.join(' '), /provider/);
 });
+
+test('normalizes a ziprecruiter connector envelope into observations', () => {
+  const result = normalizeConnectorEnvelope(envelope([
+    baseRecord({
+      providerJobId: 'zr-1',
+      url: 'https://www.ziprecruiter.com/jobs/ai-engineer-1',
+    }),
+  ], { provider: 'ziprecruiter' }), {
+    runAt: '2026-07-24T09:00:00.000Z',
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.quarantine.length, 0);
+  assert.equal(result.observations[0].provider, 'ziprecruiter');
+  assert.equal(result.observations[0].providerJobId, 'zr-1');
+  assert.equal(result.observations[0].sourceKind, 'aggregator');
+  assert.equal(result.observations[0].classification, 'lead');
+  assert.equal(result.manifest.imported, 1);
+});
+
+test('normalizes a dice connector envelope into observations', () => {
+  const result = normalizeConnectorEnvelope(envelope([
+    baseRecord({
+      providerJobId: 'dice-1',
+      url: 'https://www.dice.com/job-detail/ai-engineer-1',
+    }),
+  ], { provider: 'dice' }), {
+    runAt: '2026-07-24T09:00:00.000Z',
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.quarantine.length, 0);
+  assert.equal(result.observations[0].provider, 'dice');
+  assert.equal(result.observations[0].providerJobId, 'dice-1');
+  assert.equal(result.observations[0].sourceKind, 'aggregator');
+  assert.equal(result.observations[0].classification, 'lead');
+  assert.equal(result.manifest.imported, 1);
+});
+
+test('normalizes a jobs-and-careers connector envelope into observations', () => {
+  const result = normalizeConnectorEnvelope(envelope([
+    baseRecord({
+      providerJobId: 'jac-1',
+      url: 'https://jobsandcareers.example/job/ai-engineer-1',
+    }),
+  ], { provider: 'jobs-and-careers' }), {
+    runAt: '2026-07-24T09:00:00.000Z',
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.quarantine.length, 0);
+  assert.equal(result.observations[0].provider, 'jobs-and-careers');
+  assert.equal(result.observations[0].providerJobId, 'jac-1');
+  assert.equal(result.observations[0].sourceKind, 'aggregator');
+  assert.equal(result.observations[0].classification, 'lead');
+  assert.equal(result.manifest.imported, 1);
+});
+
+test('null postedAt normalizes without back-filling run timestamp', () => {
+  const runAt = '2026-07-24T09:00:00.000Z';
+  const result = normalizeConnectorEnvelope(envelope([
+    baseRecord({
+      providerJobId: 'apna-null-posted',
+      url: 'https://apna.co/job/ai-engineer-null-posted',
+      postedAt: null,
+    }),
+  ]), { runAt });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].postedAt, null);
+  assert.notEqual(result.observations[0].postedAt, runAt);
+  assert.equal(result.observations[0].discoveredAt, runAt);
+});

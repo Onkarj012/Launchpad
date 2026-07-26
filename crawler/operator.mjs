@@ -33,6 +33,7 @@ import { runStartupSourcePlan } from '../job-pull/startup-sources.mjs';
 import { runRemoteSourcePlan, selectRemoteProviders } from '../job-pull/remote-sources.mjs';
 import { buildDiscoveryProfile } from './discovery-profile.mjs';
 import {
+  CONNECTOR_PROVIDERS,
   normalizeConnectorEnvelope,
 } from './connector-inbox.mjs';
 import {
@@ -347,7 +348,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     clock,
     resolver,
   }), { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
-  if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: ['indeed', 'apna', 'whatjobs'] } }));
+  if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: [...CONNECTOR_PROVIDERS] } }));
   if (schedule !== 'midday' && profile?.mode === 'normal' && sources.theirstack?.enabled) {
     plans.push(sourcePlan('theirstack', 'connector-imports', 'theirstack', async ({ cursor } = {}) => {
       const theirStackConfig = sources.theirstack;

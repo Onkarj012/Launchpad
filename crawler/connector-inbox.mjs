@@ -4,7 +4,7 @@ import {
 } from '../job-pull/candidate.mjs';
 
 export const CONNECTOR_INBOX_SCHEMA_VERSION = 'LaunchpadConnectorInboxV1';
-export const CONNECTOR_PROVIDERS = Object.freeze(['indeed', 'apna', 'whatjobs']);
+export const CONNECTOR_PROVIDERS = Object.freeze(['indeed', 'apna', 'whatjobs', 'ziprecruiter', 'dice', 'jobs-and-careers']);
 
 const clean = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
