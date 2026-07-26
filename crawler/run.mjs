@@ -368,7 +368,39 @@ export function markJobsSurfaced(store, jobKeys, { at = new Date().toISOString()
   return keys.length;
 }
 
-function persistObservation(store, source, runId, observation, observedAt) {
+function workdayFreshnessRank(value) {
+  if (value?.kind === 'workday-startDate') return 3;
+  if (value?.kind === 'workday-postedOn') return 2;
+  return 0;
+}
+
+function mergeWorkdayObservation(previous, current) {
+  if (!previous || current?.provider?.toLowerCase?.() !== 'workday') return current;
+  const previousFreshness = previous.evidence?.freshness;
+  const currentFreshness = current.evidence?.freshness;
+  const keepPreviousFreshness = workdayFreshnessRank(previousFreshness) > workdayFreshnessRank(currentFreshness)
+    || (workdayFreshnessRank(previousFreshness) === workdayFreshnessRank(currentFreshness) && previous.postedAt && !current.postedAt);
+  const previousDescription = typeof previous.description === 'string' ? previous.description : '';
+  const currentDescription = typeof current.description === 'string' ? current.description : '';
+  const description = previousDescription.length > currentDescription.length ? previous.description : current.description;
+  const liveness = current.liveness?.status === 'Not Verified' && ['Active', 'Expired'].includes(previous.liveness?.status)
+    ? previous.liveness
+    : current.liveness || previous.liveness;
+  return {
+    ...previous,
+    ...current,
+    description,
+    postedAt: keepPreviousFreshness ? previous.postedAt : current.postedAt,
+    liveness,
+    evidence: {
+      ...previous.evidence,
+      ...current.evidence,
+      freshness: keepPreviousFreshness ? previousFreshness : currentFreshness,
+    },
+  };
+}
+
+function persistObservation(store, source, runId, observation, observedAt, { preserveWorkdayEvidence = true } = {}) {
   const sourceKey = sourceRecordKey(observation);
   const observationKey = hash(`${runId}|${source.id}|${sourceKey}`);
   const existingObservation = store.prepare('SELECT observation_key FROM job_observations WHERE observation_key = ?').get(observationKey);
@@ -376,31 +408,35 @@ function persistObservation(store, source, runId, observation, observedAt) {
   const providerJobId = observation.providerJobId ?? observation.jobId;
   const provider = observation.provider ?? source.provider ?? source.id;
   const jobKey = findJob(store, source, observation) ?? hash(`${provider}|${providerJobId ?? ''}|${observation.canonicalUrl ?? ''}|${normalized(observation.company)}|${normalized(observation.title)}|${normalized(observation.location)}`);
-  const fp = fingerprint(observation);
-  const companyName = normalized(observation.company) || 'unknown company';
-  const companyDomain = text(observation.companyDomain ?? observation.company_domain);
+  const previousObservation = preserveWorkdayEvidence && provider?.toLowerCase?.() === 'workday'
+    ? json(store.prepare('SELECT raw_json FROM job_observations WHERE job_key = ? ORDER BY observed_at DESC LIMIT 1').get(jobKey)?.raw_json, null)
+    : null;
+  const durableObservation = mergeWorkdayObservation(previousObservation, observation);
+  const fp = fingerprint(durableObservation);
+  const companyName = normalized(durableObservation.company) || 'unknown company';
+  const companyDomain = text(durableObservation.companyDomain ?? durableObservation.company_domain);
   const companyKey = hash(`${companyName}|${normalized(companyDomain)}`);
   store.prepare(`INSERT INTO companies(company_key, name, domain, first_seen_at, last_seen_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(company_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       domain = COALESCE(companies.domain, excluded.domain)`).run(companyKey, companyName, companyDomain, observedAt, observedAt);
-  const boardIdentity = text(source.boardId ?? source.board ?? observation.boardId ?? observation.board_id ?? source.id);
-  const boardUrl = text(source.boardUrl ?? source.url ?? observation.boardUrl ?? observation.board_url);
+  const boardIdentity = text(source.boardId ?? source.board ?? durableObservation.boardId ?? durableObservation.board_id ?? source.id);
+  const boardUrl = text(source.boardUrl ?? source.url ?? durableObservation.boardUrl ?? durableObservation.board_url);
   const boardKey = hash(`${source.id}|${companyKey}|${boardIdentity ?? ''}`);
   store.prepare(`INSERT INTO company_boards(board_key, company_key, source_id, provider, board_url, board_identity, first_seen_at, last_seen_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(board_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       board_url = COALESCE(company_boards.board_url, excluded.board_url)`).run(boardKey, companyKey, source.id, provider, boardUrl, boardIdentity, observedAt, observedAt);
-  const closedAt = ['closed', 'inactive', 'expired', 'removed', 'filled'].includes(normalized(observation.status ?? observation.liveness?.status)) ? observedAt : null;
+  const closedAt = ['closed', 'inactive', 'expired', 'removed', 'filled'].includes(normalized(durableObservation.status ?? durableObservation.liveness?.status)) ? observedAt : null;
   // Observation may advance lifecycle up to application-ready only — never starts cooldown/surfaced.
-  const observationLifecycle = lifecycleFromObservation(observation);
+  const observationLifecycle = lifecycleFromObservation(durableObservation);
   const priorLifecycle = readJobLifecycle(store, jobKey);
   const nextLifecycle = mergeLifecycleState(priorLifecycle.state, observationLifecycle) || observationLifecycle;
   const lifecycleJson = {
     ...priorLifecycle.json,
     state: nextLifecycle,
     lastObservedAt: observedAt,
-    applicationReady: observation.applicationReady === true
+    applicationReady: durableObservation.applicationReady === true
       || priorLifecycle.json.applicationReady === true
       || nextLifecycle === LIFECYCLE_STATES.APPLICATION_READY
       || nextLifecycle === LIFECYCLE_STATES.SURFACED
@@ -415,10 +451,10 @@ function persistObservation(store, source, runId, observation, observedAt) {
       closed_at = COALESCE(excluded.closed_at, jobs.closed_at),
       latest_fingerprint = excluded.latest_fingerprint,
       lifecycle_state = excluded.lifecycle_state,
-      lifecycle_json = excluded.lifecycle_json`).run(jobKey, companyKey, provider, text(providerJobId), text(observation.canonicalUrl), companyName, normalized(observation.title), normalized(observation.location), observedAt, observedAt, text(observation.postedAt), text(observation.updatedAt), text(observation.inferredRepostAt), closedAt, fp, nextLifecycle, JSON.stringify(lifecycleJson));
-  if (observation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(observation.description), observedAt);
+      lifecycle_json = excluded.lifecycle_json`).run(jobKey, companyKey, provider, text(providerJobId), text(durableObservation.canonicalUrl), companyName, normalized(durableObservation.title), normalized(durableObservation.location), observedAt, observedAt, text(durableObservation.postedAt), text(durableObservation.updatedAt), text(durableObservation.inferredRepostAt), closedAt, fp, nextLifecycle, JSON.stringify(lifecycleJson));
+  if (durableObservation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(durableObservation.description), observedAt);
   store.prepare(`INSERT INTO job_observations(observation_key, job_key, source_id, run_id, source_record_key, canonical_url, posted_at, updated_at, observed_at, fingerprint, classification, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp, observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation));
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(durableObservation.canonicalUrl), text(durableObservation.postedAt), text(durableObservation.updatedAt), observedAt, fp, durableObservation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(durableObservation));
   return { duplicate: false, jobKey, lifecycle: nextLifecycle };
 }
 
@@ -447,7 +483,11 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
       const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock });
       const observations = Array.isArray(result?.observations) ? result.observations : [];
       let duplicates = 0;
-      for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
+      for (const observation of observations) {
+        if (persistObservation(store, source, runId, observation, nowFrom(clock), {
+          preserveWorkdayEvidence: config.sourceFeatureFlags?.preserveWorkdayEvidence !== false,
+        }).duplicate) duplicates += 1;
+      }
       const manifest = result?.manifest ?? {};
       const interrupted = Boolean(result?.interrupted || manifest.interrupted);
       const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
@@ -586,6 +626,8 @@ function mapJobRow(row) {
     company: row.company,
     title: row.title,
     location: row.location,
+    postedAt: row.original_posted_at,
+    originalPostedAt: row.original_posted_at,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     fingerprint: row.latest_fingerprint,

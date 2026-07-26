@@ -425,3 +425,41 @@ test('a naturally exhausted Workday board is terminal and clears its cursor', as
   assert.equal(result.manifest.naturalTerminal, true);
   assert.equal(result.conditionalState.__cursor?.Acme, undefined);
 });
+
+test('a later thin Workday observation preserves durable date, JD, and liveness evidence', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let rich = true;
+  const sourcePlans = [{
+    id: 'workday-preservation',
+    lane: 'ats',
+    provider: 'workday',
+    fetch: async () => ({
+      observations: [{
+        provider: 'workday',
+        providerJobId: 'WD-PRESERVE-1',
+        canonicalUrl: 'https://acme.wd1.myworkdayjobs.com/Careers/job/Pune/WD-PRESERVE-1',
+        title: 'AI Engineer',
+        company: 'Acme',
+        location: 'Pune, India',
+        postedAt: rich ? '2026-07-22T01:00:00.000Z' : null,
+        description: rich ? 'Build production agent systems with Python.' : null,
+        liveness: rich ? { status: 'Active', evidence: 'workday-detail-live' } : { status: 'Not Verified' },
+        evidence: { freshness: rich ? { kind: 'workday-postedOn', label: 'Posted Yesterday' } : { kind: 'workday-unverified' } },
+        classification: 'direct',
+      }],
+      manifest: { fetched: 1, changed: 1 },
+    }),
+  }];
+
+  await crawlRun({ store, runId: 'workday-rich', sourcePlans, clock: fixedClock() });
+  rich = false;
+  await crawlRun({ store, runId: 'workday-thin', sourcePlans, clock: fixedClock() });
+
+  const raw = JSON.parse(store.prepare('SELECT raw_json FROM job_observations WHERE run_id = ?').get('workday-thin').raw_json);
+  assert.equal(raw.postedAt, '2026-07-22T01:00:00.000Z');
+  assert.equal(raw.description, 'Build production agent systems with Python.');
+  assert.equal(raw.liveness.status, 'Active');
+  assert.equal(raw.evidence.freshness.kind, 'workday-postedOn');
+  assert.equal(store.prepare('SELECT original_posted_at FROM jobs WHERE provider_job_id = ?').get('WD-PRESERVE-1').original_posted_at, raw.postedAt);
+  store.close();
+});

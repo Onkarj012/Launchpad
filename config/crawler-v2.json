@@ -2,6 +2,9 @@
   "schemaVersion": "LaunchpadCrawlerConfigV1",
   "databasePath": ".local/launchpad-crawler/crawler.sqlite",
   "boardRegistryPath": "config/board-registry.json",
+  "sourceFeatureFlags": {
+    "preserveWorkdayEvidence": true
+  },
   "sources": {
     "atsWarm": {
       "boards": [
@@ -143,6 +146,7 @@
       "enrichDetails": true,
       "detailConcurrency": 4,
       "maxDetailRequestsPerRun": 50,
+      "fairHydration": true,
       "roleFamilyKeywords": [
         "software", "engineer", "developer", "sde", "swe", "backend", "front end", "frontend",
         "full stack", "fullstack", "full-stack", "ai", "ml", "machine learning", "llm", "genai",

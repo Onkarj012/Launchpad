@@ -62,7 +62,7 @@ test('Workday LIST 30+ labels remain undated and unverified', async () => {
   });
   const candidate = result.observations[0];
   assert.equal(candidate.postedAt, null);
-  assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified' });
+  assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-postedOn-unbounded', label: 'Posted 30+ Days Ago' });
 });
 
 test('parses Workday postings, follows one bounded page, and preserves direct/lead provenance', async () => {
@@ -662,4 +662,94 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
   const identity = resolveJobIdentity(ase);
   assert.equal(identity.identity.providerJobId, 'workday|r15032');
   assert.equal(identity.code, 'NEW_TO_ME');
+});
+
+test('Workday LIST postedOn labels propagate for every board in a multi-board scan', async () => {
+  const boards = ['alpha', 'beta', 'gamma'].map((slug) => ({
+    provider: 'workday',
+    company: slug,
+    url: `https://${slug}.wd1.myworkdayjobs.com/wday/cxs/${slug}/Careers/jobs`,
+  }));
+  const result = await discoverEnterpriseAts({
+    boards,
+    transport: async (url) => {
+      const company = new URL(url).hostname.split('.')[0];
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          total: 1,
+          jobPostings: [{
+            title: `${company} Engineer`,
+            externalPath: `/job/Pune/${company}-engineer`,
+            locationsText: 'Pune, India',
+            postedOn: 'Posted 2 Days Ago',
+          }],
+        }),
+      };
+    },
+    runAt,
+    maxPages: 1,
+  });
+
+  assert.equal(result.observations.length, 3);
+  assert.ok(result.observations.every((row) => row.postedAt === '2026-07-21T10:00:00.000Z'));
+  assert.ok(result.observations.every((row) => row.evidence.freshness.label === 'Posted 2 Days Ago'));
+});
+
+test('Workday DETAIL budget hydrates across boards before taking a second row from one board', async () => {
+  const detailHosts = [];
+  const boards = ['alpha', 'beta', 'gamma'].map((slug) => ({
+    provider: 'workday',
+    company: slug,
+    url: `https://${slug}.wd1.myworkdayjobs.com/wday/cxs/${slug}/Careers/jobs`,
+  }));
+  const result = await discoverEnterpriseAts({
+    boards,
+    transport: async (url, options) => {
+      const company = new URL(url).hostname.split('.')[0];
+      if (options?.detail) {
+        detailHosts.push(company);
+        return { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: { jobReqId: `${company}-1`, location: 'Pune, India' } }) };
+      }
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          total: 2,
+          jobPostings: [1, 2].map((index) => ({
+            title: `Software Engineer ${index}`,
+            externalPath: `/job/Pune/${company}-${index}`,
+            locationsText: 'Pune, India',
+            postedOn: 'Posted Today',
+          })),
+        }),
+      };
+    },
+    runAt,
+    maxPages: 1,
+    enrichDetails: true,
+    maxDetailRequestsPerRun: 3,
+    fairHydration: true,
+  });
+
+  assert.equal(result.telemetry.workdayDetail.attempted, 3);
+  assert.deepEqual(new Set(detailHosts), new Set(['alpha', 'beta', 'gamma']));
+});
+
+test('Workday DETAIL without liveness evidence cannot erase active LIST liveness', async () => {
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: listUrl }],
+    transport: async (_url, options) => options?.detail
+      ? { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: { jobReqId: 'REQ-1', location: 'Pune, India' } }) }
+      : { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/Pune/REQ-1', locationsText: 'Pune, India', postedOn: 'Posted Today' }] }) },
+    runAt,
+    maxPages: 1,
+    enrichDetails: true,
+    maxDetailRequestsPerRun: 1,
+  });
+
+  assert.equal(result.observations[0].liveness.status, 'Active');
+  assert.equal(result.observations[0].evidence.freshness.kind, 'workday-postedOn');
 });
