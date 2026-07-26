@@ -8,4 +8,4 @@ disable-model-invocation: true
 
 Copy `resumes/templates/Onkar_Template.tex` into `resumes/sources/<date>/`, edit only tailor slots using approved evidence from `resumes/master/Master_Resume_ATS.tex`, and create the requirement matrix and provenance sidecar. Compile locally with the Mac LaTeX toolchain, run `tests/resume/verify.mjs` against the exact delivered PDF, and remove build artifacts. Only the PDF belongs in `resumes/output/<date>/`.
 
-Keep Stride and exactly two approved projects, preserve truthful qualifiers, use no em dash in tailored prose, and report missing requirements. If local compilation or verification is unavailable, stop with a blocked result. Never change `Make Resume` or `Applied?`, write a legacy tracker, auto-apply, or send.
+Keep Stride as the first Engineering Projects entry plus exactly two other approved projects (three total, no separate Experience section), preserve truthful qualifiers, use no em dash in tailored prose, and report missing requirements. If local compilation or verification is unavailable, stop with a blocked result. Never change `Make Resume` or `Applied?`, write a legacy tracker, auto-apply, or send.

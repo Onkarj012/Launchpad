@@ -2,8 +2,11 @@
 % RESUME — Onkar Jadhav
 % CANONICAL LAYOUT TEMPLATE. Frozen preamble + frozen structure.
 % Tailor only inside %== TAILOR-START/END ==  slots: HEADLINE, SUMMARY,
-% COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, PUBLICATIONS, SKILLS. Everything
+% COURSEWORK, STRIDE-BULLETS, PROJECTS, PUBLICATIONS, SKILLS. Everything
 % else, including section order and section headings, is frozen.
+% No separate Experience section: Stride is the first Engineering Projects
+% entry (frozen title/subtitle/date, tailorable bullets), followed by the two
+% tailorable PROJECTS entries -- three Engineering Projects total.
 % PUBLICATIONS is optional: fill only for research/ML-research JDs; otherwise
 % empty the slot so its \section header does not print.
 % RESUME_EVIDENCE_V1: each new tailored source requires same-directory
@@ -126,30 +129,25 @@ AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI prod
 %== TAILOR-END: COURSEWORK ==
       \resumeItemListEnd
   \resumeSubHeadingListEnd
-\vspace{-5.5mm}
-
-%-----------EXPERIENCE-----------------
-\section{\textbf{Experience}}
-\resumeSubHeadingListStart
-
-    \resumeSubheading
-      {Stride --- AI-First Adaptive Wellness Platform}{Remote}
-      {Lead Engineer}{April 2026 -- Present}
-      \resumeItemListStart
-%== TAILOR-START: EXPERIENCE-BULLETS ==
-        \item {Architected and shipped Stride to production as sole engineer, owning the full stack --- React/Next.js frontend, backend services, and data layer --- running live with an early private user cohort driving iterative product feedback ahead of public beta.}
-        \item {Architected five specialised domain agents (diet, workout, sleep, hydration, habits) sharing a behavioral memory layer, with multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini --- eliminating vendor lock-in across five concurrent agent types.}
-        \item {Separated LLM reasoning from deterministic computation (BMR/NEAT/EAT/TEF calculator), eliminating opaque model arithmetic errors; implemented CI-style quality gates before each capability release.}
-        \item {Selected Convex for real-time reactive state over a REST + WebSockets stack, keeping five concurrent agent types in sync across the frontend without manual polling logic.}
-%== TAILOR-END: EXPERIENCE-BULLETS ==
-      \resumeItemListEnd
-
-\resumeSubHeadingListEnd
-\vspace{-5mm}
+\vspace{-1mm}
 
 %-----------ENGINEERING PROJECTS-----------------
 \section{\textbf{Engineering Projects}}
 \resumeSubHeadingListStart
+
+%== TAILOR-START: STRIDE-BULLETS ==
+    \resumeProject
+      {Stride}{AI-First Adaptive Wellness Platform}
+      {React/Next.js, Convex, OpenRouter (Anthropic Claude, OpenAI GPT, Gemini)}
+      {April 2026 -- Present}
+      \resumeItemListStart
+        \item {Architected and shipped Stride to production as sole engineer, owning the full stack --- React/Next.js frontend, backend services, and data layer --- running live with an early private user cohort driving iterative product feedback ahead of public beta.}
+        \item {Architected five specialised domain agents (diet, workout, sleep, hydration, habits) sharing a behavioral memory layer, with multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini --- eliminating vendor lock-in across five concurrent agent types.}
+        \item {Separated LLM reasoning from deterministic computation (BMR/NEAT/EAT/TEF calculator), eliminating opaque model arithmetic errors; implemented CI-style quality gates before each capability release.}
+        \item {Selected Convex for real-time reactive state over a REST + WebSockets stack, keeping five concurrent agent types in sync across the frontend without manual polling logic.}
+      \resumeItemListEnd
+%== TAILOR-END: STRIDE-BULLETS ==
+    \vspace{-2mm}
 
 %== TAILOR-START: PROJECTS ==
     \resumeProject
@@ -177,7 +175,7 @@ AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI prod
 %== TAILOR-END: PROJECTS ==
 
 \resumeSubHeadingListEnd
-\vspace{-8.5mm}
+\vspace{-2mm}
 
 %-----------PUBLICATIONS (research JDs only)-----------------
 % OPTIONAL SECTION. Include ONLY for research / ML-research / applied-science JDs.
