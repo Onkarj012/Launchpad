@@ -9,7 +9,7 @@ import {
   SURFACED_SUPPRESSION_STATES,
 } from './identity.mjs';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
 const STAGES = ['fetch', 'commit'];
 const ADAPTER_FAILURE_STATUSES = new Set(['degraded', 'failed', 'terminal', 'retryable', 'malformed', 'interrupted', 'timeout']);
@@ -146,6 +146,19 @@ CREATE TABLE IF NOT EXISTS source_telemetry (
   details_json TEXT NOT NULL DEFAULT '{}',
   error TEXT,
   PRIMARY KEY (run_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS crawler_config_snapshots (
+  run_id TEXT PRIMARY KEY REFERENCES crawl_runs(run_id) ON DELETE RESTRICT,
+  config_hash TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  config_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS delivery_receipts (
+  run_id TEXT PRIMARY KEY,
+  committed_at TEXT NOT NULL,
+  receipt_json TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_observations_run ON job_observations(run_id);
@@ -431,6 +444,9 @@ export function startCrawlRun(store, { runId, schedule = 'manual', config = {}, 
     store.prepare(`INSERT INTO crawl_runs(run_id, schedule, status, stage, started_at, counts_json, telemetry_json, config_json)
       VALUES (?, ?, 'running', 'fetch', ?, '{}', '{}', ?)`).run(runId, schedule, at, JSON.stringify(config));
     for (const stage of STAGES) store.prepare('INSERT INTO crawl_run_stages(run_id, stage, status) VALUES (?, ?, ?)' ).run(runId, stage, stage === 'fetch' ? 'running' : 'pending');
+    const configJson = JSON.stringify(config);
+    store.prepare(`INSERT INTO crawler_config_snapshots(run_id, config_hash, captured_at, config_json)
+      VALUES (?, ?, ?, ?)`).run(runId, hash(configJson), at, configJson);
     store.exec('COMMIT');
   } catch (error) {
     store.exec('ROLLBACK');
@@ -514,7 +530,89 @@ export function updateJobLifecycle(store, jobKey, nextState, { at = new Date().t
   return merged;
 }
 
-export function markJobsSurfaced(store, jobKeys, { at = new Date().toISOString() } = {}) {
+export function persistRunDeliveryReceipt(store, runId, receipt, {
+  at = new Date().toISOString(),
+} = {}) {
+  if (!runId) throw new TypeError('delivery receipt requires runId');
+  if (!receipt || typeof receipt !== 'object') throw new TypeError('delivery receipt requires receipt data');
+  store.prepare(`INSERT INTO delivery_receipts(run_id, committed_at, receipt_json)
+    VALUES (?, ?, ?)
+    ON CONFLICT(run_id) DO UPDATE SET
+      committed_at = delivery_receipts.committed_at,
+      receipt_json = delivery_receipts.receipt_json`).run(runId, at, JSON.stringify(receipt));
+  return {
+    runId,
+    committedAt: store.prepare('SELECT committed_at FROM delivery_receipts WHERE run_id = ?').get(runId).committed_at,
+  };
+}
+
+export function readCrawlerConfigSnapshots(store) {
+  return store.prepare(`SELECT run_id, config_hash, captured_at, config_json
+    FROM crawler_config_snapshots ORDER BY captured_at, run_id`).all().map((row) => ({
+    runId: row.run_id,
+    configHash: row.config_hash,
+    capturedAt: row.captured_at,
+    config: json(row.config_json, {}),
+    immutable: true,
+  }));
+}
+
+export class ExternalRecoveryRequiredError extends Error {
+  constructor(entries) {
+    super(`pending external journal recovery requires explicit operator action: ${entries.map((entry) => entry.id ?? entry.key ?? 'unknown').join(', ')}`);
+    this.name = 'ExternalRecoveryRequiredError';
+    this.code = 'EXTERNAL_RECOVERY_REQUIRED';
+    this.entries = entries;
+  }
+}
+
+export function assertNoPendingExternalRecovery(entries = []) {
+  const safeStatuses = new Set(['committed', 'resolved', 'cancelled', 'aborted', 'rolled-back']);
+  const pending = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => !safeStatuses.has(String(entry?.status ?? '').toLowerCase()));
+  if (pending.length) throw new ExternalRecoveryRequiredError(pending);
+  return [];
+}
+
+export function buildRollbackRecoveryPlan(store, {
+  targetRunId = null,
+  disableSourceIds = [],
+  externalJournalEntries = [],
+} = {}) {
+  const snapshots = readCrawlerConfigSnapshots(store);
+  const snapshot = targetRunId
+    ? snapshots.find((item) => item.runId === targetRunId)
+    : snapshots.at(-2) ?? snapshots.at(-1) ?? null;
+  if (!snapshot) throw new Error('rollback requires a preserved config snapshot');
+  const pendingExternalJournalEntries = (Array.isArray(externalJournalEntries) ? externalJournalEntries : [])
+    .filter((entry) => !['committed', 'resolved', 'cancelled', 'aborted', 'rolled-back']
+      .includes(String(entry?.status ?? '').toLowerCase()));
+  return {
+    schemaVersion: 'LaunchpadRollbackRecoveryPlanV1',
+    configSnapshot: snapshot,
+    sourceLaneActions: [...new Set(disableSourceIds.filter(Boolean))].map((sourceId) => ({
+      sourceId,
+      action: 'disable-via-config',
+    })),
+    pendingExternalJournalEntries,
+    externalJournalPolicy: 'manual-recovery-only',
+    preservedData: ['crawler', 'ledger', 'Notion', 'resume', 'outreach'],
+    destructiveActions: [],
+    applyAutomatically: false,
+  };
+}
+
+export function markJobsSurfaced(store, jobKeys, {
+  at = new Date().toISOString(),
+  receiptRunId = null,
+  requireReceipt = false,
+} = {}) {
+  if (requireReceipt) {
+    const receipt = receiptRunId
+      ? store.prepare('SELECT run_id FROM delivery_receipts WHERE run_id = ?').get(receiptRunId)
+      : null;
+    if (!receipt) throw new Error(`delivery receipt is required before surfacing run ${receiptRunId ?? 'unknown'}`);
+  }
   const keys = [...new Set((Array.isArray(jobKeys) ? jobKeys : []).filter(Boolean))];
   for (const jobKey of keys) updateJobLifecycle(store, jobKey, LIFECYCLE_STATES.SURFACED, { at });
   return keys.length;

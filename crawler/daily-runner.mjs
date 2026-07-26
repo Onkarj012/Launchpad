@@ -17,7 +17,13 @@ import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
-import { markJobsSurfaced, openCrawlerStore, sourceFailureHistogram } from './run.mjs';
+import {
+  assertNoPendingExternalRecovery,
+  markJobsSurfaced,
+  openCrawlerStore,
+  persistRunDeliveryReceipt,
+  sourceFailureHistogram,
+} from './run.mjs';
 import { commitDailyReport } from './daily-report.mjs';
 import { computeCanaryVersion } from './canary-evaluator.mjs';
 
@@ -197,13 +203,24 @@ export function commitDailyDelivery({
     .filter((job) => selectedUrls.has(job.canonicalUrl) || selectedUrls.has(job.originalApplicationUrl))
     .map((job) => job.jobKey);
   let surfacedStateCommitCount = 0;
-  if (surfacedJobKeys.length) {
-    const surfaceStore = store ?? openCrawlerStore(databasePath);
-    try {
-      surfacedStateCommitCount = markJobsSurfaced(surfaceStore, surfacedJobKeys, { at: runAt });
-    } finally {
-      if (!store) surfaceStore.close();
+  const surfaceStore = store ?? openCrawlerStore(databasePath);
+  try {
+    persistRunDeliveryReceipt(surfaceStore, run.runId, {
+      markdownPath: reportCommit.markdownPath,
+      jsonPath: reportCommit.jsonPath,
+      hashes: reportCommit.hashes,
+      codeConfigVersion: run.canaryVersion ?? run.receipt?.codeConfigVersion ?? null,
+      surfacedJobKeys,
+    }, { at: runAt });
+    if (surfacedJobKeys.length) {
+      surfacedStateCommitCount = markJobsSurfaced(surfaceStore, surfacedJobKeys, {
+        at: runAt,
+        receiptRunId: run.runId,
+        requireReceipt: true,
+      });
     }
+  } finally {
+    if (!store) surfaceStore.close();
   }
   if (dcoTelemetry) {
     dcoTelemetry.operations.localReportPaths = {
@@ -324,10 +341,12 @@ async function runDailyNormalUnlocked({
   reportDirectory = null,
   reportWriter = commitDailyReport,
   reportWriterOptions = {},
+  pendingExternalJournalEntries = [],
   sourceFunctions = {},
   sourceFixtures = {},
   laneInputs = {},
 } = {}) {
+  assertNoPendingExternalRecovery(pendingExternalJournalEntries);
   const runAt = runAtFrom(clock);
   const effectiveRunId = runId ?? dailyRunIdentity({ schedule, at: runAt });
   const effectiveClock = crawlerClock(clock, runAt);

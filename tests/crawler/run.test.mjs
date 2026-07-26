@@ -80,7 +80,7 @@ test('a crawl run persists schema, source state, observations, stages, and funne
   assert.equal(result.stages.commit.status, 'committed');
 
   const state = readCrawlerState(store);
-  assert.equal(state.schemaVersion, 2);
+  assert.equal(state.schemaVersion, 3);
   assert.equal(state.sources.length, 1);
   assert.equal(state.sources[0].cursor, null);
   assert.equal(state.sources[0].scan.scanStatus, 'completed');
@@ -243,7 +243,7 @@ test('opens and expands a version-1 jobs table without losing existing rows', ()
 
   const store = openCrawlerStore(databasePath);
   const state = readCrawlerState(store);
-  assert.equal(state.schemaVersion, 2);
+  assert.equal(state.schemaVersion, 3);
   assert.equal(state.jobs.length, 1);
   assert.equal(state.jobs[0].jobKey, 'legacy-job');
   const columns = new Set(store.prepare('PRAGMA table_info(jobs)').all().map((row) => row.name));

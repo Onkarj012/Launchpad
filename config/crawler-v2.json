@@ -15,6 +15,12 @@
   "delivery": {
     "reportDirectory": "logs/daily"
   },
+  "rollbackSupport": {
+    "configSnapshots": "immutable-per-run",
+    "requireDeliveryReceiptBeforeSurfacing": true,
+    "pendingExternalJournalPolicy": "manual-recovery-only",
+    "destructiveRollbackAllowed": false
+  },
   "sources": {
     "atsWarm": {
       "boards": [
