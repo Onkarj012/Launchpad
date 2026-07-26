@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../../job-pull/config.mjs';
-import { normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { applyScores, localRunDate, runPipeline } from '../../job-pull/run.mjs';
 import { classifyMiss } from '../../job-pull/audit.mjs';
 
@@ -98,6 +98,27 @@ test('run telemetry separates scored, unscored, scoring-failed, and selected can
   assert.equal(result.counts.scoringFailed, 1);
   assert.equal(result.counts.selected, 1);
   assert.deepEqual(result.scoring, { required: true, scoredCount: 1, unscoredCount: 1, scoringFailedCount: 1, selectedCount: 1 });
+});
+
+test('suppression totals equal the roles removed from the scoring pool', () => {
+  const actioned = raw(301);
+  const cooldown = raw(302);
+  const available = raw(303);
+  const result = runPipeline({
+    config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 3, strictTarget: 1 } },
+    now,
+    runId: 'suppression-reconciliation-fixture',
+    opportunityLedgerRows: [
+      { dedup_key: candidateDedupKey(actioned), action_state: 'applied' },
+      { dedup_key: candidateDedupKey(cooldown), action_state: 'none', last_surfaced_at: '2026-07-13T12:00:00.000Z' },
+    ],
+    sources: [{ candidates: [actioned, cooldown, available], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.equal(result.counts.gatePassing, 3);
+  assert.equal(result.suppression.count, 2);
+  assert.equal(result.scoringCandidates.length, 1);
+  assert.equal(result.counts.gatePassing - result.scoringCandidates.length, result.suppression.count);
+  assert.equal(result.scoringCandidates[0].canonicalUrl, available.canonicalUrl);
 });
 
 test('audit classifies supplied misses without discovery', () => {

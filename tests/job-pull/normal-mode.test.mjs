@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { runNormalMode } from '../../job-pull/normal-mode.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { selectNormalApplications } from '../../job-pull/normal-selection.mjs';
@@ -158,6 +158,38 @@ test('v4 historical identity match is suppressed before the shortlist/Notion-pla
   });
   assert.equal(unsuppressed.shortlist.length, 1);
   assert.equal(unsuppressed.historicalSuppressions.length, 0);
+
+  const ambiguous = await runNormalMode({
+    clock: () => NOW, sourceFunctions: allFunctions({ 'portal-naukri': [readyCandidate] }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+    historicalV4Rows: [historicalV4Rows[0], { ...historicalV4Rows[0], state: 'contacted' }],
+  });
+  assert.equal(ambiguous.shortlist.length, 0);
+  assert.equal(ambiguous.historicalAmbiguous.length, 1);
+  assert.ok(ambiguous.verificationQueue.some((row) => row.reasons.includes('AMBIGUOUS_HISTORICAL_COLLISION')));
+});
+
+test('actioned and cooldown roles never reach Normal scoring or selection', async () => {
+  const actioned = normalizeCandidate(raw(31), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });
+  const cooldown = normalizeCandidate(raw(32), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });
+  let scored = [];
+  const result = await runNormalMode({
+    clock: () => NOW,
+    sourceFunctions: allFunctions({ 'tracked-ats': [actioned, cooldown] }),
+    opportunityLedgerRows: [
+      { dedup_key: candidateDedupKey(actioned), action_state: 'contacted' },
+      { dedup_key: candidateDedupKey(cooldown), action_state: 'none', last_surfaced_at: '2026-07-22T06:30:00.000Z' },
+    ],
+    scorer: async (rows) => {
+      scored = rows;
+      return { scored: rows, failures: [], chunks: 0, degraded: false, reasonCode: null };
+    },
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  assert.deepEqual(scored, []);
+  assert.deepEqual(result.shortlist, []);
+  assert.equal(result.funnel.lifecycle.suppressedActioned, 1);
+  assert.equal(result.funnel.lifecycle.suppressedCooldown, 1);
 });
 
 test('fatal core failure occurs before planning or transactional execution', async () => {

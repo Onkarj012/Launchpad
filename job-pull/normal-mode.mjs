@@ -134,7 +134,7 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
   return {
     schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode,
     shortlist: [], verificationQueue: details.verificationQueue || [], funnel: details.funnel || null, sourceManifests, sourceTelemetry: sourceManifests,
-    plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
+    plannedNotionOperations: [], transaction: null, historicalSuppressions: [], historicalAmbiguous: [],
     scoringQueue: details.scoringQueue || [],
     scoring: details.scoring || null,
     reconciliation: details.reconciliation || null,
@@ -151,15 +151,16 @@ function reconciliationLine({ eligible, scored, ready, selected, causes }) {
   return `eligible=${eligible}; scored=${scored}; ready=${ready}; selected=${selected}; causes=${causeText || 'none'}`;
 }
 
-function buildReconciliation({ eligible, historicalSuppressed, selection, selected, runFailed = false }) {
+function buildReconciliation({ eligible, historicalSuppressed, historicalAmbiguous = 0, selection, selected, runFailed = false }) {
   const ready = selection.readyCount;
   const scored = selection.scoredCount;
-  const notReady = Math.max(0, eligible - historicalSuppressed - ready);
+  const notReady = Math.max(0, eligible - historicalSuppressed - historicalAmbiguous - ready);
   const readyNotScored = Math.max(0, ready - scored);
   const selectedGap = Math.max(0, scored - selected);
   const causes = {
     eligibleToReady: {
       HISTORICAL_SUPPRESSION: historicalSuppressed,
+      HISTORICAL_AMBIGUOUS_COLLISION: historicalAmbiguous,
       NOT_APPLICATION_READY: notReady,
     },
     readyToScored: {
@@ -278,7 +279,11 @@ export async function runNormalMode({
     });
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
-    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
+    const {
+      kept: nonHistoricalCandidates,
+      suppressed: historicalSuppressions,
+      ambiguous: historicalAmbiguous,
+    } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
     const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer);
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
@@ -297,6 +302,7 @@ export async function runNormalMode({
     const reconciliation = buildReconciliation({
       eligible: eligibleCount,
       historicalSuppressed: historicalSuppressions.length,
+      historicalAmbiguous: historicalAmbiguous.length,
       selection,
       selected: incompleteScoring ? 0 : selection.selected.length,
       runFailed: incompleteScoring,
@@ -306,7 +312,22 @@ export async function runNormalMode({
       ...pipeline.scoringCandidates,
       ...sourceResults.flatMap((source) => source.candidates).filter((candidate) => !verifiedCandidates.has(candidate.canonicalUrl)),
     ];
-    const verificationQueue = verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean);
+    const verificationQueue = [
+      ...verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean),
+      ...historicalAmbiguous.map((collision) => ({
+        company: collision.company,
+        title: collision.title,
+        discoveryUrl: collision.candidate?.discoveryUrl || collision.canonicalUrl,
+        originalApplicationUrl: collision.candidate?.originalApplicationUrl || null,
+        provider: collision.candidate?.provider || null,
+        source: collision.candidate?.source || null,
+        applicationResolution: collision.candidate?.applicationResolution || null,
+        liveness: collision.candidate?.liveness || null,
+        reasons: ['AMBIGUOUS_HISTORICAL_COLLISION'],
+        evidence: collision.evidence,
+        dedupKey: candidateDedupKey(collision.candidate),
+      })),
+    ];
     if (incompleteScoring) {
       const error = scoringGateError(selection, scorerRan ? scorerTelemetry : null);
       error.details = {
@@ -330,6 +351,7 @@ export async function runNormalMode({
           selected: 0,
           verificationQueue: verificationQueue.length,
           historicalSuppressed: historicalSuppressions.length,
+          historicalAmbiguous: historicalAmbiguous.length,
           minimum: 10,
           preferred: 12,
           maximum: 20,
@@ -371,6 +393,7 @@ export async function runNormalMode({
       scoringQueue: selection.scoringQueue, funnel: pipeline.funnel,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
+      historicalAmbiguous,
       dedupInputs: {
         committedLedgerRows: effectiveLedgerRows.length,
         opportunityLedgerRows: effectiveOpportunityLedgerRows.length,
@@ -386,7 +409,7 @@ export async function runNormalMode({
       ...(scorerTelemetry
         ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } }
         : {}),
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, historicalAmbiguous: historicalAmbiguous.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
     };
   } catch (error) {
     return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error, error.details);

@@ -9,6 +9,7 @@ import { runPipeline } from '../../job-pull/run.mjs';
 import {
   markAction,
   readOpportunityLedger,
+  recordDeliveryCommit,
   recordSurfaced,
   suppressionFor,
 } from '../../job-pull/opportunity-ledger.mjs';
@@ -83,7 +84,9 @@ test('actioned and rejected rows are suppressed forever', () => {
   assert.deepEqual(suppressionFor({ action_state: 'applied' }, NOW), { suppressed: true, code: 'SUPPRESSED_ACTIONED' });
   assert.deepEqual(suppressionFor({ action_state: 'contacted' }, NOW), { suppressed: true, code: 'SUPPRESSED_ACTIONED' });
   assert.deepEqual(suppressionFor({ action_state: 'interviewing' }, NOW), { suppressed: true, code: 'SUPPRESSED_ACTIONED' });
+  assert.deepEqual(suppressionFor({ action_state: 'offer' }, NOW), { suppressed: true, code: 'SUPPRESSED_ACTIONED' });
   assert.deepEqual(suppressionFor({ action_state: 'rejected' }, NOW), { suppressed: true, code: 'SUPPRESSED_REJECTED' });
+  assert.deepEqual(suppressionFor({ action_state: 'withdrawn' }, NOW), { suppressed: true, code: 'SUPPRESSED_REJECTED' });
 });
 
 test('none rows within seven days are on cooldown', () => {
@@ -111,12 +114,24 @@ test('backfill candidates with any prior row are suppressed as already seen', ()
   assert.equal(result.exclusionAudit.selection.length, 0);
 });
 
-test('non-dry pipeline records the final selected candidates', () => {
+test('failed delivery creates no surfaced state and committed delivery starts cooldown', () => {
   const ledgerPath = tempLedger();
   const item = candidate('https://example.test/selected');
-  runPipeline({
+  const result = runPipeline({
     config: loadConfig(), now: NOW, runId: 'surface-run', opportunityLedgerPath: ledgerPath, dryRun: false,
     sources: [{ candidates: [item], manifest: { sourceId: 'reverse-ats', errors: [] } }],
+  });
+  assert.equal(readOpportunityLedger(ledgerPath).rows.length, 0);
+  recordDeliveryCommit(result.records.map((record) => record.candidate), {
+    path: ledgerPath,
+    now: NOW,
+    deliveryCommitted: false,
+  });
+  assert.equal(readOpportunityLedger(ledgerPath).rows.length, 0);
+  recordDeliveryCommit(result.records.map((record) => record.candidate), {
+    path: ledgerPath,
+    now: NOW,
+    deliveryCommitted: true,
   });
   assert.equal(readOpportunityLedger(ledgerPath).rows[0].dedup_key, candidateDedupKey(item));
 });

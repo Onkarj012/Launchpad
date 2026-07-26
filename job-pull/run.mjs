@@ -11,7 +11,7 @@ import { selectCandidates } from './select.mjs';
 import { selectApplicationShortlist } from './select.mjs';
 import { scoreConversion } from './conversion-score.mjs';
 import { readLedger } from './ledger.mjs';
-import { readOpportunityLedger, recordSurfaced, suppressionFor } from './opportunity-ledger.mjs';
+import { readOpportunityLedger, suppressionFor } from './opportunity-ledger.mjs';
 import { runTrackedScan, trackedCandidatesFromFixture } from './adapters/tracked.mjs';
 import { runReverseAtsScan, reverseAtsCandidatesFromFixture } from './adapters/reverse-ats.mjs';
 import { importPublicSearchCandidates } from './adapters/public-search.mjs';
@@ -241,7 +241,6 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     }
     return entry;
   });
-  const scoringCandidates = classified.filter((entry) => entry.eligibility.eligible && entry.freshness.eligible);
   const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
   const suppressionCounts = {
     SUPPRESSED_ACTIONED: 0,
@@ -262,7 +261,8 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     else selectionPool.push(entry);
   }
   const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
-  const selection = selectCandidates(selectionPool, config);
+  const scoringCandidates = selectionPool;
+  const selection = selectCandidates(scoringCandidates, config);
   const applicationShortlist = selectApplicationShortlist(selection.selected, config);
   const verifyQueue = classified
     .filter((entry) => entry.freshness.verifyQueue)
@@ -305,9 +305,6 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     if (!validation.valid) throw new RunError(`payload validation failed for ${candidate.canonicalUrl}: ${validation.errors.join(', ')}`);
     return { candidate, payload };
   });
-  if (!dryRun) {
-    recordSurfaced(records.map((record) => record.candidate), { path: opportunityLedgerPath, now });
-  }
   const sourceCounts = manifests.map((manifest) => ({ ...manifest }));
   const funnel = buildFunnelReport({
     observations: classified,
