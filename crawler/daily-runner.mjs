@@ -13,7 +13,8 @@ import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
-import { sourceFailureHistogram } from './run.mjs';
+import { markJobsSurfaced, openCrawlerStore, sourceFailureHistogram } from './run.mjs';
+import { commitDailyReport } from './daily-report.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -149,6 +150,41 @@ function number(value) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
+export function commitDailyDelivery({
+  run,
+  crawlerResult,
+  databasePath,
+  store = null,
+  reportDirectory,
+  reportWriter = commitDailyReport,
+  reportWriterOptions = {},
+  runAt = run?.runAt,
+} = {}) {
+  const reportCommit = reportWriter({
+    run,
+    directory: reportDirectory,
+    ...reportWriterOptions,
+  });
+  const selectedUrls = new Set((run.shortlist ?? []).flatMap((candidate) => [
+    candidate.canonicalUrl,
+    candidate.originalApplicationUrl,
+    candidate.discoveryUrl,
+  ]).filter(Boolean));
+  const surfacedJobKeys = (crawlerResult?.pendingSurfaceJobs ?? [])
+    .filter((job) => selectedUrls.has(job.canonicalUrl) || selectedUrls.has(job.originalApplicationUrl))
+    .map((job) => job.jobKey);
+  let surfacedStateCommitCount = 0;
+  if (surfacedJobKeys.length) {
+    const surfaceStore = store ?? openCrawlerStore(databasePath);
+    try {
+      surfacedStateCommitCount = markJobsSurfaced(surfaceStore, surfacedJobKeys, { at: runAt });
+    } finally {
+      if (!store) surfaceStore.close();
+    }
+  }
+  return { reportCommit, surfacedStateCommitCount };
+}
+
 export function crawlerLaneFixtures(result) {
   const observationsByLane = new Map();
   const sourceIds = new Set([
@@ -254,6 +290,9 @@ async function runDailyNormalUnlocked({
   scorer = null,
   store,
   canaryStore,
+  reportDirectory = null,
+  reportWriter = commitDailyReport,
+  reportWriterOptions = {},
   sourceFunctions = {},
   sourceFixtures = {},
   laneInputs = {},
@@ -318,16 +357,19 @@ async function runDailyNormalUnlocked({
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
   const failureHistogram = sourceFailureHistogram(crawlerResult.sourceTelemetry, crawlerResult.failures);
   const crawlerDeadline = crawlerResult.run?.telemetry?.deadline ?? null;
-  const canaryStoreWithFailures = canaryStore && {
-    readRuns: () => canaryStore.readRuns?.() ?? [],
-    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram, crawlerDeadline }),
+  const receipt = {
+    schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
+    configPath: configPath ? path.resolve(configPath) : null,
+    databasePath: path.resolve(databasePath ?? config.databasePath),
+    environment,
+    schedule,
+    mode,
+    locationPreset,
+    runId: effectiveRunId,
+    noAutoApply: true,
+    noAutoSend: true,
   };
-  const deliveryCanary = recordDeliveryCanary({
-    run: { ...result, v4HistorySnapshot: snapshotTelemetry, sourceFailureHistogram: failureHistogram, crawlerDeadline },
-    clock: effectiveClock,
-    store: canaryStoreWithFailures,
-  });
-  return {
+  const preDeliveryResult = {
     ...result,
     crawlerV2Profile: crawlerResult.profile,
     crawlerV2Operator: crawlerResult.operator,
@@ -339,25 +381,67 @@ async function runDailyNormalUnlocked({
       durationMs: crawlerResult.run?.telemetry?.sourceDurations?.[sourceId] ?? null,
     }])),
     v4HistorySnapshot: snapshotTelemetry,
-    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram, crawlerDeadline },
     telemetry: {
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
       sourceFailureHistogram: failureHistogram,
       crawlerDeadline,
     },
-    receipt: {
-      schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
-      configPath: configPath ? path.resolve(configPath) : null,
-      databasePath: path.resolve(databasePath ?? config.databasePath),
-      environment,
-      schedule,
-      mode,
-      locationPreset,
-      runId: effectiveRunId,
-      noAutoApply: true,
-      noAutoSend: true,
+    receipt,
+  };
+  let reportCommit = null;
+  let surfacedStateCommitCount = 0;
+  if (!result.outcome?.fatal) {
+    const effectiveReportDirectory = reportDirectory
+      ?? config.delivery?.reportDirectory
+      ?? path.join(path.dirname(receipt.databasePath), 'logs/daily');
+    const committed = commitDailyDelivery({
+      run: preDeliveryResult,
+      crawlerResult,
+      databasePath: receipt.databasePath,
+      store,
+      reportDirectory: effectiveReportDirectory,
+      reportWriter,
+      reportWriterOptions,
+      runAt,
+    });
+    reportCommit = committed.reportCommit;
+    surfacedStateCommitCount = committed.surfacedStateCommitCount;
+  }
+  const deliveredResult = {
+    ...preDeliveryResult,
+    delivery: {
+      commitStatus: reportCommit ? 'committed' : 'not-committed',
+      idempotent: reportCommit?.idempotent ?? false,
+      markdownPath: reportCommit?.markdownPath ?? null,
+      jsonPath: reportCommit?.jsonPath ?? null,
+      hashes: reportCommit?.hashes ?? null,
+      surfacedStateCommitCount,
+      surfacedBeforeCommit: false,
     },
+    telemetry: {
+      ...preDeliveryResult.telemetry,
+      operations: {
+        reportPaths: reportCommit
+          ? { markdown: reportCommit.markdownPath, json: reportCommit.jsonPath }
+          : { markdown: null, json: null },
+        reportHashes: reportCommit?.hashes ?? null,
+        surfacedStateCommitCount,
+      },
+    },
+  };
+  const canaryStoreWithFailures = canaryStore && {
+    readRuns: () => canaryStore.readRuns?.() ?? [],
+    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram, crawlerDeadline }),
+  };
+  const deliveryCanary = recordDeliveryCanary({
+    run: deliveredResult,
+    clock: effectiveClock,
+    store: canaryStoreWithFailures,
+  });
+  return {
+    ...deliveredResult,
+    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram, crawlerDeadline },
   };
 }
 

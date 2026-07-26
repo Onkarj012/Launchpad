@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openCrawlerStore, readCrawlerState } from '../../crawler/run.mjs';
+import {
+  markJobsSurfaced,
+  openCrawlerStore,
+  readCrawlerRunData,
+  readCrawlerState,
+} from '../../crawler/run.mjs';
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
 
 function fixedClock() {
@@ -194,6 +199,9 @@ test('a new run automatically uses durable crawler history for novelty', async (
     sourcePlans: [sourcePlan()],
     prepareEntry,
   });
+  assert.equal(first.jobs[0].lifecycle, 'application-ready');
+  assert.equal(first.pendingSurfaceJobs.length, 1);
+  markJobsSurfaced(store, first.pendingSurfaceJobs.map((job) => job.jobKey));
   const second = await crawlWorkflow({
     store,
     runId: 'durable-history-2',
@@ -203,7 +211,6 @@ test('a new run automatically uses durable crawler history for novelty', async (
 
   assert.equal(first.observations[0]._crawlerIdentity.code, 'NEW_TO_ME');
   assert.equal(first.shortlist.length, 1);
-  // Shortlist/reserve inclusion marks durable lifecycle as surfaced (cooldown gate).
   assert.equal(second.observations[0]._crawlerIdentity.code, 'SUPPRESSED_SURFACED');
   assert.equal(second.shortlist.length, 0);
   assert.equal(second.jobs.length, 1);
@@ -262,7 +269,9 @@ test('incomplete observation becoming application-ready surfaces once then coold
   assert.equal(second.observations[0]._crawlerIdentity.code, 'NEWLY_ACTIONABLE');
   assert.equal(second.shortlist.length, 1);
   assert.equal(second.counts.newlyActionable, 1);
-  assert.equal(second.jobs[0].lifecycle, 'surfaced');
+  assert.equal(second.jobs[0].lifecycle, 'application-ready');
+  markJobsSurfaced(store, second.pendingSurfaceJobs.map((job) => job.jobKey));
+  assert.equal(readCrawlerRunData(store, 'hydrate-2').jobs[0].lifecycle, 'surfaced');
 
   const third = await crawlWorkflow({
     store,
@@ -294,13 +303,16 @@ test('workflow idempotent rerun does not double-surface or duplicate newly-actio
     fetch: async () => ({ observations: [observation] }),
   }];
   const first = await crawlWorkflow({ store, runId: 'idempotent-surface-1', sourcePlans, prepareEntry });
-  const second = await crawlWorkflow({ store, runId: 'idempotent-surface-1', sourcePlans, prepareEntry });
   assert.equal(first.idempotent, false);
+  assert.equal(first.jobs[0].lifecycle, 'application-ready');
+  markJobsSurfaced(store, first.pendingSurfaceJobs.map((job) => job.jobKey));
+  const second = await crawlWorkflow({ store, runId: 'idempotent-surface-1', sourcePlans, prepareEntry });
   assert.equal(second.idempotent, true);
   assert.equal(first.shortlist.length, 1);
   assert.deepEqual(second.shortlist, first.shortlist);
-  assert.equal(second.jobs[0].lifecycle, 'surfaced');
-  assert.equal(Number(second.jobs[0].lifecycleJson?.timesSurfaced || 1), 1);
+  const jobs = readCrawlerRunData(store, 'idempotent-surface-1').jobs;
+  assert.equal(jobs[0].lifecycle, 'surfaced');
+  assert.equal(Number(jobs[0].lifecycleJson?.timesSurfaced || 1), 1);
   store.close();
 });
 

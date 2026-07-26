@@ -12,6 +12,9 @@
     "wholeRunDeadlineMs": 2520000,
     "downstreamReserveMs": 300000
   },
+  "delivery": {
+    "reportDirectory": "logs/daily"
+  },
   "sources": {
     "atsWarm": {
       "boards": [

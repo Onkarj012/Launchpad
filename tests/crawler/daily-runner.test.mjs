@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
-import { openCrawlerStore } from '../../crawler/run.mjs';
+import {
+  commitDailyDelivery,
+  crawlerLaneFixtures,
+  runDailyNormal,
+} from '../../crawler/daily-runner.mjs';
+import { commitDailyReport } from '../../crawler/daily-report.mjs';
+import { openCrawlerStore, readCrawlerRunData } from '../../crawler/run.mjs';
+import { crawlWorkflow } from '../../crawler/workflow.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
@@ -776,4 +782,106 @@ test('omitting scores preserves the unified scoring gate', async () => {
   assert.equal(result.outcome.status, 'fatal');
   assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
   assert.match(result.outcome.errors[0].message, /unscored=1/);
+});
+
+test('daily delivery commits both reports before marking a selected crawler job surfaced', async () => {
+  const { config, root } = testConfig();
+  const store = openCrawlerStore(config.databasePath);
+  const role = rawPortalJob(1601, {
+    canonicalUrl: 'https://company-1601.example.test/careers/1601',
+    provider: 'fixture',
+    providerJobId: 'delivery-1601',
+    classification: 'direct',
+    sourceKind: 'ats-direct',
+    applicationReady: true,
+  });
+  const crawlerResult = await crawlWorkflow({
+    store,
+    runId: 'delivery-crawler',
+    sourcePlans: [{
+      id: 'delivery-fixture',
+      lane: 'fixture',
+      trustClass: 'direct',
+      fetch: async () => ({ observations: [role] }),
+    }],
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, window: 'Hot', ageHours: 1 },
+    }),
+  });
+  const run = {
+    runId: 'delivery-run',
+    runAt: NOW,
+    outcome: { status: 'ok', fatal: false },
+    shortlist: [{ ...role, canonicalUrl: role.canonicalUrl, originalApplicationUrl: role.originalApplicationUrl }],
+    stretchShortage: [],
+    verificationQueue: [],
+    sourceManifests: [],
+    shortfall: { minimum: 10, selected: 1, missing: 9, reasons: ['APPLICATION_READY_MINIMUM_SHORTFALL'] },
+  };
+  let observedBeforeCommit = null;
+  const result = commitDailyDelivery({
+    run,
+    crawlerResult,
+    databasePath: config.databasePath,
+    store,
+    reportDirectory: path.join(root, 'daily'),
+    reportWriter(options) {
+      observedBeforeCommit = readCrawlerRunData(store, 'delivery-crawler').jobs[0].lifecycle;
+      return commitDailyReport(options);
+    },
+  });
+
+  assert.equal(observedBeforeCommit, 'application-ready');
+  assert.equal(existsSync(result.reportCommit.markdownPath), true);
+  assert.equal(existsSync(result.reportCommit.jsonPath), true);
+  assert.equal(readCrawlerRunData(store, 'delivery-crawler').jobs[0].lifecycle, 'surfaced');
+  store.close();
+});
+
+test('a failed daily report write consumes no crawler jobs', async () => {
+  const { config } = testConfig();
+  const store = openCrawlerStore(config.databasePath);
+  const role = rawPortalJob(1602, {
+    canonicalUrl: 'https://company-1602.example.test/careers/1602',
+    provider: 'fixture',
+    providerJobId: 'delivery-1602',
+    classification: 'direct',
+    sourceKind: 'ats-direct',
+    applicationReady: true,
+  });
+  const crawlerResult = await crawlWorkflow({
+    store,
+    runId: 'failed-delivery-crawler',
+    sourcePlans: [{
+      id: 'failed-delivery-fixture',
+      lane: 'fixture',
+      trustClass: 'direct',
+      fetch: async () => ({ observations: [role] }),
+    }],
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, window: 'Hot', ageHours: 1 },
+    }),
+  });
+  assert.throws(() => commitDailyDelivery({
+    run: {
+      runId: 'failed-delivery-run',
+      runAt: NOW,
+      shortlist: [role],
+    },
+    crawlerResult,
+    databasePath: config.databasePath,
+    store,
+    reportWriter() {
+      throw new Error('injected report failure');
+    },
+  }), /injected report failure/);
+
+  const jobs = readCrawlerRunData(store, 'failed-delivery-crawler').jobs;
+  assert.equal(jobs[0].lifecycle, 'application-ready');
+  assert.equal(jobs[0].surfaced, false);
+  store.close();
 });
