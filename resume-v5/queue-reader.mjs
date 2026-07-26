@@ -33,6 +33,17 @@ function textValue(value) {
   return String(value).trim() || null;
 }
 
+function evidencePacketFrom(row) {
+  const raw = textValue(valueFrom(row, 'requirementsEvidence'));
+  if (!raw) return null;
+  try {
+    const packet = JSON.parse(raw);
+    return packet?.version === 'LaunchpadApplicationEvidenceV1' ? packet : null;
+  } catch {
+    return null;
+  }
+}
+
 function rejectLegacyTarget(gateway) {
   const version = gateway?.version ?? gateway?.notionVersion ?? gateway?.targetVersion;
   if (version && /(?:^|[^0-9])v[34](?:$|[^0-9])/i.test(String(version))) {
@@ -49,6 +60,7 @@ export function applicationFromPage(row) {
   const directCompany = row.companyName ?? row.CompanyName ?? null;
   const name = textValue(valueFrom(row, 'name'));
   const companyPageIds = valueFrom(row, 'company');
+  const evidencePacket = evidencePacketFrom(row);
   return {
     id: row.id,
     role: textValue(directRole ?? valueFrom(row, 'role')),
@@ -57,7 +69,23 @@ export function applicationFromPage(row) {
     companyName: textValue(directCompany ?? valueFrom(row, 'companyName') ?? valueFrom(row, 'company')),
     companyPageIds: Array.isArray(companyPageIds) ? companyPageIds : [],
     jdLink: textValue(valueFrom(row, 'jdLink')),
+    canonicalUrl: evidencePacket?.canonicalUrl ?? textValue(valueFrom(row, 'jdLink')),
     originalApplicationUrl: textValue(valueFrom(row, 'originalApplicationUrl')),
+    applicationIdentity: evidencePacket?.identity ?? null,
+    provider: evidencePacket?.provider ?? textValue(valueFrom(row, 'provider')),
+    requisitionId: evidencePacket?.requisitionId ?? textValue(valueFrom(row, 'sourceJobId')),
+    jdSnapshotPath: evidencePacket?.jdSnapshotPath ?? null,
+    jdSnapshotBody: evidencePacket?.jdSnapshotBody ?? null,
+    jdSha256: evidencePacket?.jdSha256 ?? null,
+    jdCapturedAt: evidencePacket?.capturedAt ?? null,
+    freshnessEvidence: evidencePacket?.freshnessEvidence ?? null,
+    livenessEvidence: evidencePacket?.livenessEvidence ?? null,
+    seniorityDecision: evidencePacket?.seniority?.decision ?? null,
+    seniorityEvidenceQuote: evidencePacket?.seniority?.evidenceQuote ?? null,
+    readinessDecision: evidencePacket?.readinessDecision ?? textValue(valueFrom(row, 'readiness')),
+    scoringVersions: evidencePacket?.scoringVersions ?? null,
+    sourceProvenance: evidencePacket?.sourceProvenance ?? null,
+    evidencePacket,
     makeResume: booleanValue(valueFrom(row, 'makeResume')),
     applied: booleanValue(valueFrom(row, 'applied')),
     appliedAt: valueFrom(row, 'appliedAt'),
@@ -65,7 +93,6 @@ export function applicationFromPage(row) {
     resumeState: textValue(valueFrom(row, 'resumeState')) || 'Not Started',
     syncKey: textValue(valueFrom(row, 'syncKey')),
     dedupKey: textValue(valueFrom(row, 'dedupKey')),
-    canonicalUrl: textValue(valueFrom(row, 'canonicalUrl')),
     raw: row,
   };
 }

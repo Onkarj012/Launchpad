@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { assertLiveManifest, isLegacyNotionId, isNotionIdentifier, isPlaceholderIdentifier, loadManifest, normalizeNotionId, targetFor } from './manifest.mjs';
 import { assertValidViewDefinitions, buildDatabaseProperties, mapProperties, readPropertyValue, storeKeyForTarget, V5_SCHEMA, V5_STORE_KEYS } from './schema.mjs';
 import { createTransactionJournal, redactSensitive, runDurableTransaction, runReservedBatch, structuredError } from './transaction.mjs';
+import { evidencePacketValues } from '../resume-v5/application-evidence.mjs';
 
 export const NOTION_V5_API_VERSION = '2025-09-03';
 export const NOTION_V5_API_BASE = 'https://api.notion.com/v1';
@@ -80,9 +81,11 @@ function applicationValues(application = {}) {
   const role = application.role ?? application.Role;
   const company = application.companyName ?? application.Company;
   const status = application.status ?? application.Status;
+  const evidenceValues = application.evidencePacket ? evidencePacketValues(application.evidencePacket) : {};
   return {
     name: application.name ?? application.Name ?? [role, company].filter(Boolean).join(' — '), role,
-    jdLink: application.jdLink ?? application['JD Link'], originalApplicationUrl: application.originalApplicationUrl ?? application['Original Application URL'],
+    jdLink: application.jdLink ?? application['JD Link'],
+    originalApplicationUrl: application.originalApplicationUrl ?? application['Original Application URL'],
     applicationResolution: application.applicationResolution ?? application['Application Resolution'], applicationReady: application.applicationReady ?? application['Application Ready'],
     postedDate: application.postedDate ?? application['Posted Date'] ?? application['Posted At'], discoveredAt: application.discoveredAt ?? application['Discovered At'], crawledAt: application.crawledAt ?? application['Crawled At'],
     freshnessTier: application.freshnessTier ?? application['Freshness Tier'] ?? application['Freshness Window'], status: status === 'Discovered' ? 'Ready' : status,
@@ -100,6 +103,7 @@ function applicationValues(application = {}) {
     stipendPeriod: application.stipendPeriod ?? application['Stipend Period'], stipendMonthlyAmount: application.stipendMonthlyAmount ?? application['Stipend Monthly Amount'],
     stipendRaw: application.stipendRaw ?? application['Stipend Raw'], stipendEvidence: application.stipendEvidence ?? application['Stipend Evidence'],
     stipendTier: application.stipendTier ?? application['Stipend Tier'], freshness: application.freshness ?? application.Freshness, readiness: application.readiness ?? application.Readiness,
+    ...evidenceValues,
   };
 }
 
