@@ -9,13 +9,11 @@ function tempPath(name) {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'v4-history-')), name);
 }
 
-test('missing snapshot file degrades to empty rows with status missing', () => {
-  const result = readV4HistorySnapshot(tempPath('missing.json'));
-  assert.equal(result.missing, true);
-  assert.equal(result.status, 'missing');
-  assert.equal(result.rowCount, 0);
-  assert.deepEqual(result.rows, []);
-  assert.equal(result.generatedAt, null);
+test('missing snapshot file fails loudly before suppression can degrade', () => {
+  assert.throws(
+    () => readV4HistorySnapshot(tempPath('missing.json')),
+    (error) => error.code === 'V4_HISTORY_SNAPSHOT_MISSING' && /does not exist/.test(error.message),
+  );
 });
 
 test('reads a bare JSON array of historical rows as loaded', () => {
@@ -57,22 +55,20 @@ test('stale snapshot reports status stale while still contributing rows', () => 
   assert.equal(result.generatedAt, '2026-01-01T00:00:00Z');
 });
 
-test('malformed payload reports status malformed without throwing', () => {
+test('malformed payload fails loudly', () => {
   const file = tempPath('bad.json');
   fs.writeFileSync(file, JSON.stringify({ notRows: true }));
-  const result = readV4HistorySnapshot(file);
-  assert.equal(result.status, 'malformed');
-  assert.equal(result.rowCount, 0);
-  assert.deepEqual(result.rows, []);
-  assert.match(result.error, /must be an array/);
+  assert.throws(
+    () => readV4HistorySnapshot(file),
+    (error) => error.code === 'V4_HISTORY_SNAPSHOT_MALFORMED' && /must be an array/.test(error.message),
+  );
 });
 
-test('malformed JSON reports status malformed without throwing', () => {
+test('malformed JSON fails loudly', () => {
   const file = tempPath('malformed.json');
   fs.writeFileSync(file, '{not json');
-  const result = readV4HistorySnapshot(file);
-  assert.equal(result.status, 'malformed');
-  assert.equal(result.rowCount, 0);
-  assert.deepEqual(result.rows, []);
-  assert.match(result.error, /not valid JSON/);
+  assert.throws(
+    () => readV4HistorySnapshot(file),
+    (error) => error.code === 'V4_HISTORY_SNAPSHOT_MALFORMED' && /not valid JSON/.test(error.message),
+  );
 });

@@ -15,7 +15,6 @@ import { buildFunnelReport } from '../job-pull/funnel-report.mjs';
 import {
   crawlRun,
   finishCrawlRun,
-  markJobsSurfaced,
   readCrawlerRunData,
 } from './run.mjs';
 
@@ -379,12 +378,14 @@ export async function crawlWorkflow({
     .filter((record) => selectedSurfaceKeys.has(candidateKey(record)))
     .map((record) => record.jobKey)
     .filter(Boolean))];
-  if (!durable.idempotent && surfacedJobKeys.length) {
-    markJobsSurfaced(store, surfacedJobKeys, { at: runAt });
-  }
-  const jobs = !durable.idempotent && surfacedJobKeys.length
-    ? readCrawlerRunData(store, runId).jobs
-    : data.jobs;
+  const pendingSurfaceJobs = records
+    .filter((record) => surfacedJobKeys.includes(record.jobKey))
+    .map((record) => ({
+      jobKey: record.jobKey,
+      canonicalUrl: record.canonicalUrl,
+      originalApplicationUrl: record.raw?.originalApplicationUrl ?? null,
+    }));
+  const jobs = data.jobs;
   const newlyActionableCount = nonHistoricalEntries.filter((entry) => entry.identity?.code === 'NEWLY_ACTIONABLE'
     || entry.novelty?.newlyActionable === true
     || entry.novelty?.code === 'NEWLY_ACTIONABLE').length;
@@ -559,6 +560,7 @@ export async function crawlWorkflow({
         sourceTelemetry: jsonSafe(sourceTelemetry),
         sourceYield: jsonSafe(sourceYield),
         funnel: jsonSafe(funnel),
+        pendingSurfaceJobs: jsonSafe(pendingSurfaceJobs),
         v4Snapshot: jsonSafe(v4SnapshotTelemetry),
         novelty: jsonSafe(noveltyBreakdown),
       },
@@ -595,6 +597,7 @@ export async function crawlWorkflow({
     shortfall: selection.shortfall,
     sourceTelemetry: jsonSafe(sourceTelemetry),
     sourceYield: jsonSafe(persistedWorkflow?.sourceYield ?? sourceYield),
+    pendingSurfaceJobs: jsonSafe(persistedWorkflow?.pendingSurfaceJobs ?? pendingSurfaceJobs),
     plannedDownstreamHandoff: handoff,
     failures: durable.failures,
   };

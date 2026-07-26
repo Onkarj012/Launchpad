@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { openCrawlerStore } from '../../crawler/run.mjs';
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
-import { readV4HistorySnapshot } from '../../crawler/v4-history-snapshot.mjs';
 
 function fixedClock() {
   let current = Date.parse('2026-07-23T10:00:00.000Z');
@@ -54,7 +53,13 @@ async function runOnStore(store, runId, obs = observation()) {
       fetch: async () => ({ observations: [obs] }),
     }],
     prepareEntry,
-    v4Snapshot: readV4HistorySnapshot(path.join(os.tmpdir(), `v4-missing-${runId}.json`)),
+    v4Snapshot: {
+      status: 'missing',
+      path: path.join(os.tmpdir(), `v4-missing-${runId}.json`),
+      generatedAt: null,
+      rowCount: 0,
+      rows: [],
+    },
   });
 }
 

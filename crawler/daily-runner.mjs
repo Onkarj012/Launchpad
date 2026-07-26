@@ -7,13 +7,25 @@ import {
 import { fetchWarmAts } from './ats-warm.mjs';
 import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
 import { boardIdentityKey, projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
-import { runNormalMode } from '../job-pull/normal-mode.mjs';
+import {
+  assertSuccessfulDcoTelemetry,
+  reconcileDeliveryFunnel,
+  runNormalMode,
+} from '../job-pull/normal-mode.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
-import { sourceFailureHistogram } from './run.mjs';
+import {
+  assertNoPendingExternalRecovery,
+  markJobsSurfaced,
+  openCrawlerStore,
+  persistRunDeliveryReceipt,
+  sourceFailureHistogram,
+} from './run.mjs';
+import { commitDailyReport } from './daily-report.mjs';
+import { computeCanaryVersion } from './canary-evaluator.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -149,6 +161,78 @@ function number(value) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
+export function commitDailyDelivery({
+  run,
+  crawlerResult,
+  databasePath,
+  store = null,
+  reportDirectory,
+  reportWriter = commitDailyReport,
+  reportWriterOptions = {},
+  runAt = run?.runAt,
+} = {}) {
+  const dcoTelemetry = structuredClone(run.telemetry?.dco ?? null);
+  if (dcoTelemetry) {
+    const reconciliation = dcoTelemetry.funnel.reconciliation;
+    const selected = reconciliation.counts.selected;
+    reconciliation.counts.committed = selected;
+    reconciliation.causes.selectedToCommitted = {};
+    Object.assign(reconciliation, reconcileDeliveryFunnel({
+      ...reconciliation.counts,
+      causes: reconciliation.causes,
+    }));
+    dcoTelemetry.funnel.selected.committed = selected;
+    dcoTelemetry.funnel.deliveryCommitStatus = 'committed';
+    dcoTelemetry.operations.unresolvedReconciliationCount = reconciliation.unresolvedCount;
+  }
+  const deliveryRun = dcoTelemetry
+    ? { ...run, telemetry: { ...run.telemetry, dco: dcoTelemetry } }
+    : run;
+  const reportCommit = reportWriter({
+    run: deliveryRun,
+    directory: reportDirectory,
+    ...reportWriterOptions,
+  });
+  if (dcoTelemetry) assertSuccessfulDcoTelemetry(dcoTelemetry);
+  const selectedUrls = new Set((run.shortlist ?? []).flatMap((candidate) => [
+    candidate.canonicalUrl,
+    candidate.originalApplicationUrl,
+    candidate.discoveryUrl,
+  ]).filter(Boolean));
+  const surfacedJobKeys = (crawlerResult?.pendingSurfaceJobs ?? [])
+    .filter((job) => selectedUrls.has(job.canonicalUrl) || selectedUrls.has(job.originalApplicationUrl))
+    .map((job) => job.jobKey);
+  let surfacedStateCommitCount = 0;
+  const surfaceStore = store ?? openCrawlerStore(databasePath);
+  try {
+    persistRunDeliveryReceipt(surfaceStore, run.runId, {
+      markdownPath: reportCommit.markdownPath,
+      jsonPath: reportCommit.jsonPath,
+      hashes: reportCommit.hashes,
+      codeConfigVersion: run.canaryVersion ?? run.receipt?.codeConfigVersion ?? null,
+      surfacedJobKeys,
+    }, { at: runAt });
+    if (surfacedJobKeys.length) {
+      surfacedStateCommitCount = markJobsSurfaced(surfaceStore, surfacedJobKeys, {
+        at: runAt,
+        receiptRunId: run.runId,
+        requireReceipt: true,
+      });
+    }
+  } finally {
+    if (!store) surfaceStore.close();
+  }
+  if (dcoTelemetry) {
+    dcoTelemetry.operations.localReportPaths = {
+      markdown: reportCommit.markdownPath,
+      json: reportCommit.jsonPath,
+    };
+    dcoTelemetry.operations.localReportHashes = reportCommit.hashes;
+    dcoTelemetry.operations.surfacedStateCommitCount = surfacedStateCommitCount;
+  }
+  return { reportCommit, surfacedStateCommitCount, dcoTelemetry };
+}
+
 export function crawlerLaneFixtures(result) {
   const observationsByLane = new Map();
   const sourceIds = new Set([
@@ -254,10 +338,15 @@ async function runDailyNormalUnlocked({
   scorer = null,
   store,
   canaryStore,
+  reportDirectory = null,
+  reportWriter = commitDailyReport,
+  reportWriterOptions = {},
+  pendingExternalJournalEntries = [],
   sourceFunctions = {},
   sourceFixtures = {},
   laneInputs = {},
 } = {}) {
+  assertNoPendingExternalRecovery(pendingExternalJournalEntries);
   const runAt = runAtFrom(clock);
   const effectiveRunId = runId ?? dailyRunIdentity({ schedule, at: runAt });
   const effectiveClock = crawlerClock(clock, runAt);
@@ -318,16 +407,20 @@ async function runDailyNormalUnlocked({
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
   const failureHistogram = sourceFailureHistogram(crawlerResult.sourceTelemetry, crawlerResult.failures);
   const crawlerDeadline = crawlerResult.run?.telemetry?.deadline ?? null;
-  const canaryStoreWithFailures = canaryStore && {
-    readRuns: () => canaryStore.readRuns?.() ?? [],
-    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram, crawlerDeadline }),
+  const receipt = {
+    schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
+    configPath: configPath ? path.resolve(configPath) : null,
+    databasePath: path.resolve(databasePath ?? config.databasePath),
+    environment,
+    schedule,
+    mode,
+    locationPreset,
+    runId: effectiveRunId,
+    noAutoApply: true,
+    noAutoSend: true,
+    codeConfigVersion: computeCanaryVersion({ config }),
   };
-  const deliveryCanary = recordDeliveryCanary({
-    run: { ...result, v4HistorySnapshot: snapshotTelemetry, sourceFailureHistogram: failureHistogram, crawlerDeadline },
-    clock: effectiveClock,
-    store: canaryStoreWithFailures,
-  });
-  return {
+  const preDeliveryResult = {
     ...result,
     crawlerV2Profile: crawlerResult.profile,
     crawlerV2Operator: crawlerResult.operator,
@@ -339,25 +432,103 @@ async function runDailyNormalUnlocked({
       durationMs: crawlerResult.run?.telemetry?.sourceDurations?.[sourceId] ?? null,
     }])),
     v4HistorySnapshot: snapshotTelemetry,
-    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram, crawlerDeadline },
     telemetry: {
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
       sourceFailureHistogram: failureHistogram,
       crawlerDeadline,
     },
-    receipt: {
-      schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
-      configPath: configPath ? path.resolve(configPath) : null,
-      databasePath: path.resolve(databasePath ?? config.databasePath),
-      environment,
-      schedule,
-      mode,
-      locationPreset,
-      runId: effectiveRunId,
-      noAutoApply: true,
-      noAutoSend: true,
+    receipt,
+    canaryVersion: receipt.codeConfigVersion,
+  };
+  if (preDeliveryResult.telemetry.dco) {
+    const operations = preDeliveryResult.telemetry.dco.operations;
+    operations.schedule = schedule;
+    operations.configPath = receipt.configPath;
+    operations.databasePath = receipt.databasePath;
+    operations.startedAt = crawlerResult.run?.startedAt ?? runAt;
+    operations.endedAt = crawlerResult.run?.finishedAt ?? runAt;
+    operations.durationMs = crawlerDeadline?.elapsedMs ?? null;
+    operations.deadlineStatus = crawlerDeadline
+      ? {
+          enabled: crawlerDeadline.enabled === true,
+          exhausted: crawlerDeadline.exhausted === true,
+          reserveActivated: crawlerDeadline.reserveActivated === true,
+        }
+      : null;
+    operations.externalTransactionStatus = executeGateway
+      ? result.transaction?.status ?? 'explicit-test-gateway'
+      : 'disabled';
+    const dcoSources = preDeliveryResult.telemetry.dco.source.sources;
+    for (const source of dcoSources) {
+      const crawler = crawlerResult.sourceTelemetry?.[source.sourceId];
+      if (!crawler) continue;
+      source.configured ??= crawler.boardsConfigured ?? null;
+      source.attempted ??= crawler.boardsAttempted ?? crawler.attempts ?? null;
+      source.succeeded ??= crawler.adapterSuccesses ?? null;
+      source.omitted ??= crawler.boardsOmitted ?? null;
+      source.acceptedObservations ??= crawler.observations ?? null;
+      source.requestCount ??= crawler.requestCount ?? crawler.detail?.telemetry?.requestCount ?? null;
+      source.durationMs ??= crawlerResult.run?.telemetry?.sourceDurations?.[source.sourceId] ?? null;
+      source.timeout ??= Boolean(crawler.failureHistogram?.ETIMEDOUT || crawler.failureHistogram?.TIMEOUT);
+      source.resolverSucceeded ??= crawler.resolverSucceeded ?? crawler.detail?.telemetry?.resolverSucceeded ?? null;
+      source.resolverFailed ??= crawler.resolverFailed ?? crawler.detail?.telemetry?.resolverFailed ?? null;
+    }
+  }
+  let reportCommit = null;
+  let surfacedStateCommitCount = 0;
+  if (!result.outcome?.fatal) {
+    const effectiveReportDirectory = reportDirectory
+      ?? config.delivery?.reportDirectory
+      ?? path.join(path.dirname(receipt.databasePath), 'logs/daily');
+    const committed = commitDailyDelivery({
+      run: preDeliveryResult,
+      crawlerResult,
+      databasePath: receipt.databasePath,
+      store,
+      reportDirectory: effectiveReportDirectory,
+      reportWriter,
+      reportWriterOptions,
+      runAt,
+    });
+    reportCommit = committed.reportCommit;
+    surfacedStateCommitCount = committed.surfacedStateCommitCount;
+    if (committed.dcoTelemetry) preDeliveryResult.telemetry.dco = committed.dcoTelemetry;
+  }
+  const deliveredResult = {
+    ...preDeliveryResult,
+    delivery: {
+      commitStatus: reportCommit ? 'committed' : 'not-committed',
+      idempotent: reportCommit?.idempotent ?? false,
+      markdownPath: reportCommit?.markdownPath ?? null,
+      jsonPath: reportCommit?.jsonPath ?? null,
+      hashes: reportCommit?.hashes ?? null,
+      surfacedStateCommitCount,
+      surfacedBeforeCommit: false,
     },
+    telemetry: {
+      ...preDeliveryResult.telemetry,
+      operations: {
+        reportPaths: reportCommit
+          ? { markdown: reportCommit.markdownPath, json: reportCommit.jsonPath }
+          : { markdown: null, json: null },
+        reportHashes: reportCommit?.hashes ?? null,
+        surfacedStateCommitCount,
+      },
+    },
+  };
+  const canaryStoreWithFailures = canaryStore && {
+    readRuns: () => canaryStore.readRuns?.() ?? [],
+    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram, crawlerDeadline }),
+  };
+  const deliveryCanary = recordDeliveryCanary({
+    run: deliveredResult,
+    clock: effectiveClock,
+    store: canaryStoreWithFailures,
+  });
+  return {
+    ...deliveredResult,
+    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram, crawlerDeadline },
   };
 }
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { evaluateDeliveryCanary } from './canary-evaluator.mjs';
 
 export const DELIVERY_CANARY_SCHEMA = 'LaunchpadDeliveryCanaryV1';
 export const CANARY_CAUSES = Object.freeze([
@@ -67,6 +68,55 @@ function snapshotTransition(previousRuns, current) {
   };
 }
 
+function duplicateRequisitionCollisions(shortlist = []) {
+  const seen = new Set();
+  let collisions = 0;
+  for (const candidate of shortlist) {
+    const requisition = candidate.requisitionId ?? candidate.providerJobId ?? candidate.jobId;
+    if (!requisition) continue;
+    const key = `${candidate.provider ?? ''}|${requisition}`;
+    if (seen.has(key)) collisions += 1;
+    else seen.add(key);
+  }
+  return collisions;
+}
+
+function selectedSuppressedRoles(run) {
+  const suppressed = new Set((run.historicalSuppressions ?? []).flatMap((row) => [
+    row.canonicalUrl,
+    row.candidate?.canonicalUrl,
+    row.dedupKey,
+  ]).filter(Boolean));
+  return (run.shortlist ?? []).filter((candidate) => (
+    candidate.suppression?.suppressed === true
+    || candidate.historicalSuppressed === true
+    || suppressed.has(candidate.canonicalUrl)
+  )).length;
+}
+
+function sourceOutagesReportedHealthy(run) {
+  return (run.sourceManifests ?? []).filter((manifest) => (
+    ['ok', 'empty', 'success', 'succeeded', 'healthy'].includes(String(manifest.status).toLowerCase())
+    && ((manifest.errors ?? []).length > 0
+      || Number(manifest.failed ?? manifest.telemetry?.failed ?? manifest.telemetry?.adapterFailures ?? 0) > 0)
+  )).length;
+}
+
+function fatalScorerInfrastructureFailures(run) {
+  const scorer = run.scoring?.scorer;
+  const scoringFatal = run.outcome?.fatal === true
+    && run.outcome?.errors?.some((error) => error.stage === 'scoring');
+  return scoringFatal && scorer?.degraded === true ? 1 : 0;
+}
+
+function unattributedLoss(run, deltas) {
+  const dco = run.telemetry?.dco?.funnel?.reconciliation?.unresolvedCount;
+  if (dco != null) return count(dco);
+  return deltas.reduce((sum, delta) => sum + delta.attributions
+    .filter((item) => item.cause === 'unattributed')
+    .reduce((subtotal, item) => subtotal + count(item.count), 0), 0);
+}
+
 export function buildDeliveryCanary({ run, clock, previousRuns = [] } = {}) {
   if (!run || typeof run !== 'object') throw new TypeError('buildDeliveryCanary requires the unified run result');
   const runAt = runAtFrom(clock ?? run.runAt ?? new Date());
@@ -121,6 +171,26 @@ export function buildDeliveryCanary({ run, clock, previousRuns = [] } = {}) {
       shortlistBeforePopulation: null,
       shortlistAfterPopulation: null,
       note: null,
+    },
+    valid: run.canaryValid !== false && Boolean(run.runId),
+    codeConfigVersion: run.canaryVersion ?? run.receipt?.codeConfigVersion ?? null,
+  };
+  current.engineering = {
+    fatalScorerInfrastructureFailures: fatalScorerInfrastructureFailures(run),
+    sourceOutagesReportedHealthy: sourceOutagesReportedHealthy(run),
+    selectedSuppressedRoles: selectedSuppressedRoles(run),
+    rolesSurfacedBeforeCommit: run.delivery?.surfacedBeforeCommit === true ? 1 : 0,
+    duplicateRequisitionCollisions: duplicateRequisitionCollisions(run.shortlist),
+    unattributedFunnelLoss: unattributedLoss(run, current.deltas),
+    durationMs: run.telemetry?.dco?.operations?.durationMs ?? run.crawlerDeadline?.elapsedMs ?? null,
+    reportComplete: run.delivery?.commitStatus === 'committed'
+      && Boolean(run.delivery?.markdownPath)
+      && Boolean(run.delivery?.jsonPath)
+      && Boolean(run.delivery?.hashes?.markdown)
+      && Boolean(run.delivery?.hashes?.json),
+    reportPaths: {
+      markdown: run.delivery?.markdownPath ?? null,
+      json: run.delivery?.jsonPath ?? null,
     },
   };
   const transition = snapshotTransition(previousRuns, current);
@@ -198,12 +268,15 @@ export function compareDeliveryCanaryRuns(input = []) {
 
 if (path.resolve(process.argv[1] ?? '') === path.resolve(fileURLToPath(import.meta.url))) {
   const [command = 'compare', ...args] = process.argv.slice(2);
-  if (command !== 'compare') {
-    process.stderr.write('Usage: node crawler/delivery-canary.mjs compare --log <path>\n');
+  if (!['compare', 'evaluate'].includes(command)) {
+    process.stderr.write('Usage: node crawler/delivery-canary.mjs <compare|evaluate> --log <path>\n');
     process.exitCode = 2;
   } else {
     const index = args.indexOf('--log');
     const store = createJsonCanaryStore(index >= 0 ? args[index + 1] : undefined);
-    process.stdout.write(`${JSON.stringify(compareDeliveryCanaryRuns(store.readRuns()), null, 2)}\n`);
+    const result = command === 'evaluate'
+      ? evaluateDeliveryCanary(store.readRuns())
+      : compareDeliveryCanaryRuns(store.readRuns());
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   }
 }

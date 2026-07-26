@@ -12,6 +12,15 @@
     "wholeRunDeadlineMs": 2520000,
     "downstreamReserveMs": 300000
   },
+  "delivery": {
+    "reportDirectory": "logs/daily"
+  },
+  "rollbackSupport": {
+    "configSnapshots": "immutable-per-run",
+    "requireDeliveryReceiptBeforeSurfacing": true,
+    "pendingExternalJournalPolicy": "manual-recovery-only",
+    "destructiveRollbackAllowed": false
+  },
   "sources": {
     "atsWarm": {
       "boards": [
