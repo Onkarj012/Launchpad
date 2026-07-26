@@ -1,4 +1,6 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { boardIdentityKey, planBoardRotation, recordBoardHealth } from './board-registry.mjs';
+import { mapProviderSafe } from './bounded-concurrency.mjs';
 
 const PROVIDERS = new Set(['greenhouse', 'lever', 'ashby']);
 
@@ -103,32 +105,73 @@ function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
   return item;
 }
 
-export async function fetchWarmAts({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 40, maxJobsPerBoard = 100 } = {}) {
+export async function fetchWarmAts({
+  boards = [],
+  transport,
+  runAt = new Date().toISOString(),
+  maxBoards = 40,
+  maxJobsPerBoard = 100,
+  rotation = {},
+  rotationState = {},
+  seenBoardIds = [],
+  registry = null,
+  boardConcurrency = 1,
+} = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchWarmAts requires injected transport');
   const observations = [];
   const failures = [];
   const sources = [];
-  for (const board of boards.slice(0, Math.max(0, Number(maxBoards)))) {
+  const plan = rotation.enabled === true
+    ? planBoardRotation({
+      boards,
+      maxBoards,
+      providerQuotas: rotation.providerQuotas ?? { ashby: 1, greenhouse: 1, lever: 1 },
+      state: rotationState,
+      runAt,
+      seenBoardIds,
+    })
+    : {
+      boards: boards.filter((_board, index) => index < Math.max(0, Number(maxBoards))),
+      telemetry: {
+        boardsConfigured: boards.length,
+        boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+        boardsOmitted: Math.max(0, boards.length - Math.max(0, Number(maxBoards))),
+        omissions: boards.slice(Math.max(0, Number(maxBoards))).map((board) => ({
+          boardId: board.id || board.registryId || boardIdentityKey(board),
+          provider: board.provider,
+          reason: 'legacy-cap-order',
+        })),
+        rotationWindowRuns: null,
+      },
+      state: rotationState,
+    };
+  let healthRegistry = registry;
+  const healthEvents = [];
+  const updateHealth = (board, event) => {
+    const boardId = board.id || board.registryId || board.rotationBoardId || boardIdentityKey(board);
+    healthEvents.push({ boardId, ...event });
+    if (healthRegistry && boardId) healthRegistry = recordBoardHealth(healthRegistry, boardId, event);
+  };
+  const boardResults = await mapProviderSafe(plan.boards, {
+    concurrency: boardConcurrency,
+    providerKey: (board) => board?.provider,
+  }, async (board) => {
     const provider = String(board?.provider || '').toLowerCase();
     const url = endpoint({ ...board, provider });
     if (!PROVIDERS.has(provider) || !url) {
-      failures.push({ provider, board: board?.slug, code: 'INVALID_WARM_BOARD' });
-      continue;
+      return { board, failure: { provider, board: board?.slug, code: 'INVALID_WARM_BOARD' } };
     }
     try {
       const response = await transport(url, { method: 'GET', provider, board, warm: true });
       const status = Number(response?.status ?? 200);
       if (status < 200 || status >= 300) {
-        failures.push({ provider, board: board.slug, code: `HTTP_${status}` });
-        continue;
+        return { board, failure: { provider, board: board.slug, code: `HTTP_${status}` } };
       }
       const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
       const listings = rows(provider, body);
       if (!Array.isArray(listings)) {
-        failures.push({ provider, board: board.slug, code: 'MALFORMED_PAYLOAD' });
-        continue;
+        return { board, failure: { provider, board: board.slug, code: 'MALFORMED_PAYLOAD' } };
       }
-      const before = observations.length;
       const indiaFirst = board.indiaFirst === true;
       const eligibleListings = indiaFirst ? listings.filter((row) => !clearlyForeign(provider, row)) : listings;
       const foreignDiscardedAtSource = listings.length - eligibleListings.length;
@@ -139,14 +182,29 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
       const foreignPassedThroughAtSource = indiaFirst
         ? eligibleListings.filter((raw) => oldFilterWouldDiscard(raw)).length
         : 0;
+      const boardObservations = [];
       for (const raw of eligibleListings.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
         const sourceGeoObservation = oldFilterWouldDiscard(raw) ? 'india-first-filter-bypass' : null;
         const item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
-        if (item) observations.push(item);
+        if (item) boardObservations.push(item);
       }
-      sources.push({ provider, board: board.slug, company: board.company, fetched: listings.length, observations: observations.length - before, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' });
+      return {
+        board,
+        observations: boardObservations,
+        source: { provider, board: board.slug, company: board.company, fetched: listings.length, observations: boardObservations.length, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' },
+      };
     } catch (error) {
-      failures.push({ provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' });
+      return { board, failure: { provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' } };
+    }
+  });
+  for (const result of boardResults) {
+    if (result.failure) {
+      failures.push(result.failure);
+      updateHealth(result.board, { failure: true, at: runAt });
+    } else {
+      observations.push(...result.observations);
+      sources.push(result.source);
+      updateHealth(result.board, { success: true, at: runAt });
     }
   }
   return {
@@ -154,12 +212,15 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
     failures,
     manifest: {
       schemaVersion: 'WarmAtsManifestV1',
-      boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+      ...plan.telemetry,
       fetched: sources.reduce((sum, source) => sum + source.fetched, 0),
       failed: failures.length,
       sources,
+      healthEvents,
       noAutoApply: true,
     },
+    rotationState: plan.state,
+    registry: healthRegistry,
   };
 }
 

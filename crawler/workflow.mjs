@@ -1,5 +1,6 @@
 import { discoverBraveSearch } from './brave-search.mjs';
 import { discoverCompanyCareers } from './company-careers.mjs';
+import { discoverCareerPages } from './career-page-discovery.mjs';
 import { filterHistoricalCandidates } from './historical-suppression.mjs';
 import {
   canonicalizeApplicationUrl,
@@ -195,8 +196,10 @@ function sourceCursor(priorState, sourceId) {
 
 function sourceResult(result, telemetry = {}) {
   return {
+    ...result,
     observations: asArray(result?.observations),
     manifest: {
+      ...(result?.manifest ?? {}),
       fetched: Number(telemetry.attempted ?? telemetry.budgetUsed ?? result?.observations?.length ?? 0),
       changed: Number(telemetry.changed ?? result?.observations?.length ?? 0),
       telemetry,
@@ -309,7 +312,10 @@ export async function crawlWorkflow({
       ratePolicy: careerOptions.hostLimiterOptions ?? {},
       fetch: async ({ clock: sourceClock }) => {
         const priorCursor = sourceCursor(priorState, 'career-sites');
-        const result = await discoverCompanyCareers({
+        const careerDiscovery = config.sourceFeatureFlags?.safeCareerPageAdapter === true
+          ? discoverCareerPages
+          : discoverCompanyCareers;
+        const result = await careerDiscovery({
           ...careerOptions,
           companies: careerSites,
           transport: careerTransport,

@@ -146,10 +146,48 @@ function isJobPosting(node) {
   return String(node?.['@type'] ?? '').split(/\s*,\s*/).some((type) => type.toLowerCase() === 'jobposting');
 }
 
+function attributeValue(attrs, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return attrs.match(new RegExp(`\\b${escaped}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1] ?? null;
+}
+
+function microdataJobPosting(body) {
+  if (typeof body !== 'string' || !/itemtype\s*=\s*["']https?:\/\/schema\.org\/JobPosting["']/i.test(body)) return null;
+  const properties = new Map();
+  for (const match of body.matchAll(/<meta\b([^>]*)>/gi)) {
+    const property = attributeValue(match[1], 'itemprop');
+    const content = attributeValue(match[1], 'content');
+    if (property && content != null && !properties.has(property)) properties.set(property, content);
+  }
+  for (const match of body.matchAll(/<([a-z][a-z0-9]*)\b([^>]*\bitemprop\s*=\s*["'][^"']+["'][^>]*)>([\s\S]*?)<\/\1>/gi)) {
+    const property = attributeValue(match[2], 'itemprop');
+    if (property && !properties.has(property)) properties.set(property, stripHtmlToText(match[3]));
+  }
+  const title = properties.get('title') || properties.get('name');
+  const description = properties.get('description');
+  if (!title && !description) return null;
+  return {
+    '@type': 'JobPosting',
+    title,
+    description,
+    datePosted: properties.get('datePosted'),
+    validThrough: properties.get('validThrough'),
+    employmentType: properties.get('employmentType'),
+    hiringOrganization: properties.get('hiringOrganization') ? { name: properties.get('hiringOrganization') } : null,
+    jobLocation: {
+      address: {
+        addressLocality: properties.get('addressLocality'),
+        addressRegion: properties.get('addressRegion'),
+        addressCountry: properties.get('addressCountry'),
+      },
+    },
+  };
+}
+
 function detailRoot(response) {
   const body = bodyOf(response);
   const nodes = jsonLdNodes(htmlBody(response));
-  const posting = nodes.find(isJobPosting) || null;
+  const posting = nodes.find(isJobPosting) || microdataJobPosting(htmlBody(response));
   const candidates = [
     response?.details,
     response?.detail,
@@ -460,9 +498,12 @@ export function classifyOriginalListingUrl(value) {
 function emptyTelemetry(budget) {
   return {
     requests: 0,
+    requestCount: 0,
     redirects: 0,
     hostsFollowed: 0,
     bytesObserved: 0,
+    finalUrl: null,
+    redirectChain: [],
     budget: { ...budget },
   };
 }
@@ -499,6 +540,10 @@ function looksMalformed(response, status) {
 
 function resolutionFailure(observation, reason, chain = [], extra = {}, telemetry = null) {
   const discoveryUrl = canonical(observation?.discoveryUrl ?? observation?.canonicalUrl ?? observation?.url);
+  const resolverTelemetry = telemetry || emptyTelemetry(DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET);
+  resolverTelemetry.requestCount = resolverTelemetry.requests;
+  resolverTelemetry.finalUrl = chain.at(-1) ?? resolverTelemetry.finalUrl;
+  resolverTelemetry.redirectChain = [...chain];
   const leadOnly = {
     title: text(observation?.title) ? FIELD_SOURCE_LEAD : null,
     description: text(observation?.description) || text(observation?.snippet) ? FIELD_SOURCE_LEAD : null,
@@ -518,7 +563,7 @@ function resolutionFailure(observation, reason, chain = [], extra = {}, telemetr
       leadOnly: true,
       ...extra,
     },
-    telemetry: telemetry || emptyTelemetry(DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET),
+    telemetry: resolverTelemetry,
   };
 }
 
@@ -629,6 +674,7 @@ export function createOriginalListingResolver({
   maxBytes,
   maxRequests,
   requestBudget,
+  timeoutMs = 30_000,
   config,
   budget,
 } = {}) {
@@ -665,6 +711,8 @@ export function createOriginalListingResolver({
       if (seen.has(current)) return resolutionFailure(observation, 'redirect-loop', chain, {}, telemetry);
       seen.add(current);
       chain.push(current);
+      telemetry.finalUrl = current;
+      telemetry.redirectChain = [...chain];
 
       const host = hostOf(current);
       if (host && !hosts.has(host)) {
@@ -682,9 +730,14 @@ export function createOriginalListingResolver({
       let response;
       try {
         telemetry.requests += 1;
+        telemetry.requestCount = telemetry.requests;
         response = await transport(current, {
           method: 'GET',
           redirect: 'manual',
+          timeoutMs,
+          maxHosts: hostLimit,
+          maxRequests: requestLimit,
+          maxRedirects: redirectLimit,
           maxBytes: byteLimit,
           purpose: 'original-listing-resolution',
           runAt,
@@ -777,7 +830,12 @@ export function createOriginalListingResolver({
         redirectChain: chain,
         providerFingerprint: fingerprint,
         shortlistEligible: true,
-        telemetry,
+        telemetry: {
+          ...telemetry,
+          requestCount: telemetry.requests,
+          finalUrl: current,
+          redirectChain: [...chain],
+        },
       };
     }
     return resolutionFailure(observation, 'resolver-bound-exhausted', chain, {}, telemetry);

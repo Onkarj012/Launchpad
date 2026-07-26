@@ -69,6 +69,9 @@ test('direct ATS URL resolves immediately with provider fingerprint', async () =
   assert.equal(result.evidence.fieldSources.description, 'original-employer-detail');
   assert.equal(result.shortlistEligible, true);
   assert.equal(result.telemetry.requests, 1);
+  assert.equal(result.telemetry.requestCount, 1);
+  assert.equal(result.telemetry.finalUrl, applicationUrl);
+  assert.deepEqual(result.telemetry.redirectChain, [applicationUrl]);
   assert.ok(result.telemetry.budget.maxRequests >= 1);
 });
 
@@ -104,6 +107,9 @@ test('follows a safe redirect from an aggregator to an ATS detail page', async (
   assert.equal(result.patch.location, 'Pune');
   assert.equal(result.patch.sourceKind, 'ats-direct');
   assert.deepEqual(calls, [discoveryUrl, applicationUrl]);
+  assert.equal(result.telemetry.requestCount, 2);
+  assert.equal(result.telemetry.finalUrl, applicationUrl);
+  assert.deepEqual(result.telemetry.redirectChain, [discoveryUrl, applicationUrl]);
 });
 
 test('resolves intermediary apply-tracking page through outbound Apply link', async () => {

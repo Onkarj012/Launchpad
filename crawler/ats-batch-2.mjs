@@ -1,4 +1,6 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { boardIdentityKey, planBoardRotation } from './board-registry.mjs';
+import { mapProviderSafe } from './bounded-concurrency.mjs';
 
 export const ATS_BATCH_2_PROVIDERS = Object.freeze(['breezy', 'bamboohr', 'personio', 'comeet', 'pinpoint', 'rippling']);
 const COMPLETE_ARRAY_PROVIDERS = new Set(['breezy', 'personio', 'comeet', 'pinpoint', 'rippling']);
@@ -224,14 +226,42 @@ export async function fetchAtsBatch2({ board, transport, runAt = new Date().toIS
   };
 }
 
-export async function discoverAtsBatch2({ boards = [], transport, runAt, state = {}, maxBoards = 20, ...options } = {}) {
+export async function discoverAtsBatch2({ boards = [], transport, runAt, state = {}, maxBoards = 20, boardConcurrency = 1, rotation = {}, rotationState = {}, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverAtsBatch2 requires injected transport');
   const results = [], observations = [], failures = [];
-  for (const board of boards.slice(0, maxBoards)) {
-    try { const result = await fetchAtsBatch2({ board, transport, runAt, state: state[board.slug || board.company] || {}, ...options }); results.push(result); observations.push(...result.observations); if (result.manifest.status !== 'ok' && result.manifest.status !== 'not-modified') failures.push(result.manifest); }
-    catch (error) { failures.push({ sourceId: `ats-batch-2:${board.provider}:${board.slug || board.company || 'board'}`, status: 'terminal', errors: [error.message] }); }
+  const selection = rotation.enabled === true
+    ? planBoardRotation({ boards, maxBoards, state: rotationState, runAt })
+    : {
+      boards: boards.filter((_board, index) => index < Math.max(0, Number(maxBoards))),
+      telemetry: {
+        boardsConfigured: boards.length,
+        boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+        boardsOmitted: Math.max(0, boards.length - Math.max(0, Number(maxBoards))),
+        omissions: boards.filter((_board, index) => index >= Math.max(0, Number(maxBoards))).map((board) => ({ boardId: board.id || boardIdentityKey(board), provider: board.provider, reason: 'legacy-cap-order' })),
+      },
+      state: rotationState,
+    };
+  const boardResults = await mapProviderSafe(selection.boards, {
+    concurrency: boardConcurrency,
+    providerKey: (board) => board?.provider,
+  }, async (board) => {
+    try {
+      const result = await fetchAtsBatch2({ board, transport, runAt, state: state[board.slug || board.company] || {}, ...options });
+      result.boardKey = board.slug || board.company;
+      return { result };
+    } catch (error) {
+      return { failure: { sourceId: `ats-batch-2:${board.provider}:${board.slug || board.company || 'board'}`, status: 'terminal', errors: [error.message] } };
+    }
+  });
+  for (const entry of boardResults) {
+    if (entry.failure) failures.push(entry.failure);
+    else {
+      results.push(entry.result);
+      observations.push(...entry.result.observations);
+      if (entry.result.manifest.status !== 'ok' && entry.result.manifest.status !== 'not-modified') failures.push(entry.result.manifest);
+    }
   }
-  return { observations, results, failures, manifest: { schemaVersion: 'AtsBatch2BatchManifestV1', sourceId: 'ats-batch-2', providers: [...new Set(boards.slice(0, maxBoards).map((board) => board.provider))], boardsAttempted: results.length + failures.length, fetched: observations.length, changed: observations.length, failed: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted: results.some((result) => result.manifest.interrupted), truncated: results.some((result) => result.manifest.truncated), capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true } };
+  return { observations, results, failures, rotationState: selection.state, manifest: { schemaVersion: 'AtsBatch2BatchManifestV1', sourceId: 'ats-batch-2', providers: [...new Set(selection.boards.map((board) => board.provider))], ...selection.telemetry, boardsAttempted: results.length + failures.length, fetched: observations.length, changed: observations.length, failed: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted: results.some((result) => result.manifest.interrupted), truncated: results.some((result) => result.manifest.truncated), capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true } };
 }
 
 export const discoverExpandedAtsBatch2 = discoverAtsBatch2;

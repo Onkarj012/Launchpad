@@ -77,18 +77,173 @@ export function loadCrawlerConfig(file = 'config/crawler-v2.json') {
   return { config: withRegistryProjectedBoards(config), path: resolved };
 }
 
+function transportError(message, code, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+function responseHeader(headers, name) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') return headers.get(name);
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? String(headers[key]) : null;
+}
+
+async function boundedResponseBody(response, maxBytes) {
+  const declaredLength = Number(responseHeader(response?.headers, 'content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response?.body?.cancel?.();
+    throw transportError('response exceeds configured byte limit', 'RESPONSE_TOO_LARGE', {
+      byteLength: declaredLength,
+      maxBytes,
+      statusCode: Number(response?.status),
+    });
+  }
+  if (!response?.body || typeof response.body.getReader !== 'function') {
+    const body = typeof response?.text === 'function' ? await response.text() : '';
+    const byteLength = Buffer.byteLength(body);
+    if (byteLength > maxBytes) throw transportError('response exceeds configured byte limit', 'RESPONSE_TOO_LARGE', { byteLength, maxBytes, statusCode: Number(response?.status) });
+    return { body, byteLength };
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > maxBytes) {
+      const error = transportError('response exceeds configured byte limit', 'RESPONSE_TOO_LARGE', {
+        byteLength,
+        maxBytes,
+        statusCode: Number(response?.status),
+      });
+      await reader.cancel(error);
+      throw error;
+    }
+    chunks.push(decoder.decode(value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return { body: chunks.join(''), byteLength };
+}
+
+function requestAbortSignal(signal, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = Number(timeoutMs);
+  let timer = null;
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  if (Number.isFinite(timeout) && timeout > 0) {
+    timer = setTimeout(() => {
+      const error = transportError('request timed out', 'ETIMEDOUT');
+      controller.abort(error);
+    }, timeout);
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.('abort', abortFromCaller);
+    },
+  };
+}
+
 export async function defaultHttpTransport(url, options = {}) {
-  const timeoutMs = Number(options.timeoutMs ?? 10000);
-  const timeoutSignal = typeof AbortSignal?.timeout === 'function'
-    ? AbortSignal.timeout(Math.max(1, timeoutMs))
-    : undefined;
-  const response = await fetch(url, {
-    method: options.method ?? 'GET',
-    headers: options.headers,
-    body: options.body,
-    signal: options.signal ?? timeoutSignal,
-  });
-  return { status: response.status, headers: response.headers, body: await response.text() };
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const redirectMode = options.redirect ?? 'follow';
+  if (!['error', 'follow', 'manual'].includes(redirectMode)) throw new TypeError(`unsupported redirect mode: ${redirectMode}`);
+  const maxRedirects = Math.max(0, Number(options.maxRedirects ?? 10) || 0);
+  const maxRequests = Math.max(1, Number(options.maxRequests ?? maxRedirects + 1) || 1);
+  const maxHosts = Math.max(1, Number(options.maxHosts ?? 1) || 1);
+  const maxBytes = Math.max(0, Number(options.maxBytes ?? 2_000_000) || 0);
+  const allowedHosts = new Set((options.allowedHosts ?? []).map((value) => {
+    try { return new URL(value).host.toLowerCase(); } catch { return String(value).toLowerCase(); }
+  }));
+  const abort = requestAbortSignal(options.signal, options.timeoutMs ?? 10_000);
+  const redirectChain = [];
+  const hosts = new Set();
+  let current = new URL(url).toString();
+  let method = options.method ?? 'GET';
+  let body = options.body;
+  try {
+    for (let requestCount = 1; requestCount <= maxRequests; requestCount += 1) {
+      const currentUrl = new URL(current);
+      const currentHost = currentUrl.host.toLowerCase();
+      hosts.add(currentHost);
+      redirectChain.push(current);
+      const response = await fetchImpl(current, {
+        method,
+        headers: options.headers,
+        body,
+        signal: abort.signal,
+        redirect: 'manual',
+      });
+      const status = Number(response.status);
+      const location = responseHeader(response.headers, 'location');
+      const redirects = status >= 300 && status < 400 && location;
+      if (redirects) {
+        if (redirectMode === 'error') {
+          await response.body?.cancel?.();
+          throw transportError('redirect rejected by transport policy', 'REDIRECT_REJECTED', { statusCode: status, redirectChain: [...redirectChain] });
+        }
+        if (redirectMode === 'follow') {
+          const next = new URL(location, current).toString();
+          const nextUrl = new URL(next);
+          const nextHost = nextUrl.host.toLowerCase();
+          if (!['http:', 'https:'].includes(nextUrl.protocol)
+            || currentUrl.protocol === 'https:' && nextUrl.protocol !== 'https:') {
+            await response.body?.cancel?.();
+            throw transportError('redirect target violates transport protocol policy', 'REDIRECT_PROTOCOL_REJECTED', { statusCode: status, redirectChain: [...redirectChain, next] });
+          }
+          if (nextHost !== currentHost) {
+            const hostAllowed = allowedHosts.size ? allowedHosts.has(nextHost) : hosts.size < maxHosts;
+            if (!hostAllowed) {
+              await response.body?.cancel?.();
+              throw transportError('cross-host redirect rejected by transport policy', 'REDIRECT_HOST_REJECTED', { statusCode: status, redirectChain: [...redirectChain, next] });
+            }
+            if (!hosts.has(nextHost) && hosts.size >= maxHosts) {
+              await response.body?.cancel?.();
+              throw transportError('redirect host budget exceeded', 'REDIRECT_HOST_LIMIT', { statusCode: status, redirectChain: [...redirectChain, next] });
+            }
+          }
+          if (redirectChain.length > maxRedirects) {
+            await response.body?.cancel?.();
+            throw transportError('redirect limit exceeded', 'REDIRECT_LIMIT_EXCEEDED', { statusCode: status, redirectChain: [...redirectChain, next] });
+          }
+          if (requestCount >= maxRequests) {
+            await response.body?.cancel?.();
+            throw transportError('request limit exceeded while following redirects', 'REQUEST_LIMIT_EXCEEDED', { statusCode: status, redirectChain: [...redirectChain, next] });
+          }
+          await response.body?.cancel?.();
+          if (status === 303 || ((status === 301 || status === 302) && method === 'POST')) {
+            method = 'GET';
+            body = undefined;
+          }
+          current = next;
+          continue;
+        }
+      }
+      const bounded = await boundedResponseBody(response, maxBytes);
+      return {
+        status,
+        headers: response.headers,
+        body: bounded.body,
+        byteLength: bounded.byteLength,
+        url: current,
+        finalUrl: current,
+        redirected: redirectChain.length > 1,
+        redirectChain,
+        requestCount,
+      };
+    }
+    throw transportError('request limit exceeded', 'REQUEST_LIMIT_EXCEEDED', { redirectChain });
+  } finally {
+    abort.cleanup();
+  }
 }
 
 function sourcePlan(id, lane, provider, fetcher, metadata = {}) {
@@ -102,7 +257,10 @@ function resolverSettings(config) {
     ?? {};
   const settings = {};
   if (configured.maxRedirects != null) settings.maxRedirects = configured.maxRedirects;
+  if (configured.maxHosts != null) settings.maxHosts = configured.maxHosts;
   if (configured.maxBytes != null) settings.maxBytes = configured.maxBytes;
+  if (configured.maxRequests != null) settings.maxRequests = configured.maxRequests;
+  if (configured.timeoutMs != null) settings.timeoutMs = configured.timeoutMs;
   return settings;
 }
 
@@ -255,16 +413,26 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   const projected = withRegistryProjectedBoards(config);
   const sources = projected.sources;
   const plans = [];
-  if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
-    fetchWarmAts({ ...sources.atsWarm, boards: sources.atsWarm.boards, transport, runAt })));
+  if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async ({ cursor }) => {
+    const result = await fetchWarmAts({
+      ...sources.atsWarm,
+      boardConcurrency: config.sourceFeatureFlags?.boundedBoardConcurrency === true ? sources.atsWarm.boardConcurrency ?? 3 : 1,
+      boards: sources.atsWarm.boards,
+      transport,
+      runAt,
+      rotationState: cursor?.rotation ?? {},
+      registry: projected.boardRegistry ?? null,
+    });
+    return { ...result, cursor: { rotation: result.rotationState } };
+  }, { capabilities: { rotationPersistent: true } }));
   if (sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor }) => {
-    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState });
-    return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } };
-  }, { capabilities: { newestFirst: true, paginated: true } }));
+    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boardConcurrency: config.sourceFeatureFlags?.boundedBoardConcurrency === true ? sources.atsBatch1.boardConcurrency ?? 3 : 1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, rotationState: cursor?.rotation });
+    return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState, rotation: result.rotationState } };
+  }, { capabilities: { newestFirst: true, paginated: true, rotationPersistent: sources.atsBatch1.rotation?.enabled === true } }));
   if (schedule !== 'midday' && sources.atsBatch2?.boards?.length) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor }) => {
-    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: sources.atsBatch2.boards, transport, runAt, state: cursor ?? {} });
-    return { ...result, cursor: Object.fromEntries(result.results.map((entry, index) => [sources.atsBatch2.boards[index]?.slug || sources.atsBatch2.boards[index]?.company, entry.conditionalState])) };
-  }, { capabilities: { newestFirst: true, completeArray: true } }));
+    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boardConcurrency: config.sourceFeatureFlags?.boundedBoardConcurrency === true ? sources.atsBatch2.boardConcurrency ?? 3 : 1, boards: sources.atsBatch2.boards, transport, runAt, state: cursor?.boards ?? cursor ?? {}, rotationState: cursor?.rotation });
+    return { ...result, cursor: { boards: Object.fromEntries(result.results.map((entry) => [entry.boardKey, entry.conditionalState])), rotation: result.rotationState } };
+  }, { capabilities: { newestFirst: true, completeArray: true, rotationPersistent: sources.atsBatch2.rotation?.enabled === true } }));
   if (schedule !== 'midday' && sources.enterprise?.boards?.length) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor }) => {
     const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: sources.enterprise.boards, transport, runAt, conditionalState: cursor ?? {} });
     return { ...result, cursor: result.conditionalState };
@@ -313,7 +481,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     }
     const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
-  }));
+  }, { priority: 'low' }));
   // Explicit --mode remote always runs all native feeds. Scheduled --mode normal
   // also runs them when sources.remote.enabled (toggle without code changes).
   // Startup mode never inherits remote lanes. Midday keeps the lighter ATS-only plan.
@@ -337,11 +505,16 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const maxSecondary = Math.max(1, Number(remoteConfig.maxRecordsPerSecondary ?? remoteConfig.maxRecordsPerProvider ?? 25));
     const observations = [];
     const verificationQueue = [];
+    const seenCandidates = new Set();
     for (const item of outputs) {
       const laneId = item.manifest?.sourceId || item.manifest?.provider;
       const cap = primarySet.has(laneId) ? maxPrimary : maxSecondary;
       const candidates = (item.candidates || []).slice(0, cap);
       for (const candidate of candidates) {
+        const candidateKey = candidate.originalApplicationUrl || candidate.discoveryUrl || candidate.canonicalUrl
+          || [candidate.provider, candidate.providerJobId, candidate.company, candidate.title, candidate.location].map((value) => String(value ?? '').trim().toLowerCase()).join('|');
+        if (seenCandidates.has(candidateKey)) continue;
+        seenCandidates.add(candidateKey);
         const alreadyResolved = ['Direct ATS', 'Resolved Original'].includes(candidate.applicationResolution?.status)
           && candidate.originalApplicationUrl;
         if (typeof resolver === 'function' && !alreadyResolved) {
@@ -378,7 +551,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         },
       },
     };
-  }));
+  }, { priority: 'low' }));
   if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => {
     // discoverIndiaStartupLanes calls transport(request, meta) with a {source, kind, query, url}
     // object, not transport(url, options) like every other lane — every configured request here
@@ -396,7 +569,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       transport: async (request) => searxTransport(request.query),
       runAt,
     });
-  }));
+  }, { priority: 'low' }));
   if (schedule !== 'midday' && sources.searxng?.enabled) plans.push(sourcePlan('searxng-search', 'web-discovery', 'searxng', async () => {
     if (!sources.searxng.endpoint) throw new Error('SearXNG is enabled but endpoint is unavailable');
     return discoverBraveSearch({
@@ -407,7 +580,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       runAt,
       country: sources.searxng.country ?? 'IN',
     });
-  }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
+  }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true }, priority: 'low' }));
   return plans;
 }
 
@@ -510,7 +683,9 @@ export async function runCrawlerOperator({
       v4Snapshot,
       sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }),
       careerSites: config.sources.careerSites ?? [],
-      careerOptions: config.sources.careerOptions ?? {},
+      careerOptions: config.sourceFeatureFlags?.safeCareerPageAdapter === true
+        ? { ...(config.careerPageDiscovery ?? {}), ...(config.sources.careerOptions ?? {}) }
+        : config.sources.careerOptions ?? {},
       careerTransport: (config.sources.careerSites ?? []).length
         ? createChromiumFallbackTransport({ baseTransport: transport, ...(config.sources.chromium ?? {}) })
         : undefined,

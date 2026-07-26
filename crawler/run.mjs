@@ -12,6 +12,8 @@ import {
 const SCHEMA_VERSION = 2;
 const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
 const STAGES = ['fetch', 'commit'];
+const ADAPTER_FAILURE_STATUSES = new Set(['degraded', 'failed', 'terminal', 'retryable', 'malformed', 'interrupted', 'timeout']);
+const ADAPTER_SUCCESS_STATUSES = new Set(['ok', 'empty', 'success', 'succeeded', 'not-modified', 'unchanged']);
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -194,6 +196,18 @@ function clockSleep(clock, milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function monotonicNow(clock) {
+  return typeof clock?.monotonicNow === 'function' ? Number(clock.monotonicNow()) : performance.now();
+}
+
+function deadlinePolicy(config = {}) {
+  const execution = config.execution ?? {};
+  const enabled = config.sourceFeatureFlags?.wholeRunDeadline === true;
+  const deadlineMs = Math.max(1, Number(execution.wholeRunDeadlineMs ?? 45 * 60 * 1000));
+  const reserveMs = Math.max(0, Math.min(deadlineMs, Number(execution.downstreamReserveMs ?? 5 * 60 * 1000)));
+  return { enabled, deadlineMs, reserveMs };
+}
+
 function sourceHost(url) {
   try { return new URL(url).host; } catch { return null; }
 }
@@ -240,7 +254,7 @@ function telemetryFor(db, runId) {
 function sourceState(value, fallback = null) {
   const parsed = typeof value === 'string' ? json(value, null) : value;
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.scanStatus === 'string') {
-    return { cursor: ['interrupted', 'truncated'].includes(parsed.scanStatus) ? parsed.cursor ?? null : null, state: parsed };
+    return { cursor: parsed.rotationPersistent || ['interrupted', 'truncated'].includes(parsed.scanStatus) ? parsed.cursor ?? null : null, state: parsed };
   }
   return { cursor: fallback ?? parsed ?? null, state: { scanStatus: 'legacy' } };
 }
@@ -254,9 +268,147 @@ function newestPostingAt(observations, manifest) {
   return manifest?.newestPostingAt ?? values.at(-1) ?? null;
 }
 
+function adapterFailureCode(failure) {
+  const raw = failure?.code ?? failure?.kind ?? failure?.retryClass ?? failure?.reasonCode ?? failure?.status ?? failure?.reason;
+  return String(raw || 'ADAPTER_FAILURE').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '') || 'ADAPTER_FAILURE';
+}
+
+function adapterFailureMessage(failure) {
+  if (typeof failure === 'string') return failure;
+  return String(failure?.message ?? failure?.error ?? failure?.reason ?? failure?.code ?? failure?.kind ?? failure?.status ?? 'adapter failure');
+}
+
+function expandAdapterFailure(value, defaults = {}) {
+  if (value == null || value === false || value === 0) return [];
+  if (Array.isArray(value)) return value.flatMap((failure) => expandAdapterFailure(failure, defaults));
+  if (typeof value === 'string') return [{ ...defaults, code: 'ADAPTER_ERROR', message: value }];
+  if (typeof value !== 'object') return [{ ...defaults, code: 'ADAPTER_FAILURE', message: String(value) }];
+  const nested = [
+    ...(Array.isArray(value.failures) ? value.failures : []),
+    ...(Array.isArray(value.errors) ? value.errors : []),
+  ];
+  if (nested.length) {
+    return nested.flatMap((failure) => expandAdapterFailure(failure, {
+      ...defaults,
+      provider: value.provider ?? defaults.provider,
+      board: value.board ?? value.company ?? value.sourceId ?? defaults.board,
+      url: value.url ?? value.endpoint ?? defaults.url,
+      statusCode: value.statusCode ?? (Number.isInteger(value.status) ? value.status : defaults.statusCode),
+    }));
+  }
+  return [{
+    ...defaults,
+    ...value,
+    code: adapterFailureCode(value),
+    message: adapterFailureMessage(value),
+  }];
+}
+
+function dedupeAdapterFailures(failures) {
+  const seen = new Set();
+  return failures.filter((failure) => {
+    const key = [
+      failure.provider, failure.board, failure.code, failure.message,
+      failure.url, failure.statusCode,
+    ].map((value) => String(value ?? '')).join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function adapterResultEvidence(result, observations) {
+  const manifest = result?.manifest ?? {};
+  const sources = Array.isArray(manifest.sources) ? manifest.sources : [];
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const failures = [
+    ...expandAdapterFailure(result?.failures),
+    ...expandAdapterFailure(Array.isArray(manifest.failures) ? manifest.failures : []),
+    ...expandAdapterFailure(manifest.errors),
+  ];
+  for (const source of sources) {
+    failures.push(...expandAdapterFailure(source?.failures, {
+      provider: source?.provider,
+      board: source?.board ?? source?.company ?? source?.sourceId,
+      url: source?.url,
+    }));
+    failures.push(...expandAdapterFailure(source?.errors, {
+      provider: source?.provider,
+      board: source?.board ?? source?.company ?? source?.sourceId,
+      url: source?.url,
+    }));
+    if (ADAPTER_FAILURE_STATUSES.has(String(source?.status || '').toLowerCase())
+      && !source?.failures?.length && !source?.errors?.length) {
+      failures.push(...expandAdapterFailure(source, {
+        provider: source?.provider,
+        board: source?.board ?? source?.company ?? source?.sourceId,
+        url: source?.url,
+      }));
+    }
+  }
+  const interrupted = Boolean(result?.interrupted || manifest.interrupted);
+  const truncated = Boolean(result?.truncated || manifest.truncated);
+  const explicitStatus = String(manifest.status || '').toLowerCase();
+  if (interrupted) failures.push({ code: 'INTERRUPTED', message: 'adapter scan interrupted' });
+  if (truncated) failures.push({ code: 'TRUNCATED', message: `adapter scan truncated${manifest.capHit ? ` at ${manifest.capHit}` : ''}` });
+  if (ADAPTER_FAILURE_STATUSES.has(explicitStatus) && !failures.length) {
+    failures.push({ code: adapterFailureCode({ status: explicitStatus }), message: `adapter reported ${explicitStatus}` });
+  }
+  const expectedFailures = Math.max(
+    0,
+    Number(manifest.failed ?? 0) || 0,
+    typeof manifest.failures === 'number' ? Number(manifest.failures) : 0,
+    Number(manifest.telemetry?.failed ?? 0) || 0,
+  );
+  while (failures.length < expectedFailures) failures.push({ code: 'ADAPTER_FAILURE', message: 'adapter reported a failed attempt' });
+  const normalizedFailures = dedupeAdapterFailures(failures.map((failure) => ({
+    ...failure,
+    code: adapterFailureCode(failure),
+    message: adapterFailureMessage(failure),
+  })));
+  const attempts = Math.max(
+    0,
+    Number(manifest.boardsAttempted ?? 0) || 0,
+    Number(manifest.attempted ?? 0) || 0,
+    Number(manifest.telemetry?.attempted ?? manifest.telemetry?.budgetUsed ?? 0) || 0,
+    sources.length,
+    results.length,
+    normalizedFailures.length || observations.length ? 1 : 0,
+  );
+  const declaredSuccesses = Math.max(
+    0,
+    Number(manifest.successes ?? manifest.succeeded ?? 0) || 0,
+    Number(manifest.telemetry?.succeeded ?? 0) || 0,
+    sources.filter((source) => ADAPTER_SUCCESS_STATUSES.has(String(source?.status || '').toLowerCase())).length,
+  );
+  const successes = declaredSuccesses || (attempts > 0 && !normalizedFailures.length ? attempts : Math.max(0, attempts - normalizedFailures.length));
+  const status = normalizedFailures.length
+    ? observations.length ? 'degraded' : 'failed'
+    : observations.length ? 'ok' : 'empty';
+  const failureHistogram = {};
+  for (const failure of normalizedFailures) failureHistogram[failure.code] = (failureHistogram[failure.code] ?? 0) + 1;
+  return { status, attempts, successes, failures: normalizedFailures, failureHistogram, interrupted, truncated };
+}
+
+export function sourceFailureHistogram(sourceTelemetry = {}, failures = []) {
+  const histogram = {};
+  for (const telemetry of Object.values(sourceTelemetry ?? {})) {
+    for (const [code, count] of Object.entries(telemetry?.failureHistogram ?? {})) {
+      histogram[code] = (histogram[code] ?? 0) + Number(count || 0);
+    }
+  }
+  if (!Object.keys(histogram).length) {
+    for (const failure of failures ?? []) {
+      const code = adapterFailureCode(failure);
+      histogram[code] = (histogram[code] ?? 0) + 1;
+    }
+  }
+  return histogram;
+}
+
 function snapshot(db, runId) {
   const run = runRow(db, runId);
-  return { run, stages: stagesFor(db, runId), telemetry: { sources: telemetryFor(db, runId) }, failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, message: row.message })) };
+  return { run, stages: stagesFor(db, runId), telemetry: { sources: telemetryFor(db, runId) }, failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, code: row.retry_class, host: row.host, statusCode: row.status_code, message: row.message })) };
 }
 
 function beginStage(db, runId, stage, at) {
@@ -368,7 +520,39 @@ export function markJobsSurfaced(store, jobKeys, { at = new Date().toISOString()
   return keys.length;
 }
 
-function persistObservation(store, source, runId, observation, observedAt) {
+function workdayFreshnessRank(value) {
+  if (value?.kind === 'workday-startDate') return 3;
+  if (value?.kind === 'workday-postedOn') return 2;
+  return 0;
+}
+
+function mergeWorkdayObservation(previous, current) {
+  if (!previous || current?.provider?.toLowerCase?.() !== 'workday') return current;
+  const previousFreshness = previous.evidence?.freshness;
+  const currentFreshness = current.evidence?.freshness;
+  const keepPreviousFreshness = workdayFreshnessRank(previousFreshness) > workdayFreshnessRank(currentFreshness)
+    || (workdayFreshnessRank(previousFreshness) === workdayFreshnessRank(currentFreshness) && previous.postedAt && !current.postedAt);
+  const previousDescription = typeof previous.description === 'string' ? previous.description : '';
+  const currentDescription = typeof current.description === 'string' ? current.description : '';
+  const description = previousDescription.length > currentDescription.length ? previous.description : current.description;
+  const liveness = current.liveness?.status === 'Not Verified' && ['Active', 'Expired'].includes(previous.liveness?.status)
+    ? previous.liveness
+    : current.liveness || previous.liveness;
+  return {
+    ...previous,
+    ...current,
+    description,
+    postedAt: keepPreviousFreshness ? previous.postedAt : current.postedAt,
+    liveness,
+    evidence: {
+      ...previous.evidence,
+      ...current.evidence,
+      freshness: keepPreviousFreshness ? previousFreshness : currentFreshness,
+    },
+  };
+}
+
+function persistObservation(store, source, runId, observation, observedAt, { preserveWorkdayEvidence = true } = {}) {
   const sourceKey = sourceRecordKey(observation);
   const observationKey = hash(`${runId}|${source.id}|${sourceKey}`);
   const existingObservation = store.prepare('SELECT observation_key FROM job_observations WHERE observation_key = ?').get(observationKey);
@@ -376,31 +560,35 @@ function persistObservation(store, source, runId, observation, observedAt) {
   const providerJobId = observation.providerJobId ?? observation.jobId;
   const provider = observation.provider ?? source.provider ?? source.id;
   const jobKey = findJob(store, source, observation) ?? hash(`${provider}|${providerJobId ?? ''}|${observation.canonicalUrl ?? ''}|${normalized(observation.company)}|${normalized(observation.title)}|${normalized(observation.location)}`);
-  const fp = fingerprint(observation);
-  const companyName = normalized(observation.company) || 'unknown company';
-  const companyDomain = text(observation.companyDomain ?? observation.company_domain);
+  const previousObservation = preserveWorkdayEvidence && provider?.toLowerCase?.() === 'workday'
+    ? json(store.prepare('SELECT raw_json FROM job_observations WHERE job_key = ? ORDER BY observed_at DESC LIMIT 1').get(jobKey)?.raw_json, null)
+    : null;
+  const durableObservation = mergeWorkdayObservation(previousObservation, observation);
+  const fp = fingerprint(durableObservation);
+  const companyName = normalized(durableObservation.company) || 'unknown company';
+  const companyDomain = text(durableObservation.companyDomain ?? durableObservation.company_domain);
   const companyKey = hash(`${companyName}|${normalized(companyDomain)}`);
   store.prepare(`INSERT INTO companies(company_key, name, domain, first_seen_at, last_seen_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(company_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       domain = COALESCE(companies.domain, excluded.domain)`).run(companyKey, companyName, companyDomain, observedAt, observedAt);
-  const boardIdentity = text(source.boardId ?? source.board ?? observation.boardId ?? observation.board_id ?? source.id);
-  const boardUrl = text(source.boardUrl ?? source.url ?? observation.boardUrl ?? observation.board_url);
+  const boardIdentity = text(source.boardId ?? source.board ?? durableObservation.boardId ?? durableObservation.board_id ?? source.id);
+  const boardUrl = text(source.boardUrl ?? source.url ?? durableObservation.boardUrl ?? durableObservation.board_url);
   const boardKey = hash(`${source.id}|${companyKey}|${boardIdentity ?? ''}`);
   store.prepare(`INSERT INTO company_boards(board_key, company_key, source_id, provider, board_url, board_identity, first_seen_at, last_seen_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(board_key) DO UPDATE SET last_seen_at = excluded.last_seen_at,
       board_url = COALESCE(company_boards.board_url, excluded.board_url)`).run(boardKey, companyKey, source.id, provider, boardUrl, boardIdentity, observedAt, observedAt);
-  const closedAt = ['closed', 'inactive', 'expired', 'removed', 'filled'].includes(normalized(observation.status ?? observation.liveness?.status)) ? observedAt : null;
+  const closedAt = ['closed', 'inactive', 'expired', 'removed', 'filled'].includes(normalized(durableObservation.status ?? durableObservation.liveness?.status)) ? observedAt : null;
   // Observation may advance lifecycle up to application-ready only — never starts cooldown/surfaced.
-  const observationLifecycle = lifecycleFromObservation(observation);
+  const observationLifecycle = lifecycleFromObservation(durableObservation);
   const priorLifecycle = readJobLifecycle(store, jobKey);
   const nextLifecycle = mergeLifecycleState(priorLifecycle.state, observationLifecycle) || observationLifecycle;
   const lifecycleJson = {
     ...priorLifecycle.json,
     state: nextLifecycle,
     lastObservedAt: observedAt,
-    applicationReady: observation.applicationReady === true
+    applicationReady: durableObservation.applicationReady === true
       || priorLifecycle.json.applicationReady === true
       || nextLifecycle === LIFECYCLE_STATES.APPLICATION_READY
       || nextLifecycle === LIFECYCLE_STATES.SURFACED
@@ -415,20 +603,20 @@ function persistObservation(store, source, runId, observation, observedAt) {
       closed_at = COALESCE(excluded.closed_at, jobs.closed_at),
       latest_fingerprint = excluded.latest_fingerprint,
       lifecycle_state = excluded.lifecycle_state,
-      lifecycle_json = excluded.lifecycle_json`).run(jobKey, companyKey, provider, text(providerJobId), text(observation.canonicalUrl), companyName, normalized(observation.title), normalized(observation.location), observedAt, observedAt, text(observation.postedAt), text(observation.updatedAt), text(observation.inferredRepostAt), closedAt, fp, nextLifecycle, JSON.stringify(lifecycleJson));
-  if (observation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(observation.description), observedAt);
+      lifecycle_json = excluded.lifecycle_json`).run(jobKey, companyKey, provider, text(providerJobId), text(durableObservation.canonicalUrl), companyName, normalized(durableObservation.title), normalized(durableObservation.location), observedAt, observedAt, text(durableObservation.postedAt), text(durableObservation.updatedAt), text(durableObservation.inferredRepostAt), closedAt, fp, nextLifecycle, JSON.stringify(lifecycleJson));
+  if (durableObservation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(durableObservation.description), observedAt);
   store.prepare(`INSERT INTO job_observations(observation_key, job_key, source_id, run_id, source_record_key, canonical_url, posted_at, updated_at, observed_at, fingerprint, classification, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp, observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation));
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(durableObservation.canonicalUrl), text(durableObservation.postedAt), text(durableObservation.updatedAt), observedAt, fp, durableObservation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(durableObservation));
   return { duplicate: false, jobKey, lifecycle: nextLifecycle };
 }
 
-async function fetchSource(store, source, runId, priorState, config, clock) {
+async function fetchSource(store, source, runId, priorState, config, clock, runControl = {}) {
   const retry = { maxAttempts: 1, baseDelayMs: 250, ...(config.retry ?? {}) };
   const sourceRow = store.prepare('SELECT * FROM sources WHERE source_id = ?').get(source.id);
   const persisted = sourceState(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
   const sourceCapabilities = source.capabilities ?? {};
   const previousState = persisted.state;
-  const cursor = sourceCapabilities.newestFirst && !['interrupted', 'truncated'].includes(previousState.scanStatus)
+  const cursor = sourceCapabilities.newestFirst && !sourceCapabilities.rotationPersistent && !['interrupted', 'truncated'].includes(previousState.scanStatus)
     ? null
     : persisted.cursor;
   const telemetry = {
@@ -439,40 +627,73 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
     cursorContinued: Boolean(cursor != null && ['interrupted', 'truncated'].includes(previousState.scanStatus)),
     naturalTerminal: false, interrupted: false, truncated: false, newestPostingAt: null,
     consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
+    boardsConfigured: null, boardsAttempted: null, boardsOmitted: null, boardOmissions: [],
   };
   let lastError;
   for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     telemetry.attempts = attempt;
     try {
-      const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock });
+      const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock, deadline: runControl.deadline, signal: runControl.signal });
       const observations = Array.isArray(result?.observations) ? result.observations : [];
       let duplicates = 0;
-      for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
+      for (const observation of observations) {
+        if (persistObservation(store, source, runId, observation, nowFrom(clock), {
+          preserveWorkdayEvidence: config.sourceFeatureFlags?.preserveWorkdayEvidence !== false,
+        }).duplicate) duplicates += 1;
+      }
       const manifest = result?.manifest ?? {};
-      const interrupted = Boolean(result?.interrupted || manifest.interrupted);
-      const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
-      telemetry.status = interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'succeeded';
+      const evidence = adapterResultEvidence(result, observations);
+      const interrupted = evidence.interrupted;
+      const naturalTerminal = evidence.failures.length
+        ? false
+        : manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
+      telemetry.status = evidence.status;
       telemetry.observations = observations.length;
       telemetry.duplicates = duplicates;
       telemetry.fetched = Number(manifest.fetched ?? observations.length);
       telemetry.changed = Number(manifest.changed ?? observations.length - duplicates);
+      telemetry.adapterAttempts = evidence.attempts;
+      telemetry.adapterSuccesses = evidence.successes;
+      telemetry.adapterFailures = evidence.failures.length;
+      telemetry.failureHistogram = evidence.failureHistogram;
       telemetry.naturalTerminal = Boolean(naturalTerminal);
       telemetry.interrupted = interrupted;
-      telemetry.truncated = Boolean(manifest.truncated);
+      telemetry.truncated = evidence.truncated;
       telemetry.capHit = manifest.capHit ?? null;
       telemetry.recordsNotExamined = manifest.recordsNotExamined ?? null;
+      telemetry.boardsConfigured = manifest.boardsConfigured ?? null;
+      telemetry.boardsAttempted = manifest.boardsAttempted ?? null;
+      telemetry.boardsOmitted = manifest.boardsOmitted ?? null;
+      telemetry.boardOmissions = manifest.omissions ?? [];
       telemetry.newestPostingAt = newestPostingAt(observations, manifest);
       telemetry.consecutiveZeroNewRuns = telemetry.changed === 0 ? Number(previousState.consecutiveZeroNewRuns ?? 0) + 1 : 0;
-      const nextCursor = interrupted || manifest.truncated ? result?.cursor ?? cursor : null;
+      for (const failure of evidence.failures) {
+        store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+          VALUES (?, ?, 'fetch', ?, ?, ?, ?, ?, ?)`).run(
+          runId,
+          source.id,
+          Number(failure.attempt ?? attempt) || attempt,
+          failure.code,
+          sourceHost(failure.url) ?? sourceHost(source.url),
+          Number.isInteger(Number(failure.statusCode)) ? Number(failure.statusCode) : null,
+          failure.message,
+          nowFrom(clock),
+        );
+      }
+      const nextCursor = sourceCapabilities.rotationPersistent
+        ? result?.cursor ?? cursor
+        : interrupted || manifest.truncated ? result?.cursor ?? cursor : null;
       telemetry.continuationCursor = nextCursor;
       store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(nextCursor, {
         scanStatus: interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'completed',
+        outcomeStatus: evidence.status,
         naturalTerminal: Boolean(naturalTerminal),
         truncated: Boolean(manifest.truncated),
         newestPostingAt: telemetry.newestPostingAt,
         consecutiveZeroNewRuns: telemetry.consecutiveZeroNewRuns,
         cursorReset: telemetry.cursorReset,
         cursorContinued: telemetry.cursorContinued,
+        rotationPersistent: sourceCapabilities.rotationPersistent === true,
       }), nowFrom(clock), source.id);
       return { telemetry, duplicates };
     } catch (error) {
@@ -487,6 +708,10 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
     VALUES (?, ?, 'fetch', ?, ?, ?, ?, ?, ?)`).run(runId, source.id, telemetry.attempts, retryClass, sourceHost(source.url), lastError?.statusCode ?? null, message, nowFrom(clock));
   telemetry.status = 'failed';
   telemetry.error = message;
+  telemetry.adapterAttempts = telemetry.attempts;
+  telemetry.adapterSuccesses = 0;
+  telemetry.adapterFailures = 1;
+  telemetry.failureHistogram = { [adapterFailureCode({ retryClass })]: 1 };
   telemetry.interrupted = true;
   telemetry.naturalTerminal = false;
   telemetry.newestPostingAt = null;
@@ -508,20 +733,86 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     const undatedBefore = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
     backfillOriginalPostedAt(store);
     const sourceDurations = {};
+    const deadline = deadlinePolicy(config);
+    const runStartedAt = monotonicNow(clock);
+    const skippedSources = [];
+    let reserveActivated = false;
+    let deadlineExhausted = false;
+    let lastExecutedSourceId = null;
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
       const initialCursor = priorState.sources?.[source.id]?.cursor;
       store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
-      if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
-        const sourceStartedAt = performance.now();
-        const result = await fetchSource(store, source, runId, priorState, config, clock);
-        sourceDurations[source.id] = Math.max(0, Math.round(performance.now() - sourceStartedAt));
+      if (!store.prepare("SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status IN ('ok', 'empty', 'succeeded')").get(runId, source.id)) {
+        const elapsedMs = Math.max(0, monotonicNow(clock) - runStartedAt);
+        const remainingMs = deadline.deadlineMs - elapsedMs;
+        const lowPriority = source.priority === 'low';
+        const skipReason = deadline.enabled && remainingMs <= 0
+          ? 'whole-run-deadline-exhausted'
+          : deadline.enabled && lowPriority && remainingMs <= deadline.reserveMs
+            ? 'downstream-reserve-protected'
+            : null;
+        if (skipReason) {
+          deadlineExhausted ||= remainingMs <= 0;
+          reserveActivated ||= skipReason === 'downstream-reserve-protected';
+          const skipped = { sourceId: source.id, lane: source.lane ?? 'unknown', priority: source.priority ?? 'normal', reason: skipReason, remainingMs: Math.max(0, Math.round(remainingMs)) };
+          skippedSources.push(skipped);
+          store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+            VALUES (?, ?, 'fetch', 0, 'DEADLINE_SKIPPED', ?, NULL, ?, ?)`).run(runId, source.id, sourceHost(source.url), `source skipped: ${skipReason}`, nowFrom(clock));
+          store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
+            VALUES (?, ?, 'degraded', 0, 0, 0, 0, 0, ?, ?)
+            ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = 0, fetched = 0, changed = 0,
+              observations = 0, duplicates = 0, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, JSON.stringify({
+            skipped: true,
+            skipReason,
+            priority: source.priority ?? 'normal',
+            adapterAttempts: 0,
+            adapterSuccesses: 0,
+            adapterFailures: 1,
+            failureHistogram: { DEADLINE_SKIPPED: 1 },
+            interrupted: true,
+            naturalTerminal: false,
+          }), `source skipped: ${skipReason}`);
+          sourceDurations[source.id] = 0;
+          continue;
+        }
+        const sourceStartedAt = monotonicNow(clock);
+        lastExecutedSourceId = source.id;
+        const result = await fetchSource(store, source, runId, priorState, config, clock, {
+          deadline: {
+            enabled: deadline.enabled,
+            deadlineMs: deadline.deadlineMs,
+            reserveMs: deadline.reserveMs,
+            remainingMs: Math.max(0, remainingMs),
+          },
+        });
+        sourceDurations[source.id] = Math.max(0, Math.round(monotonicNow(clock) - sourceStartedAt));
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined }), t.error ?? null);
+          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, adapterAttempts: t.adapterAttempts, adapterSuccesses: t.adapterSuccesses, adapterFailures: t.adapterFailures, failureHistogram: t.failureHistogram, ...(t.boardsConfigured == null ? {} : { boardsConfigured: t.boardsConfigured, boardsAttempted: t.boardsAttempted, boardsOmitted: t.boardsOmitted, boardOmissions: t.boardOmissions }) }), t.error ?? null);
+      }
+    }
+    const elapsedAfterSources = Math.max(0, monotonicNow(clock) - runStartedAt);
+    if (deadline.enabled && elapsedAfterSources >= deadline.deadlineMs) {
+      deadlineExhausted = true;
+      const alreadyReported = skippedSources.some((source) => source.reason === 'whole-run-deadline-exhausted');
+      if (!alreadyReported && lastExecutedSourceId) {
+        const row = store.prepare('SELECT status, details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, lastExecutedSourceId);
+        const details = json(row?.details_json, {});
+        const failureHistogram = { ...(details.failureHistogram ?? {}), DEADLINE_EXHAUSTED: 1 };
+        store.prepare(`UPDATE source_telemetry SET status = 'degraded', details_json = ?, error = ? WHERE run_id = ? AND source_id = ?`).run(JSON.stringify({
+          ...details,
+          deadlineExhausted: true,
+          adapterFailures: Number(details.adapterFailures ?? 0) + 1,
+          failureHistogram,
+          interrupted: true,
+          naturalTerminal: false,
+        }), 'whole-run deadline exhausted', runId, lastExecutedSourceId);
+        store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+          VALUES (?, ?, 'fetch', 0, 'DEADLINE_EXHAUSTED', NULL, NULL, 'whole-run deadline exhausted', ?)`).run(runId, lastExecutedSourceId, nowFrom(clock));
       }
     }
     const undatedAfter = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
@@ -532,12 +823,27 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
       changed: total.changed + source.changed,
       observations: total.observations + source.observations,
       duplicates: total.duplicates + source.duplicates,
-      failed: total.failed + (source.status === 'failed' || source.status === 'interrupted' || source.status === 'truncated' ? 1 : 0),
+      failed: total.failed + (source.status === 'failed' || source.status === 'degraded' ? 1 : 0),
     }), { fetched: 0, changed: 0, observations: 0, duplicates: 0, failed: 0 });
     transitionStage(store, runId, 'fetch', 'committed', { clock });
     transitionStage(store, runId, 'commit', 'running', { clock });
     finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
-    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations }, clock });
+    const elapsedMs = Math.max(0, Math.round(monotonicNow(clock) - runStartedAt));
+    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: {
+      sources: telemetry,
+      sourceDurations,
+      sourceFailureHistogram: sourceFailureHistogram(telemetry),
+      deadline: {
+        enabled: deadline.enabled,
+        deadlineMs: deadline.deadlineMs,
+        downstreamReserveMs: deadline.reserveMs,
+        elapsedMs,
+        remainingMs: Math.max(0, deadline.deadlineMs - elapsedMs),
+        exhausted: deadlineExhausted,
+        reserveActivated,
+        skippedSources,
+      },
+    }, clock });
     return { ...snapshot(store, runId), idempotent: false, newlyDated };
   } catch (error) {
     failCrawlRun(store, runId, error, { clock });
@@ -586,6 +892,8 @@ function mapJobRow(row) {
     company: row.company,
     title: row.title,
     location: row.location,
+    postedAt: row.original_posted_at,
+    originalPostedAt: row.original_posted_at,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     fingerprint: row.latest_fingerprint,

@@ -98,6 +98,115 @@ export function boardIdentityKey(board) {
   return id ? `${provider}:${id}` : null;
 }
 
+function rotationPriority(board) {
+  if (board?.indiaFirst || board?.indiaRelevant || board?.puneRelevant) return 1;
+  if (Number(board?.health?.recentReadyRoleYield || 0) > 0 || Number(board?.health?.recentFreshEligibleYield || 0) > 0) return 2;
+  if (!board?.health?.lastSuccessfulFetchAt && (board?.probedAt || ['proposed', 'probation'].includes(board?.probeStatus))) return 4;
+  return 3;
+}
+
+function rotate(values, cursor) {
+  if (!values.length) return [];
+  const start = Math.max(0, Number(cursor) || 0) % values.length;
+  return [...values.slice(start), ...values.slice(0, start)];
+}
+
+/**
+ * Select a bounded, provider-fair board window. The returned state is JSON-safe
+ * so callers can persist it in the existing source cursor_json durable store.
+ */
+export function planBoardRotation({
+  boards = [],
+  maxBoards = boards.length,
+  providerQuotas = {},
+  state = {},
+  runAt = new Date().toISOString(),
+  seenBoardIds = [],
+} = {}) {
+  const configured = [];
+  const duplicateConfigured = [];
+  const configuredIds = new Set();
+  for (const board of boards) {
+    const id = board.id || board.registryId || boardIdentityKey(board);
+    if (!id || configuredIds.has(id)) {
+      duplicateConfigured.push({ boardId: id, provider: board?.provider || null, reason: 'duplicate-configured-board' });
+      continue;
+    }
+    configuredIds.add(id);
+    configured.push({ ...board, rotationBoardId: id });
+  }
+  configured.sort((left, right) => rotationPriority(left) - rotationPriority(right)
+    || left.rotationBoardId.localeCompare(right.rotationBoardId));
+
+  const cap = Math.max(0, Math.min(configured.length, Number(maxBoards) || 0));
+  const seen = new Set(seenBoardIds);
+  const eligible = configured.filter((board) => !seen.has(board.rotationBoardId));
+  const selected = [];
+  const selectedIds = new Set();
+  const providerCursors = { ...(state.providerCursors || {}) };
+
+  for (const [provider, rawQuota] of Object.entries(providerQuotas)) {
+    const quota = Math.max(0, Math.min(cap - selected.length, Number(rawQuota) || 0));
+    if (!quota) continue;
+    const family = configured.filter((board) => board.provider === provider && !seen.has(board.rotationBoardId));
+    const ordered = rotate(family, providerCursors[provider]);
+    for (const board of ordered) {
+      if (selected.length >= cap || selected.filter((item) => item.provider === provider).length >= quota) break;
+      if (!selectedIds.has(board.rotationBoardId)) {
+        selected.push(board);
+        selectedIds.add(board.rotationBoardId);
+      }
+    }
+    providerCursors[provider] = family.length
+      ? (Math.max(0, Number(providerCursors[provider]) || 0) + quota) % family.length
+      : 0;
+  }
+
+  const ordered = rotate(eligible, state.cursor);
+  for (const board of ordered) {
+    if (selected.length >= cap) break;
+    if (!selectedIds.has(board.rotationBoardId)) {
+      selected.push(board);
+      selectedIds.add(board.rotationBoardId);
+    }
+  }
+
+  const lastAttemptByBoard = { ...(state.lastAttemptByBoard || {}) };
+  for (const board of selected) lastAttemptByBoard[board.rotationBoardId] = runAt;
+  const remainingSlots = Math.max(1, cap - Object.values(providerQuotas).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0));
+  const providerWindow = Math.max(1, ...Object.entries(providerQuotas).map(([provider, quota]) => {
+    const count = configured.filter((board) => board.provider === provider).length;
+    return quota > 0 ? Math.ceil(count / quota) : 1;
+  }));
+  const rotationWindowRuns = configured.length ? Math.max(providerWindow, Math.ceil(configured.length / remainingSlots)) : 0;
+  const omitted = [
+    ...duplicateConfigured,
+    ...configured.filter((board) => !selectedIds.has(board.rotationBoardId)).map((board) => ({
+      boardId: board.rotationBoardId,
+      provider: board.provider,
+      reason: seen.has(board.rotationBoardId) ? 'already-attempted-this-run' : cap === 0 ? 'board-cap-zero' : 'due-in-later-rotation-window',
+    })),
+  ];
+
+  return {
+    boards: selected,
+    telemetry: {
+      boardsConfigured: configured.length,
+      boardsAttempted: selected.length,
+      boardsOmitted: omitted.length,
+      omissions: omitted,
+      providerQuotas: { ...providerQuotas },
+      rotationWindowRuns,
+    },
+    state: {
+      cursor: eligible.length ? (Math.max(0, Number(state.cursor) || 0) + remainingSlots) % eligible.length : 0,
+      providerCursors,
+      lastAttemptByBoard,
+      rotationWindowRuns,
+    },
+  };
+}
+
 export function workdayTriple(boardOrSlug) {
   if (boardOrSlug && typeof boardOrSlug === 'object') {
     if (boardOrSlug.tenant && boardOrSlug.instance && boardOrSlug.site) {
@@ -436,8 +545,18 @@ export function projectLaneBoards(registry, lane, { enabledOnly = true } = {}) {
 
 function toAdapterBoard(entry) {
   const provider = entry.provider;
+  const shared = {
+    id: entry.id,
+    registryId: entry.id,
+    activationState: entry.activationState,
+    health: { ...entry.health },
+    indiaFirst: entry.indiaFirst,
+    indiaRelevant: entry.indiaRelevant,
+    puneRelevant: entry.puneRelevant,
+  };
   if (provider === 'workday') {
     return {
+      ...shared,
       provider,
       company: entry.company,
       tenant: entry.tenant,
@@ -452,6 +571,7 @@ function toAdapterBoard(entry) {
   }
   if (['smartrecruiters', 'workable', 'teamtailor', 'recruitee'].includes(provider)) {
     const out = {
+      ...shared,
       provider,
       board: entry.board || entry.slug || entry.boardKey,
       company: entry.company,
@@ -469,6 +589,7 @@ function toAdapterBoard(entry) {
   }
   if (provider === 'pinpoint') {
     return {
+      ...shared,
       provider,
       slug: entry.slug || entry.boardKey,
       company: entry.company,
@@ -480,6 +601,7 @@ function toAdapterBoard(entry) {
   }
   // greenhouse / lever / ashby
   const out = {
+    ...shared,
     provider,
     slug: entry.slug || entry.boardKey,
     company: entry.company,
@@ -507,9 +629,17 @@ export function projectTrackedBoards(registry, { enabledOnly = true } = {}) {
     const portal = build ? build(slug) : null;
     if (!portal) continue;
     boards.push({
+      id: entry.id,
+      registryId: entry.id,
       provider: entry.provider,
       slug,
       careersUrl: portal.careers_url,
+      activationState: entry.activationState,
+      probeStatus: entry.probeStatus,
+      health: { ...entry.health },
+      indiaFirst: entry.indiaFirst,
+      indiaRelevant: entry.indiaRelevant,
+      puneRelevant: entry.puneRelevant,
     });
   }
   return boards;

@@ -72,3 +72,50 @@ test('India-first warm boards still discard explicit foreign-only locations', as
   assert.equal(result.manifest.sources[0].foreignDiscardedAtSource, 1);
   assert.equal(result.manifest.sources[0].foreignPassedThroughAtSource, 1);
 });
+
+test('warm rotation emits configured, attempted, omitted, and omission reasons', async () => {
+  const boards = ['ashby', 'greenhouse', 'lever'].flatMap((provider) =>
+    [1, 2].map((index) => ({ provider, slug: `${provider}-${index}` })));
+  const result = await fetchWarmAts({
+    boards,
+    maxBoards: 3,
+    rotation: { enabled: true, providerQuotas: { ashby: 1, greenhouse: 1, lever: 1 } },
+    transport: async (url) => url.includes('lever')
+      ? { status: 200, body: [] }
+      : { status: 200, body: { jobs: [] } },
+  });
+  assert.equal(result.manifest.boardsConfigured, 6);
+  assert.equal(result.manifest.boardsAttempted, 3);
+  assert.equal(result.manifest.boardsOmitted, 3);
+  assert.ok(result.manifest.omissions.every((item) => item.reason === 'due-in-later-rotation-window'));
+  assert.equal(result.manifest.healthEvents.length, 3);
+});
+test('bounded board concurrency runs providers in parallel but serializes each provider', async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const activeProviders = new Set();
+  let sameProviderOverlap = false;
+  const boards = [
+    { provider: 'greenhouse', slug: 'green-1', company: 'Green One' },
+    { provider: 'greenhouse', slug: 'green-2', company: 'Green Two' },
+    { provider: 'lever', slug: 'lever-1', company: 'Lever One' },
+  ];
+  const result = await fetchWarmAts({
+    boards,
+    boardConcurrency: 3,
+    transport: async (_url, { provider }) => {
+      if (activeProviders.has(provider)) sameProviderOverlap = true;
+      activeProviders.add(provider);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      activeProviders.delete(provider);
+      return { status: 200, body: provider === 'lever' ? [] : { jobs: [] } };
+    },
+  });
+
+  assert.equal(sameProviderOverlap, false);
+  assert.equal(maximumActive, 2);
+  assert.equal(result.failures.length, 0);
+});

@@ -70,10 +70,11 @@ test('a crawl run persists schema, source state, observations, stages, and funne
     failed: 0,
   });
   assert.deepEqual(result.telemetry.sources.greenhouse, {
-    status: 'succeeded', attempts: 1, fetched: 1, observations: 1, changed: 1, duplicates: 0,
+    status: 'ok', attempts: 1, fetched: 1, observations: 1, changed: 1, duplicates: 0,
     startingCursor: { page: 3 }, continuationCursor: null, naturalTerminal: true, interrupted: false, truncated: false,
     newestPostingAt: '2026-07-22T10:00:00.000Z', cursorReset: false, cursorContinued: false,
     consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
+    adapterAttempts: 1, adapterSuccesses: 1, adapterFailures: 0, failureHistogram: {},
   });
   assert.equal(result.stages.fetch.status, 'committed');
   assert.equal(result.stages.commit.status, 'committed');
@@ -156,6 +157,63 @@ test('terminal source failures are recorded and rerunning the same idempotency k
   assert.equal(second.idempotent, true);
   assert.equal(calls, 1);
   assert.equal(readCrawlerState(store).failures.length, 1);
+  store.close();
+});
+
+test('all-board adapter timeouts persist as failed with a receipt histogram', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const result = await crawlRun({
+    store,
+    runId: 'all-board-timeout',
+    clock: fixedClock(),
+    sourcePlans: [{
+      id: 'ats-warm',
+      lane: 'ats',
+      fetch: async () => ({
+        observations: [],
+        failures: [
+          { provider: 'greenhouse', board: 'one', code: 'TIMEOUT', message: 'board one timed out' },
+          { provider: 'lever', board: 'two', code: 'TIMEOUT', message: 'board two timed out' },
+        ],
+        manifest: { boardsAttempted: 2, failed: 2 },
+      }),
+    }],
+  });
+
+  assert.equal(result.telemetry.sources['ats-warm'].status, 'failed');
+  assert.deepEqual(result.telemetry.sources['ats-warm'].failureHistogram, { TIMEOUT: 2 });
+  assert.deepEqual(result.run.telemetry.sourceFailureHistogram, { TIMEOUT: 2 });
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.failures.length, 2);
+  store.close();
+});
+
+test('adapter failures with candidates produce degraded source state', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const result = await crawlRun({
+    store,
+    runId: 'partial-board-timeout',
+    clock: fixedClock(),
+    sourcePlans: [{
+      id: 'ats-warm',
+      lane: 'ats',
+      fetch: async () => ({
+        observations: [{
+          providerJobId: 'partial-1',
+          canonicalUrl: 'https://jobs.example.test/partial-1',
+          title: 'AI Engineer',
+          company: 'Example',
+          location: 'Pune',
+        }],
+        failures: [{ provider: 'lever', board: 'two', code: 'TIMEOUT', message: 'board two timed out' }],
+        manifest: { boardsAttempted: 2, failed: 1 },
+      }),
+    }],
+  });
+
+  assert.equal(result.telemetry.sources['ats-warm'].status, 'degraded');
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.run.counts.observations, 1);
   store.close();
 });
 
@@ -405,7 +463,8 @@ test('interrupted newest-first scans continue from their saved cursor without re
   const first = await crawlRun({ store, runId: 'interrupted-1', sourcePlans, clock: fixedClock() });
   const second = await crawlRun({ store, runId: 'interrupted-2', sourcePlans, clock: fixedClock() });
 
-  assert.equal(first.telemetry.sources['interrupted-source'].status, 'interrupted');
+  assert.equal(first.telemetry.sources['interrupted-source'].status, 'degraded');
+  assert.equal(first.telemetry.sources['interrupted-source'].interrupted, true);
   assert.equal(second.telemetry.sources['interrupted-source'].cursorContinued, true);
   assert.deepEqual(cursors, [null, { page: 1 }]);
   assert.equal(readCrawlerState(store).observations.length, 2);
@@ -424,4 +483,99 @@ test('a naturally exhausted Workday board is terminal and clears its cursor', as
   assert.equal(result.manifests[0].naturalTerminal, true);
   assert.equal(result.manifest.naturalTerminal, true);
   assert.equal(result.conditionalState.__cursor?.Acme, undefined);
+});
+
+test('whole-run deadline exhaustion is degraded and reports skipped work', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let monotonic = 0;
+  const sourcePlans = [
+    {
+      id: 'material-source', lane: 'ats',
+      fetch: async () => {
+        monotonic = 110;
+        return { observations: [], manifest: { status: 'empty', fetched: 0 } };
+      },
+    },
+    { id: 'late-source', lane: 'remote', priority: 'low', fetch: async () => ({ observations: [] }) },
+  ];
+  const result = await crawlRun({
+    store,
+    runId: 'deadline-exhausted',
+    sourcePlans,
+    config: { sourceFeatureFlags: { wholeRunDeadline: true }, execution: { wholeRunDeadlineMs: 100, downstreamReserveMs: 20 } },
+    clock: { ...fixedClock(), monotonicNow: () => monotonic },
+  });
+
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.telemetry.sources['late-source'].status, 'degraded');
+  assert.equal(result.run.telemetry.deadline.exhausted, true);
+  assert.deepEqual(result.run.telemetry.deadline.skippedSources.map((item) => [item.sourceId, item.reason]), [
+    ['late-source', 'whole-run-deadline-exhausted'],
+  ]);
+  store.close();
+});
+
+test('deadline reserve explicitly skips a low-priority lane for downstream work', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let monotonic = 0;
+  const result = await crawlRun({
+    store,
+    runId: 'deadline-reserve',
+    sourcePlans: [
+      {
+        id: 'primary-source', lane: 'ats',
+        fetch: async () => {
+          monotonic = 75;
+          return { observations: [], manifest: { status: 'empty', fetched: 0 } };
+        },
+      },
+      { id: 'search-source', lane: 'web-discovery', priority: 'low', fetch: async () => ({ observations: [] }) },
+    ],
+    config: { sourceFeatureFlags: { wholeRunDeadline: true }, execution: { wholeRunDeadlineMs: 100, downstreamReserveMs: 30 } },
+    clock: { ...fixedClock(), monotonicNow: () => monotonic },
+  });
+
+  assert.equal(result.run.telemetry.deadline.exhausted, false);
+  assert.equal(result.run.telemetry.deadline.reserveActivated, true);
+  assert.equal(result.telemetry.sources['search-source'].skipReason, 'downstream-reserve-protected');
+  assert.equal(result.run.telemetry.sourceFailureHistogram.DEADLINE_SKIPPED, 1);
+  store.close();
+});
+
+test('a later thin Workday observation preserves durable date, JD, and liveness evidence', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let rich = true;
+  const sourcePlans = [{
+    id: 'workday-preservation',
+    lane: 'ats',
+    provider: 'workday',
+    fetch: async () => ({
+      observations: [{
+        provider: 'workday',
+        providerJobId: 'WD-PRESERVE-1',
+        canonicalUrl: 'https://acme.wd1.myworkdayjobs.com/Careers/job/Pune/WD-PRESERVE-1',
+        title: 'AI Engineer',
+        company: 'Acme',
+        location: 'Pune, India',
+        postedAt: rich ? '2026-07-22T01:00:00.000Z' : null,
+        description: rich ? 'Build production agent systems with Python.' : null,
+        liveness: rich ? { status: 'Active', evidence: 'workday-detail-live' } : { status: 'Not Verified' },
+        evidence: { freshness: rich ? { kind: 'workday-postedOn', label: 'Posted Yesterday' } : { kind: 'workday-unverified' } },
+        classification: 'direct',
+      }],
+      manifest: { fetched: 1, changed: 1 },
+    }),
+  }];
+
+  await crawlRun({ store, runId: 'workday-rich', sourcePlans, clock: fixedClock() });
+  rich = false;
+  await crawlRun({ store, runId: 'workday-thin', sourcePlans, clock: fixedClock() });
+
+  const raw = JSON.parse(store.prepare('SELECT raw_json FROM job_observations WHERE run_id = ?').get('workday-thin').raw_json);
+  assert.equal(raw.postedAt, '2026-07-22T01:00:00.000Z');
+  assert.equal(raw.description, 'Build production agent systems with Python.');
+  assert.equal(raw.liveness.status, 'Active');
+  assert.equal(raw.evidence.freshness.kind, 'workday-postedOn');
+  assert.equal(store.prepare('SELECT original_posted_at FROM jobs WHERE provider_job_id = ?').get('WD-PRESERVE-1').original_posted_at, raw.postedAt);
+  store.close();
 });

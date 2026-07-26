@@ -77,7 +77,7 @@ function feedEntries(body, base) {
 }
 
 async function request(url, options) {
-  return fetchIncrementally({ url, transport: options.transport, state: options.conditionalState?.[canonical(url)] ?? {}, robots: options.robots, userAgent: options.userAgent ?? 'Launchpad-Company-Careers/1.0', limiter: options.limiter, hostLimiterOptions: options.hostLimiterOptions, retry: options.retry, maxBytes: options.maxBytes ?? 2_000_000, timeoutMs: options.timeoutMs ?? 30_000, clock: options.clock });
+  return fetchIncrementally({ url, transport: options.transport, state: options.conditionalState?.[canonical(url)] ?? {}, robots: options.robots, userAgent: options.userAgent ?? 'Launchpad-Company-Careers/1.0', limiter: options.limiter, hostLimiterOptions: options.hostLimiterOptions, retry: options.retry, maxBytes: options.maxBytes ?? 2_000_000, timeoutMs: options.timeoutMs ?? 30_000, maxRedirects: options.maxRedirects ?? 0, maxHosts: options.maxHosts ?? 1, maxRequests: options.maxRequestsPerPage ?? (Number(options.maxRedirects ?? 0) + 1), signal: options.signal, clock: options.clock });
 }
 
 function candidateFrom(node, { company, url, sourceUrl, runAt, sitemapLastmod = null, classification = 'lead', feed = null, expiryGraceDays = 30 } = {}) {

@@ -2,6 +2,16 @@
   "schemaVersion": "LaunchpadCrawlerConfigV1",
   "databasePath": ".local/launchpad-crawler/crawler.sqlite",
   "boardRegistryPath": "config/board-registry.json",
+  "sourceFeatureFlags": {
+    "preserveWorkdayEvidence": true,
+    "boundedBoardConcurrency": true,
+    "wholeRunDeadline": true,
+    "safeCareerPageAdapter": true
+  },
+  "execution": {
+    "wholeRunDeadlineMs": 2520000,
+    "downstreamReserveMs": 300000
+  },
   "sources": {
     "atsWarm": {
       "boards": [
@@ -26,7 +36,16 @@
         { "provider": "ashby", "slug": "signoz", "company": "SigNoz", "indiaFirst": true, "startupTagged": true }
       ],
       "maxBoards": 20,
-      "maxJobsPerBoard": 100
+      "maxJobsPerBoard": 100,
+      "boardConcurrency": 3,
+      "rotation": {
+        "enabled": true,
+        "providerQuotas": {
+          "ashby": 1,
+          "greenhouse": 1,
+          "lever": 1
+        }
+      }
     },
     "atsBatch1": {
       "boards": [
@@ -61,6 +80,9 @@
       "pageSize": 50,
       "maxPages": 1,
       "maxJobs": 100,
+      "boardConcurrency": 3,
+      "rotation": { "enabled": true },
+      "boardConcurrency": 3,
       "enrichDetails": true
     },
     "atsBatch2": {
@@ -75,6 +97,7 @@
           "evidenceRef": "https://infor.pinpointhq.com/postings.json (197 live postings observed; real Bengaluru and Hyderabad India roles including Data Scientist, Software Engineer, Security Analyst; the underlying ats-batch-2.mjs pinpoint parser was fixed to read the actual { data: [...] } JSON:API shape the live endpoint returns, and its object-shaped location field)"
         }
       ],
+      "rotation": { "enabled": true },
       "disabledBoards": [
         {
           "provider": "pinpoint",
@@ -143,6 +166,7 @@
       "enrichDetails": true,
       "detailConcurrency": 4,
       "maxDetailRequestsPerRun": 50,
+      "fairHydration": true,
       "roleFamilyKeywords": [
         "software", "engineer", "developer", "sde", "swe", "backend", "front end", "frontend",
         "full stack", "fullstack", "full-stack", "ai", "ml", "machine learning", "llm", "genai",
@@ -158,22 +182,23 @@
       ],
       "notes": "ats-enterprise.mjs previously issued a plain GET with no body for every provider. Workday's public CXS jobs endpoint returns HTTP 400 on GET and requires a POST with a JSON search body ({ appliedFacets, limit, offset, searchText }); ats-enterprise.mjs and operator.mjs's defaultHttpTransport were fixed to send that for provider workday only (see requestOptions() in crawler/ats-enterprise.mjs). All four boards above were confirmed end-to-end through the real fetch transport, not just via a manual curl probe. maxPages/maxJobsPerBoard raised from the 3-page/20-job default: the previous requestOptions() always sent offset:0, so every board silently capped at its first 20 postings regardless of these limits; ats-enterprise.mjs now advances offset from the actual item count received and stops on Workday's own `total` field, so this budget is honored (up to 10 pages x 20/page = 200 postings per board, e.g. covers a meaningful slice of Mastercard's 1169 rather than just the first page). enrichDetails + maxDetailRequestsPerRun enable bounded Workday LIST→DETAIL hydration for preselected role-family / India-location rows before eligibility policy; detailConcurrency caps parallel detail GETs; telemetry.workdayDetail reports attempted/succeeded/failed/budgetExhausted."
     },
-    "careerSites": [],
+    "careerSites": [
+      {
+        "company": "Birlasoft",
+        "websiteUrl": "https://jobs.birlasoft.com/",
+        "enabled": true,
+        "probeStatus": "verified",
+        "probedAt": "2026-07-26T07:50:52Z",
+        "evidenceRef": "https://jobs.birlasoft.com/sitemap.xml exposed current job detail URLs including Pune roles on 2026-07-26; https://jobs.birlasoft.com/job/Pune-Generative-AI-Developer-INDI/55886644/ returned schema.org JobPosting microdata with Pune location, datePosted, validThrough, and hiringOrganization"
+      }
+    ],
     "disabledCareerSites": [
       {
         "company": "Cybage Software",
         "websiteUrl": "https://www.cybage.com/careers/open-positions",
         "enabled": false,
-        "probeStatus": "verified-live-but-nonfunctional",
-        "reason": "Live and Pune-headquartered (curl-confirmed, real per-role pages such as /careers/open-positions/current-openings/c-developer), but those job pages carry no schema.org JobPosting JSON-LD. discoverCompanyCareers() only synthesizes a fallback candidate for sitemap-sourced ('job' kind) URLs, not for pages reached via same-site link-following ('page' kind), so end-to-end this board produces zero observations, then once the page budget reaches the general www.cybage.com/sitemap.xml it starts emitting mislabeled marketing pages (e.g. 'Digital Transformation', 'Retail') as if they were job postings. Verified this behavior by actually running discoverCompanyCareers() against the live site rather than adding on curl evidence alone; left disabled rather than ship mislabeled observations."
-      },
-      {
-        "company": "Birlasoft",
-        "websiteUrl": "https://jobs.birlasoft.com/",
-        "enabled": false,
-        "probeStatus": "verified-live-but-nonfunctional",
-        "reason": "Live, SuccessFactors-powered, with a genuine dedicated job sitemap (https://jobs.birlasoft.com/sitemap.xml, 697 postings, 286 Pune-tagged, curl-confirmed). Not usable as-is: company-careers.mjs's CAREER_RE match tests the full URL including hostname, and every same-site link (CSS, JS, images) on jobs.birlasoft.com matches CAREER_RE purely because the hostname contains the substring 'jobs.', so the bounded page queue fills with static assets before it ever reaches the job sitemap. Confirmed by running discoverCompanyCareers() against the live site and inspecting the fetch order. Left disabled rather than burn the crawl budget on CSS files; would need a company-careers.mjs fix (match CAREER_RE against the path, not the full URL) that is out of scope for this pass.",
-        "note": "Better suited to a direct SuccessFactors enterprise board (career44.sapsf.com, company=birlasoftl) than the generic career-site adapter, but that tenant's public OData job-search contract was not verified this pass."
+        "probeStatus": "unverified-no-jobposting-evidence",
+        "reason": "Public careers and C Developer pages were reachable on 2026-07-26, but the role page exposed neither schema.org JobPosting JSON-LD nor JobPosting microdata. The safe adapter therefore cannot verify title, description, posted date, and liveness from structured employer evidence; left disabled rather than synthesize a listing or reintroduce the old marketing-page false positives."
       },
       {
         "company": "razorpay.pinpointhq.com / zeta.pinpointhq.com / innovaccer.pinpointhq.com",
@@ -289,7 +314,8 @@
     "maxRedirects": 5,
     "maxHosts": 4,
     "maxBytes": 2000000,
-    "maxRequests": 8
+    "maxRequests": 8,
+    "timeoutMs": 30000
   },
   "careerPageDiscovery": {
     "maxRedirects": 3,

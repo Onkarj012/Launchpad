@@ -120,20 +120,26 @@ function fields(provider, row, boardUrl, runAt) {
   const url = first(row.url, row.jobUrl, row.detailUrl, row.careerSiteUrl, row.applyUrl, row.applyurl, row.externalPath, row.jobPostingUrl, row.links?.self, row.links?.job);
   const title = first(row.title, row.jobTitle, row.jobtitle, row.name, row.role);
   const company = first(row.company, row.companyName, row.hiringOrganization?.name);
-  const date = first(row.postedAt, row.datePosted, row.postingDate, row.postedOn, row.posteddate, row.createdAt, row.startDate);
+  const postedOnLabel = provider === 'workday' ? clean(row.postedOn) : null;
+  const date = first(row.postedAt, row.datePosted, row.postingDate, postedOnLabel, row.posteddate, row.createdAt, row.startDate);
   const parsedDate = parseDate(date);
   // Relative labels resolve against the run clock, not wall-clock at parse time: a long
   // crawl would otherwise date "Posted Today" rows after runAt and trip FRESHNESS_FUTURE_POSTED_AT.
   const runClock = Date.parse(String(runAt ?? ''));
-  const postedOnMs = provider === 'workday' && typeof date === 'string' && parsedDate === null
-    ? parsePostedOn(date, Number.isNaN(runClock) ? Date.now() : runClock)
+  const postedOnMs = provider === 'workday' && postedOnLabel && parseDate(postedOnLabel) === null
+    ? parsePostedOn(postedOnLabel, Number.isNaN(runClock) ? Date.now() : runClock)
     : undefined;
+  const freshness = provider !== 'workday'
+    ? null
+    : postedOnMs !== undefined
+      ? { kind: 'workday-postedOn', label: postedOnLabel }
+      : postedOnLabel && /\b30\+\s*days?\b/i.test(postedOnLabel)
+        ? { kind: 'workday-postedOn-unbounded', label: postedOnLabel }
+        : { kind: 'workday-unverified', ...(postedOnLabel ? { label: postedOnLabel } : {}) };
   const id = listRequisitionId(row);
   return {
     url: canonical(url, boardUrl), title: clean(title), company: clean(company), postedAt: postedOnMs === undefined ? parsedDate : new Date(postedOnMs).toISOString(), id: id == null ? null : String(id),
-    freshness: provider === 'workday'
-      ? postedOnMs === undefined ? { kind: 'workday-unverified' } : { kind: 'workday-postedOn', label: date }
-      : null,
+    freshness,
     location: locationText(first(row.location, row.locations, row.locationsText, row.jobLocation, row.city)),
     description: clean(row.description || row.descriptionPlain || row.jobDescription),
     applicationUrl: canonical(first(row.applyUrl, row.applyurl, row.applicationUrl, row.externalUrl), boardUrl), provider,
@@ -321,9 +327,17 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
   const runAtMs = Date.parse(String(runAt ?? ''));
   const startDateMs = Date.parse(String(detail.providerStartDate ?? ''));
   const hasUsableStartDate = Boolean(detail.providerStartDate && !Number.isNaN(startDateMs) && (Number.isNaN(runAtMs) || startDateMs <= runAtMs));
-  const postedAt = hasUsableStartDate
-    ? detail.providerStartDate
-    : candidate.postedAt;
+  const postedAt = hasUsableStartDate ? detail.providerStartDate : candidate.postedAt;
+  const priorLiveness = candidate.liveness;
+  const detailLiveness = detail.liveness;
+  const liveness = detailLiveness?.status === 'Not Verified' && ['Active', 'Expired'].includes(priorLiveness?.status)
+    ? priorLiveness
+    : detailLiveness || priorLiveness;
+  const freshness = hasUsableStartDate
+    ? { kind: 'workday-startDate', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn, detailUrl }
+    : ['workday-postedOn', 'workday-postedOn-unbounded'].includes(candidate.evidence?.freshness?.kind)
+      ? candidate.evidence.freshness
+      : { ...candidate.evidence?.freshness, kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn };
   const next = normalizeCandidate({
     ...candidate,
     url: applicationUrl,
@@ -342,19 +356,15 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
     source: candidate.source,
     sourceKind: candidate.sourceKind || 'ats-direct',
     experience,
-    liveness: { ...detail.liveness, checkedAt: runAt },
+    liveness: liveness ? { ...liveness, checkedAt: liveness.checkedAt || runAt } : null,
     evidence: {
       ...candidate.evidence,
       verified: true,
-      detailHydration: { status: 'succeeded', detailUrl },
+      detailHydration: { status: 'succeeded', detailUrl, freshnessContribution: hasUsableStartDate ? 'workday-startDate' : 'none' },
       requisitionId,
       providerStartDate: detail.providerStartDate,
       providerPostedOn: detail.providerPostedOn,
-      freshness: candidate.evidence?.freshness?.kind === 'workday-postedOn'
-        ? candidate.evidence.freshness
-        : hasUsableStartDate
-          ? { kind: 'workday-startDate', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn, detailUrl }
-          : { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
+      freshness,
     },
   }, { runAt, provider: 'workday' });
   next.classification = candidate.classification;
@@ -395,11 +405,24 @@ async function mapPool(items, concurrency, fn) {
 }
 
 async function hydrateWorkdayDetails(pending, {
-  transport, runAt, detailConcurrency, maxDetailRequests, detailTelemetry, verificationQueue,
+  transport, runAt, detailConcurrency, maxDetailRequests, detailTelemetry, verificationQueue, fairHydration,
 }) {
   let remaining = Math.max(0, Number(maxDetailRequests) || 0);
   const selected = [];
+  const byBoard = new Map();
   for (const item of pending) {
+    const key = item.boardUrl || 'unknown-board';
+    if (!byBoard.has(key)) byBoard.set(key, []);
+    byBoard.get(key).push(item);
+  }
+  const fairOrder = fairHydration ? [] : pending;
+  while (fairHydration && [...byBoard.values()].some((items) => items.length)) {
+    for (const items of byBoard.values()) {
+      const item = items.shift();
+      if (item) fairOrder.push(item);
+    }
+  }
+  for (const item of fairOrder) {
     if (remaining <= 0) {
       detailTelemetry.budgetExhausted += 1;
       item.candidate.evidence = {
@@ -497,6 +520,7 @@ export async function discoverEnterpriseAts({
   enrichDetails = false,
   detailConcurrency = 4,
   maxDetailRequestsPerRun = 0,
+  fairHydration = false,
   roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS,
   locationKeywords = DEFAULT_LOCATION_KEYWORDS,
 } = {}) {
@@ -612,7 +636,7 @@ export async function discoverEnterpriseAts({
 
   if (workdayPending.length && detailEnabled) {
     await hydrateWorkdayDetails(workdayPending, {
-      transport, runAt, detailConcurrency: concurrency, maxDetailRequests: detailBudget, detailTelemetry, verificationQueue,
+      transport, runAt, detailConcurrency: concurrency, maxDetailRequests: detailBudget, detailTelemetry, verificationQueue, fairHydration,
     });
     for (const item of workdayPending) {
       observations[item.observationIndex] = item.candidate;

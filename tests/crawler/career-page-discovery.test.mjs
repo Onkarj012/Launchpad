@@ -302,6 +302,44 @@ test('reuses JSON-LD JobPosting extraction for a discovered job URL', async () =
   assert.ok(row.evidence.fieldSources?.title || row.evidence.resolver);
 });
 
+test('accepts verified schema.org JobPosting microdata without promoting other pages', async () => {
+  const jobUrl = 'https://jobs.microdata.acmeco.io/job/Pune-AI-Engineer/1001';
+  const transport = fixtureTransport({
+    'https://jobs.microdata.acmeco.io/robots.txt': { status: 200, headers: {}, body: 'User-agent: *\nAllow: /\n' },
+    'https://jobs.microdata.acmeco.io/': htmlPage('<a href="/careers">Careers</a><a href="/about">About</a>'),
+    'https://jobs.microdata.acmeco.io/careers': htmlPage('<p>Open roles</p>'),
+    'https://jobs.microdata.acmeco.io/sitemap.xml': xmlPage(`<?xml version="1.0"?><urlset>
+      <url><loc>${jobUrl}</loc><lastmod>2026-07-25</lastmod></url>
+      <url><loc>https://jobs.microdata.acmeco.io/about</loc></url>
+    </urlset>`),
+    [jobUrl]: htmlPage(`<div itemscope="itemscope" itemtype="http://schema.org/JobPosting">
+      <span itemprop="title">AI Engineer</span>
+      <span itemprop="description"><p>Build safe agent systems in Pune.</p></span>
+      <meta itemprop="addressLocality" content="Pune">
+      <meta itemprop="addressCountry" content="IN">
+      <meta itemprop="datePosted" content="2026-07-20">
+      <meta itemprop="validThrough" content="2026-08-20">
+      <meta itemprop="employmentType" content="FULL_TIME">
+      <meta itemprop="hiringOrganization" content="Microdata Co">
+    </div>`, 'AI Engineer'),
+  });
+
+  const result = await discoverCareerPages({
+    company: 'Microdata Co',
+    websiteUrl: 'https://jobs.microdata.acmeco.io/',
+    transport,
+    runAt: RUN_AT,
+    hostLimiterOptions: { minSpacingMs: 0 },
+    retry: { maxAttempts: 1 },
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].title, 'AI Engineer');
+  assert.equal(result.observations[0].location, 'Pune, IN');
+  assert.equal(result.observations[0].postedAt, '2026-07-20T00:00:00.000Z');
+  assert.equal(result.observations.some((row) => /about/i.test(row.title)), false);
+});
+
 test('tags sitemap lastmod as modification evidence and never as postedAt', async () => {
   const lastmod = '2026-01-01T00:00:00.000Z';
   const transport = fixtureTransport({

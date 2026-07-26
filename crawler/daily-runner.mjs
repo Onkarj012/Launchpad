@@ -6,13 +6,14 @@ import {
 } from './operator.mjs';
 import { fetchWarmAts } from './ats-warm.mjs';
 import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
-import { projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
+import { boardIdentityKey, projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
 import { runNormalMode } from '../job-pull/normal-mode.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { crawlerRunLockPath, withCrawlerRunLock } from './run-lock.mjs';
+import { sourceFailureHistogram } from './run.mjs';
 
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
@@ -67,6 +68,28 @@ function trackedBoards(config) {
 
 export { trackedBoards };
 
+export function partitionTrackedScan(config) {
+  const configured = trackedBoards(config);
+  const registry = resolveBoardRegistry(config);
+  const covered = new Set();
+  if (registry) {
+    for (const board of registry.boards ?? []) {
+      if (board.enabled && board.activationState !== 'proposed') covered.add(board.id || boardIdentityKey(board));
+    }
+  } else {
+    for (const board of config.sources?.atsWarm?.boards ?? []) covered.add(board.id || board.registryId || boardIdentityKey(board));
+    for (const board of config.sources?.enterprise?.boards ?? []) covered.add(board.id || board.registryId || boardIdentityKey(board));
+  }
+  const boards = [];
+  const omissions = [];
+  for (const board of configured) {
+    const boardId = board.id || board.registryId || boardIdentityKey(board);
+    if (covered.has(boardId)) omissions.push({ boardId, provider: board.provider, reason: 'covered-by-crawler-source-plan' });
+    else boards.push(board);
+  }
+  return { configured, boards, omissions };
+}
+
 function failureMessages(failures) {
   return failures.map((failure) => [
     failure.provider,
@@ -79,6 +102,31 @@ function failureMessages(failures) {
 function fixtureStatus(candidates, failures) {
   if (failures.length) return candidates.length ? 'degraded' : 'failed';
   return candidates.length ? 'ok' : 'empty';
+}
+
+function truthfulDailyOutcome(result) {
+  if (result.outcome?.fatal) return result;
+  const degradedSources = result.sourceManifests
+    .filter((manifest) => manifest.attempted !== false && manifest.status === 'degraded')
+    .map((manifest) => manifest.sourceId);
+  if (!degradedSources.length) return result;
+  const issues = result.sourceManifests
+    .filter((manifest) => degradedSources.includes(manifest.sourceId))
+    .map((manifest) => ({ sourceId: manifest.sourceId, status: manifest.status, errors: manifest.errors ?? [] }));
+  return {
+    ...result,
+    shortfall: {
+      ...result.shortfall,
+      degradedLanes: [...new Set([...(result.shortfall?.degradedLanes ?? []), ...degradedSources])],
+      reasons: [...new Set([...(result.shortfall?.reasons ?? []), ...degradedSources.map((sourceId) => `SOURCE_DEGRADED:${sourceId}`)])],
+    },
+    outcome: {
+      ...result.outcome,
+      status: 'degraded',
+      degraded: true,
+      errors: [...(result.outcome?.errors ?? []), ...issues],
+    },
+  };
 }
 
 export const CRAWLER_SOURCE_TO_NORMAL_LANE = Object.freeze({
@@ -231,13 +279,17 @@ async function runDailyNormalUnlocked({
     locationPreset,
     store,
   });
+  const trackedPartition = partitionTrackedScan(config);
   const trackedResult = await fetchWarmAts({
     ...(config.sources?.trackedAts ?? {}),
-    boards: trackedBoards(config),
+    boards: trackedPartition.boards,
     transport,
     runAt,
   });
-  const result = await runNormalMode({
+  trackedResult.manifest.boardsConfigured = trackedPartition.configured.length;
+  trackedResult.manifest.boardsOmitted += trackedPartition.omissions.length;
+  trackedResult.manifest.omissions = [...trackedPartition.omissions, ...(trackedResult.manifest.omissions ?? [])];
+  const normalResult = await runNormalMode({
     clock: () => runAt,
     runId: effectiveRunId,
     sourceFunctions,
@@ -262,26 +314,37 @@ async function runDailyNormalUnlocked({
     includeCrawlerLanes: true,
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
+  const result = truthfulDailyOutcome(normalResult);
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
+  const failureHistogram = sourceFailureHistogram(crawlerResult.sourceTelemetry, crawlerResult.failures);
+  const crawlerDeadline = crawlerResult.run?.telemetry?.deadline ?? null;
+  const canaryStoreWithFailures = canaryStore && {
+    readRuns: () => canaryStore.readRuns?.() ?? [],
+    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram, crawlerDeadline }),
+  };
   const deliveryCanary = recordDeliveryCanary({
-    run: { ...result, v4HistorySnapshot: snapshotTelemetry },
+    run: { ...result, v4HistorySnapshot: snapshotTelemetry, sourceFailureHistogram: failureHistogram, crawlerDeadline },
     clock: effectiveClock,
-    store: canaryStore,
+    store: canaryStoreWithFailures,
   });
   return {
     ...result,
     crawlerV2Profile: crawlerResult.profile,
     crawlerV2Operator: crawlerResult.operator,
     crawlerV2Run: crawlerResult.run,
+    sourceFailureHistogram: failureHistogram,
+    crawlerDeadline,
     crawlerV2Telemetry: Object.fromEntries(Object.entries(crawlerResult.sourceTelemetry ?? {}).map(([sourceId, telemetry]) => [sourceId, {
       ...telemetry,
       durationMs: crawlerResult.run?.telemetry?.sourceDurations?.[sourceId] ?? null,
     }])),
     v4HistorySnapshot: snapshotTelemetry,
-    deliveryCanary,
+    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram, crawlerDeadline },
     telemetry: {
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
+      sourceFailureHistogram: failureHistogram,
+      crawlerDeadline,
     },
     receipt: {
       schemaVersion: 'LaunchpadCrawlerRunReceiptV1',
