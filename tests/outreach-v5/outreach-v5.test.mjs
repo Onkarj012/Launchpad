@@ -12,15 +12,17 @@ test('contact research is free-first, records public evidence, and leaves missin
   const providers = providersFor({ failure: true });
   const result = await researchContact({ application: application('one'), providers, now: OUTREACH_FIXTURE_NOW });
   assert.equal(result.status, 'found');
-  assert.equal(result.contact.email, null);
-  assert.equal(result.contact.recommendedChannel, 'LinkedIn');
-  assert.equal(result.contact.companyRelationship, 'Leads the engineering team hiring for this role');
+  assert.equal(result.contact, null);
+  assert.equal(result.recommendedCandidate.email, null);
+  assert.equal(result.recommendedCandidate.recommendedChannel, 'LinkedIn');
+  assert.equal(result.recommendedCandidate.companyRelationship, 'Leads the engineering team hiring for this role');
   assert.deepEqual(providers.calls.map(([source]) => source), ['hiringAuthors', 'companyTeamPages', 'publicProfiles']);
   assert.equal(result.failures[0].source, 'companyTeamPages');
-  assert.equal(result.contact.publicEvidence[0].url, 'https://example.com/team/one');
+  assert.equal(result.recommendedCandidate.publicEvidence[0].url, 'https://example.com/team/one');
+  assert.equal(result.recommendedCandidate.observedAt, OUTREACH_FIXTURE_NOW);
 });
 
-test('optional provider failures do not block a later evidence-backed email path', async () => {
+test('explicit paid approval allows a later evidence-backed email path', async () => {
   const calls = [];
   const result = await researchContact({
     application: application('two'),
@@ -31,12 +33,38 @@ test('optional provider failures do not block a later evidence-backed email path
       apollo: async () => { calls.push('apollo'); throw new Error('credit provider down'); },
       hunter: async () => { calls.push('hunter'); return [contact('two', { email: 'person-two@example.com', emailEvidence: 'Hunter result', recommendedChannel: 'Email' })]; },
     },
+    allowPaid: true,
+    runId: 'paid-run',
+    paidApproval: { confirmed: true, approvedBy: 'Onkar', runId: 'paid-run' },
     now: OUTREACH_FIXTURE_NOW,
   });
   assert.equal(result.status, 'found');
-  assert.equal(result.contact.email, 'person-two@example.com');
+  assert.equal(result.recommendedCandidate.email, 'person-two@example.com');
   assert.deepEqual(calls, ['hiringAuthors', 'companyTeamPages', 'publicProfiles', 'apollo', 'hunter']);
   assert.equal(result.failures[0].source, 'apollo');
+});
+
+test('paid providers are disabled by default and guessed email evidence is rejected', async () => {
+  const paidCalls = [];
+  const result = await researchContact({
+    application: application('paid-default'),
+    providers: {
+      hiringAuthors: async () => [],
+      companyTeamPages: async () => [],
+      publicProfiles: async () => [],
+      publicCompanyEmailEvidence: async () => [{
+        ...contact('guessed', { recommendedChannel: 'Email' }),
+        email: 'guessed@example.com',
+        emailEvidence: null,
+      }],
+      apollo: async () => { paidCalls.push('apollo'); return []; },
+    },
+    now: OUTREACH_FIXTURE_NOW,
+  });
+  assert.equal(result.status, 'not-found');
+  assert.deepEqual(paidCalls, []);
+  assert.equal(result.rejected[0].code, 'EMAIL_EVIDENCE_REQUIRED');
+  assert.equal(result.attempts.find(({ source }) => source === 'apollo').reason, 'paid-provider-disabled');
 });
 
 test('outreach identity is deterministic for application x person x channel', () => {
@@ -49,7 +77,8 @@ test('outreach identity is deterministic for application x person x channel', ()
 
 test('deep personalization is capped at six and lighter paths cover the remainder', async () => {
   const apps = Array.from({ length: 8 }, (_, index) => application(`app-${index}`, 100 - index));
-  const prepared = await prepareOutreach({ applications: apps, providers: providersFor(), deepLimit: 6, now: OUTREACH_FIXTURE_NOW });
+  const contactApprovals = Object.fromEntries(apps.map((app) => [app.id, { approved: true, personId: app.id, channel: 'LinkedIn' }]));
+  const prepared = await prepareOutreach({ applications: apps, providers: providersFor(), contactApprovals, deepLimit: 6, now: OUTREACH_FIXTURE_NOW });
   assert.equal(prepared.status, 'ready');
   assert.equal(prepared.deepCount, 6);
   assert.equal(prepared.lightCount, 2);
@@ -143,6 +172,10 @@ test('batch persistence preserves no-contact and draft-blocked outcomes without 
   const prepared = await prepareOutreach({
     applications: [application('ok'), application('blocked', 89, { resumeState: 'Not Started' })],
     providers: providersFor(),
+    contactApprovals: {
+      ok: { approved: true, personId: 'ok', channel: 'LinkedIn' },
+      blocked: { approved: true, personId: 'blocked', channel: 'LinkedIn' },
+    },
     attachmentExpected: (current) => current.id === 'blocked',
     now: OUTREACH_FIXTURE_NOW,
   });

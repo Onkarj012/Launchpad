@@ -40,24 +40,40 @@ function activityFilter(key) {
 
 function pageId(page) { return page?.id ?? page?.pageId ?? null; }
 
+function approvedContact(research, approval) {
+  if (approval?.approved !== true) return null;
+  const candidate = research.candidates.find(({ contact }) => {
+    const personMatches = String(approval.personId ?? '').trim() === String(contact.personId);
+    const channelMatches = String(approval.channel ?? '').trim() === String(contact.recommendedChannel);
+    return personMatches && channelMatches;
+  });
+  return candidate?.contact ?? null;
+}
+
 /** Research and draft without any send-capable connector. */
-export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = true } = {}) {
+export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = false, paidApproval = null, contactApprovals = {} } = {}) {
   const eligible = applications.filter((application) => application?.id && !terminal(application)).sort((a, b) => score(b) - score(a) || String(a.id).localeCompare(String(b.id)));
   const results = [];
   for (let index = 0; index < eligible.length; index += 1) {
     const application = eligible[index];
-    const research = await researchContact({ application, providers, allowPaid, now });
-    if (!research.contact) {
+    const research = await researchContact({ application, providers, allowPaid, paidApproval, runId: application.runId, now });
+    if (!research.recommendedCandidate) {
       results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: 'no-contact', research });
+      continue;
+    }
+    const approval = contactApprovals[application.id] ?? null;
+    const contact = approvedContact(research, approval);
+    if (!contact) {
+      results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: 'contact-review-required', research });
       continue;
     }
     try {
       const draft = buildOutreachDraft({
         application,
-        contact: research.contact,
+        contact,
         depth: index < deepLimit ? 'deep' : 'light',
-        channel: research.contact.recommendedChannel,
-        attachmentExpected: typeof attachmentExpected === 'function' ? Boolean(attachmentExpected(application, research.contact)) : Boolean(attachmentExpected),
+        channel: contact.recommendedChannel,
+        attachmentExpected: typeof attachmentExpected === 'function' ? Boolean(attachmentExpected(application, contact)) : Boolean(attachmentExpected),
         resumeArtifact: application.resumeArtifact ?? null,
       });
       results.push({ applicationId: application.id, depth: draft.depth, status: 'draft-ready', research, draft });

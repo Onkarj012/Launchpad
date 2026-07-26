@@ -68,6 +68,14 @@ function confidence(value) {
   return 'Low';
 }
 
+function observationDate(value) {
+  const observedAt = text(value);
+  if (!observedAt || Number.isNaN(Date.parse(observedAt))) {
+    throw new ContactEvidenceError('an evidence observation date is required', 'EVIDENCE_OBSERVED_AT_REQUIRED');
+  }
+  return new Date(observedAt).toISOString();
+}
+
 /**
  * Normalize only evidence supplied by a provider. In particular, this never
  * derives an email from a name, company domain, or guessed pattern.
@@ -82,6 +90,7 @@ export function normalizeContactEvidence(candidate = {}, { application = {}, sou
   if (!currentRole) throw new ContactEvidenceError('contact current role is required', 'CONTACT_ROLE_REQUIRED');
   if (!companyRelationship) throw new ContactEvidenceError('company relationship evidence is required', 'COMPANY_RELATIONSHIP_REQUIRED');
   if (!publicEvidence.length) throw new ContactEvidenceError('at least one public evidence link is required', 'PUBLIC_EVIDENCE_REQUIRED');
+  const observedAt = observationDate(candidate.observedAt ?? candidate.observationDate);
 
   const email = normalizeEmail(candidate.email ?? candidate.publicEmail);
   if (email && !candidate.emailEvidence && !candidate.emailSource) {
@@ -105,7 +114,7 @@ export function normalizeContactEvidence(candidate = {}, { application = {}, sou
     recommendedChannel: channel,
     confidence: confidence(candidate.confidence),
     source: text(candidate.source ?? source),
-    observedAt: text(candidate.observedAt),
+    observedAt,
   });
 }
 
