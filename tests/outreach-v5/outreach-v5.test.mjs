@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { application, contact, createFakeGateway, OUTREACH_FIXTURE_NOW, providersFor } from '../fixtures/outreach-v5.mjs';
 import { normalizeContactEvidence } from '../../outreach-v5/evidence.mjs';
 import { buildOutreachDraft, storeOutreachDraft } from '../../outreach-v5/draft.mjs';
@@ -10,6 +14,8 @@ import { researchContact } from '../../outreach-v5/research.mjs';
 import { normalizeNotionOutreachState, normalizeOutreachPage } from '../../outreach-v5/notion-normalizers.mjs';
 import { buildOutreachQueue } from '../../outreach-v5/queue.mjs';
 import { approveContactReview, buildContactReviewCard } from '../../outreach-v5/review.mjs';
+import * as gmailDraftModule from '../../outreach-v5/gmail-draft.mjs';
+import { approvedMessageDigest, createApprovedGmailDraft, OUTREACH_DELIVERY_CAPABILITIES } from '../../outreach-v5/gmail-draft.mjs';
 
 function notionProperty(type, value) {
   if (type === 'title' || type === 'rich_text') return { type, [type]: [{ plain_text: String(value) }] };
@@ -413,4 +419,55 @@ test('the same person cannot run parallel Email and LinkedIn sequences', () => {
   assert.ok(card.suppression.reasons.includes('ACTIVE_PERSON_SEQUENCE'));
   assert.ok(card.suppression.reasons.includes('PARALLEL_PERSON_CHANNEL'));
   assert.throws(() => approveContactReview({ card, approval: approvalFor(currentContact) }), (error) => error.code === 'CONTACT_SUPPRESSED');
+});
+
+test('Gmail draft attaches the exact verified PDF and stores its digest', async () => {
+  const gateway = createFakeGateway();
+  const app = application('gmail', 95, { resumeState: 'Ready' });
+  const pdfPath = path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-gmail-')), 'role.pdf');
+  const pdf = Buffer.from('%PDF-1.4\nverified fixture\n%%EOF\n');
+  writeFileSync(pdfPath, pdf);
+  const digest = createHash('sha256').update(pdf).digest('hex');
+  const currentContact = reviewedContact('gmail', {
+    email: 'person@gmail.example',
+    emailEvidence: 'Public company recruiting page',
+    recommendedChannel: 'Email',
+  });
+  const draft = buildOutreachDraft({
+    application: app,
+    contact: currentContact,
+    approval: approvalFor(currentContact),
+    attachmentExpected: true,
+    resumeArtifact: { applicationId: app.id, company: app.companyName, role: app.role, pdfPath, state: 'Ready', digest },
+  });
+  gateway.pages.outreach.push({ id: 'outreach-gmail', values: {} });
+  const messageDigest = approvedMessageDigest({ recipient: draft.email, subject: draft.subject, body: draft.body });
+  let payload;
+  const result = await createApprovedGmailDraft({
+    enabled: true,
+    gateway,
+    outreach: { id: 'outreach-gmail' },
+    draft,
+    messageApproval: { approved: true, approvedBy: 'Onkar', approvedAt: OUTREACH_FIXTURE_NOW, messageDigest },
+    draftCreator: { createDraft: async (input) => { payload = input; return { id: 'gmail-draft-1' }; } },
+  });
+  assert.equal(result.attachmentDigest, digest);
+  assert.equal(gateway.pages.outreach[0].values.gmailDraftId, 'gmail-draft-1');
+  assert.equal(gateway.pages.outreach[0].values.attachmentDigest, digest);
+  assert.match(Buffer.from(payload.raw, 'base64url').toString(), /Content-Type: application\/pdf/);
+});
+
+test('outreach exposes drafts and copy text only, with no send operation reachable', async () => {
+  assert.deepEqual(OUTREACH_DELIVERY_CAPABILITIES, ['gmail.drafts.create', 'linkedin.copy-text']);
+  assert.deepEqual(Object.keys(gmailDraftModule).filter((name) => /send/iu.test(name)), []);
+  await assert.rejects(() => createApprovedGmailDraft(), (error) => error.code === 'GMAIL_DRAFT_DISABLED');
+  const gateway = createFakeGateway();
+  await assert.rejects(() => createApprovedGmailDraft({
+    enabled: true,
+    gateway,
+    outreach: { id: 'outreach-no-email' },
+    draft: { applicationId: 'app', channel: 'Email', email: null },
+    messageApproval: { approved: true },
+    draftCreator: { createDraft: async () => ({ id: 'draft' }), send: async () => {} },
+  }), (error) => error.code === 'EMAIL_REQUIRED');
 });

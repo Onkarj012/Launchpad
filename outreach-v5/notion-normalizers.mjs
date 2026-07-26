@@ -118,6 +118,8 @@ export function normalizeOutreachPage(row = {}) {
     duplicateKey: text(value(row, 'duplicateKey', 'Duplicate Key')),
     evidenceUrl: text(value(row, 'evidenceUrl', 'Evidence URL')),
     draftState: text(value(row, 'draftState', 'Draft State')),
+    gmailDraftId: text(value(row, 'gmailDraftId', 'Gmail Draft ID')),
+    attachmentDigest: text(value(row, 'attachmentDigest', 'Attachment Digest')),
   });
 }
 

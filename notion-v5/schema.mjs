@@ -96,6 +96,8 @@ export const V5_SCHEMA = Object.freeze({
 export const V5_RUNTIME_PROPERTIES = Object.freeze({
   outreach: Object.freeze({
     initialSentAt: field('Initial Sent At', 'date'),
+    gmailDraftId: field('Gmail Draft ID', 'rich_text'),
+    attachmentDigest: field('Attachment Digest', 'rich_text'),
   }),
   activity: Object.freeze({
     outreachKey: field('Outreach Key', 'rich_text'),
