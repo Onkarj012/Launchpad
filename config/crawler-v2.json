@@ -3,7 +3,13 @@
   "databasePath": ".local/launchpad-crawler/crawler.sqlite",
   "boardRegistryPath": "config/board-registry.json",
   "sourceFeatureFlags": {
-    "preserveWorkdayEvidence": true
+    "preserveWorkdayEvidence": true,
+    "boundedBoardConcurrency": true,
+    "wholeRunDeadline": true
+  },
+  "execution": {
+    "wholeRunDeadlineMs": 2520000,
+    "downstreamReserveMs": 300000
   },
   "sources": {
     "atsWarm": {
@@ -30,6 +36,7 @@
       ],
       "maxBoards": 20,
       "maxJobsPerBoard": 100,
+      "boardConcurrency": 3,
       "rotation": {
         "enabled": true,
         "providerQuotas": {
@@ -72,7 +79,9 @@
       "pageSize": 50,
       "maxPages": 1,
       "maxJobs": 100,
+      "boardConcurrency": 3,
       "rotation": { "enabled": true },
+      "boardConcurrency": 3,
       "enrichDetails": true
     },
     "atsBatch2": {

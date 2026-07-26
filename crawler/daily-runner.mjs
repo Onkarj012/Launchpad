@@ -305,28 +305,31 @@ export async function runDailyNormal({
   const result = truthfulDailyOutcome(normalResult);
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
   const failureHistogram = sourceFailureHistogram(crawlerResult.sourceTelemetry, crawlerResult.failures);
+  const crawlerDeadline = crawlerResult.run?.telemetry?.deadline ?? null;
   const canaryStoreWithFailures = canaryStore && {
     readRuns: () => canaryStore.readRuns?.() ?? [],
-    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram }),
+    append: (record) => canaryStore.append?.({ ...record, sourceFailureHistogram: failureHistogram, crawlerDeadline }),
   };
   const deliveryCanary = recordDeliveryCanary({
-    run: { ...result, v4HistorySnapshot: snapshotTelemetry, sourceFailureHistogram: failureHistogram },
+    run: { ...result, v4HistorySnapshot: snapshotTelemetry, sourceFailureHistogram: failureHistogram, crawlerDeadline },
     clock: effectiveClock,
     store: canaryStoreWithFailures,
   });
   return {
     ...result,
     sourceFailureHistogram: failureHistogram,
+    crawlerDeadline,
     crawlerV2Telemetry: Object.fromEntries(Object.entries(crawlerResult.sourceTelemetry ?? {}).map(([sourceId, telemetry]) => [sourceId, {
       ...telemetry,
       durationMs: crawlerResult.run?.telemetry?.sourceDurations?.[sourceId] ?? null,
     }])),
     v4HistorySnapshot: snapshotTelemetry,
-    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram },
+    deliveryCanary: { ...deliveryCanary, sourceFailureHistogram: failureHistogram, crawlerDeadline },
     telemetry: {
       ...(result.telemetry ?? {}),
       v4HistorySnapshot: snapshotTelemetry,
       sourceFailureHistogram: failureHistogram,
+      crawlerDeadline,
     },
   };
 }

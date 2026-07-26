@@ -1,5 +1,6 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 import { boardIdentityKey, planBoardRotation, recordBoardHealth } from './board-registry.mjs';
+import { mapProviderSafe } from './bounded-concurrency.mjs';
 
 const PROVIDERS = new Set(['greenhouse', 'lever', 'ashby']);
 
@@ -114,6 +115,7 @@ export async function fetchWarmAts({
   rotationState = {},
   seenBoardIds = [],
   registry = null,
+  boardConcurrency = 1,
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchWarmAts requires injected transport');
   const observations = [];
@@ -150,30 +152,26 @@ export async function fetchWarmAts({
     healthEvents.push({ boardId, ...event });
     if (healthRegistry && boardId) healthRegistry = recordBoardHealth(healthRegistry, boardId, event);
   };
-  for (const board of plan.boards) {
+  const boardResults = await mapProviderSafe(plan.boards, {
+    concurrency: boardConcurrency,
+    providerKey: (board) => board?.provider,
+  }, async (board) => {
     const provider = String(board?.provider || '').toLowerCase();
     const url = endpoint({ ...board, provider });
     if (!PROVIDERS.has(provider) || !url) {
-      failures.push({ provider, board: board?.slug, code: 'INVALID_WARM_BOARD' });
-      updateHealth(board, { failure: true, at: runAt });
-      continue;
+      return { board, failure: { provider, board: board?.slug, code: 'INVALID_WARM_BOARD' } };
     }
     try {
       const response = await transport(url, { method: 'GET', provider, board, warm: true });
       const status = Number(response?.status ?? 200);
       if (status < 200 || status >= 300) {
-        failures.push({ provider, board: board.slug, code: `HTTP_${status}` });
-        updateHealth(board, { failure: true, at: runAt });
-        continue;
+        return { board, failure: { provider, board: board.slug, code: `HTTP_${status}` } };
       }
       const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
       const listings = rows(provider, body);
       if (!Array.isArray(listings)) {
-        failures.push({ provider, board: board.slug, code: 'MALFORMED_PAYLOAD' });
-        updateHealth(board, { failure: true, at: runAt });
-        continue;
+        return { board, failure: { provider, board: board.slug, code: 'MALFORMED_PAYLOAD' } };
       }
-      const before = observations.length;
       const indiaFirst = board.indiaFirst === true;
       const eligibleListings = indiaFirst ? listings.filter((row) => !clearlyForeign(provider, row)) : listings;
       const foreignDiscardedAtSource = listings.length - eligibleListings.length;
@@ -184,16 +182,29 @@ export async function fetchWarmAts({
       const foreignPassedThroughAtSource = indiaFirst
         ? eligibleListings.filter((raw) => oldFilterWouldDiscard(raw)).length
         : 0;
+      const boardObservations = [];
       for (const raw of eligibleListings.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
         const sourceGeoObservation = oldFilterWouldDiscard(raw) ? 'india-first-filter-bypass' : null;
         const item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
-        if (item) observations.push(item);
+        if (item) boardObservations.push(item);
       }
-      sources.push({ provider, board: board.slug, company: board.company, fetched: listings.length, observations: observations.length - before, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' });
-      updateHealth(board, { success: true, at: runAt });
+      return {
+        board,
+        observations: boardObservations,
+        source: { provider, board: board.slug, company: board.company, fetched: listings.length, observations: boardObservations.length, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' },
+      };
     } catch (error) {
-      failures.push({ provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' });
-      updateHealth(board, { failure: true, at: runAt });
+      return { board, failure: { provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' } };
+    }
+  });
+  for (const result of boardResults) {
+    if (result.failure) {
+      failures.push(result.failure);
+      updateHealth(result.board, { failure: true, at: runAt });
+    } else {
+      observations.push(...result.observations);
+      sources.push(result.source);
+      updateHealth(result.board, { success: true, at: runAt });
     }
   }
   return {

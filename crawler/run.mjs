@@ -196,6 +196,18 @@ function clockSleep(clock, milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function monotonicNow(clock) {
+  return typeof clock?.monotonicNow === 'function' ? Number(clock.monotonicNow()) : performance.now();
+}
+
+function deadlinePolicy(config = {}) {
+  const execution = config.execution ?? {};
+  const enabled = config.sourceFeatureFlags?.wholeRunDeadline === true;
+  const deadlineMs = Math.max(1, Number(execution.wholeRunDeadlineMs ?? 45 * 60 * 1000));
+  const reserveMs = Math.max(0, Math.min(deadlineMs, Number(execution.downstreamReserveMs ?? 5 * 60 * 1000)));
+  return { enabled, deadlineMs, reserveMs };
+}
+
 function sourceHost(url) {
   try { return new URL(url).host; } catch { return null; }
 }
@@ -598,7 +610,7 @@ function persistObservation(store, source, runId, observation, observedAt, { pre
   return { duplicate: false, jobKey, lifecycle: nextLifecycle };
 }
 
-async function fetchSource(store, source, runId, priorState, config, clock) {
+async function fetchSource(store, source, runId, priorState, config, clock, runControl = {}) {
   const retry = { maxAttempts: 1, baseDelayMs: 250, ...(config.retry ?? {}) };
   const sourceRow = store.prepare('SELECT * FROM sources WHERE source_id = ?').get(source.id);
   const persisted = sourceState(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
@@ -621,7 +633,7 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
   for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     telemetry.attempts = attempt;
     try {
-      const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock });
+      const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock, deadline: runControl.deadline, signal: runControl.signal });
       const observations = Array.isArray(result?.observations) ? result.observations : [];
       let duplicates = 0;
       for (const observation of observations) {
@@ -721,6 +733,12 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     const undatedBefore = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
     backfillOriginalPostedAt(store);
     const sourceDurations = {};
+    const deadline = deadlinePolicy(config);
+    const runStartedAt = monotonicNow(clock);
+    const skippedSources = [];
+    let reserveActivated = false;
+    let deadlineExhausted = false;
+    let lastExecutedSourceId = null;
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
       const initialCursor = priorState.sources?.[source.id]?.cursor;
@@ -728,13 +746,73 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
       if (!store.prepare("SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status IN ('ok', 'empty', 'succeeded')").get(runId, source.id)) {
-        const sourceStartedAt = performance.now();
-        const result = await fetchSource(store, source, runId, priorState, config, clock);
-        sourceDurations[source.id] = Math.max(0, Math.round(performance.now() - sourceStartedAt));
+        const elapsedMs = Math.max(0, monotonicNow(clock) - runStartedAt);
+        const remainingMs = deadline.deadlineMs - elapsedMs;
+        const lowPriority = source.priority === 'low';
+        const skipReason = deadline.enabled && remainingMs <= 0
+          ? 'whole-run-deadline-exhausted'
+          : deadline.enabled && lowPriority && remainingMs <= deadline.reserveMs
+            ? 'downstream-reserve-protected'
+            : null;
+        if (skipReason) {
+          deadlineExhausted ||= remainingMs <= 0;
+          reserveActivated ||= skipReason === 'downstream-reserve-protected';
+          const skipped = { sourceId: source.id, lane: source.lane ?? 'unknown', priority: source.priority ?? 'normal', reason: skipReason, remainingMs: Math.max(0, Math.round(remainingMs)) };
+          skippedSources.push(skipped);
+          store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+            VALUES (?, ?, 'fetch', 0, 'DEADLINE_SKIPPED', ?, NULL, ?, ?)`).run(runId, source.id, sourceHost(source.url), `source skipped: ${skipReason}`, nowFrom(clock));
+          store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
+            VALUES (?, ?, 'degraded', 0, 0, 0, 0, 0, ?, ?)
+            ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = 0, fetched = 0, changed = 0,
+              observations = 0, duplicates = 0, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, JSON.stringify({
+            skipped: true,
+            skipReason,
+            priority: source.priority ?? 'normal',
+            adapterAttempts: 0,
+            adapterSuccesses: 0,
+            adapterFailures: 1,
+            failureHistogram: { DEADLINE_SKIPPED: 1 },
+            interrupted: true,
+            naturalTerminal: false,
+          }), `source skipped: ${skipReason}`);
+          sourceDurations[source.id] = 0;
+          continue;
+        }
+        const sourceStartedAt = monotonicNow(clock);
+        lastExecutedSourceId = source.id;
+        const result = await fetchSource(store, source, runId, priorState, config, clock, {
+          deadline: {
+            enabled: deadline.enabled,
+            deadlineMs: deadline.deadlineMs,
+            reserveMs: deadline.reserveMs,
+            remainingMs: Math.max(0, remainingMs),
+          },
+        });
+        sourceDurations[source.id] = Math.max(0, Math.round(monotonicNow(clock) - sourceStartedAt));
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, adapterAttempts: t.adapterAttempts, adapterSuccesses: t.adapterSuccesses, adapterFailures: t.adapterFailures, failureHistogram: t.failureHistogram, ...(t.boardsConfigured == null ? {} : { boardsConfigured: t.boardsConfigured, boardsAttempted: t.boardsAttempted, boardsOmitted: t.boardsOmitted, boardOmissions: t.boardOmissions }) }), t.error ?? null);
+      }
+    }
+    const elapsedAfterSources = Math.max(0, monotonicNow(clock) - runStartedAt);
+    if (deadline.enabled && elapsedAfterSources >= deadline.deadlineMs) {
+      deadlineExhausted = true;
+      const alreadyReported = skippedSources.some((source) => source.reason === 'whole-run-deadline-exhausted');
+      if (!alreadyReported && lastExecutedSourceId) {
+        const row = store.prepare('SELECT status, details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, lastExecutedSourceId);
+        const details = json(row?.details_json, {});
+        const failureHistogram = { ...(details.failureHistogram ?? {}), DEADLINE_EXHAUSTED: 1 };
+        store.prepare(`UPDATE source_telemetry SET status = 'degraded', details_json = ?, error = ? WHERE run_id = ? AND source_id = ?`).run(JSON.stringify({
+          ...details,
+          deadlineExhausted: true,
+          adapterFailures: Number(details.adapterFailures ?? 0) + 1,
+          failureHistogram,
+          interrupted: true,
+          naturalTerminal: false,
+        }), 'whole-run deadline exhausted', runId, lastExecutedSourceId);
+        store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+          VALUES (?, ?, 'fetch', 0, 'DEADLINE_EXHAUSTED', NULL, NULL, 'whole-run deadline exhausted', ?)`).run(runId, lastExecutedSourceId, nowFrom(clock));
       }
     }
     const undatedAfter = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
@@ -750,7 +828,22 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     transitionStage(store, runId, 'fetch', 'committed', { clock });
     transitionStage(store, runId, 'commit', 'running', { clock });
     finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
-    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations, sourceFailureHistogram: sourceFailureHistogram(telemetry) }, clock });
+    const elapsedMs = Math.max(0, Math.round(monotonicNow(clock) - runStartedAt));
+    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: {
+      sources: telemetry,
+      sourceDurations,
+      sourceFailureHistogram: sourceFailureHistogram(telemetry),
+      deadline: {
+        enabled: deadline.enabled,
+        deadlineMs: deadline.deadlineMs,
+        downstreamReserveMs: deadline.reserveMs,
+        elapsedMs,
+        remainingMs: Math.max(0, deadline.deadlineMs - elapsedMs),
+        exhausted: deadlineExhausted,
+        reserveActivated,
+        skippedSources,
+      },
+    }, clock });
     return { ...snapshot(store, runId), idempotent: false, newlyDated };
   } catch (error) {
     failCrawlRun(store, runId, error, { clock });

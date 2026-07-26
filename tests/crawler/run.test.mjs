@@ -485,6 +485,63 @@ test('a naturally exhausted Workday board is terminal and clears its cursor', as
   assert.equal(result.conditionalState.__cursor?.Acme, undefined);
 });
 
+test('whole-run deadline exhaustion is degraded and reports skipped work', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let monotonic = 0;
+  const sourcePlans = [
+    {
+      id: 'material-source', lane: 'ats',
+      fetch: async () => {
+        monotonic = 110;
+        return { observations: [], manifest: { status: 'empty', fetched: 0 } };
+      },
+    },
+    { id: 'late-source', lane: 'remote', priority: 'low', fetch: async () => ({ observations: [] }) },
+  ];
+  const result = await crawlRun({
+    store,
+    runId: 'deadline-exhausted',
+    sourcePlans,
+    config: { sourceFeatureFlags: { wholeRunDeadline: true }, execution: { wholeRunDeadlineMs: 100, downstreamReserveMs: 20 } },
+    clock: { ...fixedClock(), monotonicNow: () => monotonic },
+  });
+
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.telemetry.sources['late-source'].status, 'degraded');
+  assert.equal(result.run.telemetry.deadline.exhausted, true);
+  assert.deepEqual(result.run.telemetry.deadline.skippedSources.map((item) => [item.sourceId, item.reason]), [
+    ['late-source', 'whole-run-deadline-exhausted'],
+  ]);
+  store.close();
+});
+
+test('deadline reserve explicitly skips a low-priority lane for downstream work', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let monotonic = 0;
+  const result = await crawlRun({
+    store,
+    runId: 'deadline-reserve',
+    sourcePlans: [
+      {
+        id: 'primary-source', lane: 'ats',
+        fetch: async () => {
+          monotonic = 75;
+          return { observations: [], manifest: { status: 'empty', fetched: 0 } };
+        },
+      },
+      { id: 'search-source', lane: 'web-discovery', priority: 'low', fetch: async () => ({ observations: [] }) },
+    ],
+    config: { sourceFeatureFlags: { wholeRunDeadline: true }, execution: { wholeRunDeadlineMs: 100, downstreamReserveMs: 30 } },
+    clock: { ...fixedClock(), monotonicNow: () => monotonic },
+  });
+
+  assert.equal(result.run.telemetry.deadline.exhausted, false);
+  assert.equal(result.run.telemetry.deadline.reserveActivated, true);
+  assert.equal(result.telemetry.sources['search-source'].skipReason, 'downstream-reserve-protected');
+  assert.equal(result.run.telemetry.sourceFailureHistogram.DEADLINE_SKIPPED, 1);
+  store.close();
+});
+
 test('a later thin Workday observation preserves durable date, JD, and liveness evidence', async () => {
   const store = openCrawlerStore(tempDatabase());
   let rich = true;

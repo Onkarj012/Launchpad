@@ -1,5 +1,6 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 import { boardIdentityKey, planBoardRotation } from './board-registry.mjs';
+import { mapProviderSafe } from './bounded-concurrency.mjs';
 
 export const ATS_BATCH_1 = Object.freeze(['smartrecruiters', 'workable', 'teamtailor', 'recruitee']);
 export const ATS_BATCH_SCHEMA_VERSION = 'AtsBatchFetchV1';
@@ -204,7 +205,7 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
   return { provider, board: boardId(board), observations, failures, cursorState, conditionalState, cursor: cursorState, interrupted, manifest: { status, provider, board: boardId(board), startingCursor: boardCursor, pages, fetched, jobs: observations.length, changed: observations.length, foreignDiscardedAtSource: 0, naturalTerminal, interrupted, truncated: Boolean(capHit), capHit, recordsNotExamined, newestPostingAt, bounded: { maxPages: boundedPages, maxJobs: boundedJobs, pageSize } } };
 }
 
-export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, rotation = {}, rotationState = {}, ...options } = {}) {
+export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, boardConcurrency = 1, rotation = {}, rotationState = {}, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchAtsBatch1 requires injected transport');
   const cursorState = { ...(options.cursorState || {}) }; const conditionalState = { ...(options.conditionalState || {}) }; const results = []; const observations = []; const failures = []; const seen = new Set();
   const selection = rotation.enabled === true
@@ -219,9 +220,15 @@ export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date(
       },
       state: rotationState,
     };
-  for (const board of selection.boards) {
+  const boardResults = await mapProviderSafe(selection.boards, {
+    concurrency: boardConcurrency,
+    providerKey: (board) => board?.provider,
+  }, async (board) => {
     const provider = String(board?.provider || '').toLowerCase();
-    const result = await fetchAtsProvider({ ...options, board, provider, transport, runAt, cursorState, conditionalState }); results.push(result); failures.push(...result.failures);
+    return fetchAtsProvider({ ...options, board, provider, transport, runAt, cursorState, conditionalState });
+  });
+  for (const result of boardResults) {
+    results.push(result); failures.push(...result.failures);
     for (const observation of result.observations) if (!seen.has(observation.canonicalUrl)) { seen.add(observation.canonicalUrl); observations.push(observation); }
   }
   const interrupted = results.some((result) => result.manifest.interrupted);

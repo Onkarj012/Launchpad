@@ -416,6 +416,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async ({ cursor }) => {
     const result = await fetchWarmAts({
       ...sources.atsWarm,
+      boardConcurrency: config.sourceFeatureFlags?.boundedBoardConcurrency === true ? sources.atsWarm.boardConcurrency ?? 3 : 1,
       boards: sources.atsWarm.boards,
       transport,
       runAt,
@@ -425,11 +426,11 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     return { ...result, cursor: { rotation: result.rotationState } };
   }, { capabilities: { rotationPersistent: true } }));
   if (sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor }) => {
-    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, rotationState: cursor?.rotation });
+    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boardConcurrency: config.sourceFeatureFlags?.boundedBoardConcurrency === true ? sources.atsBatch1.boardConcurrency ?? 3 : 1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, rotationState: cursor?.rotation });
     return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState, rotation: result.rotationState } };
   }, { capabilities: { newestFirst: true, paginated: true, rotationPersistent: sources.atsBatch1.rotation?.enabled === true } }));
   if (schedule !== 'midday' && sources.atsBatch2?.boards?.length) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor }) => {
-    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: sources.atsBatch2.boards, transport, runAt, state: cursor?.boards ?? cursor ?? {}, rotationState: cursor?.rotation });
+    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boardConcurrency: config.sourceFeatureFlags?.boundedBoardConcurrency === true ? sources.atsBatch2.boardConcurrency ?? 3 : 1, boards: sources.atsBatch2.boards, transport, runAt, state: cursor?.boards ?? cursor ?? {}, rotationState: cursor?.rotation });
     return { ...result, cursor: { boards: Object.fromEntries(result.results.map((entry) => [entry.boardKey, entry.conditionalState])), rotation: result.rotationState } };
   }, { capabilities: { newestFirst: true, completeArray: true, rotationPersistent: sources.atsBatch2.rotation?.enabled === true } }));
   if (schedule !== 'midday' && sources.enterprise?.boards?.length) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor }) => {
@@ -480,7 +481,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     }
     const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
-  }));
+  }, { priority: 'low' }));
   // Explicit --mode remote always runs all native feeds. Scheduled --mode normal
   // also runs them when sources.remote.enabled (toggle without code changes).
   // Startup mode never inherits remote lanes. Midday keeps the lighter ATS-only plan.
@@ -504,11 +505,16 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const maxSecondary = Math.max(1, Number(remoteConfig.maxRecordsPerSecondary ?? remoteConfig.maxRecordsPerProvider ?? 25));
     const observations = [];
     const verificationQueue = [];
+    const seenCandidates = new Set();
     for (const item of outputs) {
       const laneId = item.manifest?.sourceId || item.manifest?.provider;
       const cap = primarySet.has(laneId) ? maxPrimary : maxSecondary;
       const candidates = (item.candidates || []).slice(0, cap);
       for (const candidate of candidates) {
+        const candidateKey = candidate.originalApplicationUrl || candidate.discoveryUrl || candidate.canonicalUrl
+          || [candidate.provider, candidate.providerJobId, candidate.company, candidate.title, candidate.location].map((value) => String(value ?? '').trim().toLowerCase()).join('|');
+        if (seenCandidates.has(candidateKey)) continue;
+        seenCandidates.add(candidateKey);
         const alreadyResolved = ['Direct ATS', 'Resolved Original'].includes(candidate.applicationResolution?.status)
           && candidate.originalApplicationUrl;
         if (typeof resolver === 'function' && !alreadyResolved) {
@@ -545,7 +551,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         },
       },
     };
-  }));
+  }, { priority: 'low' }));
   if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => {
     // discoverIndiaStartupLanes calls transport(request, meta) with a {source, kind, query, url}
     // object, not transport(url, options) like every other lane — every configured request here
@@ -563,7 +569,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       transport: async (request) => searxTransport(request.query),
       runAt,
     });
-  }));
+  }, { priority: 'low' }));
   if (schedule !== 'midday' && sources.searxng?.enabled) plans.push(sourcePlan('searxng-search', 'web-discovery', 'searxng', async () => {
     if (!sources.searxng.endpoint) throw new Error('SearXNG is enabled but endpoint is unavailable');
     return discoverBraveSearch({
@@ -574,7 +580,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       runAt,
       country: sources.searxng.country ?? 'IN',
     });
-  }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
+  }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true }, priority: 'low' }));
   return plans;
 }
 
