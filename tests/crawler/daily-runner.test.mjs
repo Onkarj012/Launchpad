@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -730,6 +730,9 @@ test('the unified result invokes the canary recorder at the daily-run seam', asy
   assert.equal(records[0].runId, result.runId);
   assert.deepEqual(records[0].sourceFailureHistogram, result.sourceFailureHistogram);
   assert.deepEqual(result.deliveryCanary.sourceFailureHistogram, result.sourceFailureHistogram);
+  assert.equal(result.telemetry.dco.funnel.deliveryCommitStatus, 'committed');
+  assert.equal(result.telemetry.dco.operations.unresolvedReconciliationCount, 0);
+  assert.equal(JSON.parse(readFileSync(result.delivery.jsonPath, 'utf8')).telemetry.funnel.reconciliation.ok, true);
 });
 
 test('scores supplied to the unified daily run merge before the scoring gate', async () => {

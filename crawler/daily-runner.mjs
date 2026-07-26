@@ -7,7 +7,11 @@ import {
 import { fetchWarmAts } from './ats-warm.mjs';
 import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
 import { boardIdentityKey, projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
-import { runNormalMode } from '../job-pull/normal-mode.mjs';
+import {
+  assertSuccessfulDcoTelemetry,
+  reconcileDeliveryFunnel,
+  runNormalMode,
+} from '../job-pull/normal-mode.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
@@ -160,11 +164,29 @@ export function commitDailyDelivery({
   reportWriterOptions = {},
   runAt = run?.runAt,
 } = {}) {
+  const dcoTelemetry = structuredClone(run.telemetry?.dco ?? null);
+  if (dcoTelemetry) {
+    const reconciliation = dcoTelemetry.funnel.reconciliation;
+    const selected = reconciliation.counts.selected;
+    reconciliation.counts.committed = selected;
+    reconciliation.causes.selectedToCommitted = {};
+    Object.assign(reconciliation, reconcileDeliveryFunnel({
+      ...reconciliation.counts,
+      causes: reconciliation.causes,
+    }));
+    dcoTelemetry.funnel.selected.committed = selected;
+    dcoTelemetry.funnel.deliveryCommitStatus = 'committed';
+    dcoTelemetry.operations.unresolvedReconciliationCount = reconciliation.unresolvedCount;
+  }
+  const deliveryRun = dcoTelemetry
+    ? { ...run, telemetry: { ...run.telemetry, dco: dcoTelemetry } }
+    : run;
   const reportCommit = reportWriter({
-    run,
+    run: deliveryRun,
     directory: reportDirectory,
     ...reportWriterOptions,
   });
+  if (dcoTelemetry) assertSuccessfulDcoTelemetry(dcoTelemetry);
   const selectedUrls = new Set((run.shortlist ?? []).flatMap((candidate) => [
     candidate.canonicalUrl,
     candidate.originalApplicationUrl,
@@ -182,7 +204,15 @@ export function commitDailyDelivery({
       if (!store) surfaceStore.close();
     }
   }
-  return { reportCommit, surfacedStateCommitCount };
+  if (dcoTelemetry) {
+    dcoTelemetry.operations.localReportPaths = {
+      markdown: reportCommit.markdownPath,
+      json: reportCommit.jsonPath,
+    };
+    dcoTelemetry.operations.localReportHashes = reportCommit.hashes;
+    dcoTelemetry.operations.surfacedStateCommitCount = surfacedStateCommitCount;
+  }
+  return { reportCommit, surfacedStateCommitCount, dcoTelemetry };
 }
 
 export function crawlerLaneFixtures(result) {
@@ -389,6 +419,40 @@ async function runDailyNormalUnlocked({
     },
     receipt,
   };
+  if (preDeliveryResult.telemetry.dco) {
+    const operations = preDeliveryResult.telemetry.dco.operations;
+    operations.schedule = schedule;
+    operations.configPath = receipt.configPath;
+    operations.databasePath = receipt.databasePath;
+    operations.startedAt = crawlerResult.run?.startedAt ?? runAt;
+    operations.endedAt = crawlerResult.run?.finishedAt ?? runAt;
+    operations.durationMs = crawlerDeadline?.elapsedMs ?? null;
+    operations.deadlineStatus = crawlerDeadline
+      ? {
+          enabled: crawlerDeadline.enabled === true,
+          exhausted: crawlerDeadline.exhausted === true,
+          reserveActivated: crawlerDeadline.reserveActivated === true,
+        }
+      : null;
+    operations.externalTransactionStatus = executeGateway
+      ? result.transaction?.status ?? 'explicit-test-gateway'
+      : 'disabled';
+    const dcoSources = preDeliveryResult.telemetry.dco.source.sources;
+    for (const source of dcoSources) {
+      const crawler = crawlerResult.sourceTelemetry?.[source.sourceId];
+      if (!crawler) continue;
+      source.configured ??= crawler.boardsConfigured ?? null;
+      source.attempted ??= crawler.boardsAttempted ?? crawler.attempts ?? null;
+      source.succeeded ??= crawler.adapterSuccesses ?? null;
+      source.omitted ??= crawler.boardsOmitted ?? null;
+      source.acceptedObservations ??= crawler.observations ?? null;
+      source.requestCount ??= crawler.requestCount ?? crawler.detail?.telemetry?.requestCount ?? null;
+      source.durationMs ??= crawlerResult.run?.telemetry?.sourceDurations?.[source.sourceId] ?? null;
+      source.timeout ??= Boolean(crawler.failureHistogram?.ETIMEDOUT || crawler.failureHistogram?.TIMEOUT);
+      source.resolverSucceeded ??= crawler.resolverSucceeded ?? crawler.detail?.telemetry?.resolverSucceeded ?? null;
+      source.resolverFailed ??= crawler.resolverFailed ?? crawler.detail?.telemetry?.resolverFailed ?? null;
+    }
+  }
   let reportCommit = null;
   let surfacedStateCommitCount = 0;
   if (!result.outcome?.fatal) {
@@ -407,6 +471,7 @@ async function runDailyNormalUnlocked({
     });
     reportCommit = committed.reportCommit;
     surfacedStateCommitCount = committed.surfacedStateCommitCount;
+    if (committed.dcoTelemetry) preDeliveryResult.telemetry.dco = committed.dcoTelemetry;
   }
   const deliveredResult = {
     ...preDeliveryResult,

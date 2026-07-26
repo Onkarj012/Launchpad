@@ -147,6 +147,7 @@ export function buildDailyReport(run) {
       commitStatus: 'committed',
       surfacedStateCommitted: false,
     },
+    telemetry: run.telemetry?.dco ? structuredClone(run.telemetry.dco) : null,
   };
 }
 
@@ -272,6 +273,16 @@ export function commitDailyReport({
   const markdownTemp = path.join(resolvedDirectory, `.${stem}.${suffix}.md.tmp`);
   const jsonTemp = path.join(resolvedDirectory, `.${stem}.${suffix}.json.tmp`);
   const markdown = renderDailyReportMarkdown(receipt);
+  if (receipt.telemetry?.operations) {
+    receipt.telemetry.operations.localReportPaths = { markdown: markdownPath, json: jsonPath };
+    receipt.telemetry.operations.localReportHashes = {
+      markdown: sha256(markdown),
+      json: null,
+      hashScope: 'JSON payload before embedding localReportHashes.json',
+    };
+    const payloadBeforeChecksum = `${JSON.stringify(receipt, null, 2)}\n`;
+    receipt.telemetry.operations.localReportHashes.json = sha256(payloadBeforeChecksum);
+  }
   const json = `${JSON.stringify(receipt, null, 2)}\n`;
   let markdownRenamed = false;
   let jsonRenamed = false;

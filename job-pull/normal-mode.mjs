@@ -212,6 +212,233 @@ function buildReconciliation({ eligible, historicalSuppressed, historicalAmbiguo
   };
 }
 
+function count(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function histogram(values) {
+  const result = {};
+  for (const value of values.filter(Boolean)) result[value] = (result[value] ?? 0) + 1;
+  return result;
+}
+
+function sumReasons(reasons = {}) {
+  return Object.values(reasons).reduce((sum, value) => sum + count(value), 0);
+}
+
+export function reconcileDeliveryFunnel({
+  eligible = 0,
+  ready = 0,
+  scored = 0,
+  selected = 0,
+  committed = 0,
+  causes = {},
+} = {}) {
+  const stages = [
+    ['eligibleToReady', eligible, ready],
+    ['readyToScored', ready, scored],
+    ['scoredToSelected', scored, selected],
+    ['selectedToCommitted', selected, committed],
+  ].map(([stage, from, to]) => {
+    const delta = count(from) - count(to);
+    const attributed = sumReasons(causes[stage]);
+    return {
+      stage,
+      from: count(from),
+      to: count(to),
+      delta,
+      attributed,
+      unattributed: Math.max(0, delta - attributed) + Math.max(0, attributed - delta),
+      ok: delta >= 0 && delta === attributed,
+    };
+  });
+  const unresolvedCount = stages.reduce((sum, stage) => sum + stage.unattributed, 0);
+  return { ok: stages.every((stage) => stage.ok), unresolvedCount, stages };
+}
+
+function detailHydration(manifests) {
+  const rows = manifests.map((manifest) => (
+    manifest.telemetry?.workdayDetail
+    ?? manifest.workdayDetail
+    ?? manifest.telemetry?.detailHydration
+    ?? {}
+  ));
+  return {
+    attempted: rows.reduce((sum, row) => sum + count(row.attempted), 0),
+    succeeded: rows.reduce((sum, row) => sum + count(row.succeeded), 0),
+    failed: rows.reduce((sum, row) => sum + count(row.failed), 0),
+    skipped: rows.reduce((sum, row) => sum + count(row.skipped ?? row.budgetExhausted), 0),
+  };
+}
+
+export function buildDcoTelemetry({
+  runId,
+  schedule = null,
+  runAt,
+  sourceManifests = [],
+  funnel = null,
+  readinessRepair = null,
+  verificationQueue = [],
+  historicalSuppressions = [],
+  opportunitySuppressions = 0,
+  scoring = null,
+  selection = null,
+  reconciliation = null,
+  committed = 0,
+  deliveryCommitStatus = 'pending',
+} = {}) {
+  const selected = selection?.selected?.length ?? reconciliation?.selected ?? 0;
+  const ready = reconciliation?.ready ?? selection?.readyCount ?? 0;
+  const scored = reconciliation?.scored ?? selection?.scoredCount ?? 0;
+  const eligible = reconciliation?.eligible ?? 0;
+  const causes = {
+    ...(reconciliation?.causes ?? {}),
+    selectedToCommitted: selected === count(committed)
+      ? {}
+      : { [deliveryCommitStatus === 'failed' ? 'DELIVERY_COMMIT_FAILED' : 'DELIVERY_PENDING']: Math.max(0, selected - count(committed)) },
+  };
+  const reconciliationResult = reconcileDeliveryFunnel({
+    eligible,
+    ready,
+    scored,
+    selected,
+    committed,
+    causes,
+  });
+  const capCodes = selection?.exclusions ?? [];
+  const scorerFailures = scoring?.scorer?.failures ?? [];
+  const sourceRows = sourceManifests.map((manifest) => ({
+    sourceId: manifest.sourceId ?? null,
+    configured: manifest.boardsConfigured ?? null,
+    attempted: manifest.boardsAttempted ?? (manifest.attempted === false ? 0 : null),
+    succeeded: manifest.succeeded ?? manifest.telemetry?.succeeded ?? null,
+    degraded: manifest.status === 'degraded',
+    failed: manifest.status === 'failed',
+    omitted: manifest.boardsOmitted ?? null,
+    rawRows: manifest.rawRows ?? manifest.fetched ?? null,
+    acceptedObservations: manifest.acceptedObservations ?? manifest.telemetry?.observations ?? null,
+    truncation: manifest.truncated === true,
+    recordsNotExamined: manifest.recordsNotExamined ?? null,
+    requestCount: manifest.requestCount ?? manifest.telemetry?.requestCount ?? null,
+    durationMs: manifest.durationMs ?? manifest.telemetry?.durationMs ?? null,
+    timeout: manifest.timeout ?? manifest.telemetry?.timeout ?? null,
+    resolverSucceeded: manifest.resolverSucceeded ?? manifest.telemetry?.resolverSucceeded ?? null,
+    resolverFailed: manifest.resolverFailed ?? manifest.telemetry?.resolverFailed ?? null,
+    newlyActionableYield: manifest.newlyActionableYield ?? null,
+  }));
+  return {
+    schemaVersion: 'LaunchpadDcoTelemetryV1',
+    source: {
+      boards: {
+        configured: sourceRows.reduce((sum, row) => sum + count(row.configured), 0),
+        attempted: sourceRows.reduce((sum, row) => sum + count(row.attempted), 0),
+        succeeded: sourceRows.reduce((sum, row) => sum + count(row.succeeded), 0),
+        degraded: sourceRows.filter((row) => row.degraded).length,
+        failed: sourceRows.filter((row) => row.failed).length,
+        omitted: sourceRows.reduce((sum, row) => sum + count(row.omitted), 0),
+      },
+      rawRows: sourceRows.reduce((sum, row) => sum + count(row.rawRows), 0),
+      acceptedObservations: sourceRows.reduce((sum, row) => sum + count(row.acceptedObservations), 0),
+      deduplicatedUniqueJobs: funnel?.lifecycle?.normalized ?? null,
+      truncation: {
+        sources: sourceRows.filter((row) => row.truncation).map((row) => row.sourceId),
+        recordsNotExamined: sourceRows.reduce((sum, row) => sum + count(row.recordsNotExamined), 0),
+      },
+      requests: {
+        count: sourceRows.reduce((sum, row) => sum + count(row.requestCount), 0),
+        durationMs: sourceRows.reduce((sum, row) => sum + count(row.durationMs), 0),
+        timeout: sourceRows.some((row) => row.timeout === true),
+      },
+      resolver: {
+        succeeded: sourceRows.reduce((sum, row) => sum + count(row.resolverSucceeded), 0),
+        failed: sourceRows.reduce((sum, row) => sum + count(row.resolverFailed), 0),
+      },
+      detailHydration: detailHydration(sourceManifests),
+      perSourceNewlyActionableYield: Object.fromEntries(sourceRows.map((row) => [row.sourceId, row.newlyActionableYield])),
+      sources: sourceRows,
+    },
+    funnel: {
+      normalizedUnique: funnel?.lifecycle?.normalized ?? null,
+      cheapGate: {
+        pass: funnel?.lifecycle?.eligible ?? eligible,
+        failByFirstReason: funnel?.firstFailureCodes ?? {},
+      },
+      hydration: {
+        pool: readinessRepair?.input ?? null,
+        outcomes: {
+          attempted: readinessRepair?.attempted ?? 0,
+          repaired: readinessRepair?.repaired ?? 0,
+          rejected: readinessRepair?.rejected ?? 0,
+          queued: readinessRepair?.queued ?? 0,
+        },
+      },
+      hardGateEligible: eligible,
+      freshnessClasses: funnel?.lifecycle?.freshnessClasses ?? {},
+      readinessBlockers: histogram(verificationQueue.flatMap((row) => row.reasons ?? row.blockers ?? [])),
+      suppressions: {
+        historical: historicalSuppressions.length,
+        opportunity: count(opportunitySuppressions),
+      },
+      scorer: {
+        attempted: scoring?.scorer?.attempted ?? scoring?.scoredCount ?? scored,
+        scored,
+        failed: scoring?.scoringFailedCount ?? scorerFailures.length,
+        reasonHistogram: histogram(scorerFailures.map((failure) => failure.reason)),
+      },
+      scoreFloorExclusions: {
+        stretch: selection?.scorePolicy?.stretchCount ?? 0,
+        belowFloor: selection?.scorePolicy?.belowFloorCount ?? 0,
+      },
+      capExclusions: {
+        company: capCodes.filter((row) => row.code === 'SELECTION_COMPANY_CAP').length,
+        family: capCodes.filter((row) => row.code === 'SELECTION_FAMILY_DIVERSITY_TARGET').length,
+      },
+      selected: {
+        strict: selection?.selected?.filter((row) => row.selectionTier === 'Strict').length ?? 0,
+        fallback: selection?.selected?.filter((row) => row.selectionTier === 'Fallback').length ?? 0,
+        stretch: selection?.stretch?.length ?? 0,
+        total: selected,
+        committed: count(committed),
+      },
+      deliveryCommitStatus,
+      reconciliation: {
+        counts: { eligible, ready, scored, selected, committed: count(committed) },
+        causes,
+        ...reconciliationResult,
+      },
+    },
+    operations: {
+      runId: runId ?? null,
+      schedule,
+      configPath: null,
+      databasePath: null,
+      startedAt: runAt ?? null,
+      endedAt: null,
+      durationMs: null,
+      deadlineStatus: null,
+      localReportPaths: { markdown: null, json: null },
+      localReportHashes: { markdown: null, json: null },
+      externalTransactionStatus: 'disabled',
+      surfacedStateCommitCount: 0,
+      unresolvedReconciliationCount: reconciliationResult.unresolvedCount,
+    },
+  };
+}
+
+export function assertSuccessfulDcoTelemetry(telemetry) {
+  const reconciliation = telemetry?.funnel?.reconciliation;
+  if (telemetry?.funnel?.deliveryCommitStatus !== 'committed') {
+    throw new NormalModeError('successful run requires a committed local report', 'delivery-reconciliation');
+  }
+  if (!reconciliation?.ok || reconciliation.unresolvedCount !== 0) {
+    throw new NormalModeError(
+      `unattributed funnel loss: ${reconciliation?.unresolvedCount ?? 'unknown'}`,
+      'delivery-reconciliation',
+    );
+  }
+  return telemetry;
+}
+
 // Broken-scorer reason codes, read from job-pull/match-scorer.mjs: a missing
 // binary and an auth failure abort the batch before it starts, and repeated
 // invalid output means the scorer cannot produce usable scores at all.
@@ -523,6 +750,29 @@ export async function runNormalMode({
       .filter((manifest) => ['empty', 'unavailable'].includes(manifest.status) && manifest.reasonCode !== 'PORTAL_REQUIRES_LIVE_INJECTION')
       .map((manifest) => manifest.sourceId);
     const missing = Math.max(0, 10 - shortlist.length);
+    const scoringTelemetry = scorerTelemetry
+      ? {
+          required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0,
+          scoredCount: selection.scoredCount,
+          unscoredCount: selection.unscoredCount,
+          scoringFailedCount: selection.scoringFailedCount,
+          selectedCount: shortlist.length,
+          scorer: scorerTelemetry,
+        }
+      : null;
+    const dcoTelemetry = buildDcoTelemetry({
+      runId,
+      runAt,
+      sourceManifests,
+      funnel: pipeline.funnel,
+      readinessRepair: readinessRepair.telemetry,
+      verificationQueue,
+      historicalSuppressions,
+      opportunitySuppressions: pipeline.funnel?.lifecycle?.suppressedActioned ?? 0,
+      scoring: scoringTelemetry,
+      selection,
+      reconciliation,
+    });
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
       scoringQueue: selection.scoringQueue, funnel: pipeline.funnel,
@@ -553,9 +803,8 @@ export async function runNormalMode({
       },
       outcome: { status: failedLanes.length || scoringDropped ? 'degraded' : 'ok', fatal: false, degraded: failedLanes.length > 0 || scoringDropped, errors: sourceManifests.map(issueFor).filter(Boolean) },
       reconciliation,
-      ...(scorerTelemetry
-        ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } }
-        : {}),
+      telemetry: { dco: dcoTelemetry },
+      ...(scoringTelemetry ? { scoring: scoringTelemetry } : {}),
       counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, stretch: selection.stretch.length, belowFloor: selection.scorePolicy.belowFloorCount, strictSelected: selection.strictComposition.selected, strictShortfall: selection.strictComposition.shortfall, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, historicalAmbiguous: historicalAmbiguous.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, companyCounts: selection.companyCounts, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
     };
   } catch (error) {
