@@ -683,7 +683,9 @@ export async function runCrawlerOperator({
       v4Snapshot,
       sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }),
       careerSites: config.sources.careerSites ?? [],
-      careerOptions: config.sources.careerOptions ?? {},
+      careerOptions: config.sourceFeatureFlags?.safeCareerPageAdapter === true
+        ? { ...(config.careerPageDiscovery ?? {}), ...(config.sources.careerOptions ?? {}) }
+        : config.sources.careerOptions ?? {},
       careerTransport: (config.sources.careerSites ?? []).length
         ? createChromiumFallbackTransport({ baseTransport: transport, ...(config.sources.chromium ?? {}) })
         : undefined,

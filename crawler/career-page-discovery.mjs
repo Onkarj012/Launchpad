@@ -296,6 +296,9 @@ async function request(url, options) {
     retry: options.retry,
     maxBytes: options.maxBytes ?? DEFAULT_CAREER_PAGE_DISCOVERY_BUDGET.maxBytes,
     timeoutMs: options.timeoutMs ?? 30_000,
+    maxRedirects: options.maxRedirects ?? DEFAULT_CAREER_PAGE_DISCOVERY_BUDGET.maxRedirects,
+    maxHosts: options.maxHosts ?? DEFAULT_CAREER_PAGE_DISCOVERY_BUDGET.maxHosts,
+    maxRequests: options.maxRequests ?? DEFAULT_CAREER_PAGE_DISCOVERY_BUDGET.maxRequests,
     clock: options.clock,
   });
 }
@@ -506,6 +509,9 @@ export async function discoverCareerPages({
         hostLimiterOptions,
         retry: retry ?? rest.retry ?? { maxAttempts: 3 },
         maxBytes: limits.maxBytes,
+        maxRedirects: limits.maxRedirects,
+        maxHosts: limits.maxHosts,
+        maxRequests: limits.maxRequests,
         clock,
         userAgent: USER_AGENT,
       });
@@ -785,6 +791,10 @@ export async function discoverCareerPages({
       runAt,
       sources,
       telemetry,
+      truncated: sources.some((source) => source.status === 'capped' || source.status === 'budget-exhausted'),
+      interrupted: sources.some((source) => source.status === 'budget-exhausted'),
+      capHit: telemetry.budgetExhausted ? 'maxRequests' : telemetry.cappedJobUrls ? 'maxJobUrlsPerCompany' : null,
+      recordsNotExamined: sources.reduce((sum, source) => sum + Math.max(0, Number(source.telemetry?.jobUrlsDiscovered ?? 0) - limits.maxJobUrlsPerCompany), 0) || null,
     },
     telemetry,
     conditionalState: state,

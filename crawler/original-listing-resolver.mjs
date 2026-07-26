@@ -146,10 +146,48 @@ function isJobPosting(node) {
   return String(node?.['@type'] ?? '').split(/\s*,\s*/).some((type) => type.toLowerCase() === 'jobposting');
 }
 
+function attributeValue(attrs, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return attrs.match(new RegExp(`\\b${escaped}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1] ?? null;
+}
+
+function microdataJobPosting(body) {
+  if (typeof body !== 'string' || !/itemtype\s*=\s*["']https?:\/\/schema\.org\/JobPosting["']/i.test(body)) return null;
+  const properties = new Map();
+  for (const match of body.matchAll(/<meta\b([^>]*)>/gi)) {
+    const property = attributeValue(match[1], 'itemprop');
+    const content = attributeValue(match[1], 'content');
+    if (property && content != null && !properties.has(property)) properties.set(property, content);
+  }
+  for (const match of body.matchAll(/<([a-z][a-z0-9]*)\b([^>]*\bitemprop\s*=\s*["'][^"']+["'][^>]*)>([\s\S]*?)<\/\1>/gi)) {
+    const property = attributeValue(match[2], 'itemprop');
+    if (property && !properties.has(property)) properties.set(property, stripHtmlToText(match[3]));
+  }
+  const title = properties.get('title') || properties.get('name');
+  const description = properties.get('description');
+  if (!title && !description) return null;
+  return {
+    '@type': 'JobPosting',
+    title,
+    description,
+    datePosted: properties.get('datePosted'),
+    validThrough: properties.get('validThrough'),
+    employmentType: properties.get('employmentType'),
+    hiringOrganization: properties.get('hiringOrganization') ? { name: properties.get('hiringOrganization') } : null,
+    jobLocation: {
+      address: {
+        addressLocality: properties.get('addressLocality'),
+        addressRegion: properties.get('addressRegion'),
+        addressCountry: properties.get('addressCountry'),
+      },
+    },
+  };
+}
+
 function detailRoot(response) {
   const body = bodyOf(response);
   const nodes = jsonLdNodes(htmlBody(response));
-  const posting = nodes.find(isJobPosting) || null;
+  const posting = nodes.find(isJobPosting) || microdataJobPosting(htmlBody(response));
   const candidates = [
     response?.details,
     response?.detail,
