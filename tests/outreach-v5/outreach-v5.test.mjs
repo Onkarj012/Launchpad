@@ -16,6 +16,7 @@ import { buildOutreachQueue } from '../../outreach-v5/queue.mjs';
 import { approveContactReview, buildContactReviewCard } from '../../outreach-v5/review.mjs';
 import * as gmailDraftModule from '../../outreach-v5/gmail-draft.mjs';
 import { approvedMessageDigest, createApprovedGmailDraft, OUTREACH_DELIVERY_CAPABILITIES } from '../../outreach-v5/gmail-draft.mjs';
+import { buildResponseOperationalViews, reconcileObservedResponse } from '../../outreach-v5/responses.mjs';
 
 function notionProperty(type, value) {
   if (type === 'title' || type === 'rich_text') return { type, [type]: [{ plain_text: String(value) }] };
@@ -470,4 +471,53 @@ test('outreach exposes drafts and copy text only, with no send operation reachab
     messageApproval: { approved: true },
     draftCreator: { createDraft: async () => ({ id: 'draft' }), send: async () => {} },
   }), (error) => error.code === 'EMAIL_REQUIRED');
+});
+
+test('manual raw-Notion response reconciliation stops the sequence and feeds response views', async () => {
+  const gateway = createFakeGateway();
+  gateway.pages.applications.push({ id: 'app-raw-response', values: { outreachState: 'Sent', nextAction: 'Follow-up 1' } });
+  gateway.pages.outreach.push({ id: 'outreach-raw-response', values: { response: null, outcome: null, draftState: 'Sent', nextEligibleContact: '2026-07-27T12:00:00.000Z' } });
+  const rawApplication = {
+    id: 'app-raw-response',
+    properties: {
+      Name: notionProperty('title', 'AI Engineer | Acme'),
+      Role: notionProperty('rich_text', 'AI Engineer'),
+      Status: notionProperty('select', 'Applied'),
+      'Application Ready': notionProperty('checkbox', true),
+    },
+  };
+  const rawOutreach = {
+    id: 'outreach-raw-response',
+    properties: {
+      Name: notionProperty('title', 'Acme | Person | Email'),
+      Application: notionProperty('relation', ['app-raw-response']),
+      Person: notionProperty('rich_text', 'Person Raw'),
+      Channel: notionProperty('select', 'Email'),
+      'Sent?': notionProperty('checkbox', true),
+      'Initial Sent At': notionProperty('date', '2026-07-20T12:00:00.000Z'),
+      Response: notionProperty('select', 'Replied'),
+      'Duplicate Key': notionProperty('rich_text', 'sequence-raw-response'),
+      'Draft State': notionProperty('select', 'Sent'),
+    },
+  };
+  const reconciled = await reconcileObservedResponse({
+    gateway,
+    rawApplication,
+    rawOutreach,
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', observedAt: OUTREACH_FIXTURE_NOW },
+    now: OUTREACH_FIXTURE_NOW,
+  });
+  assert.equal(reconciled.status, 'confirmed');
+  assert.equal(gateway.pages.outreach[0].values.draftState, 'Stopped');
+  assert.equal(gateway.pages.applications[0].values.outreachState, 'Stopped');
+  assert.equal(gateway.pages.activity[0].values.outreachKey, 'sequence-raw-response');
+  const views = buildResponseOperationalViews({
+    applications: [rawApplication],
+    outreach: [{ ...rawOutreach, properties: { ...rawOutreach.properties, 'Draft State': notionProperty('select', 'Stopped') } }],
+    activity: gateway.pages.activity,
+  });
+  assert.deepEqual(views.replied.map(({ id }) => id), ['outreach-raw-response']);
+  assert.deepEqual(views.positive.map(({ id }) => id), ['outreach-raw-response']);
+  assert.deepEqual(views.awaiting, []);
+  assert.equal(views.responseActivity.length, 1);
 });

@@ -19,7 +19,7 @@ function array(value) {
 }
 
 function rawPage(value) {
-  return Boolean(value?.properties && typeof value.properties === 'object');
+  return Boolean(value?.properties && typeof value.properties === 'object' && !value.values);
 }
 
 function rawValue(page, name) {
