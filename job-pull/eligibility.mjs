@@ -216,6 +216,60 @@ function parsedExperience(candidate) {
 }
 
 export function classifyExperience(candidate, policy) {
+  const seniority = candidate.seniorityAssessment;
+  if (seniority?.seniorityDecision === 'ineligible') {
+    return {
+      pass: false,
+      strict: false,
+      relaxed: false,
+      code: seniority.reasonCode || 'SENIORITY_INELIGIBLE',
+      evidence: seniority.evidenceQuote || null,
+      minYears: seniority.minimumYears ?? null,
+      maxYears: null,
+      seniority,
+    };
+  }
+  if (seniority?.seniorityDecision === 'uncertain') {
+    return {
+      pass: false,
+      strict: false,
+      relaxed: false,
+      manualReview: true,
+      verificationRequired: true,
+      code: seniority.reasonCode || 'SENIORITY_UNCERTAIN_VERIFY',
+      evidence: seniority.evidenceQuote || null,
+      minYears: seniority.minimumYears ?? null,
+      maxYears: null,
+      seniority,
+    };
+  }
+  if (seniority?.seniorityDecision === 'eligible' && seniority.requirementKind === 'preferred') {
+    return {
+      pass: true,
+      strict: false,
+      relaxed: true,
+      code: seniority.reasonCode || 'SENIORITY_PREFERRED_ONLY',
+      evidence: seniority.evidenceQuote || null,
+      minYears: null,
+      maxYears: null,
+      seniority,
+    };
+  }
+  if (seniority?.seniorityDecision === 'eligible'
+    && ['technology-specific', 'domain-specific'].includes(seniority.requirementKind)) {
+    const minimumYears = seniority.minimumYears ?? null;
+    const strict = minimumYears != null && minimumYears <= policy.experience.strictMaximumYears;
+    return {
+      pass: true,
+      strict,
+      relaxed: !strict,
+      code: 'SENIORITY_SPECIFIC_REQUIREMENT_NOT_TOTAL',
+      evidence: seniority.evidenceQuote || null,
+      minYears: minimumYears,
+      maxYears: null,
+      seniority,
+    };
+  }
   const parsed = parsedExperience(candidate);
   if (parsed.min != null && parsed.min >= policy.experience.hardRejectMinimumYears) {
     return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS', evidence: parsed.evidence, minYears: parsed.min, maxYears: parsed.max };

@@ -114,12 +114,26 @@ scoring queue is built and before selection.
 | `responseLikelihood` | integer 0–20 | rubric sub-score; feeds the Auto-Suggest rule |
 | `autoSuggest` | boolean | `score ≥ 80 AND window ∈ {Hot, Active} AND tier = Strict AND responseLikelihood ≥ 14` |
 | `descriptionAvailable` | boolean | see below |
+| `seniorityDecision` | eligible, ineligible, uncertain | abstaining classifier output |
+| `requirementKind` | enum | total-professional, technology-specific, domain-specific, preferred, or ambiguous |
+| `minimumYears` | number or null | minimum from the quoted requirement |
+| `evidenceQuote` | string | exact literal JD substring; empty only when no years statement exists |
+| `confidence` | number 0–1 | classifier confidence |
+| `reasonCode` | string | stable seniority decision reason |
 
 **`descriptionAvailable` is load-bearing.** Skill match (35) and Domain relevance (20)
 both require reading the JD. Workday rows only receive JD text via
 `enrichWorkdayCandidates`, whose budget is 50. A row with no description cannot be
 honestly scored — it must be capped, not guessed. `CLAUDE.md`: never fabricate evidence;
 unknown stays unknown.
+
+Seniority output is validated independently of JSON Schema. A non-empty
+`evidenceQuote` must be a literal substring of the JD, and a years value requires a
+quote. Invalid model evidence rejects that row. Deterministic postconditions always
+reject an explicit total-professional minimum of three or more years, while
+technology-specific, domain-specific, and ambiguous requirements can abstain into the
+verification queue. Assessments are cached by JD fingerprint, prompt version, and
+model version.
 
 ---
 

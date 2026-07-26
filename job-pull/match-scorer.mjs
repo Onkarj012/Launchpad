@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { adjudicateSeniority } from './seniority-classifier.mjs';
 
 export class MatchScorerError extends Error {
   constructor(message, reasonCode = 'SCORER_FAILED', { stderr = null } = {}) {
@@ -118,7 +119,9 @@ function buildScoringPrompt(chunkFile, rowCount) {
     '5. responseLikelihood: the Response Likelihood sub-score (0-20).',
     '6. autoSuggest: your opinion whether the role is a strong pick (matchScore >= 80, posted within the last week, new-grad-friendly, responseLikelihood >= 14). The pipeline recomputes this from pipeline facts; answer honestly anyway.',
     '7. descriptionAvailable: echo the input flag for the job.',
-    '8. Never fabricate evidence. When a fact is unknown, score conservatively instead of guessing.',
+    '8. Classify the JD seniority requirement with seniorityDecision (eligible, ineligible, uncertain), requirementKind (total-professional, technology-specific, domain-specific, preferred, ambiguous), minimumYears, an exact evidenceQuote copied literally from the description, confidence from 0 to 1, and a stable reasonCode.',
+    '9. An explicit total-professional minimum of 3+ years is ineligible. A technology-specific or domain-specific 3-year statement is not automatically ineligible. Use uncertain for ambiguity; use an empty quote and null minimumYears when no years statement exists.',
+    '10. Never fabricate evidence. When a fact is unknown, score conservatively instead of guessing.',
     '',
     `Return exactly one scores row per input job (${rowCount} rows total).`,
   ].join('\n');
@@ -166,6 +169,31 @@ export function mergeScoreRow(candidate, row, { source = 'scorer' } = {}) {
     };
   }
   const descriptionAvailable = descriptionText(candidate) !== null;
+  const hasSeniorityOutput = [
+    'seniorityDecision',
+    'requirementKind',
+    'minimumYears',
+    'evidenceQuote',
+    'confidence',
+    'reasonCode',
+  ].some((key) => Object.hasOwn(row || {}, key));
+  const seniorityAssessment = hasSeniorityOutput
+    ? { ...adjudicateSeniority(candidate, row), source: 'match-scorer-model' }
+    : null;
+  if (seniorityAssessment?.accepted === false) {
+    return {
+      candidate: {
+        ...candidate,
+        matchScore: null,
+        responseLikelihood: null,
+        autoSuggest: false,
+        seniorityAssessment,
+        scoringFailed: true,
+        scoringFailureReason: seniorityAssessment.reasonCode,
+      },
+      failure: { reason: seniorityAssessment.reasonCode, stderr: null },
+    };
+  }
   const matchScore = descriptionAvailable ? score : Math.min(score, NO_DESCRIPTION_MAX_SCORE);
   const hook = typeof (row.strongestHook ?? row.hook) === 'string' ? (row.strongestHook ?? row.hook) : null;
   return {
@@ -185,6 +213,11 @@ export function mergeScoreRow(candidate, row, { source = 'scorer' } = {}) {
         rawResponseLikelihood: responseLikelihood,
         noDescriptionCapApplied: !descriptionAvailable && score > NO_DESCRIPTION_MAX_SCORE,
       },
+      ...(seniorityAssessment
+        ? candidate.seniorityAssessment
+          ? { seniorityScoringOpinion: seniorityAssessment }
+          : { seniorityAssessment }
+        : {}),
       scoringFailed: false,
       scoringFailureReason: null,
       scoringFailureStderr: null,

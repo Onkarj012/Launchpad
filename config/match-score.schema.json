@@ -10,7 +10,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["canonicalUrl", "matchScore", "rationale", "strongestHook", "responseLikelihood", "autoSuggest", "descriptionAvailable"],
+        "required": ["canonicalUrl", "matchScore", "rationale", "strongestHook", "responseLikelihood", "autoSuggest", "descriptionAvailable", "seniorityDecision", "requirementKind", "minimumYears", "evidenceQuote", "confidence", "reasonCode"],
         "properties": {
           "canonicalUrl": { "type": "string", "description": "Join key echoed exactly from the input job row." },
           "matchScore": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Rubric total (0-100)." },
@@ -18,7 +18,13 @@
           "strongestHook": { "type": "string", "description": "Single strongest hook to lead the resume/email with." },
           "responseLikelihood": { "type": "integer", "minimum": 0, "maximum": 20, "description": "Response Likelihood sub-score; feeds the Auto-Suggest rule." },
           "autoSuggest": { "type": "boolean", "description": "Model opinion only; the pipeline recomputes Auto-Suggest from pipeline facts." },
-          "descriptionAvailable": { "type": "boolean", "description": "Whether JD text was present for this row." }
+          "descriptionAvailable": { "type": "boolean", "description": "Whether JD text was present for this row." },
+          "seniorityDecision": { "type": "string", "enum": ["eligible", "ineligible", "uncertain"], "description": "Abstaining seniority eligibility decision." },
+          "requirementKind": { "type": "string", "enum": ["total-professional", "technology-specific", "domain-specific", "preferred", "ambiguous"], "description": "Meaning of the quoted years requirement." },
+          "minimumYears": { "type": ["number", "null"], "minimum": 0, "description": "Minimum years in the quoted requirement, or null when none exists." },
+          "evidenceQuote": { "type": "string", "description": "Exact literal substring from the JD, or empty when there is no years evidence." },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Classifier confidence." },
+          "reasonCode": { "type": "string", "description": "Stable seniority reason code." }
         }
       }
     }

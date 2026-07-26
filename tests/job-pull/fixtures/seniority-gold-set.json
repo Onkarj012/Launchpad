@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "LaunchpadSeniorityGoldSetV1",
+  "humanReviewRequired": true,
+  "humanReviewed": false,
+  "ratesTrusted": false,
+  "instructions": "Seed labels are provisional examples copied from existing repository fixtures. The human owner must review every case before false-positive or false-negative rates are trusted.",
+  "cases": [
+    {
+      "id": "explicit-total-three",
+      "jdText": "Requirements: 3+ years developing production software.",
+      "label": "ineligible",
+      "requirementKind": "total-professional",
+      "humanReviewed": false,
+      "sourceFixture": "tests/job-pull/eligibility.test.mjs"
+    },
+    {
+      "id": "fresher-welcome",
+      "jdText": "This role welcomes freshers.",
+      "label": "eligible",
+      "requirementKind": "ambiguous",
+      "humanReviewed": false,
+      "sourceFixture": "tests/job-pull/eligibility.test.mjs"
+    },
+    {
+      "id": "unrelated-resolution",
+      "jdText": "Requirements: support at least 720p video output. Freshers welcome.",
+      "label": "eligible",
+      "requirementKind": "ambiguous",
+      "humanReviewed": false,
+      "sourceFixture": "tests/job-pull/eligibility.test.mjs"
+    }
+  ]
+}

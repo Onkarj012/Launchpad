@@ -11,6 +11,8 @@ import { readOpportunityLedger } from './opportunity-ledger.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
 import { withConversionScore } from './conversion-score.mjs';
+import { classifySeniorityPool } from './seniority-classifier.mjs';
+import { classifyCandidate } from './eligibility.mjs';
 
 export class NormalModeError extends Error {
   constructor(message, stage = 'normal-mode') { super(message); this.name = 'NormalModeError'; this.stage = stage; }
@@ -68,6 +70,14 @@ function v5Payload(candidate, runId) {
     matchScore: candidate.matchScore,
     matchScoreVersion: candidate.matchScoreVersion || null,
     matchScoreInputs: candidate.matchScoreInputs || null,
+    seniorityDecision: candidate.seniorityAssessment?.seniorityDecision || null,
+    seniorityRequirementKind: candidate.seniorityAssessment?.requirementKind || null,
+    seniorityMinimumYears: candidate.seniorityAssessment?.minimumYears ?? null,
+    seniorityEvidenceQuote: candidate.seniorityAssessment?.evidenceQuote || null,
+    seniorityConfidence: candidate.seniorityAssessment?.confidence ?? null,
+    seniorityReasonCode: candidate.seniorityAssessment?.reasonCode || null,
+    seniorityPromptVersion: candidate.seniorityAssessment?.promptVersion || null,
+    seniorityModelVersion: candidate.seniorityAssessment?.modelVersion || null,
     conversionScore: candidate.conversionScore,
     conversionScoreVersion: candidate.conversionScoreVersion || null,
     conversionInputs: candidate.conversionInputs || null,
@@ -103,6 +113,7 @@ function provenanceFor(candidate, runId) {
     location: candidate.location,
     citizenshipEvidence: candidate.citizenshipEvidence || candidate.remoteEligibility?.evidence || null,
     experience: candidate.experience,
+    seniority: candidate.seniorityAssessment || null,
     employment: candidate.employment,
     feesBonds: candidate.feeBondEvidence || null,
     liveness: candidate.liveness,
@@ -149,6 +160,7 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
     selectionExclusions: details.selectionExclusions || [],
     strictComposition: details.strictComposition || null,
     familyComposition: details.familyComposition || null,
+    seniority: details.seniority || null,
     reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
@@ -289,6 +301,7 @@ export async function runNormalMode({
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
   historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer,
+  seniorityClassifier = null, seniorityCache = null, seniorityPromptVersion, seniorityModelVersion,
   readinessRepairer = null, readinessRepairMaxRequests = 20, readinessRepairDeadlineMs = 30_000,
   runDeadlineAt = null, monotonicClock = Date.now,
 } = {}) {
@@ -300,6 +313,20 @@ export async function runNormalMode({
     sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes });
     sourceResults = applyScores(sourceResults, scores);
     await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates), { maxRequests: enrichmentBudget });
+    const seniority = await classifySeniorityPool(
+      sourceResults.flatMap((source) => source.candidates),
+      {
+        classifyModel: seniorityClassifier,
+        ...(seniorityCache ? { cache: seniorityCache } : {}),
+        ...(seniorityPromptVersion ? { promptVersion: seniorityPromptVersion } : {}),
+        ...(seniorityModelVersion ? { modelVersion: seniorityModelVersion } : {}),
+      },
+    );
+    let seniorityIndex = 0;
+    sourceResults = sourceResults.map((source) => ({
+      ...source,
+      candidates: source.candidates.map(() => seniority.pool[seniorityIndex++]),
+    }));
     const sourceManifests = sourceResults.map(({ manifest }) => manifest);
     const baseConfig = config || loadConfig();
     const baseConversionPlan = conversionPlan || loadConversionPlan();
@@ -333,7 +360,28 @@ export async function runNormalMode({
       scorer,
       { runId, runAt },
     );
-    const convertedPool = scoredPool.map((candidate) => withConversionScore(candidate, {
+    // A scorer opinion arrives after the first eligibility pass. Re-apply the
+    // same deterministic gate before selection so a late uncertain/ineligible
+    // adjudication cannot remain application-ready.
+    const finalScoredPool = scoredPool.map((candidate) => {
+      const seniorityAssessment = candidate.seniorityScoringOpinion || candidate.seniorityAssessment;
+      if (!seniorityAssessment || seniorityAssessment === candidate.seniorityAssessment) return candidate;
+      const assessedCandidate = { ...candidate, seniorityAssessment };
+      return {
+        ...assessedCandidate,
+        eligibility: classifyCandidate(assessedCandidate, {
+          ...normalConfig,
+          salaryFloorLpa: baseConversionPlan.salaryFloorLpa,
+        }),
+      };
+    });
+    const seniorityTelemetry = {
+      ...seniority.telemetry,
+      scoringOpinions: finalScoredPool.filter((candidate) => candidate.seniorityScoringOpinion).length,
+      postScoringUncertain: finalScoredPool.filter((candidate) => candidate.seniorityAssessment?.seniorityDecision === 'uncertain').length,
+      postScoringIneligible: finalScoredPool.filter((candidate) => candidate.seniorityAssessment?.seniorityDecision === 'ineligible').length,
+    };
+    const convertedPool = finalScoredPool.map((candidate) => withConversionScore(candidate, {
       freshnessWindow: candidate.freshness?.window ?? null,
       eligibility: candidate.eligibility ?? null,
       policy: baseConversionPlan.conversionScore,
@@ -366,9 +414,9 @@ export async function runNormalMode({
       selected: incompleteScoring ? 0 : selection.selected.length,
       runFailed: incompleteScoring,
     });
-    const verifiedCandidates = new Set(pipeline.scoringCandidates.map((candidate) => candidate.canonicalUrl));
+    const verifiedCandidates = new Set(finalScoredPool.map((candidate) => candidate.canonicalUrl));
     const verificationCandidates = [
-      ...pipeline.scoringCandidates,
+      ...finalScoredPool,
       ...sourceResults.flatMap((source) => source.candidates).filter((candidate) => !verifiedCandidates.has(candidate.canonicalUrl)),
     ];
     const verificationRows = [
@@ -414,6 +462,7 @@ export async function runNormalMode({
         selectionExclusions: selection.exclusions,
         strictComposition: selection.strictComposition,
         familyComposition: selection.familyComposition,
+        seniority: seniorityTelemetry,
         scoring: {
           required: true,
           scoredCount: selection.scoredCount,
@@ -483,6 +532,7 @@ export async function runNormalMode({
       strictComposition: selection.strictComposition,
       familyComposition: selection.familyComposition,
       scorePolicy: selection.scorePolicy,
+      seniority: seniorityTelemetry,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
       historicalAmbiguous,
