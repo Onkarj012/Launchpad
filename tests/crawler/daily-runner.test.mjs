@@ -139,6 +139,23 @@ test('tracked warm-set observations feed tracked-ats into the real Normal pipeli
   assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats').fetched, 1);
 });
 
+test('one board is never fetched twice when crawler warm and tracked inputs overlap', async () => {
+  const { config } = testConfig({
+    warmBoards: [{ slug: 'shared-board', company: 'Shared Company' }],
+    trackedBoards: ['shared-board'],
+  });
+  const calls = [];
+  const result = await runDailyNormal(runOptions(
+    config,
+    fakeTransport({ 'shared-board': [greenhouseJob(202, 'shared-board')] }, calls),
+  ));
+  assert.equal(calls.length, 1);
+  assert.equal(result.scoringQueue.filter((candidate) => candidate.company === 'Shared Company').length, 1);
+  const tracked = result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats');
+  assert.equal(tracked.boardsOmitted, 1);
+  assert.equal(tracked.omissions[0].reason, 'covered-by-crawler-source-plan');
+});
+
 test('caller-supplied fixtures for other Normal lanes are preserved', async () => {
   const { config } = testConfig();
   const portalJob = rawPortalJob(301);

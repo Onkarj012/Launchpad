@@ -255,16 +255,25 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   const projected = withRegistryProjectedBoards(config);
   const sources = projected.sources;
   const plans = [];
-  if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
-    fetchWarmAts({ ...sources.atsWarm, boards: sources.atsWarm.boards, transport, runAt })));
+  if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async ({ cursor }) => {
+    const result = await fetchWarmAts({
+      ...sources.atsWarm,
+      boards: sources.atsWarm.boards,
+      transport,
+      runAt,
+      rotationState: cursor?.rotation ?? {},
+      registry: projected.boardRegistry ?? null,
+    });
+    return { ...result, cursor: { rotation: result.rotationState } };
+  }, { capabilities: { rotationPersistent: true } }));
   if (sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor }) => {
-    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState });
-    return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } };
-  }, { capabilities: { newestFirst: true, paginated: true } }));
+    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, rotationState: cursor?.rotation });
+    return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState, rotation: result.rotationState } };
+  }, { capabilities: { newestFirst: true, paginated: true, rotationPersistent: sources.atsBatch1.rotation?.enabled === true } }));
   if (schedule !== 'midday' && sources.atsBatch2?.boards?.length) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor }) => {
-    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: sources.atsBatch2.boards, transport, runAt, state: cursor ?? {} });
-    return { ...result, cursor: Object.fromEntries(result.results.map((entry, index) => [sources.atsBatch2.boards[index]?.slug || sources.atsBatch2.boards[index]?.company, entry.conditionalState])) };
-  }, { capabilities: { newestFirst: true, completeArray: true } }));
+    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: sources.atsBatch2.boards, transport, runAt, state: cursor?.boards ?? cursor ?? {}, rotationState: cursor?.rotation });
+    return { ...result, cursor: { boards: Object.fromEntries(result.results.map((entry) => [entry.boardKey, entry.conditionalState])), rotation: result.rotationState } };
+  }, { capabilities: { newestFirst: true, completeArray: true, rotationPersistent: sources.atsBatch2.rotation?.enabled === true } }));
   if (schedule !== 'midday' && sources.enterprise?.boards?.length) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor }) => {
     const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: sources.enterprise.boards, transport, runAt, conditionalState: cursor ?? {} });
     return { ...result, cursor: result.conditionalState };

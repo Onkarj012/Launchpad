@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { boardIdentityKey, planBoardRotation, recordBoardHealth } from './board-registry.mjs';
 
 const PROVIDERS = new Set(['greenhouse', 'lever', 'ashby']);
 
@@ -103,16 +104,58 @@ function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
   return item;
 }
 
-export async function fetchWarmAts({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 40, maxJobsPerBoard = 100 } = {}) {
+export async function fetchWarmAts({
+  boards = [],
+  transport,
+  runAt = new Date().toISOString(),
+  maxBoards = 40,
+  maxJobsPerBoard = 100,
+  rotation = {},
+  rotationState = {},
+  seenBoardIds = [],
+  registry = null,
+} = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchWarmAts requires injected transport');
   const observations = [];
   const failures = [];
   const sources = [];
-  for (const board of boards.slice(0, Math.max(0, Number(maxBoards)))) {
+  const plan = rotation.enabled === true
+    ? planBoardRotation({
+      boards,
+      maxBoards,
+      providerQuotas: rotation.providerQuotas ?? { ashby: 1, greenhouse: 1, lever: 1 },
+      state: rotationState,
+      runAt,
+      seenBoardIds,
+    })
+    : {
+      boards: boards.filter((_board, index) => index < Math.max(0, Number(maxBoards))),
+      telemetry: {
+        boardsConfigured: boards.length,
+        boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+        boardsOmitted: Math.max(0, boards.length - Math.max(0, Number(maxBoards))),
+        omissions: boards.slice(Math.max(0, Number(maxBoards))).map((board) => ({
+          boardId: board.id || board.registryId || boardIdentityKey(board),
+          provider: board.provider,
+          reason: 'legacy-cap-order',
+        })),
+        rotationWindowRuns: null,
+      },
+      state: rotationState,
+    };
+  let healthRegistry = registry;
+  const healthEvents = [];
+  const updateHealth = (board, event) => {
+    const boardId = board.id || board.registryId || board.rotationBoardId || boardIdentityKey(board);
+    healthEvents.push({ boardId, ...event });
+    if (healthRegistry && boardId) healthRegistry = recordBoardHealth(healthRegistry, boardId, event);
+  };
+  for (const board of plan.boards) {
     const provider = String(board?.provider || '').toLowerCase();
     const url = endpoint({ ...board, provider });
     if (!PROVIDERS.has(provider) || !url) {
       failures.push({ provider, board: board?.slug, code: 'INVALID_WARM_BOARD' });
+      updateHealth(board, { failure: true, at: runAt });
       continue;
     }
     try {
@@ -120,12 +163,14 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
       const status = Number(response?.status ?? 200);
       if (status < 200 || status >= 300) {
         failures.push({ provider, board: board.slug, code: `HTTP_${status}` });
+        updateHealth(board, { failure: true, at: runAt });
         continue;
       }
       const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
       const listings = rows(provider, body);
       if (!Array.isArray(listings)) {
         failures.push({ provider, board: board.slug, code: 'MALFORMED_PAYLOAD' });
+        updateHealth(board, { failure: true, at: runAt });
         continue;
       }
       const before = observations.length;
@@ -145,8 +190,10 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
         if (item) observations.push(item);
       }
       sources.push({ provider, board: board.slug, company: board.company, fetched: listings.length, observations: observations.length - before, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' });
+      updateHealth(board, { success: true, at: runAt });
     } catch (error) {
       failures.push({ provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' });
+      updateHealth(board, { failure: true, at: runAt });
     }
   }
   return {
@@ -154,12 +201,15 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
     failures,
     manifest: {
       schemaVersion: 'WarmAtsManifestV1',
-      boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+      ...plan.telemetry,
       fetched: sources.reduce((sum, source) => sum + source.fetched, 0),
       failed: failures.length,
       sources,
+      healthEvents,
       noAutoApply: true,
     },
+    rotationState: plan.state,
+    registry: healthRegistry,
   };
 }
 

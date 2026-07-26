@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { boardIdentityKey, planBoardRotation } from './board-registry.mjs';
 
 export const ATS_BATCH_1 = Object.freeze(['smartrecruiters', 'workable', 'teamtailor', 'recruitee']);
 export const ATS_BATCH_SCHEMA_VERSION = 'AtsBatchFetchV1';
@@ -203,17 +204,29 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
   return { provider, board: boardId(board), observations, failures, cursorState, conditionalState, cursor: cursorState, interrupted, manifest: { status, provider, board: boardId(board), startingCursor: boardCursor, pages, fetched, jobs: observations.length, changed: observations.length, foreignDiscardedAtSource: 0, naturalTerminal, interrupted, truncated: Boolean(capHit), capHit, recordsNotExamined, newestPostingAt, bounded: { maxPages: boundedPages, maxJobs: boundedJobs, pageSize } } };
 }
 
-export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, ...options } = {}) {
+export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, rotation = {}, rotationState = {}, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchAtsBatch1 requires injected transport');
   const cursorState = { ...(options.cursorState || {}) }; const conditionalState = { ...(options.conditionalState || {}) }; const results = []; const observations = []; const failures = []; const seen = new Set();
-  for (const board of boards.slice(0, Math.max(0, Number(maxBoards)))) {
+  const selection = rotation.enabled === true
+    ? planBoardRotation({ boards, maxBoards, state: rotationState, runAt })
+    : {
+      boards: boards.filter((_board, index) => index < Math.max(0, Number(maxBoards))),
+      telemetry: {
+        boardsConfigured: boards.length,
+        boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+        boardsOmitted: Math.max(0, boards.length - Math.max(0, Number(maxBoards))),
+        omissions: boards.filter((_board, index) => index >= Math.max(0, Number(maxBoards))).map((board) => ({ boardId: board.id || boardIdentityKey(board), provider: board.provider, reason: 'legacy-cap-order' })),
+      },
+      state: rotationState,
+    };
+  for (const board of selection.boards) {
     const provider = String(board?.provider || '').toLowerCase();
     const result = await fetchAtsProvider({ ...options, board, provider, transport, runAt, cursorState, conditionalState }); results.push(result); failures.push(...result.failures);
     for (const observation of result.observations) if (!seen.has(observation.canonicalUrl)) { seen.add(observation.canonicalUrl); observations.push(observation); }
   }
   const interrupted = results.some((result) => result.manifest.interrupted);
   const truncated = results.some((result) => result.manifest.truncated);
-  return { schemaVersion: ATS_BATCH_SCHEMA_VERSION, observations, manifest: { schemaVersion: 'AtsBatchManifestV1', batch: 'ats-batch-1', runAt, providers: ATS_BATCH_1, boardsAttempted: results.length, boardsBound: Math.min(boards.length, Math.max(0, Number(maxBoards))), pages: results.reduce((sum, result) => sum + (result.manifest.pages || 0), 0), fetched: results.reduce((sum, result) => sum + (result.manifest.fetched || 0), 0), changed: observations.length, direct: observations.filter((row) => row.evidence.classification === 'direct').length, leads: observations.filter((row) => row.evidence.classification === 'lead').length, failures: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted, truncated, capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, sources: results.map((result, index) => ({ provider: result.provider, board: result.board, company: boards[index]?.company ?? boards[index]?.name ?? result.board, startingCursor: result.manifest.startingCursor, fetched: Number(result.manifest.fetched || 0), observations: result.observations.length, foreignDiscardedAtSource: Number(result.manifest.foreignDiscardedAtSource || 0), status: result.manifest.status, naturalTerminal: result.manifest.naturalTerminal, interrupted: result.manifest.interrupted, truncated: result.manifest.truncated, capHit: result.manifest.capHit, recordsNotExamined: result.manifest.recordsNotExamined, newestPostingAt: result.manifest.newestPostingAt, failures: result.failures.length })), noAutoApply: true }, cursorState, conditionalState, failures, results };
+  return { schemaVersion: ATS_BATCH_SCHEMA_VERSION, observations, manifest: { schemaVersion: 'AtsBatchManifestV1', batch: 'ats-batch-1', runAt, providers: ATS_BATCH_1, ...selection.telemetry, boardsAttempted: results.length, boardsBound: selection.boards.length, pages: results.reduce((sum, result) => sum + (result.manifest.pages || 0), 0), fetched: results.reduce((sum, result) => sum + (result.manifest.fetched || 0), 0), changed: observations.length, direct: observations.filter((row) => row.evidence.classification === 'direct').length, leads: observations.filter((row) => row.evidence.classification === 'lead').length, failures: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted, truncated, capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, sources: results.map((result, index) => ({ provider: result.provider, board: result.board, company: selection.boards[index]?.company ?? selection.boards[index]?.name ?? result.board, startingCursor: result.manifest.startingCursor, fetched: Number(result.manifest.fetched || 0), observations: result.observations.length, foreignDiscardedAtSource: Number(result.manifest.foreignDiscardedAtSource || 0), status: result.manifest.status, naturalTerminal: result.manifest.naturalTerminal, interrupted: result.manifest.interrupted, truncated: result.manifest.truncated, capHit: result.manifest.capHit, recordsNotExamined: result.manifest.recordsNotExamined, newestPostingAt: result.manifest.newestPostingAt, failures: result.failures.length })), noAutoApply: true }, cursorState, conditionalState, rotationState: selection.state, failures, results };
 }
 
 export const runAtsBatch1 = fetchAtsBatch1;

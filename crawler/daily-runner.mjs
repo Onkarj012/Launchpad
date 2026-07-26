@@ -5,7 +5,7 @@ import {
 } from './operator.mjs';
 import { fetchWarmAts } from './ats-warm.mjs';
 import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
-import { projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
+import { boardIdentityKey, projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
 import { runNormalMode } from '../job-pull/normal-mode.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
@@ -63,6 +63,28 @@ function trackedBoards(config) {
 }
 
 export { trackedBoards };
+
+export function partitionTrackedScan(config) {
+  const configured = trackedBoards(config);
+  const registry = resolveBoardRegistry(config);
+  const covered = new Set();
+  if (registry) {
+    for (const board of registry.boards ?? []) {
+      if (board.enabled && board.activationState !== 'proposed') covered.add(board.id || boardIdentityKey(board));
+    }
+  } else {
+    for (const board of config.sources?.atsWarm?.boards ?? []) covered.add(board.id || board.registryId || boardIdentityKey(board));
+    for (const board of config.sources?.enterprise?.boards ?? []) covered.add(board.id || board.registryId || boardIdentityKey(board));
+  }
+  const boards = [];
+  const omissions = [];
+  for (const board of configured) {
+    const boardId = board.id || board.registryId || boardIdentityKey(board);
+    if (covered.has(boardId)) omissions.push({ boardId, provider: board.provider, reason: 'covered-by-crawler-source-plan' });
+    else boards.push(board);
+  }
+  return { configured, boards, omissions };
+}
 
 function failureMessages(failures) {
   return failures.map((failure) => [
@@ -219,12 +241,16 @@ export async function runDailyNormal({
     runId: effectiveRunId,
     store,
   });
+  const trackedPartition = partitionTrackedScan(config);
   const trackedResult = await fetchWarmAts({
     ...(config.sources?.trackedAts ?? {}),
-    boards: trackedBoards(config),
+    boards: trackedPartition.boards,
     transport,
     runAt,
   });
+  trackedResult.manifest.boardsConfigured = trackedPartition.configured.length;
+  trackedResult.manifest.boardsOmitted += trackedPartition.omissions.length;
+  trackedResult.manifest.omissions = [...trackedPartition.omissions, ...(trackedResult.manifest.omissions ?? [])];
   const result = await runNormalMode({
     clock: () => runAt,
     runId: effectiveRunId,

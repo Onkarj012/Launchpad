@@ -72,3 +72,21 @@ test('India-first warm boards still discard explicit foreign-only locations', as
   assert.equal(result.manifest.sources[0].foreignDiscardedAtSource, 1);
   assert.equal(result.manifest.sources[0].foreignPassedThroughAtSource, 1);
 });
+
+test('warm rotation emits configured, attempted, omitted, and omission reasons', async () => {
+  const boards = ['ashby', 'greenhouse', 'lever'].flatMap((provider) =>
+    [1, 2].map((index) => ({ provider, slug: `${provider}-${index}` })));
+  const result = await fetchWarmAts({
+    boards,
+    maxBoards: 3,
+    rotation: { enabled: true, providerQuotas: { ashby: 1, greenhouse: 1, lever: 1 } },
+    transport: async (url) => url.includes('lever')
+      ? { status: 200, body: [] }
+      : { status: 200, body: { jobs: [] } },
+  });
+  assert.equal(result.manifest.boardsConfigured, 6);
+  assert.equal(result.manifest.boardsAttempted, 3);
+  assert.equal(result.manifest.boardsOmitted, 3);
+  assert.ok(result.manifest.omissions.every((item) => item.reason === 'due-in-later-rotation-window'));
+  assert.equal(result.manifest.healthEvents.length, 3);
+});

@@ -11,6 +11,7 @@ import {
   loadBoardRegistry,
   migrateFromLegacySources,
   normalizeRegistryBoard,
+  planBoardRotation,
   projectLaneBoards,
   projectTrackedBoards,
   projectTrackedWarmSet,
@@ -260,4 +261,42 @@ test('provider families carry typed identity, evidence, geography, capabilities,
   assert.ok(samples.workable.endpoint);
   assert.equal(samples.workday.tenant, 'finastra');
   assert.ok(samples.workday.url.includes('/wday/cxs/finastra/finc/jobs'));
+});
+
+test('rotation attempts every enabled warm board inside its declared window', () => {
+  const boards = ['ashby', 'greenhouse', 'lever'].flatMap((provider) =>
+    Array.from({ length: 4 }, (_value, index) => ({ provider, slug: `${provider}-${index}` })));
+  let state = {};
+  const attempted = new Set();
+  let windowRuns = null;
+  for (let run = 0; run < 20; run += 1) {
+    const result = planBoardRotation({
+      boards,
+      maxBoards: 4,
+      providerQuotas: { ashby: 1, greenhouse: 1, lever: 1 },
+      state,
+      runAt: `2026-07-${String(run + 1).padStart(2, '0')}T00:00:00.000Z`,
+    });
+    state = result.state;
+    windowRuns = result.telemetry.rotationWindowRuns;
+    for (const board of result.boards) attempted.add(board.rotationBoardId);
+    if (run + 1 === windowRuns) break;
+  }
+  assert.equal(attempted.size, boards.length);
+  assert.equal(Object.keys(state.lastAttemptByBoard).length, boards.length);
+});
+
+test('rotation reserves provider quotas even when registry order is all Ashby first', () => {
+  const boards = [
+    ...Array.from({ length: 8 }, (_value, index) => ({ provider: 'ashby', slug: `ashby-${index}` })),
+    { provider: 'greenhouse', slug: 'greenhouse-0' },
+    { provider: 'lever', slug: 'lever-0' },
+  ];
+  const result = planBoardRotation({
+    boards,
+    maxBoards: 4,
+    providerQuotas: { ashby: 1, greenhouse: 1, lever: 1 },
+  });
+  assert.deepEqual(new Set(result.boards.map((board) => board.provider)), new Set(['ashby', 'greenhouse', 'lever']));
+  assert.equal(result.telemetry.boardsAttempted, 4);
 });

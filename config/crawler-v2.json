@@ -29,7 +29,15 @@
         { "provider": "ashby", "slug": "signoz", "company": "SigNoz", "indiaFirst": true, "startupTagged": true }
       ],
       "maxBoards": 20,
-      "maxJobsPerBoard": 100
+      "maxJobsPerBoard": 100,
+      "rotation": {
+        "enabled": true,
+        "providerQuotas": {
+          "ashby": 1,
+          "greenhouse": 1,
+          "lever": 1
+        }
+      }
     },
     "atsBatch1": {
       "boards": [
@@ -64,6 +72,7 @@
       "pageSize": 50,
       "maxPages": 1,
       "maxJobs": 100,
+      "rotation": { "enabled": true },
       "enrichDetails": true
     },
     "atsBatch2": {
@@ -78,6 +87,7 @@
           "evidenceRef": "https://infor.pinpointhq.com/postings.json (197 live postings observed; real Bengaluru and Hyderabad India roles including Data Scientist, Software Engineer, Security Analyst; the underlying ats-batch-2.mjs pinpoint parser was fixed to read the actual { data: [...] } JSON:API shape the live endpoint returns, and its object-shaped location field)"
         }
       ],
+      "rotation": { "enabled": true },
       "disabledBoards": [
         {
           "provider": "pinpoint",
