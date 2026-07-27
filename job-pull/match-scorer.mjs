@@ -92,6 +92,7 @@ function buildScoringPrompt(chunkFile, rowCount) {
     '6. autoSuggest: your opinion whether the role is a strong pick (matchScore >= 80, posted within the last week, new-grad-friendly, responseLikelihood >= 14). The pipeline recomputes this from pipeline facts; answer honestly anyway.',
     '7. descriptionAvailable: echo the input flag for the job.',
     '8. Never fabricate evidence. When a fact is unknown, score conservatively instead of guessing.',
+    '9. Read ONLY the chunk file named in this prompt. Do not open, search, or explore any other file in the repository. Do not run shell commands to look for context. Everything needed is in the chunk file and in this prompt. Return only the JSON.',
     '',
     `Return exactly one scores row per input job (${rowCount} rows total).`,
   ].join('\n');

@@ -188,3 +188,18 @@ test('production scorer ignores user config, sets reasoning effort, and honors t
   assert.equal(calls[0].options.timeout, 4321);
   assert.equal(calls[1].options.timeout, 99);
 });
+
+test('scoring prompt constrains codex to the chunk file only', async () => {
+  const workDir = mkdtempSync(path.join(os.tmpdir(), 'launchpad-match-scorer-'));
+  const calls = [];
+  const execFileImpl = (binary, args, options, callback) => {
+    calls.push({ binary, args, options });
+    const outputFile = args[args.indexOf('-o') + 1];
+    writeFileSync(outputFile, JSON.stringify({ scores: [scoreRow(candidate(1))] }));
+    callback(null, '', '');
+  };
+  const scorer = createCodexScorer({ codexBinary: process.execPath, workDir, execFileImpl });
+  await scorer([candidate(1)]);
+  const prompt = calls[0].args[calls[0].args.length - 1];
+  assert.ok(prompt.includes('Do not open, search, or explore any other file in the repository'));
+});
