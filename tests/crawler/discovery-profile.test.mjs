@@ -64,7 +64,7 @@ test('CLI and plan plumbing preserve defaults and expose explicit profile flags'
 test('daily command invokes the unified runner and emits its operator result', async () => {
   let received = null;
   let emitted = null;
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-1'], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-1', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -79,7 +79,7 @@ test('daily command invokes the unified runner and emits its operator result', a
 
 test('daily command activates the codex scorer by default', async () => {
   let received = null;
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-scorer-default'], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-scorer-default', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -92,7 +92,7 @@ test('daily command activates the codex scorer by default', async () => {
 
 test('daily --no-scorer passes no scorer to the runner', async () => {
   let received = null;
-  const exitCode = await main(['daily', '--env', 'dev', '--no-scorer'], {
+  const exitCode = await main(['daily', '--env', 'dev', '--no-scorer', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -105,7 +105,7 @@ test('daily --no-scorer passes no scorer to the runner', async () => {
 
 test('daily --scores-json with --no-scorer passes the scores path through and no scorer', async () => {
   let received = null;
-  const exitCode = await main(['daily', '--env', 'dev', '--scores-json', 'scores/manual.json', '--no-scorer'], {
+  const exitCode = await main(['daily', '--env', 'dev', '--scores-json', 'scores/manual.json', '--no-scorer', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };

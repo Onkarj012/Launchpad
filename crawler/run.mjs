@@ -536,11 +536,13 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     const sourceDurations = {};
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
-      if (signal?.aborted || Number(deadline?.remainingMs) <= 0) {
+      const currentTime = typeof clock?.now === 'function' ? new Date(clock.now()).getTime() : Date.now();
+      if (signal?.aborted) {
         const error = signal?.reason instanceof Error ? signal.reason : new Error('crawler source deadline exceeded');
         error.code ??= 'DAILY_DEADLINE_EXCEEDED';
         throw error;
       }
+      if (Number(deadline?.remainingMs) <= 0 || Number(deadline?.deadlineMs) <= currentTime) break;
       const initialCursor = priorState.sources?.[source.id]?.cursor;
       store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)

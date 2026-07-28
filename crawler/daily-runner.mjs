@@ -11,9 +11,10 @@ import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 
-function createDailyExecution(config, runAt) {
+export function createDailyExecution(config, runAt) {
   const deadlineMs = Math.max(1, Number(config?.execution?.wholeRunDeadlineMs ?? 2_520_000) || 2_520_000);
   const reserveMs = Math.max(0, Number(config?.execution?.downstreamReserveMs ?? 300_000) || 300_000);
+  const scorerFloorMs = Math.max(1, Number(config?.execution?.scorerFloorMs ?? 300_000) || 300_000);
   const startedAt = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -26,11 +27,12 @@ function createDailyExecution(config, runAt) {
     signal: controller.signal,
     deadlineMs,
     reserveMs,
+    scorerFloorMs,
     startedAt,
     remainingMs: () => Math.max(0, deadlineMs - (Date.now() - startedAt)),
     sourceBudget() {
       return {
-        deadlineMs: startedAt + deadlineMs,
+        deadlineMs: startedAt + deadlineMs - reserveMs,
         remainingMs: Math.max(0, deadlineMs - (Date.now() - startedAt) - reserveMs),
         reserveMs,
       };
@@ -287,7 +289,8 @@ async function runDailyNormalImpl({
     // keeps the run byte-identical to the pre-scorer behaviour — offline, no
     // child processes.
     scorer: scorer === 'codex'
-      ? createCodexScorer({ wholeTimeoutMs: Math.max(1, dailyExecution.remainingMs()) })
+      // Scoring keeps a minimum runway so discovery cannot starve the scorer.
+      ? createCodexScorer({ wholeTimeoutMs: Math.max(dailyExecution.scorerFloorMs, dailyExecution.remainingMs()) })
       : (scorer ?? undefined),
     includeCrawlerLanes: true,
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,

@@ -93,6 +93,60 @@ test('a crawl run persists schema, source state, observations, stages, and funne
   store.close();
 });
 
+test('a crawl run stops before starting a source after its absolute deadline', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  let calls = 0;
+  try {
+    const result = await crawlRun({
+      store,
+      runId: 'run-absolute-deadline',
+      clock: fixedClock(),
+      // fixedClock ticks a minute per call: startCrawlRun takes 01:00 and
+      // crawlRun's own nowFrom takes 01:01, so the first source is checked at
+      // 01:02. Sit the deadline just past that so source one runs and source
+      // two is skipped.
+      deadline: { deadlineMs: Date.parse('2026-07-23T01:02:00.500Z'), remainingMs: 60_000 },
+      sourcePlans: [{
+        id: 'completed-source',
+        lane: 'ats',
+        fetch: async () => ({ observations: [], manifest: { fetched: 0, changed: 0 } }),
+      }, {
+        id: 'deadline-source',
+        lane: 'ats',
+        fetch: async () => {
+          calls += 1;
+          return { observations: [], manifest: { fetched: 0, changed: 0 } };
+        },
+      }],
+    });
+    assert.equal(calls, 0);
+    assert.equal(result.telemetry.sources['completed-source'].status, 'succeeded');
+  } finally {
+    store.close();
+  }
+});
+
+test('an aborted crawl run still fails with the daily deadline error', async () => {
+  const store = openCrawlerStore(tempDatabase());
+  const controller = new AbortController();
+  controller.abort(new Error('crawler source deadline exceeded'));
+  try {
+    await assert.rejects(() => crawlRun({
+      store,
+      runId: 'run-aborted',
+      clock: fixedClock(),
+      signal: controller.signal,
+      sourcePlans: [{
+        id: 'aborted-source',
+        lane: 'ats',
+        fetch: async () => ({ observations: [], manifest: { fetched: 0, changed: 0 } }),
+      }],
+    }), (error) => error.code === 'DAILY_DEADLINE_EXCEEDED');
+  } finally {
+    store.close();
+  }
+});
+
 test('retryable source failures retry deterministically and remain observable without failing the run', async () => {
   const store = openCrawlerStore(tempDatabase());
   const attempts = [];

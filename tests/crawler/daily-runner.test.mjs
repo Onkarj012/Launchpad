@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
+import { createDailyExecution, crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
 import { openCrawlerStore } from '../../crawler/run.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 
@@ -123,6 +123,16 @@ test('crawler-v2 atsWarm observations feed reverse-ats-warm into the real Normal
   assert.equal(manifest.fetched, 1);
   assert.equal(manifest.required, true);
   assert.equal(manifest.optional, false);
+});
+
+test('the scorer timeout keeps its floor when discovery leaves almost no time', async () => {
+  const execution = createDailyExecution({ execution: { wholeRunDeadlineMs: 1 } }, NOW);
+  try {
+    assert.ok(execution.remainingMs() <= 1);
+    assert.equal(Math.max(execution.scorerFloorMs, execution.remainingMs()), 300_000);
+  } finally {
+    execution.cleanup();
+  }
 });
 
 test('tracked warm-set observations feed tracked-ats into the real Normal pipeline', async () => {
