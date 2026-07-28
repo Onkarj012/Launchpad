@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { computeCanaryVersion, evaluateDeliveryCanary } from './canary-evaluator.mjs';
 import { fileURLToPath } from 'node:url';
 
 export const DELIVERY_CANARY_SCHEMA = 'LaunchpadDeliveryCanaryV1';
@@ -134,6 +135,13 @@ export function buildDeliveryCanary({ run, clock, previousRuns = [] } = {}) {
     current.historySnapshot.note = transition.note;
     current.historySnapshot.transition = transition;
   }
+  current.valid = run.canaryValid === true;
+  current.codeConfigVersion = run.codeConfigVersion ?? computeCanaryVersion({ config: run.canaryConfig ?? {}, root: process.cwd() });
+  current.engineering = {
+    ...(run.canaryEngineering ?? {}),
+    ...(run.durationMs != null ? { durationMs: run.durationMs } : {}),
+    ...(run.reportComplete != null ? { reportComplete: run.reportComplete, reportPaths: run.reportPaths ?? null } : {}),
+  };
   return current;
 }
 
@@ -154,11 +162,22 @@ export function createJsonCanaryStore(filePath = 'logs/delivery-canary.json') {
       return Array.isArray(parsed) ? parsed : Array.isArray(parsed?.runs) ? parsed.runs : [];
     },
     append(run) {
-      const runs = this.readRuns().filter((item) => item.runId !== run.runId);
+      const runs = this.readRuns();
+      const existing = runs.find((item) => item.runId === run.runId);
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(run)) {
+          const error = new Error(`canary run ID already exists with different content: ${run.runId}`);
+          error.code = 'CANARY_RUN_ID_CONFLICT';
+          throw error;
+        }
+        return existing;
+      }
       runs.push(run);
       runs.sort((left, right) => String(left.runAt).localeCompare(String(right.runAt)));
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
-      fs.writeFileSync(resolved, `${JSON.stringify({ schemaVersion: DELIVERY_CANARY_SCHEMA, runs }, null, 2)}\n`, 'utf8');
+      const temporary = `${resolved}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, `${JSON.stringify({ schemaVersion: DELIVERY_CANARY_SCHEMA, runs }, null, 2)}\n`, 'utf8');
+      fs.renameSync(temporary, resolved);
       return run;
     },
   };
@@ -198,12 +217,16 @@ export function compareDeliveryCanaryRuns(input = []) {
 
 if (path.resolve(process.argv[1] ?? '') === path.resolve(fileURLToPath(import.meta.url))) {
   const [command = 'compare', ...args] = process.argv.slice(2);
-  if (command !== 'compare') {
-    process.stderr.write('Usage: node crawler/delivery-canary.mjs compare --log <path>\n');
+  if (!['compare', 'evaluate'].includes(command)) {
+    process.stderr.write('Usage: node crawler/delivery-canary.mjs <compare|evaluate> --log <path>\n');
     process.exitCode = 2;
   } else {
     const index = args.indexOf('--log');
     const store = createJsonCanaryStore(index >= 0 ? args[index + 1] : undefined);
-    process.stdout.write(`${JSON.stringify(compareDeliveryCanaryRuns(store.readRuns()), null, 2)}\n`);
+    const result = command === 'evaluate'
+      ? evaluateDeliveryCanary(store.readRuns())
+      : compareDeliveryCanaryRuns(store.readRuns());
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (command === 'evaluate' && result.passed !== true) process.exitCode = 1;
   }
 }

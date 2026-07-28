@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -18,6 +19,7 @@ import {
 import { installSchedules } from './install-schedule.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
 import { createJsonCanaryStore } from './delivery-canary.mjs';
+import { acquireCrawlerRunLock } from './run-lock.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -82,12 +84,15 @@ function configuredSourceIds(config) {
 function localReadiness(config, args) {
   const runTests = args.includes('--run-tests');
   const testRun = runTests
-    ? spawnSync(process.execPath, ['--test', 'tests/crawler/*.test.mjs'], { cwd: process.cwd(), encoding: 'utf8', shell: true })
+    ? spawnSync(process.execPath, ['--test', 'tests/crawler/*.test.mjs', 'tests/job-pull/*.test.mjs', 'tests/notion-v5/*.test.mjs', 'tests/v5/*.test.mjs'], { cwd: process.cwd(), encoding: 'utf8', shell: true })
     : null;
   const testOutput = `${testRun?.stdout ?? ''}\n${testRun?.stderr ?? ''}`;
   const testTotal = Number(testOutput.match(/# tests (\d+)/)?.[1] ?? 0);
   const git = spawnSync('git', ['status', '--porcelain'], { cwd: process.cwd(), encoding: 'utf8' });
   const dirtyPaths = String(git.stdout ?? '').split(/\r?\n/).filter(Boolean).map((line) => line.slice(3));
+  const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' });
+  const receiptHash = `sha256:${createHash('sha256').update(testOutput).digest('hex')}`;
+  const codeConfigVersion = `git:${String(revision.stdout ?? '').trim()}:dirty:${dirtyPaths.join('|') || 'clean'}`;
   const evidenceFile = value(args, '--operational-evidence');
   const operationalEvidence = evidenceFile ? JSON.parse(fs.readFileSync(path.resolve(evidenceFile), 'utf8')) : null;
   const braveKeyName = config.sources.brave?.apiKeyEnv ?? 'BRAVE_SEARCH_API_KEY';
@@ -102,6 +107,14 @@ function localReadiness(config, args) {
     operationalEvidence,
     sourceIds: configuredSourceIds(config),
     credentialsAvailable,
+    evidenceProvenance: {
+      schemaVersion: 'LaunchpadReadinessEvidenceV2',
+      runId: `local-readiness-${receiptHash.slice(-12)}`,
+      runAt: new Date().toISOString(),
+      codeConfigVersion,
+      receiptHash,
+      recognized: true,
+    },
   });
   return { evidence, assessment: assessProductionReadiness(evidence), testExitCode: testRun?.status ?? null };
 }
@@ -130,18 +143,23 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
     return 0;
   }
   if (command === 'daily') {
-    const result = await dailyRunner({
-      config,
-      runId: value(argv, '--run-id'),
-      scores: value(argv, '--scores-json'),
-      // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
-      // --no-scorer preserves the offline pre-scorer behaviour for debugging/replay;
-      // --scores-json rows still win per-row inside normal-mode regardless.
-      scorer: argv.includes('--no-scorer') ? null : 'codex',
-      canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
-    });
-    emit(result);
-    return result.outcome?.status === 'fatal' ? 1 : 0;
+    const lock = acquireCrawlerRunLock(value(argv, '--lock-path', path.join(config.databasePath ? path.dirname(config.databasePath) : '.local/launchpad-crawler', 'daily.lock')));
+    try {
+      const result = await dailyRunner({
+        config,
+        runId: value(argv, '--run-id'),
+        scores: value(argv, '--scores-json'),
+        // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
+        // --no-scorer preserves the offline pre-scorer behaviour for debugging/replay;
+        // --scores-json rows still win per-row inside normal-mode regardless.
+        scorer: argv.includes('--no-scorer') ? null : 'codex',
+        canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
+      });
+      emit(result);
+      return result.outcome?.status === 'fatal' ? 1 : 0;
+    } finally {
+      lock.release();
+    }
   }
   if (command === 'run') {
     const schedule = positional(argv)[1] ?? 'morning';

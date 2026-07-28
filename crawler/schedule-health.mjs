@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { openCrawlerStore } from './run.mjs';
+import { DatabaseSync } from 'node:sqlite';
 import { classifyScheduleRun } from './scheduler.mjs';
 
 const SCHEDULES = ['morning', 'midday'];
@@ -87,7 +87,7 @@ export function buildScheduleHealthReport({ databasePath, now = new Date() } = {
   const schedules = {};
   let db = null;
   try {
-    if (exists) db = openCrawlerStore(resolved);
+    if (exists) db = new DatabaseSync(resolved, { readOnly: true });
     for (const schedule of SCHEDULES) {
       const lastRunRow = db
         ? db.prepare('SELECT * FROM crawl_runs WHERE schedule = ? ORDER BY started_at DESC LIMIT 1').get(schedule)

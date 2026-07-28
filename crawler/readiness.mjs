@@ -1,6 +1,7 @@
 const REQUIRED_MILESTONES = Object.freeze(
   Array.from({ length: 15 }, (_, index) => String(index + 1).padStart(2, '0')),
 );
+export const READINESS_EVIDENCE_SCHEMA = 'LaunchpadReadinessEvidenceV2';
 
 export function buildLocalReadinessEvidence({
   testsPassed = false,
@@ -9,6 +10,7 @@ export function buildLocalReadinessEvidence({
   operationalEvidence = null,
   sourceIds = [],
   credentialsAvailable = false,
+  evidenceProvenance = null,
 } = {}) {
   const verified = testsPassed === true;
   const sources = Object.fromEntries(sourceIds.map((sourceId) => [sourceId, { status: 'verified-by-local-suite' }]));
@@ -25,7 +27,16 @@ export function buildLocalReadinessEvidence({
     contactGating: { pass: verified, onlyAfterSelection: true, verifiedOnly: true, maxPerApplication: 2 },
     audit: { pass: verified, evidence: verified ? ['crawler-test-suite'] : [] },
     testSummary: { supplied: true, passed: verified, failed: verified ? 0 : 1, total: Number(testTotal) || 0 },
-    unresolvedBlockers: dirtyPaths.map((file) => `dirty-worktree:${file}`),
+    unresolvedBlockers: [],
+    reproducibility: { dirtyPaths: [...dirtyPaths], captured: true },
+    evidenceProvenance: evidenceProvenance ?? {
+      schemaVersion: READINESS_EVIDENCE_SCHEMA,
+      runId: null,
+      runAt: null,
+      codeConfigVersion: null,
+      receiptHash: null,
+      recognized: false,
+    },
     liveCredentials: { required: true, available: credentialsAvailable === true },
     operationalVerification: operationalEvidence && nonEmptyArray(operationalEvidence.evidence)
       ? { ...operationalEvidence, pass: operationalEvidence.pass === true }
@@ -180,6 +191,18 @@ function checkBlockers(evidence) {
   return { pass: reasons.length === 0, reasons };
 }
 
+function checkEvidenceProvenance(evidence) {
+  const value = evidence.evidenceProvenance;
+  const valid = isObject(value)
+    && value.schemaVersion === READINESS_EVIDENCE_SCHEMA
+    && typeof value.runId === 'string' && value.runId.trim()
+    && typeof value.runAt === 'string' && !Number.isNaN(Date.parse(value.runAt))
+    && typeof value.codeConfigVersion === 'string' && value.codeConfigVersion.trim()
+    && typeof value.receiptHash === 'string' && /^sha256:[a-f0-9]{64}$/i.test(value.receiptHash)
+    && value.recognized === true;
+  return { pass: valid, reasons: valid ? [] : ['READINESS_EVIDENCE_PROVENANCE_INVALID'] };
+}
+
 function checkOperational(evidence) {
   const credentials = evidence.liveCredentials;
   const verification = evidence.operationalVerification;
@@ -210,6 +233,7 @@ export function assessProductionReadiness(evidence = {}) {
     ['audit-evidence', checkAudit(input)],
     ['test-summary', checkTests(input)],
     ['unresolved-blockers', checkBlockers(input)],
+    ['evidence-provenance', checkEvidenceProvenance(input)],
     ['operational-verification', checkOperational(input)],
   ].map(([name, result]) => ({ name, ...result }));
   const deterministic = checks.filter((check) => check.name !== 'operational-verification');

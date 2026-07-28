@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
 import { openCrawlerStore, startCrawlRun, finishCrawlRun } from '../../crawler/run.mjs';
@@ -127,6 +128,22 @@ test('reports truncation signals and measured duration per source', () => {
     recordsNotExamined: 4,
     durationMs: 4321,
   });
+});
+
+test('opens existing database read-only without repairing metadata', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-read-only-');
+  const store = openCrawlerStore(databasePath);
+  store.prepare("UPDATE crawler_meta SET value = 'sentinel' WHERE key = 'schema_version'").run();
+  store.prepare('DELETE FROM crawler_migrations WHERE version = ?').run(4);
+  store.close();
+
+  const report = buildScheduleHealthReport({ databasePath, now: new Date('2026-07-24T05:00:00.000Z') });
+  assert.equal(report.hasDatabase, true);
+
+  const check = new DatabaseSync(databasePath, { readOnly: true });
+  assert.equal(check.prepare("SELECT value FROM crawler_meta WHERE key = 'schema_version'").get().value, 'sentinel');
+  assert.equal(check.prepare('SELECT COUNT(*) AS count FROM crawler_migrations WHERE version = ?').get(4).count, 0);
+  check.close();
 });
 
 test('reports a source with no truncation signals as clean', () => {

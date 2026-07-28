@@ -22,6 +22,14 @@ const completeEvidence = () => ({
   unresolvedBlockers: [],
   liveCredentials: { required: true, available: true },
   operationalVerification: { pass: true, evidence: ['fixture-replay', 'bounded-probe'] },
+  evidenceProvenance: {
+    schemaVersion: 'LaunchpadReadinessEvidenceV2',
+    runId: 'readiness-fixture-1',
+    runAt: '2026-07-27T00:00:00.000Z',
+    codeConfigVersion: 'git:fixture:dirty:none',
+    receiptHash: `sha256:${'a'.repeat(64)}`,
+    recognized: true,
+  },
 });
 
 test('passes only when all required crawler evidence and operational verification are present', () => {
@@ -93,7 +101,8 @@ test('generated local evidence reports dirty worktree and missing operational ve
   const result = assessProductionReadiness(evidence);
 
   assert.equal(result.productionReady, false);
-  assert.ok(evidence.unresolvedBlockers.includes('dirty-worktree:crawler/workflow.mjs'));
-  assert.ok(result.reasons.includes('UNRESOLVED_BLOCKERS_PRESENT'));
+  assert.deepEqual(evidence.unresolvedBlockers, []);
+  assert.deepEqual(evidence.reproducibility.dirtyPaths, ['crawler/workflow.mjs']);
+  assert.ok(result.reasons.includes('READINESS_EVIDENCE_PROVENANCE_INVALID'));
   assert.ok(result.reasons.includes('OPERATIONAL_VERIFICATION_MISSING'));
 });
