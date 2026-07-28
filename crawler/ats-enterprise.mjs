@@ -117,7 +117,12 @@ function listRequisitionId(row) {
 }
 
 function fields(provider, row, boardUrl, runAt) {
-  const url = first(row.url, row.jobUrl, row.detailUrl, row.careerSiteUrl, row.applyUrl, row.applyurl, row.externalPath, row.jobPostingUrl, row.links?.self, row.links?.job);
+  const rawUrl = first(row.url, row.jobUrl, row.detailUrl, row.careerSiteUrl, row.applyUrl, row.applyurl, row.externalPath, row.jobPostingUrl, row.links?.self, row.links?.job);
+  const externalPath = clean(row.externalPath);
+  const workdayUrl = provider === 'workday' && externalPath
+    ? workdayPublicApplicationUrl(boardUrl, externalPath, null)
+    : null;
+  const url = workdayUrl ?? rawUrl;
   const title = first(row.title, row.jobTitle, row.jobtitle, row.name, row.role);
   const company = first(row.company, row.companyName, row.hiringOrganization?.name);
   const date = first(row.postedAt, row.datePosted, row.postingDate, row.postedOn, row.posteddate, row.createdAt, row.startDate);
@@ -136,8 +141,8 @@ function fields(provider, row, boardUrl, runAt) {
       : null,
     location: locationText(first(row.location, row.locations, row.locationsText, row.jobLocation, row.city)),
     description: clean(row.description || row.descriptionPlain || row.jobDescription),
-    applicationUrl: canonical(first(row.applyUrl, row.applyurl, row.applicationUrl, row.externalUrl), boardUrl), provider,
-    externalPath: clean(row.externalPath),
+    applicationUrl: canonical(first(row.applyUrl, row.applyurl, row.applicationUrl, row.externalUrl), boardUrl) ?? workdayUrl, provider,
+    externalPath,
   };
 }
 

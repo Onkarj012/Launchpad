@@ -230,6 +230,8 @@ export async function crawlWorkflow({
   braveTransport,
   prepareEntry,
   reserveOptions = {},
+  signal = null,
+  deadline = null,
 } = {}) {
   if (!store) throw new TypeError('crawlWorkflow requires an open crawler store');
   if (!runId) throw new TypeError('crawlWorkflow requires runId');
@@ -333,7 +335,7 @@ export async function crawlWorkflow({
     }));
   }
 
-  const durable = await crawlRun({ store, sourcePlans: composedPlans, priorState, config, clock, runId, schedule });
+  const durable = await crawlRun({ store, sourcePlans: composedPlans, priorState, config, clock, runId, schedule, signal, deadline });
   const data = readCrawlerRunData(store, runId);
   const persistedWorkflow = durable.telemetry?.workflow;
   const records = data.observations.map((record) => ({

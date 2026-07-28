@@ -1,4 +1,6 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { boardIdentityKey, planBoardRotation, recordBoardHealth } from './board-registry.mjs';
+import { mapProviderSafe } from './bounded-concurrency.mjs';
 
 const PROVIDERS = new Set(['greenhouse', 'lever', 'ashby']);
 
@@ -103,32 +105,128 @@ function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
   return item;
 }
 
-export async function fetchWarmAts({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 40, maxJobsPerBoard = 100 } = {}) {
+function clockMs(clock) {
+  const value = typeof clock?.now === 'function' ? clock.now() : Date.now();
+  const parsed = typeof value === 'number' ? value : Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+async function boundedTransport(transport, url, options, timeoutMs, parentSignal) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parentSignal.reason);
+  if (parentSignal?.aborted) onAbort();
+  else parentSignal?.addEventListener?.('abort', onAbort, { once: true });
+  let timer;
+  try {
+    const request = Promise.resolve().then(() => transport(url, { ...options, timeoutMs, signal: controller.signal }));
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`warm ATS request timed out after ${timeoutMs}ms`);
+        error.code = 'ETIMEDOUT';
+        controller.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
+    return await Promise.race([request, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    parentSignal?.removeEventListener?.('abort', onAbort);
+  }
+}
+
+export async function fetchWarmAts({
+  boards = [],
+  transport,
+  runAt = new Date().toISOString(),
+  maxBoards = 40,
+  maxJobsPerBoard = 100,
+  rotation = {},
+  rotationState = {},
+  seenBoardIds = [],
+  registry = null,
+  boardConcurrency = 1,
+  requestTimeoutMs = 10_000,
+  maxDurationMs = Infinity,
+  deadline = null,
+  signal = null,
+  clock = null,
+} = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchWarmAts requires injected transport');
   const observations = [];
   const failures = [];
   const sources = [];
-  for (const board of boards.slice(0, Math.max(0, Number(maxBoards)))) {
+  const omissions = [];
+  const startedAt = clockMs(clock);
+  const configuredDurationMs = Math.max(1, Number(maxDurationMs) || Infinity);
+  const parentRemainingMs = Number.isFinite(Number(deadline?.remainingMs)) ? Number(deadline.remainingMs) : Infinity;
+  const effectiveDurationMs = Math.min(configuredDurationMs, parentRemainingMs);
+  const deadlineAt = Number.isFinite(effectiveDurationMs) ? startedAt + effectiveDurationMs : Infinity;
+  let deadlineExhausted = false;
+  const remainingMs = () => Math.max(0, deadlineAt - clockMs(clock));
+  const unsupportedBoards = boards.filter((board) => !PROVIDERS.has(String(board?.provider || '').toLowerCase()));
+  const warmBoards = boards.filter((board) => PROVIDERS.has(String(board?.provider || '').toLowerCase()));
+  const plan = rotation.enabled === true
+    ? planBoardRotation({
+      boards: warmBoards,
+      maxBoards,
+      providerQuotas: rotation.providerQuotas ?? { ashby: 1, greenhouse: 1, lever: 1 },
+      state: rotationState,
+      runAt,
+      seenBoardIds,
+    })
+    : {
+      boards: warmBoards.filter((_board, index) => index < Math.max(0, Number(maxBoards))),
+      telemetry: {
+        boardsConfigured: boards.length,
+        boardsAttempted: Math.min(warmBoards.length, Math.max(0, Number(maxBoards))),
+        boardsOmitted: Math.max(0, boards.length - Math.max(0, Number(maxBoards))),
+        omissions: [...unsupportedBoards.map((board) => ({
+          boardId: board.id || board.registryId || boardIdentityKey(board),
+          provider: board.provider,
+          reason: 'unsupported-warm-provider',
+        })), ...warmBoards.slice(Math.max(0, Number(maxBoards))).map((board) => ({
+          boardId: board.id || board.registryId || boardIdentityKey(board),
+          provider: board.provider,
+          reason: 'legacy-cap-order',
+        }))],
+        rotationWindowRuns: null,
+      },
+      state: rotationState,
+    };
+  let healthRegistry = registry;
+  const healthEvents = [];
+  const updateHealth = (board, event) => {
+    const boardId = board.id || board.registryId || board.rotationBoardId || boardIdentityKey(board);
+    healthEvents.push({ boardId, ...event });
+    if (healthRegistry && boardId) healthRegistry = recordBoardHealth(healthRegistry, boardId, event);
+  };
+  const boardResults = await mapProviderSafe(plan.boards, {
+    concurrency: boardConcurrency,
+    providerKey: (board) => board?.provider,
+  }, async (board) => {
     const provider = String(board?.provider || '').toLowerCase();
     const url = endpoint({ ...board, provider });
+    const boardId = board.id || board.registryId || board.rotationBoardId || boardIdentityKey(board);
+    const availableMs = remainingMs();
+    if (availableMs <= 0) {
+      deadlineExhausted = true;
+      return { board, omitted: { boardId, provider, reason: 'source-deadline-exhausted' } };
+    }
     if (!PROVIDERS.has(provider) || !url) {
-      failures.push({ provider, board: board?.slug, code: 'INVALID_WARM_BOARD' });
-      continue;
+      return { board, attempted: false, failure: { provider, board: board?.slug, code: 'INVALID_WARM_BOARD' } };
     }
     try {
-      const response = await transport(url, { method: 'GET', provider, board, warm: true });
+      const timeoutMs = Math.max(1, Math.min(Number(requestTimeoutMs) || 10_000, availableMs));
+      const response = await boundedTransport(transport, url, { method: 'GET', provider, board, warm: true }, timeoutMs, signal);
       const status = Number(response?.status ?? 200);
       if (status < 200 || status >= 300) {
-        failures.push({ provider, board: board.slug, code: `HTTP_${status}` });
-        continue;
+        return { board, failure: { provider, board: board.slug, code: `HTTP_${status}` } };
       }
       const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
       const listings = rows(provider, body);
       if (!Array.isArray(listings)) {
-        failures.push({ provider, board: board.slug, code: 'MALFORMED_PAYLOAD' });
-        continue;
+        return { board, failure: { provider, board: board.slug, code: 'MALFORMED_PAYLOAD' } };
       }
-      const before = observations.length;
       const indiaFirst = board.indiaFirst === true;
       const eligibleListings = indiaFirst ? listings.filter((row) => !clearlyForeign(provider, row)) : listings;
       const foreignDiscardedAtSource = listings.length - eligibleListings.length;
@@ -139,27 +237,66 @@ export async function fetchWarmAts({ boards = [], transport, runAt = new Date().
       const foreignPassedThroughAtSource = indiaFirst
         ? eligibleListings.filter((raw) => oldFilterWouldDiscard(raw)).length
         : 0;
+      const boardObservations = [];
       for (const raw of eligibleListings.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
         const sourceGeoObservation = oldFilterWouldDiscard(raw) ? 'india-first-filter-bypass' : null;
         const item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
-        if (item) observations.push(item);
+        if (item) boardObservations.push(item);
       }
-      sources.push({ provider, board: board.slug, company: board.company, fetched: listings.length, observations: observations.length - before, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' });
+      return {
+        board,
+        attempted: true,
+        observations: boardObservations,
+        source: { provider, board: board.slug, company: board.company, fetched: listings.length, observations: boardObservations.length, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' },
+      };
     } catch (error) {
-      failures.push({ provider, board: board.slug, code: 'TRANSPORT_ERROR', message: error?.message || 'transport error' });
+      if (error?.code === 'ETIMEDOUT' && remainingMs() <= 0) deadlineExhausted = true;
+      return { board, attempted: true, failure: { provider, board: board.slug, code: error?.code === 'ETIMEDOUT' ? 'REQUEST_TIMEOUT' : 'TRANSPORT_ERROR', message: error?.message || 'transport error' } };
+    }
+  });
+  let attemptedBoards = 0;
+  for (const result of boardResults) {
+    if (result.omitted) {
+      omissions.push(result.omitted);
+      deadlineExhausted = true;
+    } else if (result.failure) {
+      if (result.attempted) attemptedBoards += 1;
+      failures.push(result.failure);
+      updateHealth(result.board, { failure: true, at: runAt });
+    } else {
+      attemptedBoards += 1;
+      observations.push(...result.observations);
+      sources.push(result.source);
+      updateHealth(result.board, { success: true, at: runAt });
     }
   }
+  const allOmissions = [...(plan.telemetry?.omissions ?? []), ...omissions];
   return {
     observations,
     failures,
     manifest: {
       schemaVersion: 'WarmAtsManifestV1',
-      boardsAttempted: Math.min(boards.length, Math.max(0, Number(maxBoards))),
+      ...plan.telemetry,
+      boardsSelected: plan.boards.length,
+      boardsAttempted: attemptedBoards,
+      boardsSucceeded: sources.length,
+      boardsFailed: failures.length,
+      boardsOmitted: allOmissions.length,
+      omissions: allOmissions,
+      deadline: {
+        enabled: Number.isFinite(effectiveDurationMs),
+        exhausted: deadlineExhausted,
+        elapsedMs: Math.max(0, clockMs(clock) - startedAt),
+        maxDurationMs: Number.isFinite(effectiveDurationMs) ? effectiveDurationMs : null,
+      },
       fetched: sources.reduce((sum, source) => sum + source.fetched, 0),
       failed: failures.length,
       sources,
+      healthEvents,
       noAutoApply: true,
     },
+    rotationState: plan.state,
+    registry: healthRegistry,
   };
 }
 

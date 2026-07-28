@@ -11,6 +11,34 @@ import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { recordDeliveryCanary } from './delivery-canary.mjs';
 
+function createDailyExecution(config, runAt) {
+  const deadlineMs = Math.max(1, Number(config?.execution?.wholeRunDeadlineMs ?? 2_520_000) || 2_520_000);
+  const reserveMs = Math.max(0, Number(config?.execution?.downstreamReserveMs ?? 300_000) || 300_000);
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    const error = new Error(`daily execution deadline exceeded after ${deadlineMs}ms`);
+    error.code = 'DAILY_DEADLINE_EXCEEDED';
+    controller.abort(error);
+  }, deadlineMs);
+  return {
+    runAt,
+    signal: controller.signal,
+    deadlineMs,
+    reserveMs,
+    startedAt,
+    remainingMs: () => Math.max(0, deadlineMs - (Date.now() - startedAt)),
+    sourceBudget() {
+      return {
+        deadlineMs: startedAt + deadlineMs,
+        remainingMs: Math.max(0, deadlineMs - (Date.now() - startedAt) - reserveMs),
+        reserveMs,
+      };
+    },
+    cleanup() { clearTimeout(timer); },
+  };
+}
+
 function runAtFrom(clock) {
   const value = typeof clock === 'function'
     ? clock()
@@ -168,7 +196,7 @@ function trackedFixture(result) {
   };
 }
 
-async function runCrawlerFull({ config, transport, clock, runId, store }) {
+async function runCrawlerFull({ config, transport, clock, runId, store, signal = null, deadline = null }) {
   const crawlerConfig = validateCrawlerConfig(config);
   const crawlerRunId = `${runId}-crawler-v2`;
   return runCrawlerOperator({
@@ -180,10 +208,12 @@ async function runCrawlerFull({ config, transport, clock, runId, store }) {
     mode: 'normal',
     locationPreset: 'india',
     store,
+    signal,
+    deadline,
   });
 }
 
-export async function runDailyNormal({
+async function runDailyNormalImpl({
   config,
   transport = defaultHttpTransport,
   clock,
@@ -201,8 +231,10 @@ export async function runDailyNormal({
   sourceFunctions = {},
   sourceFixtures = {},
   laneInputs = {},
+  execution = null,
 } = {}) {
   const runAt = runAtFrom(clock);
+  const dailyExecution = execution ?? createDailyExecution(config, runAt);
   const effectiveRunId = runId ?? `daily-normal-${runAt}`;
   const effectiveClock = crawlerClock(clock, runAt);
   const v4HistorySnapshot = readV4HistorySnapshot(config?.v4HistorySnapshotPath, {
@@ -219,12 +251,19 @@ export async function runDailyNormal({
     runAt,
     runId: effectiveRunId,
     store,
+    signal: dailyExecution.signal,
+    deadline: dailyExecution.sourceBudget(),
   });
   const trackedResult = await fetchWarmAts({
     ...(config.sources?.trackedAts ?? {}),
     boards: trackedBoards(config),
     transport,
     runAt,
+    signal: dailyExecution.signal,
+    deadline: dailyExecution.sourceBudget(),
+    requestTimeoutMs: config.sources?.trackedAts?.requestTimeoutMs ?? 10_000,
+    maxDurationMs: config.sources?.trackedAts?.maxDurationMs ?? Math.max(1, dailyExecution.remainingMs() - dailyExecution.reserveMs),
+    boardConcurrency: config.sources?.trackedAts?.boardConcurrency ?? 2,
   });
   const result = await runNormalMode({
     clock: () => runAt,
@@ -247,7 +286,9 @@ export async function runDailyNormal({
     // (production), an injected async function fakes it (tests). The default
     // keeps the run byte-identical to the pre-scorer behaviour — offline, no
     // child processes.
-    scorer: scorer === 'codex' ? createCodexScorer() : (scorer ?? undefined),
+    scorer: scorer === 'codex'
+      ? createCodexScorer({ wholeTimeoutMs: Math.max(1, dailyExecution.remainingMs()) })
+      : (scorer ?? undefined),
     includeCrawlerLanes: true,
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
@@ -270,6 +311,16 @@ export async function runDailyNormal({
       v4HistorySnapshot: snapshotTelemetry,
     },
   };
+}
+
+export async function runDailyNormal(options = {}) {
+  const runAt = runAtFrom(options.clock);
+  const execution = createDailyExecution(options.config ?? {}, runAt);
+  try {
+    return await runDailyNormalImpl({ ...options, execution });
+  } finally {
+    execution.cleanup();
+  }
 }
 
 export default runDailyNormal;

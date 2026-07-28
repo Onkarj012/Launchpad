@@ -150,18 +150,42 @@ export function loadCrawlerConfig(file = 'config/crawler-v2.json') {
   return { config: withRegistryProjectedBoards(config), path: resolved };
 }
 
+function requestAbortSignal(signal, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = Number(timeoutMs);
+  let timer = null;
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  if (Number.isFinite(timeout) && timeout > 0) {
+    timer = setTimeout(() => {
+      const error = new Error('request timed out');
+      error.code = 'ETIMEDOUT';
+      controller.abort(error);
+    }, timeout);
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.('abort', abortFromCaller);
+    },
+  };
+}
+
 export async function defaultHttpTransport(url, options = {}) {
-  const timeoutMs = Number(options.timeoutMs ?? 10000);
-  const timeoutSignal = typeof AbortSignal?.timeout === 'function'
-    ? AbortSignal.timeout(Math.max(1, timeoutMs))
-    : undefined;
-  const response = await fetch(url, {
-    method: options.method ?? 'GET',
-    headers: options.headers,
-    body: options.body,
-    signal: options.signal ?? timeoutSignal,
-  });
-  return { status: response.status, headers: response.headers, body: await response.text() };
+  const abort = requestAbortSignal(options.signal, options.timeoutMs ?? 10000);
+  try {
+    const response = await fetch(url, {
+      method: options.method ?? 'GET',
+      headers: options.headers,
+      body: options.body,
+      signal: abort.signal,
+    });
+    return { status: response.status, headers: response.headers, body: await response.text() };
+  } finally {
+    abort.cleanup();
+  }
 }
 
 function sourcePlan(id, lane, provider, fetcher, metadata = {}) {

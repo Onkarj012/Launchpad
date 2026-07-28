@@ -72,3 +72,83 @@ test('India-first warm boards still discard explicit foreign-only locations', as
   assert.equal(result.manifest.sources[0].foreignDiscardedAtSource, 1);
   assert.equal(result.manifest.sources[0].foreignPassedThroughAtSource, 1);
 });
+
+test('warm rotation emits configured, attempted, omitted, and omission reasons', async () => {
+  const boards = ['ashby', 'greenhouse', 'lever'].flatMap((provider) =>
+    [1, 2].map((index) => ({ provider, slug: `${provider}-${index}` })));
+  const result = await fetchWarmAts({
+    boards,
+    maxBoards: 3,
+    rotation: { enabled: true, providerQuotas: { ashby: 1, greenhouse: 1, lever: 1 } },
+    transport: async (url) => url.includes('lever')
+      ? { status: 200, body: [] }
+      : { status: 200, body: { jobs: [] } },
+  });
+  assert.equal(result.manifest.boardsConfigured, 6);
+  assert.equal(result.manifest.boardsAttempted, 3);
+  assert.equal(result.manifest.boardsOmitted, 3);
+  assert.ok(result.manifest.omissions.every((item) => item.reason === 'due-in-later-rotation-window'));
+  assert.equal(result.manifest.healthEvents.length, 3);
+});
+test('bounded board concurrency runs providers in parallel but serializes each provider', async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const activeProviders = new Set();
+  let sameProviderOverlap = false;
+  const boards = [
+    { provider: 'greenhouse', slug: 'green-1', company: 'Green One' },
+    { provider: 'greenhouse', slug: 'green-2', company: 'Green Two' },
+    { provider: 'lever', slug: 'lever-1', company: 'Lever One' },
+  ];
+  const result = await fetchWarmAts({
+    boards,
+    boardConcurrency: 3,
+    transport: async (_url, { provider }) => {
+      if (activeProviders.has(provider)) sameProviderOverlap = true;
+      activeProviders.add(provider);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      activeProviders.delete(provider);
+      return { status: 200, body: provider === 'lever' ? [] : { jobs: [] } };
+    },
+  });
+
+  assert.equal(sameProviderOverlap, false);
+  assert.equal(maximumActive, 2);
+  assert.equal(result.failures.length, 0);
+});
+
+test('never-settling warm transport is bounded and reported as a request timeout', async () => {
+  const started = Date.now();
+  const result = await fetchWarmAts({
+    boards: [{ provider: 'ashby', slug: 'hung' }],
+    requestTimeoutMs: 15,
+    transport: async () => new Promise(() => {}),
+  });
+  assert.ok(Date.now() - started < 500);
+  assert.equal(result.manifest.boardsAttempted, 1);
+  assert.equal(result.failures[0].code, 'REQUEST_TIMEOUT');
+  assert.equal(result.manifest.deadline.exhausted, false);
+});
+
+test('warm source deadline omits boards without starting more requests', async () => {
+  let calls = 0;
+  const result = await fetchWarmAts({
+    boards: [
+      { provider: 'ashby', slug: 'one' },
+      { provider: 'ashby', slug: 'two' },
+    ],
+    maxDurationMs: 5,
+    requestTimeoutMs: 100,
+    transport: async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { status: 200, body: { jobs: [] } };
+    },
+  });
+  assert.ok(calls <= 1);
+  assert.equal(result.manifest.deadline.enabled, true);
+  assert.ok(result.manifest.boardsOmitted >= 1 || result.manifest.deadline.exhausted);
+});

@@ -98,6 +98,71 @@ export function boardIdentityKey(board) {
   return id ? `${provider}:${id}` : null;
 }
 
+function rotate(values, cursor) {
+  if (!values.length) return [];
+  const start = Math.max(0, Number(cursor) || 0) % values.length;
+  return [...values.slice(start), ...values.slice(0, start)];
+}
+
+export function planBoardRotation({ boards = [], maxBoards = boards.length, providerQuotas = {}, state = {}, runAt = new Date().toISOString(), seenBoardIds = [] } = {}) {
+  const configured = [];
+  const duplicateConfigured = [];
+  const ids = new Set();
+  for (const board of boards) {
+    const id = boardIdentityKey(board);
+    if (!id || ids.has(id)) {
+      duplicateConfigured.push({ boardId: id, provider: board?.provider ?? null, reason: 'duplicate-configured-board' });
+      continue;
+    }
+    ids.add(id);
+    configured.push({ ...board, rotationBoardId: id });
+  }
+  configured.sort((left, right) => String(left.rotationBoardId).localeCompare(String(right.rotationBoardId)));
+  const cap = Math.max(0, Math.min(configured.length, Number(maxBoards) || 0));
+  const seen = new Set(seenBoardIds);
+  const eligible = configured.filter((board) => !seen.has(board.rotationBoardId));
+  const selected = [];
+  const selectedIds = new Set();
+  const providerCursors = { ...(state.providerCursors || {}) };
+  for (const [provider, rawQuota] of Object.entries(providerQuotas)) {
+    const quota = Math.max(0, Math.min(cap - selected.length, Number(rawQuota) || 0));
+    const family = eligible.filter((board) => String(board.provider).toLowerCase() === String(provider).toLowerCase());
+    for (const board of rotate(family, providerCursors[provider])) {
+      if (selected.length >= cap || selected.filter((item) => item.provider === board.provider).length >= quota) break;
+      if (!selectedIds.has(board.rotationBoardId)) { selected.push(board); selectedIds.add(board.rotationBoardId); }
+    }
+    providerCursors[provider] = family.length ? (Number(providerCursors[provider] || 0) + quota) % family.length : 0;
+  }
+  for (const board of rotate(eligible, state.cursor)) {
+    if (selected.length >= cap) break;
+    if (!selectedIds.has(board.rotationBoardId)) { selected.push(board); selectedIds.add(board.rotationBoardId); }
+  }
+  const omissions = [
+    ...duplicateConfigured,
+    ...configured.filter((board) => !selectedIds.has(board.rotationBoardId)).map((board) => ({
+      boardId: board.rotationBoardId,
+      provider: board.provider,
+      reason: seen.has(board.rotationBoardId) ? 'already-attempted-this-run' : cap === 0 ? 'board-cap-zero' : 'due-in-later-rotation-window',
+    })),
+  ];
+  return {
+    boards: selected,
+    telemetry: {
+      boardsConfigured: configured.length,
+      boardsAttempted: selected.length,
+      boardsOmitted: omissions.length,
+      omissions,
+      providerQuotas: { ...providerQuotas },
+      rotationWindowRuns: configured.length ? Math.ceil(configured.length / Math.max(1, cap)) : 0,
+    },
+    state: {
+      cursor: eligible.length ? (Number(state.cursor || 0) + Math.max(1, cap)) % eligible.length : 0,
+      providerCursors,
+      lastAttemptByBoard: Object.fromEntries(selected.map((board) => [board.rotationBoardId, runAt])),
+    },
+  };
+}
+
 export function workdayTriple(boardOrSlug) {
   if (boardOrSlug && typeof boardOrSlug === 'object') {
     if (boardOrSlug.tenant && boardOrSlug.instance && boardOrSlug.site) {

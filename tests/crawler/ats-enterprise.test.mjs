@@ -643,6 +643,10 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
   assert.equal(accountant.evidence.detailHydration.status, 'skipped');
   assert.equal(accountant.evidence.detailHydration.reason, 'not-plausible');
   assert.equal(accountant.description, null);
+  assert.equal(
+    accountant.canonicalUrl,
+    'https://reliaquest.wd5.myworkdayjobs.com/ReliaQuest_Careers/job/London-Office/Staff-Accountant_R15064',
+  );
 
   // DETAIL requested only for preselected rows (ASE + ambiguous specialist), not accountant.
   const detailCalls = calls.filter((call) => call.method === 'GET' || call.detail);

@@ -9,7 +9,7 @@ import {
   SURFACED_SUPPRESSION_STATES,
 } from './identity.mjs';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
 const STAGES = ['fetch', 'commit'];
 
@@ -147,6 +147,9 @@ CREATE TABLE IF NOT EXISTS source_telemetry (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_observations_run ON job_observations(run_id);
+CREATE INDEX IF NOT EXISTS idx_job_observations_job_dated_latest
+  ON job_observations(job_key, observed_at DESC, posted_at)
+  WHERE posted_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_source_failures_run ON source_failures(run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_provider_id ON jobs(provider, provider_job_id) WHERE provider_job_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url) WHERE canonical_url IS NOT NULL;
@@ -169,7 +172,10 @@ export function openCrawlerStore(path = ':memory:') {
   ensureColumn(db, 'jobs', 'lifecycle_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'source_telemetry', 'details_json', "TEXT NOT NULL DEFAULT '{}'");
   db.prepare(`INSERT INTO crawler_meta(key, value) VALUES ('schema_version', ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
+    ON CONFLICT(key) DO UPDATE SET value = CASE
+      WHEN CAST(crawler_meta.value AS INTEGER) < CAST(excluded.value AS INTEGER) THEN excluded.value
+      ELSE crawler_meta.value
+    END`).run(String(SCHEMA_VERSION));
   for (let version = 1; version <= SCHEMA_VERSION; version += 1) {
     db.prepare('INSERT OR IGNORE INTO crawler_migrations(version, applied_at) VALUES (?, ?)').run(version, new Date().toISOString());
   }
@@ -422,7 +428,24 @@ function persistObservation(store, source, runId, observation, observedAt) {
   return { duplicate: false, jobKey, lifecycle: nextLifecycle };
 }
 
-async function fetchSource(store, source, runId, priorState, config, clock) {
+async function abortableSourceFetch(sourcePromise, signal) {
+  if (!signal) return sourcePromise;
+  if (signal.aborted) {
+    const error = signal.reason instanceof Error ? signal.reason : new Error('source aborted');
+    error.code ??= 'RUN_ABORTED';
+    throw error;
+  }
+  return Promise.race([
+    sourcePromise,
+    new Promise((_, reject) => signal.addEventListener('abort', () => {
+      const error = signal.reason instanceof Error ? signal.reason : new Error('source aborted');
+      error.code ??= 'RUN_ABORTED';
+      reject(error);
+    }, { once: true })),
+  ]);
+}
+
+async function fetchSource(store, source, runId, priorState, config, clock, { signal = null, deadline = null } = {}) {
   const retry = { maxAttempts: 1, baseDelayMs: 250, ...(config.retry ?? {}) };
   const sourceRow = store.prepare('SELECT * FROM sources WHERE source_id = ?').get(source.id);
   const persisted = sourceState(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
@@ -444,7 +467,10 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
   for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     telemetry.attempts = attempt;
     try {
-      const result = await source.fetch({ source, runId, cursor, priorState, attempt, config, clock });
+      const result = await abortableSourceFetch(
+        source.fetch({ source, runId, cursor, priorState, attempt, config, clock, signal, deadline }),
+        signal,
+      );
       const observations = Array.isArray(result?.observations) ? result.observations : [];
       let duplicates = 0;
       for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
@@ -498,7 +524,7 @@ async function fetchSource(store, source, runId, priorState, config, clock) {
   return { telemetry, duplicates: 0 };
 }
 
-export async function crawlRun({ store, sourcePlans = [], priorState = {}, config = {}, clock = {} , runId, schedule = 'manual' } = {}) {
+export async function crawlRun({ store, sourcePlans = [], priorState = {}, config = {}, clock = {} , runId, schedule = 'manual', signal = null, deadline = null } = {}) {
   if (!store) throw new TypeError('crawlRun requires an open crawler store');
   if (!runId) throw new TypeError('crawlRun requires runId for durable idempotency');
   const started = startCrawlRun(store, { runId, schedule, config, clock });
@@ -510,13 +536,18 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     const sourceDurations = {};
     for (const source of sourcePlans) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
+      if (signal?.aborted || Number(deadline?.remainingMs) <= 0) {
+        const error = signal?.reason instanceof Error ? signal.reason : new Error('crawler source deadline exceeded');
+        error.code ??= 'DAILY_DEADLINE_EXCEEDED';
+        throw error;
+      }
       const initialCursor = priorState.sources?.[source.id]?.cursor;
       store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
       if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
         const sourceStartedAt = performance.now();
-        const result = await fetchSource(store, source, runId, priorState, config, clock);
+        const result = await fetchSource(store, source, runId, priorState, config, clock, { signal, deadline });
         sourceDurations[source.id] = Math.max(0, Math.round(performance.now() - sourceStartedAt));
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
