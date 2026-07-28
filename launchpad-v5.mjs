@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertValidConfig, assertValidConversionPlan, loadConfig, loadConversionPlan } from './job-pull/config.mjs';
@@ -17,6 +17,7 @@ import { syncAppliedApplications } from './resume-v5/application-sync.mjs';
 import { prepareOutreach, persistOutreach } from './outreach-v5/workflow.mjs';
 import { assertValidManifest, loadManifest } from './notion-v5/manifest.mjs';
 import { assertValidViewDefinitions } from './notion-v5/schema.mjs';
+import { provisioningPreflight, smokeV5 } from './notion-v5/provision.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const COMMAND_CONFIG_PATH = path.join(ROOT, 'config/launchpad-v5.commands.json');
@@ -43,6 +44,8 @@ export function buildHelp(config = commandConfig()) {
     '  node launchpad-v5.mjs help       Show this contract.',
     '  node launchpad-v5.mjs validate   Validate v5 manifest, schema, policy, and skill mirrors.',
     '  node launchpad-v5.mjs rehearse   Run all deterministic v5 paths with fixture data and no external writes.',
+    '  node launchpad-v5.mjs smoke-plan --run-id ID [--credential-file FILE] [--journal FILE] [--receipt FILE]',
+    '  node launchpad-v5.mjs smoke --confirm-live --run-id ID --credential-file FILE --journal FILE --receipt FILE',
     '',
     'Agent commands:',
     ...Object.values(config.commands).map((command) => {
@@ -221,11 +224,61 @@ export async function runNoWriteRehearsal() {
   };
 }
 
+function option(argv, name) {
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] ?? null : null;
+}
+
+export function buildSmokePlan(argv = []) {
+  const credentialFile = option(argv, '--credential-file');
+  const journalPath = option(argv, '--journal');
+  const receiptPath = option(argv, '--receipt');
+  const runId = option(argv, '--run-id');
+  return {
+    schemaVersion: 'LaunchpadV5SmokePlanV1',
+    network: false,
+    liveWrites: false,
+    required: {
+      confirmationFlag: '--confirm-live',
+      credentialFile: credentialFile ?? '<external path required>',
+      journalPath: journalPath ?? '<external path required>',
+      receiptPath: receiptPath ?? '<external path required>',
+      runId: runId ?? '<unique run ID required>',
+    },
+    preflight: provisioningPreflight({ manifest: loadManifest(), enabled: Boolean(runId), credentialFile, journalPath, runId }),
+  };
+}
+
+function writeSmokeReceipt(receiptPath, result) {
+  const resolved = path.resolve(receiptPath);
+  if (resolved === ROOT || resolved.startsWith(`${ROOT}${path.sep}`)) throw new LaunchpadV5OperatorError('smoke receipt must be outside repository', 'SMOKE_RECEIPT_LOCATION_INVALID');
+  mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
+  const temporary = `${resolved}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 'LaunchpadV5SmokeReceiptV1', recordedAt: new Date().toISOString(), result }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, resolved);
+  chmodSync(resolved, 0o600);
+  return resolved;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const command = argv[0] ?? 'help';
   if (command === 'help' || command === '--help' || command === '-h') { process.stdout.write(buildHelp()); return 0; }
-  if (command === 'validate') { process.stdout.write(`${JSON.stringify(validateV5Surface(), null, 2)}\n`); return 0; }
-  if (command === 'rehearse') { process.stdout.write(`${JSON.stringify(await runNoWriteRehearsal(), null, 2)}\n`); return 0; }
+  if (command === 'validate') { const result = validateV5Surface(); process.stdout.write(`${JSON.stringify(result, null, 2)}\n`); return result.status === 'valid' ? 0 : 1; }
+  if (command === 'rehearse') { const result = await runNoWriteRehearsal(); process.stdout.write(`${JSON.stringify(result, null, 2)}\n`); return result.status === 'passed' ? 0 : 1; }
+  if (command === 'smoke-plan') { const result = buildSmokePlan(argv.slice(1)); process.stdout.write(`${JSON.stringify(result, null, 2)}\n`); return 0; }
+  if (command === 'smoke') {
+    if (!argv.includes('--confirm-live')) throw new LaunchpadV5OperatorError('live smoke requires --confirm-live', 'LIVE_CONFIRMATION_REQUIRED');
+    const credentialFile = option(argv, '--credential-file');
+    const journalPath = option(argv, '--journal');
+    const receiptPath = option(argv, '--receipt');
+    const runId = option(argv, '--run-id');
+    if (!credentialFile || !journalPath || !receiptPath || !runId) throw new LaunchpadV5OperatorError('live smoke requires --credential-file, --journal, --receipt, and --run-id', 'SMOKE_ARGUMENTS_REQUIRED');
+    const result = await smokeV5({ enabled: true, credentialFile, journalPath, runId, application: { Role: 'Synthetic AI Engineer', Company: `Launchpad v5 synthetic company ${runId}`, 'Application Ready': true, 'Run ID': runId }, company: { name: `Launchpad v5 synthetic company ${runId}`, canonicalDomain: `${runId}.invalid` } });
+    const receipt = writeSmokeReceipt(receiptPath, result);
+    process.stdout.write(`${JSON.stringify({ receipt, result }, null, 2)}\n`);
+    return result.status === 'passed' ? 0 : 1;
+  }
   process.stderr.write(`Unknown command: ${command}\n\n${buildHelp()}`);
   return 2;
 }

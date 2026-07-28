@@ -102,16 +102,25 @@ export async function provisionV5({ manifest = loadManifest(), credentialFile = 
   }
 }
 
-export async function smokeV5({ manifest = loadManifest(), credentialFile = null, enabled = false, gateway = null, journalPath = null, journal = null, company = { name: 'Launchpad v5 synthetic company', canonicalDomain: 'synthetic.launchpad-v5.invalid' }, application = { Role: 'Synthetic AI Engineer', Company: 'Launchpad v5 synthetic company', 'Application Ready': true }, transaction = {} } = {}) {
-  const preflight = provisioningPreflight({ manifest, enabled, credentialFile, journalPath, injectedGateway: Boolean(gateway) });
+export async function smokeV5({ manifest = loadManifest(), credentialFile = null, enabled = false, gateway = null, journalPath = null, journal = null, company = { name: 'Launchpad v5 synthetic company', canonicalDomain: 'synthetic.launchpad-v5.invalid' }, application = { Role: 'Synthetic AI Engineer', Company: 'Launchpad v5 synthetic company', 'Application Ready': true }, transaction = {}, runId = application?.['Run ID'] ?? transaction?.runId ?? null } = {}) {
+  const preflight = provisioningPreflight({ manifest, enabled, credentialFile, journalPath, injectedGateway: Boolean(gateway), runId });
   if (!preflight.ok) return { status: 'blocked', live: false, ...preflight };
+  const dedupKey = String(runId);
+  const payload = { ...application, 'Run ID': runId, 'Dedup Key': dedupKey };
   const client = gateway ?? createNotionV5Gateway({ manifest, credentialFile, live: true, journalPath, journal });
-  const result = await client.writeApplications([{ operation: 'create', resource: 'application', dedupKey: 'launchpad-v5-synthetic-smoke', payload: application, company }], { ...transaction, journalPath, journal });
-  return { status: result.status === 'committed' || result.status === 'noop' ? 'passed' : 'failed', live: Boolean(client.live), result };
+  const result = await client.writeApplications([{ operation: 'create', resource: 'application', dedupKey, payload, company }], { ...transaction, journalPath, journal, keyOf: transaction.keyOf ?? (() => dedupKey) });
+  const freshCommit = result.status === 'committed'
+    && result.committed?.length === 1
+    && result.verified?.length === 1
+    && result.failed?.length === 0
+    && result.recovery?.length === 0
+    && result.skipped?.length === 0;
+  return { status: freshCommit ? 'passed' : result.status === 'noop' ? 'blocked' : 'failed', live: Boolean(client.live), runId, dedupKey, result };
 }
 
-export function provisioningPreflight({ manifest, enabled = false, credentialFile = null, journalPath = null, injectedGateway = false } = {}) {
+export function provisioningPreflight({ manifest, enabled = false, credentialFile = null, journalPath = null, injectedGateway = false, runId = null } = {}) {
   if (!enabled) return { ok: false, code: 'LIVE_OPT_IN_REQUIRED', reason: 'enabled: true is required' };
+  if (!runId || !String(runId).trim()) return { ok: false, code: 'SMOKE_RUN_ID_REQUIRED', reason: 'a unique smoke run ID is required' };
   if (!injectedGateway && !credentialFile) return { ok: false, code: 'CREDENTIAL_REQUIRED', reason: 'external credential file is required' };
   if (!injectedGateway && !journalPath) return { ok: false, code: 'JOURNAL_PATH_REQUIRED', reason: 'explicit external journal path is required' };
   if (isPlaceholderIdentifier(manifest?.parent?.id) || !isNotionIdentifier(manifest?.parent?.id) || isLegacyNotionId(manifest?.parent?.id)) return { ok: false, code: 'PARENT_REQUIRED', reason: 'real authorized v5 parent page id is required' };

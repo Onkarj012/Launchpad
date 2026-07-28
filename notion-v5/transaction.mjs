@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,8 +46,24 @@ function ensureExternalJournalPath(journalPath, repositoryRoot = REPOSITORY_ROOT
   if (!journalPath || !String(journalPath).trim()) throw new NotionV5TransactionError('an explicit external journal path is required for live writes', null, 'JOURNAL_PATH_REQUIRED');
   const resolved = path.resolve(String(journalPath));
   const root = path.resolve(repositoryRoot);
-  const canonical = existsSync(resolved) ? realpathSync(resolved) : resolved;
-  if (canonical === root || canonical.startsWith(`${root}${path.sep}`)) throw new NotionV5TransactionError('transaction journal must be outside the repository', null, 'JOURNAL_LOCATION_INVALID');
+  const insideRoot = (candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+  const parent = path.dirname(resolved);
+  let canonicalParent;
+  try { canonicalParent = realpathSync(parent); }
+  catch { throw new NotionV5TransactionError('transaction journal parent must exist and resolve canonically', null, 'JOURNAL_LOCATION_INVALID'); }
+  if (insideRoot(canonicalParent)) throw new NotionV5TransactionError('transaction journal must be outside the repository', null, 'JOURNAL_LOCATION_INVALID');
+  if (!existsSync(resolved)) return resolved;
+  let stats;
+  try {
+    const linkStats = lstatSync(resolved);
+    if (linkStats.isSymbolicLink() || !linkStats.isFile() || linkStats.nlink > 1) throw new Error('unsafe file type');
+    stats = statSync(resolved);
+  } catch (error) {
+    if (error instanceof NotionV5TransactionError) throw error;
+    throw new NotionV5TransactionError('transaction journal must be a regular non-symlink file', null, 'JOURNAL_FILE_INVALID');
+  }
+  if ((stats.mode & 0o077) !== 0) throw new NotionV5TransactionError('transaction journal must not be group/world readable', null, 'JOURNAL_PERMISSIONS_INVALID');
+  if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) throw new NotionV5TransactionError('transaction journal must be owned by the current user', null, 'JOURNAL_OWNER_INVALID');
   return resolved;
 }
 

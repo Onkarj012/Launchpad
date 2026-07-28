@@ -6,7 +6,7 @@ import path from 'node:path';
 import { isLegacyNotionId, isNotionIdentifier, loadManifest, assertLiveManifest, validateManifest } from '../../notion-v5/manifest.mjs';
 import { buildDatabaseProperties, mapProperties, readPropertyValue, V5_SCHEMA, V5_STORE_KEYS, V5_VIEW_DEFINITIONS, validateViewDefinitions } from '../../notion-v5/schema.mjs';
 import { createNotionV5Gateway, loadExternalCredential, NotionV5Error, NOTION_V5_API_VERSION } from '../../notion-v5/gateway.mjs';
-import { provisionV5 } from '../../notion-v5/provision.mjs';
+import { provisionV5, smokeV5 } from '../../notion-v5/provision.mjs';
 import { createTransactionJournal, runReservedBatch, structuredError } from '../../notion-v5/transaction.mjs';
 
 const manifest = loadManifest();
@@ -219,6 +219,15 @@ test('provisioning partial failure reports durable cleanup facts and never claim
   assert.equal(result.recovery.rollbackPerformed, false);
   assert.equal(result.recovery.cleanupRequired, true);
   assert.equal(result.recovery.createdObjects.length, 2);
+});
+
+test('smoke requires fresh committed verification and rejects noop', async () => {
+  const noop = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-noop', gateway: { live: true, async writeApplications() { return { status: 'noop', committed: [], verified: [], failed: [], skipped: ['smoke-noop'], recovery: [] }; } } });
+  assert.equal(noop.status, 'blocked');
+
+  const committed = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-commit', gateway: { live: true, async writeApplications() { return { status: 'committed', committed: [{}], verified: [{}], failed: [], skipped: [], recovery: [] }; } } });
+  assert.equal(committed.status, 'passed');
+  assert.equal(committed.runId, 'smoke-commit');
 });
 
 test('view definitions cover the required names and filters', () => {
