@@ -188,7 +188,11 @@ function buildReconciliation({ eligible, historicalSuppressed, selection, select
 // Broken-scorer reason codes, read from job-pull/match-scorer.mjs: a missing
 // binary and an auth failure abort the batch before it starts, and repeated
 // invalid output means the scorer cannot produce usable scores at all.
-const BROKEN_SCORER_REASON_CODES = new Set(['SCORER_BINARY_MISSING', 'SCORER_AUTH_FAILED', 'SCORER_OUTPUT_INVALID', 'SCORER_TIMEOUT']);
+const BROKEN_SCORER_REASON_CODES = new Set([
+  'SCORER_BINARY_MISSING', 'SCORER_BINARY_NOT_ABSOLUTE', 'SCORER_AUTH_FAILED',
+  'SCORER_SPAWN_FAILED', 'SCORER_OUTPUT_INVALID', 'SCORER_CARDINALITY_MISMATCH',
+  'SCORER_URL_MISMATCH', 'SCORER_TIMEOUT', 'SCORER_DEADLINE_EXCEEDED', 'SCORER_ABORTED',
+]);
 
 /**
  * Gate policy (docs/spec/match-scoring.md §6): the run fails only when the
@@ -230,11 +234,11 @@ function hasUsableMatchScore(candidate) {
  * scorer only sees rows that still lack a usable Match Score — a --scores-json
  * manual override always wins on any row it covers.
  */
-async function scorePoolInRun(candidates, scorer) {
+async function scorePoolInRun(candidates, scorer, { runId = null, runAt = null } = {}) {
   if (typeof scorer !== 'function') return { pool: candidates, telemetry: null };
   const unscored = candidates.filter((candidate) => !hasUsableMatchScore(candidate));
   if (!unscored.length) return { pool: candidates, telemetry: { attempted: 0, chunks: 0, failures: [], degraded: false, reasonCode: null } };
-  const scoring = await scorer(unscored);
+  const scoring = await scorer(unscored, { runId, runAt });
   const merged = new Map((Array.isArray(scoring?.scored) ? scoring.scored : []).map((candidate) => [candidate.canonicalUrl, candidate]));
   return {
     pool: candidates.map((candidate) => merged.get(candidate.canonicalUrl) ?? candidate),
@@ -279,7 +283,7 @@ export async function runNormalMode({
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer);
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));

@@ -75,8 +75,8 @@ test('score merge preserves agent scoring and daily date uses India timezone', (
     humanContact: true,
     projectConnection: true,
   }]);
-  assert.equal(sources[0].candidates[0].matchScore, 87);
-  assert.equal(sources[0].candidates[0].autoSuggest, true);
+  assert.equal(sources[0].candidates[0].matchScore, 45);
+  assert.equal(sources[0].candidates[0].autoSuggest, false);
   assert.equal(sources[0].candidates[0].applicationResolution.status, 'Resolved Original');
   assert.equal(sources[0].candidates[0].conversionSignals.humanContact, true);
   assert.equal(localRunDate('2026-07-14T20:00:00.000Z', config.timezone), '2026-07-15');

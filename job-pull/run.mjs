@@ -18,6 +18,7 @@ import { importPublicSearchCandidates } from './adapters/public-search.mjs';
 import { importIndeedCandidates, indeedUnavailable } from './adapters/indeed.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { buildFunnelReport } from './funnel-report.mjs';
+import { mergeScoreRow } from './match-scorer.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CAREER_OPS_DIR = path.resolve(MODULE_DIR, '../career-ops');
@@ -166,13 +167,9 @@ export function applyScores(sources, scoreInput) {
     candidates: (source.candidates || []).map((candidate) => {
       const score = byUrl.get(candidate.canonicalUrl);
       if (!score) return candidate;
+      const normalized = mergeScoreRow(candidate, score).candidate;
       const updated = {
-        ...candidate,
-        matchScore: Number.isFinite(Number(score.matchScore ?? score.score)) ? Number(score.matchScore ?? score.score) : candidate.matchScore,
-        rationale: typeof score.rationale === 'string' ? score.rationale : candidate.rationale,
-        hook: typeof (score.strongestHook ?? score.hook) === 'string' ? (score.strongestHook ?? score.hook) : candidate.hook,
-        strongestHook: typeof (score.strongestHook ?? score.hook) === 'string' ? (score.strongestHook ?? score.hook) : candidate.strongestHook,
-        responseLikelihood: Number.isFinite(Number(score.responseLikelihood)) ? Number(score.responseLikelihood) : candidate.responseLikelihood,
+        ...normalized,
         originalApplicationUrl: score.originalApplicationUrl ?? score.originalApplyUrl ?? candidate.originalApplicationUrl,
         originalApplicationEvidence: score.originalApplicationEvidence ?? candidate.applicationResolution?.evidence,
         applicationResolution: (score.originalApplicationUrl ?? score.originalApplyUrl)
@@ -183,7 +180,6 @@ export function applyScores(sources, scoreInput) {
           humanContact: score.humanContact === true || candidate.conversionSignals?.humanContact === true,
           projectConnection: score.projectConnection === true || candidate.conversionSignals?.projectConnection === true,
         },
-        autoSuggest: score.autoSuggest === true,
       };
       return assertCandidate(updated);
     }),
