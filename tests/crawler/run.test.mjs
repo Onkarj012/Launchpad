@@ -93,6 +93,33 @@ test('a crawl run persists schema, source state, observations, stages, and funne
   store.close();
 });
 
+test('a source manifest telemetry block survives crawlRun SQLite persistence', async () => {
+  const databasePath = tempDatabase();
+  const store = openCrawlerStore(databasePath);
+  const workdayDetail = { attempted: 2, succeeded: 1 };
+  const sourcePlans = [{
+    id: 'ats-enterprise',
+    lane: 'ats-expanded',
+    fetch: async () => ({
+      observations: [],
+      manifest: { fetched: 0, changed: 0, telemetry: { workdayDetail } },
+    }),
+  }];
+
+  const result = await crawlRun({ store, runId: 'telemetry-persistence', sourcePlans, clock: fixedClock() });
+  assert.deepEqual(result.telemetry.sources['ats-enterprise'].detail.telemetry.workdayDetail, workdayDetail);
+  store.close();
+
+  const reopened = openCrawlerStore(databasePath);
+  const persisted = await crawlRun({ store: reopened, runId: 'telemetry-persistence', sourcePlans, clock: fixedClock() });
+  assert.deepEqual(persisted.telemetry.sources['ats-enterprise'].detail.telemetry.workdayDetail, workdayDetail);
+  assert.deepEqual(
+    JSON.parse(reopened.prepare('SELECT details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?').get('telemetry-persistence', 'ats-enterprise').details_json).detail.telemetry.workdayDetail,
+    workdayDetail,
+  );
+  reopened.close();
+});
+
 test('a crawl run stops before starting a source after its absolute deadline', async () => {
   const store = openCrawlerStore(tempDatabase());
   let calls = 0;

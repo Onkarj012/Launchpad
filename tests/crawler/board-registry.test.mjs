@@ -89,6 +89,8 @@ test('scheduled operator source plan includes Finastra from the unified registry
   assert.equal(config.boardRegistryPath, 'config/board-registry.json');
 
   const enterprise = config.sources.enterprise.boards;
+  assert.equal(config.sources.enterprise.maxDetailRequestsPerRun, 200);
+  assert.ok(Array.isArray(config.sources.enterprise.excludedLocationKeywords));
   assert.ok(enterprise.some((board) => board.tenant === 'finastra' && board.site === 'finc' && board.enabled !== false));
 
   const plans = buildSourcePlans({

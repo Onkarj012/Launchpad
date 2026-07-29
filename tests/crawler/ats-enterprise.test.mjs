@@ -244,13 +244,62 @@ test('Workday: large tenant paginates past the first 20 postings via offset, bou
   assert.equal(result.manifest.sources[0].pagesCapped, false);
 });
 
-test('Workday preselection keeps ambiguous list rows and only skips clearly irrelevant DETAIL fetches', () => {
-  assert.equal(preselectWorkdayListRow({ title: 'Specialist', locationsText: '' }).selected, true);
-  assert.equal(preselectWorkdayListRow({ title: 'Specialist', locationsText: '' }).reason, 'ambiguous');
-  assert.equal(preselectWorkdayListRow({ title: 'Operations Specialist', locationsText: 'Pune India Office' }).selected, true);
-  assert.equal(preselectWorkdayListRow({ title: 'Associate Software Engineer', locationsText: 'London' }).selected, true);
-  assert.equal(preselectWorkdayListRow({ title: 'Staff Accountant', locationsText: 'London Office' }).selected, false);
-  assert.equal(preselectWorkdayListRow({ title: 'Staff Accountant', locationsText: 'London Office' }).reason, 'not-plausible');
+test('Workday preselection requires target title and accepted geography, with Pune ranked first', () => {
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Associate Software Engineer', locationsText: 'Pune India Office' }), { selected: true, priority: 0, reason: 'target-title-pune' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'AI Engineer', locationsText: 'Remote India' }), { selected: true, priority: 1, reason: 'target-title-geo-plausible' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'AI Engineer', locationsText: 'US Remote' }), { selected: false, priority: null, reason: 'location-excluded' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'Bangalore, India' }), { selected: false, priority: null, reason: 'location-excluded' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'London' }), { selected: false, priority: null, reason: 'location-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Staff Accountant', locationsText: 'Pune' }), { selected: false, priority: null, reason: 'title-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Retail Store Manager', locationsText: 'Pune' }), { selected: false, priority: null, reason: 'title-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Maintenance Technician', locationsText: 'Pune' }), { selected: false, priority: null, reason: 'title-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'Fukuoka, Japan' }), { selected: false, priority: null, reason: 'location-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'Indianapolis' }), { selected: false, priority: null, reason: 'location-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'Jerusalem' }), { selected: false, priority: null, reason: 'location-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'Kochi, India' }), { selected: false, priority: null, reason: 'location-not-target' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: 'India' }), { selected: true, priority: 2, reason: 'target-title-india-unspecified' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Engineering Manager', locationsText: 'Pune' }), { selected: true, priority: 0, reason: 'target-title-pune' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Software Engineer', locationsText: '' }), { selected: true, priority: 3, reason: 'target-title-location-unknown' });
+  assert.deepEqual(preselectWorkdayListRow({ title: 'Specialist', locationsText: '' }), { selected: false, priority: null, reason: 'title-not-target' });
+});
+
+test('Workday DETAIL budget hydrates Pune before earlier remote and unknown candidates', async () => {
+  const listUrl = 'https://priority.wd1.myworkdayjobs.com/wday/cxs/priority/Careers/jobs';
+  const detailCalls = [];
+  const transport = async (url, options) => {
+    if (options?.detail) {
+      detailCalls.push(url);
+      return { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: {
+        title: url.includes('Pune') ? 'Associate Software Engineer' : 'AI Engineer',
+        jobDescription: '<p>Build reliable software.</p>',
+        location: url.includes('Pune') ? 'Pune, India' : 'Remote India',
+        jobReqId: url.includes('Pune') ? 'PUNE-1' : 'REMOTE-1',
+        canApply: true, posted: true,
+      } }) };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ total: 3, jobPostings: [
+      { title: 'AI Engineer', externalPath: '/job/Remote/AI-REMOTE', locationsText: 'Remote India', bulletFields: ['REMOTE-1'] },
+      { title: 'Software Engineer', externalPath: '/job/Unknown/AI-UNKNOWN', locationsText: '', bulletFields: ['UNKNOWN-1'] },
+      { title: 'Associate Software Engineer', externalPath: '/job/Pune/ASE-PUNE', locationsText: 'Pune India', bulletFields: ['PUNE-1'] },
+    ] }) };
+  };
+
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Priority', url: listUrl }],
+    transport, runAt, maxPages: 1, detailConcurrency: 1, maxDetailRequestsPerRun: 2,
+  });
+
+  assert.equal(detailCalls.length, 2);
+  assert.match(detailCalls[0], /ASE-PUNE/);
+  assert.match(detailCalls[1], /AI-REMOTE/);
+  assert.deepEqual(result.telemetry.workdayDetail.selectedByReason, {
+    'target-title-geo-plausible': 1,
+    'target-title-location-unknown': 1,
+    'target-title-pune': 1,
+  });
+  assert.equal(result.telemetry.workdayDetail.preselected, 3);
+  assert.equal(result.telemetry.workdayDetail.attempted, 2);
+  assert.equal(result.telemetry.workdayDetail.budgetExhausted, 1);
 });
 
 test('Workday DETAIL hydration populates JD, location, requisition ID, experience, liveness, and application URL', async () => {
@@ -608,7 +657,7 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
             bulletFields: ['R15064'],
           },
           {
-            // Ambiguous list row (no location text) must still receive DETAIL, not silent drop.
+            // Missing location does not override the non-target title gate.
             title: 'GreyMatter Specialist',
             externalPath: '/job/Dublin/GreyMatter-Specialist_R14895',
             locationsText: '',
@@ -625,7 +674,7 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
     transport, runAt, maxPages: 1, ...WORKDAY_DETAIL_OPTS,
   });
 
-  // All three LIST rows become observations; only preselected ones spend DETAIL budget.
+  // All three LIST rows become observations; only the target Pune title spends DETAIL budget.
   assert.equal(result.observations.length, 3);
   const ase = result.observations.find((row) => row.title === 'Associate Software Engineer');
   assert.ok(ase);
@@ -641,22 +690,29 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
 
   const accountant = result.observations.find((row) => row.title === 'Staff Accountant');
   assert.equal(accountant.evidence.detailHydration.status, 'skipped');
-  assert.equal(accountant.evidence.detailHydration.reason, 'not-plausible');
+  assert.equal(accountant.evidence.detailHydration.reason, 'title-not-target');
   assert.equal(accountant.description, null);
   assert.equal(
     accountant.canonicalUrl,
     'https://reliaquest.wd5.myworkdayjobs.com/ReliaQuest_Careers/job/London-Office/Staff-Accountant_R15064',
   );
 
-  // DETAIL requested only for preselected rows (ASE + ambiguous specialist), not accountant.
+  const specialist = result.observations.find((row) => row.title === 'GreyMatter Specialist');
+  assert.equal(specialist.evidence.detailHydration.status, 'skipped');
+  assert.equal(specialist.evidence.detailHydration.reason, 'title-not-target');
+  assert.equal(specialist.description, null);
+
+  // DETAIL requested only for the target Pune row, not accountant or non-target specialist.
   const detailCalls = calls.filter((call) => call.method === 'GET' || call.detail);
-  assert.equal(detailCalls.length, 2);
+  assert.equal(detailCalls.length, 1);
   assert.ok(detailCalls.some((call) => call.url.includes('Associate-Software-Engineer_R15032')));
   assert.ok(!detailCalls.some((call) => call.url.includes('Staff-Accountant')));
+  assert.ok(!detailCalls.some((call) => call.url.includes('GreyMatter-Specialist')));
 
-  assert.equal(result.telemetry.workdayDetail.preselected, 2);
-  assert.equal(result.telemetry.workdayDetail.skipped, 1);
-  assert.equal(result.telemetry.workdayDetail.succeeded, 2);
+  assert.equal(result.telemetry.workdayDetail.preselected, 1);
+  assert.equal(result.telemetry.workdayDetail.skipped, 2);
+  assert.equal(result.telemetry.workdayDetail.succeeded, 1);
+  assert.deepEqual(result.telemetry.workdayDetail.selectedByReason, { 'target-title-pune': 1 });
 
   // After hydration the candidate is evidence-rich enough for downstream policy,
   // and the LIST postedOn label dates it, so it is policy-evaluable rather than

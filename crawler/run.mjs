@@ -475,6 +475,9 @@ async function fetchSource(store, source, runId, priorState, config, clock, { si
       let duplicates = 0;
       for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
       const manifest = result?.manifest ?? {};
+      if (manifest.telemetry && typeof manifest.telemetry === 'object' && !Array.isArray(manifest.telemetry)) {
+        telemetry.detail = { telemetry: manifest.telemetry };
+      }
       const interrupted = Boolean(result?.interrupted || manifest.interrupted);
       const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
       telemetry.status = interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'succeeded';
@@ -554,7 +557,7 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
         const t = result.telemetry;
         store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined }), t.error ?? null);
+          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, detail: t.detail }), t.error ?? null);
       }
     }
     const undatedAfter = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);

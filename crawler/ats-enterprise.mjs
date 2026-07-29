@@ -8,7 +8,7 @@ const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 // (ai/ml/backend/full-stack/new-grad SWE/adjacent). Used only to decide which Workday LIST
 // rows are worth a DETAIL request — never as a final reject gate.
 const DEFAULT_ROLE_FAMILY_KEYWORDS = Object.freeze([
-  'software', 'engineer', 'developer', 'sde', 'swe', 'backend', 'front end', 'frontend',
+  'software', 'engineer', 'engineering', 'developer', 'sde', 'swe', 'backend', 'front end', 'frontend',
   'full stack', 'fullstack', 'full-stack', 'ai', 'ml', 'machine learning', 'llm', 'genai',
   'gen ai', 'python', 'data scientist', 'data engineer', 'platform', 'devops', 'sre',
   'site reliability', 'product engineer', 'application engineer', 'solutions engineer',
@@ -16,9 +16,19 @@ const DEFAULT_ROLE_FAMILY_KEYWORDS = Object.freeze([
   'member of technical staff', 'mts', 'nlp', 'prompt', 'agentic',
 ]);
 const DEFAULT_LOCATION_KEYWORDS = Object.freeze([
-  'pune', 'india', 'indian', 'bengaluru', 'bangalore', 'hyderabad', 'mumbai', 'chennai',
-  'delhi', 'noida', 'gurgaon', 'gurugram', 'remote', 'apac', 'asia', 'worldwide',
-  'world wide', 'global', 'anywhere', 'hinjawadi', 'hinjewadi', 'kharadi', 'baner',
+  'pune', 'pune metro', 'pune metropolitan', 'pimpri-chinchwad', 'pimpri chinchwad', 'pcmc',
+  'hinjawadi', 'hinjewadi', 'wakad', 'baner', 'kharadi', 'viman nagar', 'magarpatta', 'talawade',
+  'remote', 'apac', 'asia pacific', 'asia-pacific', 'worldwide', 'world wide',
+  'global', 'anywhere',
+]);
+const PUNE_LOCATION_KEYWORDS = Object.freeze([
+  'pune', 'pune metro', 'pune metropolitan', 'pimpri-chinchwad', 'pimpri chinchwad', 'pcmc',
+  'hinjawadi', 'hinjewadi', 'wakad', 'baner', 'kharadi', 'viman nagar', 'magarpatta', 'talawade',
+]);
+const DEFAULT_EXCLUDED_LOCATION_KEYWORDS = Object.freeze([
+  'bengaluru', 'bangalore', 'hyderabad', 'mumbai', 'chennai', 'delhi', 'noida', 'gurgaon', 'gurugram',
+  'us remote', 'usa', 'united states', 'canada', 'uk', 'united kingdom', 'europe', 'eu only', 'latam',
+  'latin america',
 ]);
 
 const clean = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -196,34 +206,51 @@ function requestOptions(provider, maxJobsPerBoard, etag, offset = 0) {
   };
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function keywordHit(text, keywords) {
-  const hay = String(text || '').toLowerCase();
+  const hay = String(text || '');
   if (!hay) return false;
   return keywords.some((keyword) => {
-    const needle = String(keyword || '').toLowerCase().trim();
-    return needle && hay.includes(needle);
+    const needle = String(keyword || '').trim();
+    if (!needle) return false;
+    const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRegExp(needle)}(?:$|[^\\p{L}\\p{N}])`, 'iu');
+    return pattern.test(hay);
   });
 }
 
+function isIndiaUnspecifiedListLocation(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return normalized === 'india' || normalized === 'india office';
+}
+
 /**
- * Decide whether a Workday LIST row is worth a DETAIL fetch. Ambiguous rows
- * (missing title/location, or unclear) always select true so they are not
- * silently dropped before hydration can reveal relevance. Final policy gates
- * still own eligibility — this never rejects a role from the observation set.
+ * Decide whether a Workday LIST row is worth a DETAIL fetch. This only controls
+ * DETAIL spending; every LIST row remains an observation for downstream gates.
  */
-export function preselectWorkdayListRow(row, { roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS, locationKeywords = DEFAULT_LOCATION_KEYWORDS } = {}) {
+export function preselectWorkdayListRow(row, {
+  roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS,
+  locationKeywords = DEFAULT_LOCATION_KEYWORDS,
+  excludedLocationKeywords = DEFAULT_EXCLUDED_LOCATION_KEYWORDS,
+} = {}) {
   const title = clean(first(row?.title, row?.jobTitle, row?.jobtitle, row?.name, row?.role)) || '';
   const location = locationText(first(row?.location, row?.locations, row?.locationsText, row?.jobLocation, row?.city)) || '';
   const roleHit = keywordHit(title, roleFamilyKeywords);
   const locationPresent = Boolean(location);
-  const locationHit = locationPresent && keywordHit(location, locationKeywords);
-  const ambiguous = !title || !locationPresent;
 
-  if (ambiguous) return { selected: true, reason: 'ambiguous' };
-  if (roleHit) return { selected: true, reason: 'role-family' };
-  if (locationHit) return { selected: true, reason: 'location-relevant' };
-  // Clearly off-family title at a clearly non-relevant location: skip DETAIL only.
-  return { selected: false, reason: 'not-plausible' };
+  if (!title || !roleHit) return { selected: false, reason: 'title-not-target', priority: null };
+  if (!locationPresent) return { selected: true, reason: 'target-title-location-unknown', priority: 3 };
+  if (keywordHit(location, excludedLocationKeywords)) return { selected: false, reason: 'location-excluded', priority: null };
+  if (keywordHit(location, PUNE_LOCATION_KEYWORDS)) {
+    return { selected: true, reason: 'target-title-pune', priority: 0 };
+  }
+  if (keywordHit(location, locationKeywords)) return { selected: true, reason: 'target-title-geo-plausible', priority: 1 };
+  if (isIndiaUnspecifiedListLocation(location)) {
+    return { selected: true, reason: 'target-title-india-unspecified', priority: 2 };
+  }
+  return { selected: false, reason: 'location-not-target', priority: null };
 }
 
 /**
@@ -504,11 +531,12 @@ export async function discoverEnterpriseAts({
   maxDetailRequestsPerRun = 0,
   roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS,
   locationKeywords = DEFAULT_LOCATION_KEYWORDS,
+  excludedLocationKeywords = DEFAULT_EXCLUDED_LOCATION_KEYWORDS,
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverEnterpriseAts requires injected transport');
   const observations = []; const failures = []; const verificationQueue = []; const seen = new Set(); const state = { ...conditionalState };
   const sources = [];
-  const detailTelemetry = { attempted: 0, succeeded: 0, failed: 0, budgetExhausted: 0, preselected: 0, skipped: 0 };
+  const detailTelemetry = { attempted: 0, succeeded: 0, failed: 0, budgetExhausted: 0, preselected: 0, skipped: 0, selectedByReason: {} };
   const telemetry = {
     boards: boards.length, attempted: 0, succeeded: 0, pages: 0, extracted: 0, direct: 0, leads: 0, duplicates: 0, skipped: 0, capped: 0,
     workdayDetail: detailTelemetry,
@@ -577,12 +605,13 @@ export async function discoverEnterpriseAts({
         if (candidate.classification !== 'direct') verificationQueue.push({ url: candidate.canonicalUrl, company: candidate.company, reason: 'enterprise-lead', evidence: candidate.provenance });
 
         if (provider === 'workday' && detailEnabled) {
-          const selection = preselectWorkdayListRow(row, { roleFamilyKeywords, locationKeywords });
+          const selection = preselectWorkdayListRow(row, { roleFamilyKeywords, locationKeywords, excludedLocationKeywords });
           if (!selection.selected) {
             detailTelemetry.skipped += 1;
             candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: selection.reason } };
           } else {
             detailTelemetry.preselected += 1;
+            detailTelemetry.selectedByReason[selection.reason] = (detailTelemetry.selectedByReason[selection.reason] ?? 0) + 1;
             const detailUrl = workdayDetailUrl(board.url, candidate._listExternalPath || row.externalPath);
             if (!detailUrl) {
               detailTelemetry.skipped += 1;
@@ -594,6 +623,8 @@ export async function discoverEnterpriseAts({
                 detailUrl,
                 boardUrl: board.url,
                 externalPath: candidate._listExternalPath || row.externalPath,
+                priority: selection.priority,
+                reason: selection.reason,
               });
             }
           }
@@ -616,6 +647,7 @@ export async function discoverEnterpriseAts({
   }
 
   if (workdayPending.length && detailEnabled) {
+    workdayPending.sort((left, right) => left.priority - right.priority);
     await hydrateWorkdayDetails(workdayPending, {
       transport, runAt, detailConcurrency: concurrency, maxDetailRequests: detailBudget, detailTelemetry, verificationQueue,
     });
@@ -639,4 +671,5 @@ export async function discoverEnterpriseAts({
 export const ENTERPRISE_ATS_PROVIDERS = [...SUPPORTED];
 export const WORKDAY_DEFAULT_ROLE_FAMILY_KEYWORDS = DEFAULT_ROLE_FAMILY_KEYWORDS;
 export const WORKDAY_DEFAULT_LOCATION_KEYWORDS = DEFAULT_LOCATION_KEYWORDS;
+export const WORKDAY_DEFAULT_EXCLUDED_LOCATION_KEYWORDS = DEFAULT_EXCLUDED_LOCATION_KEYWORDS;
 export default discoverEnterpriseAts;

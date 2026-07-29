@@ -1,6 +1,6 @@
 import { makeHttpCtx } from '../career-ops/providers/_http.mjs';
 import { fetchWorkdayJobDetail } from '../career-ops/providers/workday.mjs';
-import { WORKDAY_DEFAULT_LOCATION_KEYWORDS } from '../crawler/ats-enterprise.mjs';
+import { preselectWorkdayListRow } from '../crawler/ats-enterprise.mjs';
 import { canonicalizeUrl, extractExperienceYears, stripHtmlToText } from './candidate.mjs';
 
 async function parallelEach(items, limit, fn) {
@@ -38,26 +38,34 @@ export async function enrichWorkdayCandidates(
   const limit = Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 4) : 4;
   const httpCtx = ctx ?? makeHttpCtx();
   const budget = Math.max(0, Number.isFinite(Number(maxRequests)) ? Number(maxRequests) : 50);
-  const boardGroups = new Map();
+  const boardGroupsByPriority = new Map();
   workdayCandidates.forEach((candidate, index) => {
+    if (typeof candidate.description === 'string' && candidate.description.trim()) return;
+    const selection = preselectWorkdayListRow(candidate);
+    if (!selection.selected) {
+      candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: selection.reason } };
+      return;
+    }
+
+    if (!boardGroupsByPriority.has(selection.priority)) boardGroupsByPriority.set(selection.priority, new Map());
+    const boardGroups = boardGroupsByPriority.get(selection.priority);
     const key = boardKeyOf(candidate);
-    const indiaLocated = WORKDAY_DEFAULT_LOCATION_KEYWORDS.some((keyword) => String(candidate.location ?? '').toLowerCase().includes(keyword));
     if (!boardGroups.has(key)) boardGroups.set(key, []);
-    boardGroups.get(key).push({ candidate, index, indiaLocated });
+    boardGroups.get(key).push({ candidate, index });
   });
-  for (const group of boardGroups.values()) {
-    group.sort((a, b) => Number(b.indiaLocated) - Number(a.indiaLocated) || a.index - b.index);
-  }
+
   const ordered = [];
-  for (let round = 0; ordered.length < workdayCandidates.length; round++) {
-    let drawn = false;
-    for (const group of boardGroups.values()) {
-      if (round < group.length) {
-        ordered.push(group[round].candidate);
-        drawn = true;
+  for (const priority of [...boardGroupsByPriority.keys()].sort((a, b) => a - b)) {
+    const boardGroups = boardGroupsByPriority.get(priority);
+    const groups = [...boardGroups.values()];
+    const maxGroupLength = Math.max(0, ...groups.map((group) => group.length));
+    for (let round = 0; round < maxGroupLength; round++) {
+      for (const group of groups) {
+        if (round < group.length) {
+          ordered.push(group[round].candidate);
+        }
       }
     }
-    if (!drawn) break;
   }
   const selected = ordered.slice(0, budget);
   for (const candidate of ordered.slice(budget)) {
