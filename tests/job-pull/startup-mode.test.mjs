@@ -82,6 +82,19 @@ test('Startup mode prioritizes startup signals but preserves original-applicatio
   assert.equal(fixtures['funding-hiring-signals'].signals[0].fundingDate, '2026-05-10');
 });
 
+test('Startup Notion operations carry the enriched company record at the top level', async () => {
+  const result = await runStartupMode({
+    clock: () => STARTUP_NOW,
+    sourceFunctions: startupSourceFunctions(),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+  });
+  const candidate = result.shortlist.find((item) => item.company === 'Startup Co 1');
+  const operation = result.plannedNotionOperations.find((item) => item.payload.Company === candidate.company);
+  assert.ok(candidate.companyRecord.name);
+  assert.ok(candidate.companyRecord.canonicalDomain);
+  assert.deepEqual(operation.company, candidate.companyRecord);
+});
+
 test('Unresolved startup leads remain in verification and cannot satisfy the application-ready shortlist', async () => {
   const result = await runStartupMode({
     clock: () => STARTUP_NOW,

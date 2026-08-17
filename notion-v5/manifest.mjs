@@ -77,6 +77,41 @@ function expectedContracts() {
   return Object.fromEntries(V5_STORE_KEYS.map((key) => [key, expectedPropertyKeys(key)]));
 }
 
+function expectedRelationInventory(manifest) {
+  const dataSourceIds = Object.fromEntries(V5_STORE_KEYS.map((key) => [key, manifest.targets?.[key]?.dataSourceId]));
+  return V5_STORE_KEYS.flatMap((storeKey) => Object.values(V5_SCHEMA.stores[storeKey].properties)
+    .filter((property) => property.type === 'relation')
+    .map((property) => ({
+      from: `${storeKey}.${property.name}`,
+      to: property.target,
+      fromDataSourceId: dataSourceIds[storeKey],
+      toDataSourceId: dataSourceIds[property.target],
+      verified: true,
+    })));
+}
+
+function relationMatches(actual, expected) {
+  const fields = ['from', 'to', 'fromDataSourceId', 'toDataSourceId'];
+  return actual && typeof actual === 'object' && !Array.isArray(actual)
+    && Object.keys(actual).length === fields.length + 1
+    && fields.every((field) => typeof actual[field] === 'string' && actual[field] === expected[field])
+    && actual.verified === true;
+}
+
+function validateRelations(manifest) {
+  if (!Array.isArray(manifest.relations)) return ['relations must be an array'];
+  const expected = expectedRelationInventory(manifest);
+  const errors = [];
+  for (const relation of expected) {
+    const matches = manifest.relations.filter((candidate) => relationMatches(candidate, relation)).length;
+    if (matches === 0) errors.push(`missing relation ${relation.from}`);
+    if (matches > 1) errors.push(`duplicate relation ${relation.from}`);
+  }
+  const unexpected = manifest.relations.filter((candidate) => !expected.some((relation) => relationMatches(candidate, relation)));
+  if (unexpected.length > 0) errors.push(`unexpected relation entry count ${unexpected.length}`);
+  return errors;
+}
+
 function targetIdentifierErrors(key, target) {
   const errors = [];
   for (const field of ['databaseId', 'dataSourceId']) {
@@ -113,6 +148,7 @@ export function validateManifest(manifest) {
     const received = manifest.expectedPropertyContracts[key];
     if (!Array.isArray(received) || JSON.stringify([...received].sort()) !== JSON.stringify([...expected[key]].sort())) errors.push(`${key} property contract does not match v5 schema`);
   }
+  errors.push(...validateRelations(manifest));
   if (!Array.isArray(manifest.viewNames) || manifest.viewNames.length === 0) errors.push('viewNames must be a non-empty array');
   if (!Array.isArray(manifest.legacyAuditGaps)) errors.push('legacyAuditGaps must be an array');
   return { valid: errors.length === 0, errors };
@@ -158,6 +194,7 @@ export function createManifestTemplate() {
     parent: { type: 'page_id', id: 'PLACEHOLDER_LAUNCHPAD_V5_PARENT' },
     targets: Object.fromEntries(V5_STORE_KEYS.map((key) => [key, { name: V5_STORE_NAMES[key], databaseId: `PLACEHOLDER_${key.toUpperCase()}_V5_DATABASE`, dataSourceId: `PLACEHOLDER_${key.toUpperCase()}_V5_DATA_SOURCE` }])),
     expectedPropertyContracts: expectedContracts(),
+    relations: expectedRelationInventory({ targets: Object.fromEntries(V5_STORE_KEYS.map((key) => [key, { dataSourceId: `PLACEHOLDER_${key.toUpperCase()}_V5_DATA_SOURCE` }])) }),
     viewNames: ['Ready', 'Backfill', 'Internship', 'Startup', 'Remote', 'Verification', 'Resume', 'Applied', 'Outreach', 'Follow-up', 'Pipeline', 'Archive'],
     legacyAuditGaps: [...LEGACY_NOTION_AUDIT_GAPS],
   };

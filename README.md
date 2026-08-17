@@ -1,6 +1,12 @@
 # Launchpad v5
 
-Onkar Jadhav's job-search system: discover roles → score against targeting → prepare a truthful resume → track the application lifecycle. The local v5 operator contract is in [docs/SYSTEM-REFERENCE.md](docs/SYSTEM-REFERENCE.md); the handoff is [docs/launchpad-v5-operator-handoff.md](docs/launchpad-v5-operator-handoff.md).
+Onkar Jadhav's job-search system: discover roles → score against targeting → prepare a truthful resume → track the application lifecycle. Read [docs/STATUS.md](docs/STATUS.md) first for the current execution position. The executable contract is in [docs/SYSTEM-REFERENCE.md](docs/SYSTEM-REFERENCE.md), and the operator handoff is [docs/launchpad-v5-operator-handoff.md](docs/launchpad-v5-operator-handoff.md).
+
+## Current release position
+
+The unified daily implementation exists in the dirty working tree and is locally stabilizing. It is **not production-ready, live-verified, or promoted**. GitHub issues are the live status authority; local issue packs, audits, probes, and plans are specifications or history.
+
+Launchpad v5 is the sole active runtime contract. v3 and v4 are historical read-only systems with no write, migration, archive, delete, or runtime fallback path.
 
 ## Quick start
 
@@ -12,102 +18,86 @@ node crawler/cli.mjs help
 node crawler/cli.mjs validate
 ```
 
-## Launchpad Crawler v2
+`rehearse` uses deterministic fixtures and injected local fakes. It does not prove live Notion, browser, scheduler, source-yield, or production behavior.
 
-Crawler v2 is the durable, discovery-only morning crawler. It stores crawl
-history in SQLite, suppresses previously observed jobs across run IDs, honors
-discovered `robots.txt` rules, uses shared per-host limits, and returns a
-planning-only shortlist handoff.
-
-Configure [config/crawler-v2.json](config/crawler-v2.json) before the first run:
-
-- Add public ATS boards to `atsBatch1.boards`, `atsBatch2.boards`, or
-  `enterprise.boards`.
-- Add `{ "company": "...", "websiteUrl": "https://..." }` entries to
-  `careerSites`.
-- Enable Brave only after setting `BRAVE_SEARCH_API_KEY`; queries remain leads
-  until an original employer listing is resolved.
-- Enable the Indeed inbox only after placing a dated `IndeedConnectorV1` export
-  under `connector-inbox/indeed/`.
-- Keep commercial rescue disabled until a profile and cost limit are explicitly
-  approved.
-
-Operator commands:
+## Unified daily commands
 
 ```sh
-# Validate configuration without crawling
+node crawler/cli.mjs daily morning --mode normal  --location-preset india --run-id <unique-id>
+node crawler/cli.mjs daily morning --mode startup --location-preset pune  --run-id <unique-id>
+node crawler/cli.mjs daily morning --mode remote   --location-preset india --run-id <unique-id>
+node crawler/cli.mjs daily midday  --mode normal  --location-preset pune  --run-id <unique-id>
+node crawler/cli.mjs daily midday  --mode startup --location-preset india --run-id <unique-id>
+node crawler/cli.mjs daily midday  --mode remote   --location-preset india --run-id <unique-id>
+```
+
+The daily path performs one shared crawl, then passes the shared inventory to the requested Normal, Startup, or Remote selector. Midday Remote intentionally skips native remote-feed fetching and selects from the shared midday ATS/delta inventory.
+
+All modes share normalization, original-application resolution, eligibility/readiness, scoring, opportunity-ledger suppression, and final-shortlist-only surfacing. Mode-specific code ranks the already-gated pool. Crawler SQLite stores discovery/observation state; it no longer owns cooldown surfacing policy.
+
+Workday freshness is fail-safe: a usable DETAIL `startDate` is trusted. LIST `postedOn` remains undated and enters `VerifyQueue`.
+
+## Crawler operations
+
+```sh
+# Configuration and stage inspection
 node crawler/cli.mjs validate
+node crawler/cli.mjs plan morning --mode normal --location-preset pune
+node crawler/cli.mjs plan midday --mode remote --location-preset india
 
-# Inspect the intended stage order
-node crawler/cli.mjs plan morning
-node crawler/cli.mjs plan midday
+# Discovery-only crawler path, separate from unified daily selection
+node crawler/cli.mjs run morning --mode normal --location-preset pune --run-id <unique-id>
 
-# Run discovery. Use a unique run ID for each real run.
-node crawler/cli.mjs run morning --run-id 2026-07-23-morning
-node crawler/cli.mjs run midday --run-id 2026-07-23-midday
-
-# Generate an honest local readiness result
+# Local readiness calculation and all six deterministic suite groups
 node crawler/cli.mjs readiness --run-tests
 ```
 
-The default SQLite path is `.local/launchpad-crawler/crawler.sqlite`, which is
-ignored by Git. The morning command runs every configured discovery lane;
-midday omits broad expanded ATS, Brave, and startup discovery. Scheduling is
-owned by the local operator: invoke these commands from `launchd`, cron, or
-another scheduler only after a bounded live smoke run succeeds.
+The default SQLite path is `.local/launchpad-crawler/crawler.sqlite`, ignored by Git. The repository can generate/install local macOS launchd agents, but checked-in code and tests do not prove the current machine has the working-tree schedule installed or operating. Do not claim installed scheduling without retained machine evidence.
 
-Crawler output never submits an application, checks `Apply?`, writes a sent
-message, or performs authenticated LinkedIn crawling.
+## Agent surface
 
-Daily agent surface:
-
-- `/morning` runs Normal by default; `/morning startup` and `/morning remote` are focused modes.
+- `/morning` delegates to unified daily Normal by default; `/morning startup` and `/morning remote` select focused modes.
 - `/make-applications` reads the user-controlled v5 `Make Resume` queue and compiles locally.
-- `/outreach` prepares free-first drafts and never sends.
-- `/linkedin-leads` is an explicit read-only rescue, never part of morning.
-- `/followups` surfaces or drafts v5 cadence actions; `/sync` synchronizes observed `Applied?` and confirmed outcomes.
-- Apify is an explicit, default-off rescue profile only (`node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json`).
-
-## Daily contract
-
-All modes share original-application resolution, active liveness, geography, employment, experience, fee/bond, freshness, scoring, and deduplication gates. Normal emphasizes India-first discovery. Startup adds company-stage and funding/hiring evidence. Remote emphasizes India-compatible remote, stable EOR, and full-time-equivalent contractor roles. Internships are separate, with INR 30,000+ Preferred and INR 25,000–29,999 Lower-Stipend tiers.
-
-The shortlist targets minimum 10, preferred 12, maximum 20. Unresolved roles remain in Needs Verification and never count. Source failures are reported; core integrity failures stop before writes. A shortfall may suggest `/linkedin-leads`, but it never launches the rescue automatically.
+- `/outreach` performs free-first research and prepares draft content; the active workflow has no guaranteed Gmail draft adapter or send provider.
+- `/linkedin-leads` is an explicit read-only rescue and never runs automatically.
+- `/followups` surfaces or drafts cadence actions; `/sync` observes user-set `Applied?` and confirmed outcomes.
+- Apify is explicit, default-off rescue only: `node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json`.
 
 ## v5 stores and state
 
-The fixed manifest scopes the gateway to Applications v5, Companies v5, Outreach v5, Activity v5, and Referrals v5. Applications owns the role lifecycle and user-owned `Make Resume` / `Applied?` inputs. Outreach owns application × person × channel sequences. Activity owns idempotent dated events.
+The fixed manifest scopes the gateway to Applications v5, Companies v5, Outreach v5, Activity v5, and Referrals v5. The working-tree validator requires exactly ten directed reciprocal relation entries. This is a local manifest claim, not a claim that the dirty relation set completed a live credentialed smoke.
 
-Live writes require explicit operator authorization, an external protected credential, an external transaction journal, and reserve → write → verify → commit. There is no legacy fallback. Historical systems remain untouched; no migration, archive, or delete action is part of this release.
+Applications owns the role lifecycle and user-owned `Make Resume` / `Applied?` inputs. Companies owns reusable evidence. Outreach owns application × person × channel sequences. Activity owns idempotent events. Referrals owns referral evidence and outcomes.
+
+Live writes require explicit operator authorization, a protected external credential, an external transaction journal, and reserve → write → verify → commit. There is no legacy fallback.
 
 ## Resume and outreach guardrails
 
 - Resume compilation is local-only. Use the frozen `resumes/templates/Onkar_Template.tex` and approved `resumes/master/Master_Resume_ATS.tex` evidence.
 - Keep `.tex`, matrix, and provenance sidecars under `resumes/sources/<date>/`; `resumes/output/<date>/` contains PDFs only.
-- Never check `Make Resume` or `Applied?`, infer an application submission, invent a fact/contact, auto-apply, send email, or send a LinkedIn message.
-- Outreach cadence is Day 0, 3, 10, 17 and stops on reply, rejection, opt-out, withdrawal, closure, or offer.
+- Never check `Make Resume` or `Applied?`, infer a submission, invent a fact/contact, auto-apply, send email, send a LinkedIn message, or claim a Gmail draft without adapter evidence.
+- External actions are allowed only through a separately explicit, authorized, scoped path.
 
-## Verification suites
+## Verification map
 
-The Phase 0 crawler release baseline is documented in
-[docs/crawler-v2-operational-baseline.md](docs/crawler-v2-operational-baseline.md)
-and is the following single scoped command:
+The readiness command covers:
 
 ```sh
-node --test tests/crawler/*.test.mjs tests/job-pull/normal-mode.test.mjs tests/job-pull/startup-mode.test.mjs tests/job-pull/remote-mode.test.mjs tests/notion-v5/gateway.test.mjs tests/job-pull/dedup.test.mjs
-```
-
-The broader verification commands remain available for full local checks:
-
-```sh
-node --test tests/job-pull/*.test.mjs
 node --test tests/crawler/*.test.mjs
+node --test tests/job-pull/*.test.mjs
 node --test tests/notion-v5/*.test.mjs
 node --test tests/resume-v5/*.test.mjs
 node --test tests/outreach-v5/*.test.mjs
 node --test tests/v5/*.test.mjs
+```
+
+Additional local checks:
+
+```sh
+node launchpad-v5.mjs validate
+node crawler/safety-contract.mjs
 node tests/resume/verify.mjs
 git diff --check
 ```
 
-The local rehearsal and deterministic suites do not prove a live Notion write, credentialed smoke, authenticated browser smoke, or production morning run. Those remain explicit live gates.
+Avoid publishing test counts unless the exact command, date, revision, and dirty/clean state are retained. Local validation does not establish a credentialed Notion smoke, clean committed baseline, production canary streak, push, or promotion.

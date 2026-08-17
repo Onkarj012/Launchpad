@@ -145,6 +145,19 @@ test('remote lanes do not appear when sources.remote.enabled is false or mode is
   assert.equal(startup.some((plan) => plan.id === 'remote-mode'), false);
 });
 
+test('explicit Remote respects the midday cheap boundary but includes native feeds in the morning', () => {
+  const common = {
+    config: { sources: baseSources() },
+    transport: async () => ({ status: 200, body: '[]' }),
+    runAt: '2026-07-24T04:30:00.000Z',
+  };
+  const midday = buildSourcePlans({ ...common, schedule: 'midday', profile: { mode: 'remote' } });
+  assert.equal(midday.some((plan) => plan.id === 'remote-mode'), false);
+
+  const morning = buildSourcePlans({ ...common, schedule: 'morning', profile: { mode: 'remote' } });
+  assert.ok(morning.some((plan) => plan.id === 'remote-mode'));
+});
+
 test('scheduled remote run applies original-listing resolution and keeps Himalayas primary with cadence-bound secondaries', async () => {
   const { transport, requested } = remoteTransport();
   const resolverCalls = [];

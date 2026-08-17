@@ -18,7 +18,7 @@ export function classifyFreshness(candidateOrPostedAt, options = {}) {
   const candidate = candidateOrPostedAt && typeof candidateOrPostedAt === 'object' ? candidateOrPostedAt : null;
   const isWorkday = candidate?.provider?.toLowerCase?.() === 'workday';
   const isPersonio = candidate?.provider?.toLowerCase?.() === 'personio';
-  const workdayHasVerifiedDate = ['workday-startDate', 'workday-postedOn'].includes(candidate?.evidence?.freshness?.kind);
+  const workdayHasVerifiedDate = candidate?.evidence?.freshness?.kind === 'workday-startDate';
   const rawPostedAt = candidate ? candidate.postedAt : candidateOrPostedAt;
   // A four-tenant, 16-row Workday probe matched LIST postedOn to DETAIL startDate;
   // see docs/research/workday-postedon-probe.md for the measured basis.

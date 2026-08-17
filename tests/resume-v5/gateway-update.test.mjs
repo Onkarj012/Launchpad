@@ -4,18 +4,25 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadManifest } from '../../notion-v5/manifest.mjs';
+import { V5_STORE_KEYS } from '../../notion-v5/schema.mjs';
 import { createNotionV5Gateway } from '../../notion-v5/gateway.mjs';
 
 const base = loadManifest();
 const pageId = '77777777777777777777777777777777';
+const dataSourceIds = ['22222222222222222222222222222222', '33333333333333333333333333333333', '44444444444444444444444444444444', '55555555555555555555555555555555', '66666666666666666666666666666666'];
 const manifest = {
   ...base,
   parent: { ...base.parent, id: '11111111111111111111111111111111' },
   targets: Object.fromEntries(Object.entries(base.targets).map(([key, value], index) => [key, {
     ...value,
     databaseId: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'cccccccccccccccccccccccccccccccc', 'dddddddddddddddddddddddddddddddd', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'][index],
-    dataSourceId: ['22222222222222222222222222222222', '33333333333333333333333333333333', '44444444444444444444444444444444', '55555555555555555555555555555555', '66666666666666666666666666666666'][index],
+    dataSourceId: dataSourceIds[index],
   }])),
+  relations: base.relations.map((relation) => ({
+    ...relation,
+    fromDataSourceId: dataSourceIds[V5_STORE_KEYS.indexOf(relation.from.split('.')[0])],
+    toDataSourceId: dataSourceIds[V5_STORE_KEYS.indexOf(relation.to)],
+  })),
 };
 
 test('v5 gateway updates a scoped application page through the pinned page endpoint', async () => {

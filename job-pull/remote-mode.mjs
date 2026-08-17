@@ -1,12 +1,14 @@
 import { assertValidConfig, assertValidConversionPlan, loadConfig, loadConversionPlan } from './config.mjs';
 import { candidateDedupKey } from './candidate.mjs';
-import { runPipeline } from './run.mjs';
+import { applyScores, runPipeline } from './run.mjs';
 import { createNoWriteNotionGateway } from './workflow.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
 import { enrichRemoteSources, REMOTE_SCHEMA_FIELDS } from './remote-enrichment.mjs';
 import { runRemoteSourcePlan } from './remote-sources.mjs';
 import { selectRemoteApplications } from './remote-selection.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
+import { readOpportunityLedger, recordSurfaced } from './opportunity-ledger.mjs';
+import { buildReconciliation, scorePoolInRun, scorerIsBroken, scoringGateError } from './mode-scoring.mjs';
 
 export const REMOTE_MODE_SCHEMA_VERSION = 'LaunchpadV5RemoteModeV1';
 
@@ -159,6 +161,7 @@ function verificationRecord(candidate, pipelineCandidate = null) {
 }
 
 function fatalResult(runId, runAt, sourceManifests, error) {
+  const details = error.details || {};
   return {
     schemaVersion: REMOTE_MODE_SCHEMA_VERSION,
     runId,
@@ -172,9 +175,12 @@ function fatalResult(runId, runAt, sourceManifests, error) {
     plannedNotionOperations: [],
     transaction: null,
     historicalSuppressions: [],
+    scoringQueue: details.scoringQueue || [],
+    scoring: details.scoring || null,
+    reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => ['failed', 'unavailable'].includes(item.status)).map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
-    counts: null,
+    counts: details.counts || null,
   };
 }
 
@@ -183,7 +189,8 @@ export async function runRemoteMode({
   mode = 'remote', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {},
   notionGateway = createNoWriteNotionGateway(), executeGateway = false,
-  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = [], historicalV4Rows = [],
+  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = null, historicalV4Rows = [],
+  opportunityLedgerPath = null, scores, scorer, commitSurfaced = false,
 } = {}) {
   if (String(mode).toLowerCase() !== 'remote') throw new RemoteModeError(`Remote runner only supports remote mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -191,6 +198,7 @@ export async function runRemoteMode({
   let sourceResults = [];
   try {
     sourceResults = enrichRemoteSources(await runRemoteSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, providerFetchers, runAt, runId }));
+    sourceResults = applyScores(sourceResults, scores);
     const sourceManifests = sourceResults.map(({ manifest }) => manifest);
     const baseConfig = config || loadConfig();
     const baseConversionPlan = conversionPlan || loadConversionPlan();
@@ -199,15 +207,33 @@ export async function runRemoteMode({
     const remoteConfig = structuredClone(baseConfig);
     remoteConfig.run = { ...remoteConfig.run, minimumTotal: 10, maximumTotal: 20, strictTarget: 10 };
     remoteConfig.employment.allowedTypes = [...new Set([...remoteConfig.employment.allowedTypes, 'contract'])];
-    const pipeline = runPipeline({ config: remoteConfig, conversionPlan: baseConversionPlan, now: runAt, runId, ledgerRows, opportunityLedgerRows, sources: sourceResults, dryRun: true });
+    const effectiveOpportunityLedgerRows = opportunityLedgerRows ?? readOpportunityLedger(opportunityLedgerPath ?? undefined).rows;
+    const pipeline = runPipeline({ config: remoteConfig, conversionPlan: baseConversionPlan, now: runAt, runId, ledgerRows, opportunityLedgerRows: effectiveOpportunityLedgerRows, opportunityLedgerPath, sources: sourceResults, dryRun: true });
     const pipelineByUrl = new Map(pipeline.scoringCandidates.map((candidate) => [candidate.canonicalUrl, candidate]));
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
-    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
-    const selectionEntries = nonHistoricalCandidates
+    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
+    const selectionEntries = scoredPool
       .filter((candidate) => candidate.remoteReady === true)
       .map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
     const selection = selectRemoteApplications(selectionEntries, { maximumPerCompany: remoteConfig.run.maximumPerCompany });
+    const eligibleCount = pipeline.postSuppressionCandidates.length;
+    const scorerRan = scorerTelemetry !== null;
+    const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
+    const incompleteScoring = scorerRan ? scorerIsBroken(scorerTelemetry) : droppedScoringRows;
+    const scoringDropped = scorerRan && droppedScoringRows && !incompleteScoring;
+    const reconciliation = buildReconciliation({ eligible: eligibleCount, historicalSuppressed: historicalSuppressions.length, selection, selected: incompleteScoring ? 0 : selection.selected.length, runFailed: incompleteScoring });
+    if (incompleteScoring) {
+      const error = scoringGateError(RemoteModeError, selection, scorerRan ? scorerTelemetry : null);
+      error.details = {
+        scoringQueue: selection.scoringQueue,
+        scoring: { required: true, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: 0, ...(scorerTelemetry ? { scorer: scorerTelemetry } : {}) },
+        reconciliation,
+        counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, selected: 0, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      };
+      throw error;
+    }
     const shortlist = selection.selected;
     const operations = shortlist.map((candidate) => ({ operation: 'create', resource: 'application', dedupKey: candidateDedupKey(candidate), payload: remotePayload(candidate, runId), provenance: provenanceFor(candidate, runId) }));
     if (!notionGateway || typeof notionGateway.planWrites !== 'function') throw new RemoteModeError('notion gateway must implement planWrites', 'notion');
@@ -219,6 +245,7 @@ export async function runRemoteMode({
       if (notionGateway.kind !== 'fake-transactional-v5' || typeof notionGateway.executeWrites !== 'function') throw new RemoteModeError('live or non-transactional gateway execution is disabled; inject the Remote fake gateway', 'notion');
       transaction = await notionGateway.executeWrites({ operations: plannedOperations });
     }
+    if (commitSurfaced) recordSurfaced(shortlist, { path: opportunityLedgerPath || undefined, now: runAt });
     const selectedKeys = new Set(shortlist.map((candidate) => candidateDedupKey(candidate)));
     const verificationQueue = sourceResults.flatMap((source) => source.candidates)
       .map((candidate) => ({ candidate, pipelineCandidate: pipelineByUrl.get(candidate.canonicalUrl) || null }))
@@ -243,9 +270,12 @@ export async function runRemoteMode({
       plannedNotionOperations: plannedOperations,
       transaction,
       historicalSuppressions,
+      scoringQueue: selection.scoringQueue,
+      ...(scorerTelemetry ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } } : {}),
+      reconciliation,
       shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing, preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes, reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)], linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' } },
-      outcome: { status: failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), dated: sourceResults.reduce((sum, source) => sum + source.candidates.filter((candidate) => candidate.postedAt != null).length, 0), applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, eligibilityClasses: selection.eligibilityClasses, schemaIntegrationRequired: true, missingFields: [...REMOTE_SCHEMA_FIELDS] },
+      outcome: { status: failedLanes.length || scoringDropped || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || scoringDropped || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), dated: sourceResults.reduce((sum, source) => sum + source.candidates.filter((candidate) => candidate.postedAt != null).length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, eligibilityClasses: selection.eligibilityClasses, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount, schemaIntegrationRequired: true, missingFields: [...REMOTE_SCHEMA_FIELDS] },
     };
   } catch (error) {
     return fatalResult(runId, runAt, sourceResults.map(({ manifest }) => manifest), error);

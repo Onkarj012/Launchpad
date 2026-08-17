@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isLegacyNotionId, isNotionIdentifier, loadManifest, assertLiveManifest, validateManifest } from '../../notion-v5/manifest.mjs';
+import { createManifestTemplate, isLegacyNotionId, isNotionIdentifier, loadManifest, assertLiveManifest, validateManifest } from '../../notion-v5/manifest.mjs';
 import { buildDatabaseProperties, mapProperties, readPropertyValue, V5_SCHEMA, V5_STORE_KEYS, V5_VIEW_DEFINITIONS, validateViewDefinitions } from '../../notion-v5/schema.mjs';
 import { createNotionV5Gateway, loadExternalCredential, NotionV5Error, NOTION_V5_API_VERSION } from '../../notion-v5/gateway.mjs';
 import { provisionV5, smokeV5 } from '../../notion-v5/provision.mjs';
@@ -20,6 +20,11 @@ const realManifest = {
   ...manifest,
   parent: { type: 'page_id', id: ids.parent },
   targets: Object.fromEntries(Object.entries(manifest.targets).map(([key, value], index) => [key, { ...value, databaseId: ids.databases[index], dataSourceId: ids.dataSources[index] }])),
+  relations: manifest.relations.map((relation) => ({
+    ...relation,
+    fromDataSourceId: ids.dataSources[V5_STORE_KEYS.indexOf(relation.from.split('.')[0])],
+    toDataSourceId: ids.dataSources[V5_STORE_KEYS.indexOf(relation.to)],
+  })),
 };
 
 function tempPath(name) { return path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-v5-')), name); }
@@ -100,6 +105,45 @@ test('real manifest is scoped to nonlegacy v5 IDs and records reciprocal relatio
   legacy.targets.applications.databaseId = '7bc3de3a-91d9-4391-8b22-9e68b264e8d2';
   assert.equal(validateManifest(legacy).valid, false);
   assert.equal(NOTION_V5_API_VERSION, '2025-09-03');
+});
+
+test('manifest validation rejects a missing relation', () => {
+  const invalid = structuredClone(manifest);
+  invalid.relations = invalid.relations.filter((relation) => relation.from !== 'outreach.Activity');
+  assert.equal(validateManifest(invalid).valid, false);
+});
+
+test('manifest validation rejects duplicate and unexpected relations', () => {
+  const duplicate = structuredClone(manifest);
+  duplicate.relations.push(structuredClone(duplicate.relations[0]));
+  assert.equal(validateManifest(duplicate).valid, false);
+
+  const unexpected = structuredClone(manifest);
+  unexpected.relations.push({ from: 'outreach.Unknown', to: 'activity', fromDataSourceId: ids.dataSources[2], toDataSourceId: ids.dataSources[3], verified: true });
+  assert.equal(validateManifest(unexpected).valid, false);
+});
+
+test('manifest validation rejects wrong relation targets, data-source IDs, and verification', () => {
+  for (const mutate of [
+    (relation) => { relation.to = 'applications'; },
+    (relation) => { relation.fromDataSourceId = ids.dataSources[0]; },
+    (relation) => { relation.toDataSourceId = ids.dataSources[0]; },
+    (relation) => { relation.verified = false; },
+  ]) {
+    const invalid = structuredClone(manifest);
+    mutate(invalid.relations.find((relation) => relation.from === 'outreach.Activity'));
+    assert.equal(validateManifest(invalid).valid, false);
+  }
+});
+
+test('manifest template includes a complete schema-derived relation inventory', () => {
+  const template = createManifestTemplate();
+  assert.equal(validateManifest(template).valid, true);
+  assert.deepEqual(template.relations.map((relation) => relation.from).sort(), manifest.relations.map((relation) => relation.from).sort());
+  for (const relation of template.relations) {
+    assert.equal(relation.fromDataSourceId, template.targets[relation.from.split('.')[0]].dataSourceId);
+    assert.equal(relation.verified, true);
+  }
 });
 
 test('offline gateway fails closed and Issue 01 planWrites returns authoritative operations unchanged', async () => {

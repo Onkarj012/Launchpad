@@ -1,6 +1,8 @@
-# Launchpad v5 implementation issues
+# Launchpad v5 historical implementation issue pack
 
 Parent specification: [Launchpad v5](../../spec/launchpad-v5.md)
+
+This directory preserves the older local **01–11** v5-foundation issue pack. These numbers are not LP-001–LP-019. The Markdown files are specifications/history, not a current tracker. GitHub is the live issue-status authority, and [../../STATUS.md](../../STATUS.md) is the sole repository execution-status index.
 
 ## Dependency order
 
@@ -15,9 +17,9 @@ Parent specification: [Launchpad v5](../../spec/launchpad-v5.md)
                        11
 ```
 
-Issues 04, 05, 06, 07, and 10 can begin independently after issue 03. Issue 08 follows 07, issue 09 follows 03 and 08, and issue 11 is the final integration and go-live gate.
+Issues 04, 05, 06, 07, and 10 were designed to begin independently after issue 03. Issue 08 follows 07, issue 09 follows 03 and 08, and issue 11 is the final integration/live-gate issue.
 
-Issues 01–11 have local implementation and deterministic coverage in this worktree. Their shared status is `locally-complete-live-gated`: local contracts are testable, while credentialed Notion smoke, authenticated browser smoke, and production verification remain open. No issue status below claims live success.
+The v5 foundation has substantial local implementation and deterministic coverage, but no local issue checkbox or README status proves a live credentialed Notion smoke, authenticated browser smoke, clean release, production canary streak, or promotion. v3/v4 remain historical read-only systems.
 
 ## Issues
 

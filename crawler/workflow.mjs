@@ -14,7 +14,6 @@ import { buildFunnelReport } from '../job-pull/funnel-report.mjs';
 import {
   crawlRun,
   finishCrawlRun,
-  markJobsSurfaced,
   readCrawlerRunData,
 } from './run.mjs';
 
@@ -368,19 +367,9 @@ export async function crawlWorkflow({
   const selectedCandidates = new Set(selection.reserve.map((item) => item.candidate));
   const recordsByKey = new Map(records.map((record) => [candidateKey(record), record]));
   const historicalKeys = new Set(historicalSuppressedEntries.map((entry) => candidateKey(candidateOf(entry))));
-  // Cooldown/surfaced starts only when a role enters shortlist/reserve output — never on raw observe.
-  // Prefer durable SQLite job_key from persisted observations (identity.jobKey hashing differs).
-  const selectedSurfaceKeys = new Set(selection.reserve.map((item) => candidateKey(candidateOf(item))).filter(Boolean));
-  const surfacedJobKeys = [...new Set(records
-    .filter((record) => selectedSurfaceKeys.has(candidateKey(record)))
-    .map((record) => record.jobKey)
-    .filter(Boolean))];
-  if (!durable.idempotent && surfacedJobKeys.length) {
-    markJobsSurfaced(store, surfacedJobKeys, { at: runAt });
-  }
-  const jobs = !durable.idempotent && surfacedJobKeys.length
-    ? readCrawlerRunData(store, runId).jobs
-    : data.jobs;
+  // SQLite records observations only. Final mode planning owns surfacing, and
+  // the opportunity ledger is the cooldown authority.
+  const jobs = data.jobs;
   const newlyActionableCount = nonHistoricalEntries.filter((entry) => entry.identity?.code === 'NEWLY_ACTIONABLE'
     || entry.novelty?.newlyActionable === true
     || entry.novelty?.code === 'NEWLY_ACTIONABLE').length;

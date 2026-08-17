@@ -18,8 +18,9 @@ import {
 } from './readiness.mjs';
 import { installSchedules } from './install-schedule.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
-import { createJsonCanaryStore } from './delivery-canary.mjs';
+import { createJsonCanaryStore, loadDeliveryCanaryEvidence } from './delivery-canary.mjs';
 import { acquireCrawlerRunLock } from './run-lock.mjs';
+import { notifyDesktop } from './notify.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -31,6 +32,15 @@ const ENV_CONFIG_PATHS = Object.freeze({
   'live-test': 'config/crawler-v2-live-test.json',
   dev: 'config/crawler-v2-dev.json',
 });
+
+export const READINESS_TEST_GLOBS = Object.freeze([
+  'tests/crawler/*.test.mjs',
+  'tests/job-pull/*.test.mjs',
+  'tests/notion-v5/*.test.mjs',
+  'tests/resume-v5/*.test.mjs',
+  'tests/outreach-v5/*.test.mjs',
+  'tests/v5/*.test.mjs',
+]);
 
 function explicitOption(args, name) {
   const index = args.indexOf(name);
@@ -84,7 +94,7 @@ function configuredSourceIds(config) {
 function localReadiness(config, args) {
   const runTests = args.includes('--run-tests');
   const testRun = runTests
-    ? spawnSync(process.execPath, ['--test', 'tests/crawler/*.test.mjs', 'tests/job-pull/*.test.mjs', 'tests/notion-v5/*.test.mjs', 'tests/v5/*.test.mjs'], { cwd: process.cwd(), encoding: 'utf8', shell: true })
+    ? spawnSync(process.execPath, ['--test', ...READINESS_TEST_GLOBS], { cwd: process.cwd(), encoding: 'utf8', shell: true })
     : null;
   const testOutput = `${testRun?.stdout ?? ''}\n${testRun?.stderr ?? ''}`;
   const testTotal = Number(testOutput.match(/# tests (\d+)/)?.[1] ?? 0);
@@ -119,7 +129,7 @@ function localReadiness(config, args) {
   return { evidence, assessment: assessProductionReadiness(evidence), testExitCode: testRun?.status ?? null };
 }
 
-export async function main(argv = process.argv.slice(2), { dailyRunner = runDailyNormal, emit = output } = {}) {
+export async function main(argv = process.argv.slice(2), { dailyRunner = runDailyNormal, emit = output, notify = notifyDesktop } = {}) {
   const command = argv[0] ?? 'help';
   if (['help', '--help', '-h'].includes(command)) {
     process.stdout.write(buildCrawlerHelp());
@@ -143,19 +153,44 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
     return 0;
   }
   if (command === 'daily') {
+    const schedule = positional(argv)[1] ?? 'morning';
+    const canaryEvidencePath = explicitOption(argv, '--canary-evidence');
+    const canaryEvidence = loadDeliveryCanaryEvidence(canaryEvidencePath);
     const lock = acquireCrawlerRunLock(value(argv, '--lock-path', path.join(config.databasePath ? path.dirname(config.databasePath) : '.local/launchpad-crawler', 'daily.lock')));
     try {
       const result = await dailyRunner({
         config,
+        schedule,
+        mode: value(argv, '--mode', 'normal'),
+        locationPreset: value(argv, '--location-preset', 'india'),
         runId: value(argv, '--run-id'),
         scores: value(argv, '--scores-json'),
         // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
         // --no-scorer preserves the offline pre-scorer behaviour for debugging/replay;
         // --scores-json rows still win per-row inside normal-mode regardless.
         scorer: argv.includes('--no-scorer') ? null : 'codex',
+        canaryEvidence,
         canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
       });
       emit(result);
+      if (result.outcome?.status === 'fatal') {
+        try {
+          notify({
+            title: 'Launchpad — run failed',
+            message: `daily run ${result.runId ?? ''} failed: ${result.outcome?.errors?.[0]?.message ?? result.outcome?.errors?.[0] ?? 'see logs'}`,
+          });
+        } catch {}
+      } else {
+        const freshCount = (result.shortlist ?? []).filter((candidate) => candidate.selectionTier === 'Strict' && ['Hot', 'Active'].includes(candidate.freshnessWindow)).length;
+        if (freshCount > 0) {
+          try {
+            notify({
+              title: 'Launchpad — fresh matches',
+              message: `${freshCount} new Strict Hot/Active match${freshCount === 1 ? '' : 'es'} ready`,
+            });
+          } catch {}
+        }
+      }
       return result.outcome?.status === 'fatal' ? 1 : 0;
     } finally {
       lock.release();

@@ -4,6 +4,7 @@ This is Onkar Jadhav's job-search system: discover roles → score against targe
 
 ## Source of truth
 - **`master_prompt.md`** (project root) is the single source of truth for targeting, scoring rubric, resume tailoring rules, and outreach. Every skill reads it. Change behavior there, not here — this file does **not** duplicate the rubric.
+- **`docs/STATUS.md`** is the sole repository index for current execution status. GitHub issues remain the live issue-status authority; dated plans, audits, probes, and local issue packs are design/history.
 - **Resume layout:** `resumes/templates/Onkar_Template.tex` is the single canonical, frozen layout template. Every tailored resume starts as a copy of it; only its `%== TAILOR-START/END ==` slots (HEADLINE, SUMMARY, COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS) are editable per JD.
 - **Resume content:** `resumes/master/Master_Resume_ATS.tex` is the approved-evidence source of truth. Never invent experience — tailoring only reframes/reorders/selects from it.
 
@@ -36,8 +37,8 @@ Job Search/
 ```
 
 ## Skills (single-slash)
-- `/morning` — daily v5 entry point; no argument means Normal, with `/morning startup` and `/morning remote` as focused modes. Presents the verified shortlist and follow-up handoff.
-- `/daily-job-pull` — v5 discovery engine (ATS, India-first, startup, remote, optional Indeed, and explicit Apify rescue) → normalize → gate → score → select 10–20. **Discovery only.** Usually invoked via `/morning`.
+- `/morning` — daily v5 entry point; no argument means Normal, with `/morning startup` and `/morning remote` as focused modes. The executable local surface is `node crawler/cli.mjs daily morning|midday --mode normal|startup|remote --location-preset india|pune`: one shared crawl, then the requested mode selector. Midday Remote skips native remote feeds.
+- `/daily-job-pull` — v5 discovery engine (ATS, India-first, startup, remote, optional Indeed, and explicit Apify rescue) → normalize → gate → score → select 10–20. Usually invoked via `/morning`; consequential actions remain prohibited.
 - `/quick-add` — log one user-found role (gate → score → single row).
 - `/followups` — surface v5 Applications/Outreach/Activity due items (fixed cadence), draft on request. **Never sends.**
 - `/resume-latex` — paste a JD → tailored one-page PDF-only to `resumes/output/<date>/`, built from the frozen template.
@@ -50,11 +51,12 @@ Job Search/
 
 ## Guardrails (non-negotiable)
 - **No auto-apply, ever.** No skill checks `Apply?`, submits an application, or sends an email autonomously. `Apply?` is always a manual user action; `Auto-Suggest` is an opinion, not a command.
-- **Scheduled / cloud runs are discovery-only** — a scheduled `daily-job-pull` scores and logs to Notion and nothing else.
+- **Scheduled execution support is local and bounded** — launchd generation/install code exists, but installed state and production operation require separate retained evidence. Daily execution may update local discovery/opportunity state and plan v5 operations; it never auto-applies, sends, or changes user-owned checkboxes.
 - **Resume compilation is local-only** — needs the Mac LaTeX toolchain; never runs headless/cloud.
 - **PDF-only output** — `resumes/output/<date>/` contains only `.pdf`; `.tex` stays in `resumes/sources/<date>/`; build artifacts are deleted after every compile.
 - **Never fabricate** experience, metrics, dates, salaries, contacts, or links. Unknown → blank or "Not Verified".
 - **Notion is the tracker of record** — propose any schema change and get approval before touching live data.
 - **Launchpad v5 is the sole active runtime contract** — v3/v4 are read-only historical systems; no migration, fallback, archive, or delete action is permitted in this scope.
+- **Outreach is draft preparation, not delivery** — the active v5 workflow has no guaranteed Gmail draft adapter or send provider. Local draft text and v5 draft state must not be described as a created Gmail draft.
 
 ## Imported Claude Cowork project instructions

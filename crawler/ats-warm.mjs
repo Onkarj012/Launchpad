@@ -71,6 +71,9 @@ function clearlyForeign(provider, row) {
 function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
   if (!row.url || !row.title) return null;
   const startupTagged = board.startupTagged === true;
+  const startupStageEvidenceRef = typeof board.evidenceRef === 'string' && board.evidenceRef.trim()
+    ? board.evidenceRef.trim()
+    : null;
   const item = normalizeCandidate({
     url: row.url,
     jobId: row.id,
@@ -90,17 +93,20 @@ function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
     liveness: { status: 'Active', checkedAt: runAt, evidence: 'public-ats-feed' },
     evidence: {
       classification: 'direct', verified: true, provider: board.provider, board: board.slug, sourceUrl, startupTagged,
+      ...(startupStageEvidenceRef ? { startupStageEvidenceRef } : {}),
       ...(sourceGeoObservation ? { sourceGeoObservation } : {}),
     },
   }, { runAt, provider: board.provider, sourceCategory: 'direct-company' });
   item.classification = 'direct';
-  // Board-level startup tagging is operator-curated, evidence-backed metadata
-  // (see config/crawler-v2.json sources.atsWarm.boards[].startupTagged). It is
-  // prioritization signal only and must never substitute for freshness,
-  // liveness, or readiness verification, which run unchanged elsewhere.
+  // Board-level startup tagging is only a stage assertion. Promote it into
+  // focused Startup fallback evidence when the board retains an independent
+  // evidence reference; the generated label must never prove itself.
   if (startupTagged) {
     item.companyStage = 'Startup';
-    item.companyStageEvidence = `warm ATS board tagged startup: ${board.company || board.slug}`;
+    if (startupStageEvidenceRef) {
+      item.startupStageEvidenceRef = startupStageEvidenceRef;
+      item.companyStageEvidence = startupStageEvidenceRef;
+    }
   }
   return item;
 }

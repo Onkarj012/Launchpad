@@ -66,7 +66,7 @@ export const V5_SCHEMA = Object.freeze({
     outreach: Object.freeze({
       name: V5_STORE_NAMES.outreach,
       properties: Object.freeze({
-        name: field('Name', 'title'), application: relation('Application', 'applications', 'Outreach'), person: field('Person', 'rich_text'),
+        name: field('Name', 'title'), application: relation('Application', 'applications', 'Outreach'), activity: relation('Activity', 'activity', 'Outreach'), person: field('Person', 'rich_text'),
         channel: field('Channel', 'select'), contactUrl: field('Contact URL', 'url'), preview: field('Preview', 'rich_text'), sent: field('Sent?', 'checkbox'),
         sentAt: field('Sent At', 'date'), response: field('Response', 'select'), outcome: field('Outcome', 'select'), nextEligibleContact: field('Next Eligible Contact', 'date'),
         duplicateKey: field('Duplicate Key', 'rich_text'), evidenceUrl: field('Evidence URL', 'url'), draftState: field('Draft State', 'select'), email: field('Email', 'email'),
@@ -75,7 +75,7 @@ export const V5_SCHEMA = Object.freeze({
     activity: Object.freeze({
       name: V5_STORE_NAMES.activity,
       properties: Object.freeze({
-        name: field('Name', 'title'), application: relation('Application', 'applications', 'Activity'), eventType: field('Event Type', 'select'), eventAt: field('Event At', 'date'),
+        name: field('Name', 'title'), application: relation('Application', 'applications', 'Activity'), outreach: relation('Outreach', 'outreach', 'Activity'), eventType: field('Event Type', 'select'), eventAt: field('Event At', 'date'),
         dueAt: field('Due At', 'date'), idempotencyKey: field('Idempotency Key', 'rich_text'), actionState: field('Action State', 'select'), notes: field('Notes', 'rich_text'),
       }),
     }),

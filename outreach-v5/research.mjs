@@ -49,7 +49,7 @@ function candidateWithMetadata(candidate, source) {
  * optional and failures are recorded, never promoted into a send operation,
  * and never allowed to block the application path.
  */
-export async function researchContact({ application, providers = {}, sourceOrder = FREE_FIRST_SOURCE_ORDER, allowPaid = true, now = () => Date.now() } = {}) {
+export async function researchContact({ application, providers = {}, sourceOrder = FREE_FIRST_SOURCE_ORDER, allowPaid = false, selectContact, now = () => Date.now() } = {}) {
   if (!application?.id) throw new ContactResearchError('application id is required', 'APPLICATION_ID_REQUIRED');
   const attempts = [];
   const failures = [];
@@ -89,9 +89,10 @@ export async function researchContact({ application, providers = {}, sourceOrder
   }
 
   candidates.sort((left, right) => right.score - left.score || left.contact.name.localeCompare(right.contact.name));
-  const selected = candidates[0]?.contact ?? null;
+  const selectedEntry = typeof selectContact === 'function' ? selectContact(candidates) : null;
+  const selected = candidates.includes(selectedEntry) ? selectedEntry.contact : null;
   return {
-    status: selected ? 'found' : 'not-found',
+    status: selected ? 'found' : candidates.length ? 'needs-selection' : 'not-found',
     applicationId: application.id,
     contact: selected,
     candidates: candidates.map(({ contact, source, score }) => ({ contact, source, score })),

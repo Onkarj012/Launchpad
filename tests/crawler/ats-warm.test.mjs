@@ -23,6 +23,33 @@ test('fetches complete direct jobs from Greenhouse, Lever, and Ashby warm boards
   assert.equal(result.manifest.failed, 0);
 });
 
+test('startup-tagged warm boards retain stage evidence only from a nonempty board evidence reference', async () => {
+  const boards = [
+    { provider: 'greenhouse', slug: 'tag-only', company: 'Tag Only', startupTagged: true },
+    { provider: 'greenhouse', slug: 'evidence-backed', company: 'Evidence Backed', startupTagged: true, evidenceRef: 'https://portfolio.example.test/evidence-backed' },
+  ];
+  const result = await fetchWarmAts({
+    boards,
+    runAt: '2026-07-23T10:00:00.000Z',
+    transport: async (url) => {
+      const slug = url.includes('evidence-backed') ? 'evidence-backed' : 'tag-only';
+      return { status: 200, body: { jobs: [{ id: slug, title: 'AI Engineer', absolute_url: `https://job-boards.greenhouse.io/${slug}/jobs/${slug}`, location: { name: 'Pune, India' } }] } };
+    },
+  });
+
+  const tagOnly = result.observations.find((row) => row.company === 'Tag Only');
+  assert.equal(tagOnly.companyStage, 'Startup');
+  assert.equal(tagOnly.companyStageEvidence, undefined);
+  assert.equal(tagOnly.startupStageEvidenceRef, undefined);
+  assert.equal(tagOnly.evidence.startupTagged, true);
+
+  const evidenceBacked = result.observations.find((row) => row.company === 'Evidence Backed');
+  assert.equal(evidenceBacked.companyStage, 'Startup');
+  assert.equal(evidenceBacked.companyStageEvidence, 'https://portfolio.example.test/evidence-backed');
+  assert.equal(evidenceBacked.startupStageEvidenceRef, 'https://portfolio.example.test/evidence-backed');
+  assert.equal(evidenceBacked.evidence.startupStageEvidenceRef, 'https://portfolio.example.test/evidence-backed');
+});
+
 test('India-first warm boards discard clearly foreign rows before the job cap', async () => {
   const result = await fetchWarmAts({
     boards: [{ provider: 'ashby', slug: 'acme', company: 'Acme', indiaFirst: true }],

@@ -346,14 +346,14 @@ async function readConnectorInbox({ inboxDir, runAt, resolver }) {
   return { observations, manifest: { status: 'succeeded', fetched: observations.length, receipts, noAutoApply: true } };
 }
 
-export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }) {
+export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null }) {
   // Project boards from the unified registry when configured; tests that inject
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
   const projected = withRegistryProjectedBoards(config);
   const sources = projected.sources;
   const plans = [];
   if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
-    fetchWarmAts({ ...sources.atsWarm, boards: sources.atsWarm.boards, transport, runAt })));
+    fetchWarmAts({ ...sources.atsWarm, boards: sources.atsWarm.boards, transport, runAt, signal, deadline })));
   if (sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor }) => {
     const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState });
     return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } };
@@ -433,10 +433,11 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
   }));
-  // Explicit --mode remote always runs all native feeds. Scheduled --mode normal
-  // also runs them when sources.remote.enabled (toggle without code changes).
-  // Startup mode never inherits remote lanes. Midday keeps the lighter ATS-only plan.
-  const explicitRemoteMode = profile?.mode === 'remote';
+  // Morning Remote can run configured native feeds. Midday Remote is a cheap
+  // selector over the shared ATS/delta inventory and must not start them.
+  // Scheduled Normal also runs native feeds when the config enables the lane.
+  // Startup mode never inherits remote lanes.
+  const explicitRemoteMode = profile?.mode === 'remote' && schedule !== 'midday';
   const scheduledRemoteEnabled = sources.remote?.enabled === true
     && profile?.mode === 'normal'
     && schedule !== 'midday';
@@ -590,6 +591,8 @@ export async function runCrawlerOperator({
   transport = defaultHttpTransport,
   clock = {},
   store: suppliedStore = null,
+  signal = null,
+  deadline = null,
 } = {}) {
   validateCrawlerConfig(config);
   crawlerSchedulePlan(config, schedule);
@@ -627,7 +630,7 @@ export async function runCrawlerOperator({
       priorLifecycleRows: lifecycleRows,
       historicalRows,
       v4Snapshot,
-      sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile }),
+      sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal, deadline }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},
       careerTransport: (config.sources.careerSites ?? []).length
@@ -643,6 +646,8 @@ export async function runCrawlerOperator({
       },
       braveTransport: schedule !== 'midday' ? braveTransportFor(config, transport) : null,
       prepareEntry,
+      signal,
+      deadline,
     });
     const commercialConfig = config.sources.commercialRescue ?? {};
     if (commercialConfig.enabled) {

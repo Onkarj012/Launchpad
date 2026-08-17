@@ -140,6 +140,32 @@ test('Remote eligibility classifies India, APAC, global, and India-available EOR
   assert.equal(eor.remoteEmploymentDecision.category, 'Stable EOR');
 });
 
+test('Global company descriptions with a US citizenship restriction are rejected before global classification', () => {
+  const result = classifyRemoteEligibility({ workMode: 'remote', description: 'We are a global SaaS company headquartered in San Francisco. This remote role requires you to be a US citizen due to government contract requirements.' });
+  assert.equal(result.status, 'Not Eligible');
+  assert.equal(result.code, 'REMOTE_COUNTRY_CITIZENSHIP_AUTH_PAYROLL_RESTRICTED');
+});
+
+test('India is not supported overrides APAC eligibility', () => {
+  const result = classifyRemoteEligibility({ workMode: 'remote', description: 'Open to APAC candidates... India is not supported for payroll purposes at this time.' });
+  assert.equal(result.status, 'Not Eligible');
+  assert.equal(result.code, 'REMOTE_INDIA_EXCLUDED');
+});
+
+test('Country-first and country-qualified citizenship, residency, and work-permit restrictions are rejected', () => {
+  for (const description of ['must be a US citizen', 'citizen of Canada', 'US residents only need apply', 'open to US residents only', 'residents of Canada', 'requires a valid EU work permit', 'must hold a valid work permit for the United Kingdom']) {
+    const result = classifyRemoteEligibility({ workMode: 'remote', description });
+    assert.equal(result.status, 'Not Eligible', description);
+    assert.equal(result.code, 'REMOTE_COUNTRY_CITIZENSHIP_AUTH_PAYROLL_RESTRICTED', description);
+  }
+});
+
+test('A full-time ongoing role with uncapped commission remains employment-eligible', () => {
+  const result = classifyRemoteEmployment({ description: '$80k base + uncapped commission, full-time role, ongoing' });
+  assert.equal(result.status, 'Eligible');
+  assert.equal(result.code, 'REMOTE_FULL_TIME');
+});
+
 test('Bare remote and country/citizenship/payroll restrictions go to Needs Verification or rejection', () => {
   assert.equal(candidate({ location: 'Remote', description: 'Remote role. Full-time role.' }).remoteEligibilityDecision.code, 'REMOTE_SCOPE_AMBIGUOUS');
   assert.equal(candidate({ location: 'Remote - US only' }).remoteEligibilityDecision.status, 'Not Eligible');

@@ -10,6 +10,19 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import {
+  DEFAULT_APIFY_SEEN_CACHE_PATH,
+  loadApifySeenCache,
+  saveApifySeenCache,
+  seenKeyFor,
+} from './apify-seen-cache.mjs';
+import {
+  DEFAULT_APIFY_BUDGET_STATE_PATH,
+  loadApifyBudgetState,
+  saveApifyBudgetState,
+  budgetBlockReason,
+  recordApifyRun,
+} from './apify-budget-state.mjs';
 
 export class RunError extends Error {
   constructor(message, code = 'run-error') {
@@ -340,11 +353,19 @@ export async function pullAll(config, token, {
   sleepImpl = sleep,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   runTimeoutMs = null,
+  seenCachePath = DEFAULT_APIFY_SEEN_CACHE_PATH,
+  seenCache = null,
+  budgetStatePath = DEFAULT_APIFY_BUDGET_STATE_PATH,
+  budgetState = null,
 } = {}) {
   validateConfig(config);
   const selectionInput = profiles ?? profile;
   const selected = selectProfiles(config, selectionInput);
   const preflight = buildPreflight(config, selectionInput);
+  const seenCacheInjected = seenCache !== null;
+  if (!seenCacheInjected) seenCache = loadApifySeenCache(seenCachePath);
+  const budgetStateInjected = budgetState !== null;
+  if (!budgetStateInjected) budgetState = loadApifyBudgetState(budgetStatePath);
   const summary = {};
   const records = [];
   const seenActorIds = new Set();
@@ -365,6 +386,20 @@ export async function pullAll(config, token, {
       log(`  ! ${key}: APIFY_TOKEN is not set`);
       continue;
     }
+    const estimatedCostUsd = Number(actor.estimatedCostUsd) || 0;
+    const nowIso = new Date(clockMillis(clock)).toISOString();
+    const blockReason = budgetBlockReason({
+      state: budgetState, nowIso, estimatedCostUsd,
+      monthlyBudgetUsd: config.rescue?.monthlyBudgetUsd ?? Infinity,
+      maxRunsPerMonth: config.rescue?.maxRunsPerMonth ?? Infinity,
+      maxRunCostUsd: config.rescue?.maxRunCostUsd ?? Infinity,
+    });
+    if (blockReason) {
+      const blocked = actorTelemetry(actor, { status: 'unavailable', failureReason: blockReason });
+      summary[key] = blocked;
+      log(`  ! ${key}: blocked by ${blockReason}`);
+      continue;
+    }
     const startedAt = clockMillis(clock);
     try {
       const items = await runActor(actor, token, fetchImpl, {
@@ -380,17 +415,32 @@ export async function pullAll(config, token, {
         if (record) mapped.push(record);
         else invalid += 1;
       }
+      const seenIds = new Set(seenCache.profiles[actor.profile] ?? []);
+      let skippedSeen = 0;
+      for (let index = mapped.length - 1; index >= 0; index -= 1) {
+        if (seenIds.has(seenKeyFor(mapped[index]))) {
+          mapped.splice(index, 1);
+          skippedSeen += 1;
+        }
+      }
       const knownEligibility = eligibleCount(mapped);
       const degraded = invalid > 0;
       summary[key] = actorTelemetry(actor, {
         status: degraded ? 'degraded' : 'ok',
         fetched: items.length,
         prepared: mapped.length,
+        skippedSeen,
         ...knownEligibility,
         latencyMs: Math.max(0, clockMillis(clock) - startedAt),
         failureReason: degraded ? 'partial-failure' : null,
       });
       records.push(...mapped);
+      recordApifyRun(budgetState, nowIso, estimatedCostUsd);
+      const profileSeen = seenCache.profiles[actor.profile] || (seenCache.profiles[actor.profile] = []);
+      seenCache.profiles[actor.profile] = [...new Set([
+        ...profileSeen,
+        ...mapped.map(seenKeyFor).filter(Boolean),
+      ])];
       if (degraded) log(`  ! ${key}: ${invalid} record(s) had schema drift and were skipped`);
     } catch (error) {
       const telemetry = actorTelemetry(actor, {
@@ -409,6 +459,8 @@ export async function pullAll(config, token, {
   const unavailable = actors.filter((actor) => actor.status === 'unavailable');
   const status = failures.length ? (failures.length < actors.length ? 'degraded' : 'failed')
     : unavailable.length ? 'unavailable' : 'ok';
+  if (!seenCacheInjected) saveApifySeenCache(seenCachePath, seenCache, new Date(clockMillis(clock)).toISOString());
+  if (!budgetStateInjected) saveApifyBudgetState(budgetStatePath, budgetState, new Date(clockMillis(clock)).toISOString());
   return { status, records, summary, actors, preflight };
 }
 

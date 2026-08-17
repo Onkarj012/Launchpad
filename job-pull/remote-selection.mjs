@@ -1,5 +1,6 @@
 import { sourceQuality } from './dedup.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
+import { scoreState, scoringQueueRecord, splitScoredEntries } from './mode-scoring.mjs';
 import { waterfallBand } from './normal-selection.mjs';
 
 export const REMOTE_WATERFALL = Object.freeze([
@@ -28,8 +29,7 @@ export function remoteWaterfallBand(entry) {
 }
 
 function fitScore(entry) {
-  const candidate = entry.candidate || entry;
-  return Number(candidate.matchScore ?? candidate.score ?? entry.matchScore ?? entry.score ?? 0);
+  return scoreState(entry).score ?? Number.NEGATIVE_INFINITY;
 }
 
 function compareRemote(left, right) {
@@ -56,15 +56,16 @@ export function selectRemoteApplications(entries, { minimum = 10, preferred = 12
     const remoteBand = remoteWaterfallBand({ ...entry, candidate, eligibility, freshness });
     return { ...entry, candidate, eligibility, freshness, readiness, remoteBand };
   }).filter((entry) => entry.candidate.remoteReady === true && entry.readiness.ready && entry.remoteBand);
+  const { scored, scoringQueue, scoredCount, unscoredCount, scoringFailedCount } = splitScoredEntries(ready);
 
   const queues = new Map(REMOTE_WATERFALL.map((band) => [band, []]));
-  for (const entry of ready) queues.get(entry.remoteBand)?.push(entry);
+  for (const entry of scored) queues.get(entry.remoteBand)?.push(entry);
   for (const queue of queues.values()) queue.sort(compareRemote);
 
   const selected = [];
   const companyCounts = new Map();
   const seen = new Set();
-  const target = Math.min(maximum, ready.length);
+  const target = Math.min(maximum, scored.length);
   for (const band of REMOTE_WATERFALL) {
     for (const entry of queues.get(band)) {
       if (selected.length >= target) break;
@@ -96,7 +97,12 @@ export function selectRemoteApplications(entries, { minimum = 10, preferred = 12
   }
   return {
     selected,
-    readyPoolCount: ready.length,
+    readyPoolCount: scored.length,
+    scoringQueue: scoringQueue.map(scoringQueueRecord),
+    scoredCount,
+    unscoredCount,
+    scoringFailedCount,
+    readyCount: ready.length,
     minimum,
     preferred: Math.min(preferred, maximum),
     maximum,

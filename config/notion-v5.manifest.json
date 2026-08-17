@@ -11,8 +11,8 @@
   "expectedPropertyContracts": {
     "applications": ["name", "role", "company", "outreach", "activity", "referrals", "jdLink", "originalApplicationUrl", "applicationResolution", "applicationReady", "postedDate", "discoveredAt", "crawledAt", "freshnessTier", "status", "makeResume", "applied", "appliedAt", "resumeState", "outreachState", "nextAction", "employmentCategory", "selectionTier", "relaxation", "roleFamily", "companyStage", "workMode", "location", "matchScore", "conversionScore", "responseLikelihood", "source", "provider", "sourceJobId", "originalApplicationEvidence", "liveness", "requirementsEvidence", "relaxationEvidence", "rationale", "hook", "runId", "dedupKey", "syncKey", "stipendAmount", "stipendCurrency", "stipendPeriod", "stipendMonthlyAmount", "stipendRaw", "stipendEvidence", "stipendTier", "freshness", "readiness"],
     "companies": ["name", "applications", "canonicalDomain", "careerPageUrl", "atsProvider", "atsBoardUrl", "stage", "fundingDate", "fundingEvidence", "locations", "remotePolicy", "verificationState", "companyKey", "lastVerified"],
-    "outreach": ["name", "application", "person", "channel", "contactUrl", "preview", "sent", "sentAt", "response", "outcome", "nextEligibleContact", "duplicateKey", "evidenceUrl", "draftState", "email"],
-    "activity": ["name", "application", "eventType", "eventAt", "dueAt", "idempotencyKey", "actionState", "notes"],
+    "outreach": ["name", "application", "activity", "person", "channel", "contactUrl", "preview", "sent", "sentAt", "response", "outcome", "nextEligibleContact", "duplicateKey", "evidenceUrl", "draftState", "email"],
+    "activity": ["name", "application", "outreach", "eventType", "eventAt", "dueAt", "idempotencyKey", "actionState", "notes"],
     "referrals": ["name", "application", "person", "personUrl", "channel", "status", "requestedAt", "outcome", "duplicateKey", "evidence"]
   },
   "viewNames": ["Ready", "Backfill", "Internship", "Startup", "Remote", "Verification", "Resume", "Applied", "Outreach", "Follow-up", "Pipeline", "Archive"],
@@ -58,6 +58,8 @@
     { "from": "outreach.Application", "to": "applications", "fromDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true },
     { "from": "applications.Activity", "to": "activity", "fromDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "toDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "verified": true },
     { "from": "activity.Application", "to": "applications", "fromDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true },
+    { "from": "outreach.Activity", "to": "activity", "fromDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "toDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "verified": true },
+    { "from": "activity.Outreach", "to": "outreach", "fromDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "toDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "verified": true },
     { "from": "applications.Referrals", "to": "referrals", "fromDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "toDataSourceId": "fafb335b-0707-48be-8877-ee9659bf0ea4", "verified": true },
     { "from": "referrals.Application", "to": "applications", "fromDataSourceId": "fafb335b-0707-48be-8877-ee9659bf0ea4", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true }
   ],

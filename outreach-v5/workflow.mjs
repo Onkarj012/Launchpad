@@ -41,13 +41,17 @@ function activityFilter(key) {
 function pageId(page) { return page?.id ?? page?.pageId ?? null; }
 
 /** Research and draft without any send-capable connector. */
-export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = true } = {}) {
+export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = false, selectContact } = {}) {
   const eligible = applications.filter((application) => application?.id && !terminal(application)).sort((a, b) => score(b) - score(a) || String(a.id).localeCompare(String(b.id)));
   const results = [];
   for (let index = 0; index < eligible.length; index += 1) {
     const application = eligible[index];
-    const research = await researchContact({ application, providers, allowPaid, now });
+    const research = await researchContact({ application, providers, allowPaid, selectContact, now });
     if (!research.contact) {
+      if (research.status === 'needs-selection') {
+        results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: 'needs-selection', research });
+        continue;
+      }
       results.push({ applicationId: application.id, depth: index < deepLimit ? 'deep' : 'light', status: 'no-contact', research });
       continue;
     }
@@ -69,6 +73,7 @@ export async function prepareOutreach({ applications = [], providers = {}, deepL
     status: results.some((result) => result.status === 'draft-blocked') ? 'partial' : 'ready',
     deepCount: results.filter((result) => result.depth === 'deep' && result.status === 'draft-ready').length,
     lightCount: results.filter((result) => result.depth === 'light' && result.status === 'draft-ready').length,
+    needsSelectionCount: results.filter((result) => result.status === 'needs-selection').length,
     results,
   };
 }
@@ -118,6 +123,7 @@ export async function confirmManualSend({ gateway, outreach, application, confir
   const activity = await gateway.createPage('activity', {
     name: `${eventType} — ${outreach.person}`,
     application: [application.id],
+    outreach: [outreach.id],
     eventType,
     eventAt: sentAt,
     dueAt: stage === 'Follow-up 2' ? addDays(initialSentAt, 17) : nextEligibleContact,
@@ -126,7 +132,7 @@ export async function confirmManualSend({ gateway, outreach, application, confir
     notes: `Manual confirmation: ${confirmation.confirmedBy ?? confirmation.source ?? confirmation.note}`,
   });
   const sequence = { ...outreach, sent: true, sentAt: initialSentAt };
-  const activityHistory = [...(existing ?? []), { eventType, eventAt: sentAt }];
+  const activityHistory = [...(existing ?? []), { eventType, eventAt: sentAt, outreachId: outreach.id }];
   const derived = deriveOutreachState({ application, sequence, activities: activityHistory, now });
   if (typeof gateway.updatePage === 'function') {
     await gateway.updatePage('applications', application.id, { outreachState: derived.state, nextAction: derived.nextAction });
@@ -149,6 +155,7 @@ export async function recordOutreachOutcome({ gateway, outreach, application, re
   const activity = await gateway.createPage('activity', {
     name: `Outreach response — ${outreach.person}`,
     application: [application.id],
+    outreach: [outreach.id],
     eventType: 'Response',
     eventAt: observedAt,
     idempotencyKey: eventKey,
@@ -162,7 +169,7 @@ export async function recordOutreachOutcome({ gateway, outreach, application, re
 export function deriveApplicationOutreachState({ application, sequences = [], activities = [], now = () => Date.now() } = {}) {
   if (!sequences.length) return { state: 'None', nextAction: null, nextEligibleContact: null, due: false };
   const ordered = [...sequences].sort((a, b) => String(a.duplicateKey ?? a.id).localeCompare(String(b.duplicateKey ?? b.id)));
-  const derived = ordered.map((sequence) => deriveOutreachState({ application, sequence, activities: activities.filter((activity) => !sequence.id || activity.outreachId === sequence.id || activity.duplicateKey === sequence.duplicateKey), now }));
+  const derived = ordered.map((sequence) => deriveOutreachState({ application, sequence, activities: activities.filter((activity) => !sequence.id || activity.outreachId === sequence.id || (Array.isArray(activity.outreach) && activity.outreach.includes(sequence.id)) || activity.duplicateKey === sequence.duplicateKey), now }));
   const active = derived.find((state) => state.state !== 'Stopped') ?? derived[0];
   return active;
 }

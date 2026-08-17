@@ -8,8 +8,8 @@ import {
   crawlerDiscoveryPlan,
   runCrawlerOperator,
 } from '../../crawler/operator.mjs';
-import { main, parseDiscoveryProfileArgs } from '../../crawler/cli.mjs';
-import { mkdtempSync } from 'node:fs';
+import { main, parseDiscoveryProfileArgs, READINESS_TEST_GLOBS } from '../../crawler/cli.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -46,6 +46,17 @@ test('Pune changes source priority and hints without changing shared gate policy
   assert.ok(pune.sourcePlan.queryHints.includes('Pune'));
 });
 
+test('readiness uses the complete canonical deterministic Node test suite', () => {
+  assert.deepEqual(READINESS_TEST_GLOBS, [
+    'tests/crawler/*.test.mjs',
+    'tests/job-pull/*.test.mjs',
+    'tests/notion-v5/*.test.mjs',
+    'tests/resume-v5/*.test.mjs',
+    'tests/outreach-v5/*.test.mjs',
+    'tests/v5/*.test.mjs',
+  ]);
+});
+
 test('CLI and plan plumbing preserve defaults and expose explicit profile flags', () => {
   assert.deepEqual(parseDiscoveryProfileArgs(['plan', 'morning']), {
     schedule: 'morning', mode: 'normal', locationPreset: 'india',
@@ -61,10 +72,14 @@ test('CLI and plan plumbing preserve defaults and expose explicit profile flags'
   assert.equal(plan.profile.locationPreset, 'pune');
 });
 
-test('daily command invokes the unified runner and emits its operator result', async () => {
+test('daily command invokes the unified runner and emits its operator result with local canary evidence', async () => {
   let received = null;
   let emitted = null;
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-1', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
+  const evidencePath = path.join(root, 'canary-evidence.json');
+  const evidence = { schemaVersion: 'LaunchpadDeliveryCanaryEvidenceV1', runId: 'command-daily-1' };
+  writeFileSync(evidencePath, JSON.stringify(evidence));
+  const exitCode = await main(['daily', 'midday', '--env', 'dev', '--mode', 'remote', '--location-preset', 'pune', '--run-id', 'command-daily-1', '--canary-evidence', evidencePath, '--lock-path', path.join(root, 'daily.lock')], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -74,7 +89,26 @@ test('daily command invokes the unified runner and emits its operator result', a
   assert.equal(exitCode, 0);
   assert.equal(received.runId, 'command-daily-1');
   assert.equal(received.config.schemaVersion, 'LaunchpadCrawlerConfigV1');
+  assert.equal(received.schedule, 'midday');
+  assert.equal(received.mode, 'remote');
+  assert.equal(received.locationPreset, 'pune');
+  assert.deepEqual(received.canaryEvidence, evidence);
   assert.equal(emitted.outcome.status, 'ok');
+});
+
+test('daily command passes missing canary evidence as nonfatal invalid evidence', async () => {
+  let received = null;
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
+  const missingPath = path.join(root, 'missing-canary-evidence.json');
+  const exitCode = await main(['daily', '--env', 'dev', '--canary-evidence', missingPath, '--lock-path', path.join(root, 'daily.lock')], {
+    dailyRunner: async (options) => {
+      received = options;
+      return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
+    },
+    emit: () => {},
+  });
+  assert.equal(exitCode, 0);
+  assert.match(received.canaryEvidence.loadError, /failed to load canary evidence/);
 });
 
 test('daily command activates the codex scorer by default', async () => {
@@ -115,6 +149,61 @@ test('daily --scores-json with --no-scorer passes the scores path through and no
   assert.equal(exitCode, 0);
   assert.equal(received.scores, 'scores/manual.json');
   assert.equal(received.scorer, null);
+});
+
+test('daily command notifies once when the run is fatal', async () => {
+  const notifications = [];
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-fatal', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
+    dailyRunner: async () => ({
+      runId: 'command-daily-fatal',
+      outcome: { status: 'fatal', errors: [{ message: 'source timeout' }] },
+    }),
+    emit: () => {},
+    notify: (details) => { notifications.push(details); },
+  });
+  assert.equal(exitCode, 1);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, 'Launchpad — run failed');
+  assert.match(notifications[0].message, /daily run command-daily-fatal failed: source timeout/);
+});
+
+test('daily command notifies once for fresh Strict Hot/Active matches', async () => {
+  const notifications = [];
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-fresh', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
+    dailyRunner: async () => ({
+      runId: 'command-daily-fresh',
+      outcome: { status: 'ok' },
+      shortlist: [
+        { selectionTier: 'Strict', freshnessWindow: 'Hot' },
+        { selectionTier: 'Strict', freshnessWindow: 'Active' },
+      ],
+    }),
+    emit: () => {},
+    notify: (details) => { notifications.push(details); },
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(notifications, [{
+    title: 'Launchpad — fresh matches',
+    message: '2 new Strict Hot/Active matches ready',
+  }]);
+});
+
+test('daily command does not notify when there are no fresh strict matches', async () => {
+  const notifications = [];
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-no-fresh', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
+    dailyRunner: async () => ({
+      runId: 'command-daily-no-fresh',
+      outcome: { status: 'ok' },
+      shortlist: [
+        { selectionTier: 'strict', freshnessWindow: 'Warm' },
+        { selectionTier: 'broad', freshnessWindow: 'Hot' },
+      ],
+    }),
+    emit: () => {},
+    notify: (details) => { notifications.push(details); },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(notifications.length, 0);
 });
 
 test('operator passes profile metadata into workflow config and result metadata', async () => {

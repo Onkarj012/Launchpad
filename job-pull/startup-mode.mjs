@@ -1,12 +1,14 @@
 import { assertValidConfig, assertValidConversionPlan, loadConfig, loadConversionPlan } from './config.mjs';
 import { candidateDedupKey } from './candidate.mjs';
-import { runPipeline } from './run.mjs';
+import { applyScores, runPipeline } from './run.mjs';
 import { createNoWriteNotionGateway } from './workflow.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
 import { enrichStartupSources } from './startup-enrichment.mjs';
 import { runStartupSourcePlan } from './startup-sources.mjs';
 import { selectStartupApplications } from './startup-selection.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
+import { readOpportunityLedger, recordSurfaced } from './opportunity-ledger.mjs';
+import { buildReconciliation, scorePoolInRun, scorerIsBroken, scoringGateError } from './mode-scoring.mjs';
 
 export const STARTUP_MODE_SCHEMA_VERSION = 'LaunchpadV5StartupModeV1';
 
@@ -150,12 +152,13 @@ function verificationRecord(candidate, eligibility) {
 }
 
 function fatalResult(runId, runAt, sourceManifests, companyRecords, error) {
+  const details = error.details || {};
   return {
     schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
-    companyRecords, plannedNotionOperations: [], transaction: null, historicalSuppressions: [],
+    companyRecords, plannedNotionOperations: [], transaction: null, historicalSuppressions: [], scoringQueue: details.scoringQueue || [], scoring: details.scoring || null, reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => ['failed', 'unavailable'].includes(item.status)).map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
-    counts: null,
+    counts: details.counts || null,
   };
 }
 
@@ -163,7 +166,7 @@ function fatalResult(runId, runAt, sourceManifests, companyRecords, error) {
 export async function runStartupMode({
   mode = 'startup', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(), executeGateway = false,
-  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = [], historicalV4Rows = [],
+  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = null, opportunityLedgerPath = null, historicalV4Rows = [], scores, scorer, commitSurfaced = false,
 } = {}) {
   if (String(mode).toLowerCase() !== 'startup') throw new StartupModeError(`Startup runner only supports startup mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -172,6 +175,7 @@ export async function runStartupMode({
   let companyRecords = [];
   try {
     sourceResults = await runStartupSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId });
+    sourceResults = applyScores(sourceResults, scores);
     const enriched = enrichStartupSources(sourceResults, { runAt });
     sourceResults = enriched.sources;
     companyRecords = enriched.companyRecords;
@@ -180,14 +184,32 @@ export async function runStartupMode({
     const baseConversionPlan = conversionPlan || loadConversionPlan();
     assertValidConfig(baseConfig);
     assertValidConversionPlan(baseConversionPlan);
-    const pipeline = runPipeline({ config: baseConfig, conversionPlan: baseConversionPlan, now: runAt, runId, ledgerRows, opportunityLedgerRows, sources: sourceResults, dryRun: true });
+    const effectiveOpportunityLedgerRows = opportunityLedgerRows ?? readOpportunityLedger(opportunityLedgerPath ?? undefined).rows;
+    const pipeline = runPipeline({ config: baseConfig, conversionPlan: baseConversionPlan, now: runAt, runId, ledgerRows, opportunityLedgerRows: effectiveOpportunityLedgerRows, opportunityLedgerPath, sources: sourceResults, dryRun: true });
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
-    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
-    const selectionEntries = nonHistoricalCandidates.map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
+    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
+    const selectionEntries = scoredPool.map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
     const selection = selectStartupApplications(selectionEntries, { maximumPerCompany: baseConfig.run.maximumPerCompany });
+    const eligibleCount = pipeline.postSuppressionCandidates.length;
+    const scorerRan = scorerTelemetry !== null;
+    const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
+    const incompleteScoring = scorerRan ? scorerIsBroken(scorerTelemetry) : droppedScoringRows;
+    const scoringDropped = scorerRan && droppedScoringRows && !incompleteScoring;
+    const reconciliation = buildReconciliation({ eligible: eligibleCount, historicalSuppressed: historicalSuppressions.length, selection, selected: incompleteScoring ? 0 : selection.selected.length, runFailed: incompleteScoring });
+    if (incompleteScoring) {
+      const error = scoringGateError(StartupModeError, selection, scorerRan ? scorerTelemetry : null);
+      error.details = {
+        scoringQueue: selection.scoringQueue,
+        scoring: { required: true, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: 0, ...(scorerTelemetry ? { scorer: scorerTelemetry } : {}) },
+        reconciliation,
+        counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, selected: 0, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      };
+      throw error;
+    }
     const shortlist = selection.selected;
-    const operations = shortlist.map((candidate) => ({ operation: 'create', resource: 'application', dedupKey: candidateDedupKey(candidate), payload: startupPayload(candidate, runId), provenance: provenanceFor(candidate, runId) }));
+    const operations = shortlist.map((candidate) => ({ operation: 'create', resource: 'application', dedupKey: candidateDedupKey(candidate), payload: startupPayload(candidate, runId), provenance: provenanceFor(candidate, runId), company: candidate.companyRecord || null }));
     if (!notionGateway || typeof notionGateway.planWrites !== 'function') throw new StartupModeError('notion gateway must implement planWrites', 'notion');
     const planned = notionGateway.planWrites({ schemaVersion: 'LaunchpadV5PlanV1', mode: 'startup', runId, runAt, operations: structuredClone(operations) });
     const plannedOperations = Array.isArray(planned) ? planned : planned?.operations;
@@ -197,6 +219,7 @@ export async function runStartupMode({
       if (notionGateway.kind !== 'fake-transactional-v5' || typeof notionGateway.executeWrites !== 'function') throw new StartupModeError('live or non-transactional gateway execution is disabled; inject the startup test fake gateway', 'notion');
       transaction = await notionGateway.executeWrites({ operations: plannedOperations });
     }
+    if (commitSurfaced) recordSurfaced(shortlist, { path: opportunityLedgerPath || undefined, now: runAt });
     const candidatesByUrl = new Map(pipeline.scoringCandidates.map((candidate) => [candidate.canonicalUrl, candidate]));
     const verificationQueue = sourceResults.flatMap((source) => source.candidates)
       .map((candidate) => candidatesByUrl.get(candidate.canonicalUrl) || candidate)
@@ -210,12 +233,14 @@ export async function runStartupMode({
     return {
       schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist, verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, companyRecords, plannedNotionOperations: plannedOperations, transaction,
       historicalSuppressions,
+      scoringQueue: selection.scoringQueue,
+      ...(scorerTelemetry ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } } : {}),
+      reconciliation,
       shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing, preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes, reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)], linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' } },
-      outcome: { status: failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), companyRecords: companyRecords.length, fundingSignals: companyRecords.filter((company) => company.fundingSignal?.within18Months).length, underSixMonthFunding: companyRecords.filter((company) => company.fundingSignal?.under6Months).length, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, startupSources: selection.startupSources },
+      outcome: { status: failedLanes.length || scoringDropped || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || scoringDropped || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
+      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), companyRecords: companyRecords.length, fundingSignals: companyRecords.filter((company) => company.fundingSignal?.within18Months).length, underSixMonthFunding: companyRecords.filter((company) => company.fundingSignal?.under6Months).length, eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, startupSources: selection.startupSources, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
     };
   } catch (error) {
     return fatalResult(runId, runAt, sourceResults.map(({ manifest }) => manifest), companyRecords, error);
   }
 }
-

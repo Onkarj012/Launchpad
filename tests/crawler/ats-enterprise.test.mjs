@@ -42,16 +42,19 @@ test('Workday LIST labels date candidates and preserve postedOn provenance', asy
   assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-postedOn', label: 'Posted Yesterday' });
 });
 
-test('Workday LIST "Posted Today" dates against runAt, not wall-clock', async () => {
+test('Workday LIST "Posted Today" stays in VerifyQueue until detail corroboration', async () => {
   const pastRunAt = '2026-07-20T04:30:00.000Z';
   const result = await discoverEnterpriseAts({
     boards: [{ provider: 'workday', company: 'Acme', url: 'https://acme.wd1.myworkdayjobs.com/jobs' }],
     transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/ai-engineer', postedOn: 'Posted Today' }] }) }),
     runAt: pastRunAt, maxPages: 1,
   });
-  // A long crawl must not date rows after runAt, or freshness trips FRESHNESS_FUTURE_POSTED_AT.
+  // A list-only date is uncorroborated, so it must not be treated as verified freshness.
   assert.equal(result.observations[0].postedAt, pastRunAt);
-  assert.equal(classifyFreshness(result.observations[0], { now: pastRunAt }).code, 'FRESHNESS_HOT_0_72H');
+  const freshness = classifyFreshness(result.observations[0], { now: pastRunAt });
+  assert.equal(freshness.window, 'VerifyQueue');
+  assert.equal(freshness.verifyQueue, true);
+  assert.equal(freshness.workdayUncorroborated, true);
 });
 
 test('Workday LIST 30+ labels remain undated and unverified', async () => {
@@ -592,7 +595,7 @@ test('hydrated Workday candidate with a future start date remains undated and un
   assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified', providerStartDate: '2026-07-24T00:00:00.000Z', providerPostedOn: null });
 });
 
-test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, and remains policy-evaluable', async () => {
+test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, and remains in VerifyQueue', async () => {
   const listUrl = 'https://reliaquest.wd5.myworkdayjobs.com/wday/cxs/reliaquest/ReliaQuest_Careers/jobs';
   const calls = [];
   const transport = async (url, options) => {
@@ -714,11 +717,11 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
   assert.equal(result.telemetry.workdayDetail.succeeded, 1);
   assert.deepEqual(result.telemetry.workdayDetail.selectedByReason, { 'target-title-pune': 1 });
 
-  // After hydration the candidate is evidence-rich enough for downstream policy,
-  // and the LIST postedOn label dates it, so it is policy-evaluable rather than
-  // parked in VerifyQueue (see docs/research/workday-postedon-probe.md).
+  // The LIST postedOn label remains uncorroborated for freshness classification.
   const freshness = classifyFreshness(ase, { now: runAt });
-  assert.equal(freshness.window, 'Backfill');
+  assert.equal(freshness.window, 'VerifyQueue');
+  assert.equal(freshness.verifyQueue, true);
+  assert.equal(freshness.workdayUncorroborated, true);
   const identity = resolveJobIdentity(ase);
   assert.equal(identity.identity.providerJobId, 'workday|r15032');
   assert.equal(identity.code, 'NEW_TO_ME');

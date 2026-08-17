@@ -1,11 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { createDailyExecution, crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
+import { fileURLToPath } from 'node:url';
+import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
+import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
+import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
+import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
 import { openCrawlerStore } from '../../crawler/run.mjs';
+import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
+import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -25,6 +33,7 @@ function greenhouseJob(id, companySlug, overrides = {}) {
 function rawPortalJob(id, overrides = {}) {
   return {
     url: `https://naukri.example.test/job/${id}`,
+    canonicalUrl: `https://naukri.example.test/job/${id}`,
     company: `Portal Company ${id}`,
     title: 'AI Engineer',
     location: 'Pune, India',
@@ -63,6 +72,7 @@ function testConfig({ warmBoards = [], trackedBoards = [] } = {}) {
     config: {
       schemaVersion: 'LaunchpadCrawlerConfigV1',
       databasePath: path.join(root, 'crawler.sqlite'),
+      opportunityLedgerPath: path.join(root, 'opportunity-ledger.tsv'),
       reverseWarmSetPath,
       sources: {
         atsWarm: {
@@ -90,14 +100,136 @@ function fakeTransport(jobsBySlug, calls = []) {
   };
 }
 
+function plannedOperations(shortlist, runId) {
+  return shortlist.map((candidate) => {
+    const canonicalUrl = candidate.canonicalUrl ?? candidate.url;
+    const dedupKey = candidateDedupKey(candidate);
+    return {
+      operation: 'create',
+      resource: 'application',
+      dedupKey,
+      payload: {
+        name: `${candidate.title} — ${candidate.company}`,
+        role: candidate.title,
+        Company: candidate.company,
+        jdLink: candidate.discoveryUrl || canonicalUrl,
+        originalApplicationUrl: candidate.originalApplicationUrl,
+        applicationResolution: candidate.applicationResolution?.status,
+        applicationReady: true,
+        postedDate: candidate.postedAt,
+        discoveredAt: candidate.discoveredAt,
+        crawledAt: candidate.crawledAt,
+        freshnessTier: candidate.waterfallBand || candidate.freshnessWindow,
+        status: 'Ready',
+        makeResume: false,
+        applied: false,
+        resumeState: 'Not Started',
+        employmentCategory: candidate.employment?.type === 'internship' ? 'Internship' : candidate.employment?.type === 'contract' ? 'Contractor/EOR' : 'Full-time',
+        selectionTier: candidate.selectionTier,
+        relaxation: candidate.relaxations || [],
+        roleFamily: candidate.roleFamily || null,
+        companyStage: candidate.companyStage || null,
+        workMode: candidate.workMode ? candidate.workMode[0].toUpperCase() + candidate.workMode.slice(1) : null,
+        location: candidate.location,
+        matchScore: candidate.matchScore,
+        conversionScore: candidate.conversionScore,
+        responseLikelihood: candidate.responseLikelihood,
+        source: candidate.source,
+        provider: candidate.provider,
+        sourceJobId: candidate.jobId,
+        originalApplicationEvidence: candidate.originalApplicationEvidence || candidate.applicationResolution?.evidence || null,
+        liveness: candidate.liveness?.status,
+        requirementsEvidence: candidate.requirementsEvidence || candidate.evidence?.requirements || candidate.experience?.evidence || null,
+        relaxationEvidence: candidate.readinessEvidence ?? null,
+        rationale: candidate.rationale,
+        hook: candidate.hook,
+        runId,
+        dedupKey,
+        syncKey: dedupKey,
+      },
+      provenance: {
+        discoveryUrl: candidate.discoveryUrl || canonicalUrl,
+        discoverySource: candidate.discoverySource || candidate.evidence?.discovery?.source || candidate.source,
+        discoveryCategory: candidate.discoveryCategory || candidate.evidence?.discovery?.category || candidate.sourceCategory,
+        discoveryProvider: candidate.provider || candidate.evidence?.discovery?.provider,
+        originalApplicationUrl: candidate.originalApplicationUrl,
+        originalApplicationEvidence: candidate.originalApplicationEvidence || candidate.applicationResolution?.evidence || null,
+        verifiedAt: candidate.verifiedAt || candidate.liveness?.checkedAt || null,
+        postedAt: candidate.postedAt,
+        discoveredAt: candidate.discoveredAt,
+        crawledAt: candidate.crawledAt,
+        location: candidate.location,
+        citizenshipEvidence: candidate.citizenshipEvidence || candidate.remoteEligibility?.evidence || null,
+        experience: candidate.experience,
+        employment: candidate.employment,
+        feesBonds: candidate.feeBondEvidence || null,
+        liveness: candidate.liveness,
+        score: candidate.matchScore,
+        rationale: candidate.rationale,
+        hook: candidate.hook,
+        runId,
+        dedupKey,
+      },
+    };
+  });
+}
+
+function canaryEvidence(config, runId, shortlist = null) {
+  return ({ shortlist: actualShortlist = shortlist ?? [], plannedNotionOperations = null, codeConfigVersion: actualVersion, inventoryIdentity: actualIdentity } = {}) => {
+  const reportRoot = path.dirname(config.databasePath);
+  const markdown = path.join(reportRoot, `${runId}-canary.md`);
+  const json = path.join(reportRoot, `${runId}-canary.json`);
+  const markdownBytes = `# Delivery canary ${runId}\n`;
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), encoding: 'utf8' }).trim();
+  const codeConfigVersion = actualVersion ?? computeCanaryVersion({ config });
+  const operations = plannedNotionOperations ?? plannedOperations(actualShortlist, runId);
+  const inventoryIdentity = actualIdentity ?? computeDeliveryInventoryIdentity(actualShortlist, operations);
+  writeFileSync(markdown, markdownBytes);
+  writeFileSync(json, JSON.stringify({
+    schemaVersion: DELIVERY_CANARY_SIDECAR_SCHEMA,
+    runId,
+    codeConfigVersion,
+    revision,
+    inventoryIdentity,
+    markdownDigest: `sha256:${createHash('sha256').update(markdownBytes).digest('hex')}`,
+  }));
+  return {
+    schemaVersion: DELIVERY_CANARY_EVIDENCE_SCHEMA,
+    runId,
+    codeConfigVersion,
+    inventoryIdentity,
+    engineering: {
+      fatalScorerInfrastructureFailures: 0,
+      sourceOutagesReportedHealthy: 0,
+      selectedSuppressedRoles: 0,
+      rolesSurfacedBeforeCommit: 0,
+      duplicateRequisitionCollisions: 0,
+      unattributedFunnelLoss: 0,
+      durationMs: 1_000,
+      reportComplete: true,
+      reportPaths: { markdown, json },
+      manualInventoryMatch: true,
+    },
+    reproducibility: { revision, clean: true, dirtyPaths: [] },
+  };
+  };
+}
+
 function runOptions(config, transport, overrides = {}) {
+  const runId = overrides.runId === undefined
+    ? `daily-${path.basename(path.dirname(config.databasePath))}`
+    : overrides.runId;
   return {
     config,
     transport,
     clock: { now: () => NOW, sleep: async () => {} },
-    runId: `daily-${path.basename(path.dirname(config.databasePath))}`,
+    runId,
     ledgerRows: [],
     opportunityLedgerRows: [],
+    ...(runId && overrides.canaryEvidence === undefined ? {
+      canaryEvidence: canaryEvidence(config, runId),
+      canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    } : {}),
     ...overrides,
   };
 }
@@ -123,6 +255,65 @@ test('crawler-v2 atsWarm observations feed reverse-ats-warm into the real Normal
   assert.equal(manifest.fetched, 1);
   assert.equal(manifest.required, true);
   assert.equal(manifest.optional, false);
+});
+
+test('board rotation state round-trips through a temporary file', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'launchpad-board-rotation-'));
+  const file = path.join(root, 'nested', 'board-rotation-state.json');
+  const state = {
+    cursor: 2,
+    providerCursors: { greenhouse: 3 },
+    lastAttemptByBoard: { 'greenhouse:board-a': NOW },
+  };
+
+  const saved = saveBoardRotationState(file, state, NOW);
+
+  assert.deepEqual(loadBoardRotationState(file), {
+    schemaVersion: 1,
+    updatedAt: NOW,
+    ...state,
+  });
+  assert.deepEqual(saved, loadBoardRotationState(file));
+});
+
+test('consecutive daily runs rotate tracked warm boards using persisted state', async () => {
+  const { config } = testConfig({ trackedBoards: ['board-a', 'board-b', 'board-c', 'board-d'] });
+  const rotationStatePath = path.join(path.dirname(config.databasePath), 'rotation', 'state.json');
+  config.sources.trackedAts = { maxBoards: 2, rotationStatePath };
+  const calls = [];
+  const transport = fakeTransport({
+    'board-a': [],
+    'board-b': [],
+    'board-c': [],
+    'board-d': [],
+  }, calls);
+
+  await runDailyNormal(runOptions(config, transport, { runId: 'rotation-first' }));
+  const firstBoards = calls.splice(0).map((url) => url.match(/\/boards\/([^/]+)\/jobs/)?.[1]).filter(Boolean);
+  await runDailyNormal(runOptions(config, transport, { runId: 'rotation-second' }));
+  const secondBoards = calls.map((url) => url.match(/\/boards\/([^/]+)\/jobs/)?.[1]).filter(Boolean);
+
+  assert.equal(firstBoards.length, 2);
+  assert.equal(secondBoards.length, 2);
+  assert.notDeepEqual(secondBoards, firstBoards);
+  assert.equal(loadBoardRotationState(rotationStatePath).updatedAt, NOW);
+});
+
+test('runDailyNormal defaults the crawler discovery profile', async () => {
+  const { config } = testConfig();
+  const store = openCrawlerStore(config.databasePath);
+  const runId = 'daily-default-profile';
+  try {
+    await runDailyNormal(runOptions(config, fakeTransport({}), { runId, store }));
+    const row = store.prepare('SELECT schedule, config_json FROM crawl_runs WHERE run_id = ?').get(`${runId}-crawler-v2`);
+    const profile = JSON.parse(row.config_json).discoveryProfile;
+    assert.equal(row.schedule, 'morning');
+    assert.equal(profile.schedule, 'morning');
+    assert.equal(profile.mode, 'normal');
+    assert.equal(profile.locationPreset, 'india');
+  } finally {
+    store.close();
+  }
 });
 
 test('the scorer timeout keeps its floor when discovery leaves almost no time', async () => {
@@ -706,18 +897,30 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
 });
 
-test('the unified result invokes the canary recorder at the daily-run seam', async () => {
+test('daily records the exact final shortlist before persisting a valid canary', async () => {
   const { config } = testConfig();
   const records = [];
+  const events = [];
+  const candidates = [rawPortalJob(1401), rawPortalJob(1402)];
+  const runId = 'daily-ledger-before-canary';
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId,
+    canaryEvidence: canaryEvidence(config, runId, candidates),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
     canaryStore: {
       readRuns: () => records,
-      append: (record) => records.push(record),
+      append: (record) => { events.push('canary'); records.push(record); },
+    },
+    opportunityLedgerWriter: (shortlist, options) => {
+      events.push('ledger');
+      return recordSurfaced(shortlist, options);
     },
     sourceFixtures: {
-      'portal-naukri': { candidates: [rawPortalJob(1401)], manifest: { status: 'ok' } },
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates, manifest: { status: 'ok' } },
     },
   }));
+  events.push('returned');
 
   assert.deepEqual(result.deliveryCanary.counts, {
     eligible: result.counts.eligible,
@@ -725,8 +928,73 @@ test('the unified result invokes the canary recorder at the daily-run seam', asy
     ready: result.counts.ready,
     shortlist: result.counts.selected,
   });
+  assert.deepEqual(events, ['ledger', 'canary', 'returned']);
   assert.equal(records.length, 1);
   assert.equal(records[0].runId, result.runId);
+  assert.deepEqual(records[0].discoveryProfile, { schedule: 'morning', mode: 'normal', locationPreset: 'india' });
+  assert.equal(records[0].valid, true, JSON.stringify(records[0].invalidReasons));
+  assert.equal(result.deliveryCanary.persisted, true);
+  assert.deepEqual(result.surfaced.rows.map((row) => row.canonical_url).sort(), result.shortlist.map((candidate) => candidate.canonicalUrl).sort());
+});
+
+test('malformed, preflight-unwritable, or conflicting canary stores fail before the opportunity ledger is touched', async () => {
+  const cases = [
+    ['malformed', { readRuns: () => { throw new SyntaxError('malformed canary store'); } }, /malformed canary store/],
+    ['preflight-unwritable', { readRuns: () => [], preflight: () => { const error = new Error('canary store is unwritable'); error.code = 'EACCES'; throw error; } }, (error) => error.code === 'EACCES'],
+    ['conflict', { readRuns: () => [{ runId: 'conflict', runAt: NOW, counts: { shortlist: 999 } }] }, (error) => error.code === 'CANARY_RUN_ID_CONFLICT'],
+  ];
+  for (const [runId, canaryStore, expected] of cases) {
+    const { config } = testConfig();
+    const candidates = [rawPortalJob(`1403-${runId}`)];
+    await assert.rejects(runDailyNormal(runOptions(config, fakeTransport({}), {
+      canaryStore,
+      runId,
+      canaryEvidence: canaryEvidence(config, runId, candidates),
+      sourceFixtures: { 'portal-naukri': { candidates, manifest: { status: 'ok' } } },
+    })), expected);
+    assert.deepEqual(readOpportunityLedger(config.opportunityLedgerPath).rows, []);
+  }
+});
+
+test('ledger failure leaves the canary store unchanged', async () => {
+  const { config } = testConfig();
+  const records = [];
+  const runId = 'ledger-failure';
+  const candidates = [rawPortalJob(1404)];
+  await assert.rejects(runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId,
+    canaryEvidence: canaryEvidence(config, runId, candidates),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    canaryStore: { readRuns: () => records, append: (record) => records.push(record) },
+    opportunityLedgerWriter: () => { throw new Error('ledger write failed'); },
+    sourceFixtures: { 'portal-naukri': { candidates, manifest: { status: 'ok' } } },
+  })), /ledger write failed/);
+  assert.deepEqual(records, []);
+});
+
+test('canary append failure after ledger returns degraded delivery with shortlist and no valid record claim', async () => {
+  const { config } = testConfig();
+  const runId = 'canary-append-failure';
+  const candidates = [rawPortalJob(1405)];
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId,
+    canaryEvidence: canaryEvidence(config, runId, candidates),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    canaryStore: {
+      readRuns: () => [],
+      append: () => { const error = new Error('canary store is unwritable'); error.code = 'EACCES'; throw error; },
+    },
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates, manifest: { status: 'ok' } } },
+  }));
+
+  assert.equal(result.outcome.status, 'degraded');
+  assert.equal(result.outcome.fatal, false);
+  assert.deepEqual(result.shortlist.map((candidate) => candidate.canonicalUrl), candidates.map((candidate) => candidate.url));
+  assert.equal(result.deliveryCanary.valid, false);
+  assert.equal(result.deliveryCanary.preparedValid, true);
+  assert.equal(result.deliveryCanary.persisted, false);
+  assert.equal(result.canaryPersistenceError.code, 'EACCES');
+  assert.deepEqual(readOpportunityLedger(config.opportunityLedgerPath).rows.map((row) => row.canonical_url), candidates.map((candidate) => candidate.url));
 });
 
 test('scores supplied to the unified daily run merge before the scoring gate', async () => {
@@ -779,4 +1047,93 @@ test('omitting scores preserves the unified scoring gate', async () => {
   assert.equal(result.outcome.status, 'fatal');
   assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
   assert.match(result.outcome.errors[0].message, /unscored=1/);
+});
+
+test('focused mode fixtures require independent stage evidence for shared Startup fallback without weakening native lanes', () => {
+  const shared = { canonicalUrl: 'https://jobs.example.test/shared', company: 'Shared Co', title: 'AI Engineer', location: 'Pune, India', provider: 'greenhouse', sourceId: 'ats-warm', classification: 'direct' };
+  const enterprise = { ...shared, canonicalUrl: 'https://jobs.example.test/enterprise', company: 'Enterprise Co', companyStage: 'Enterprise', companyStageEvidence: 'https://companies.example.test/enterprise' };
+  const taggedStartup = { ...shared, canonicalUrl: 'https://jobs.example.test/tagged-startup', company: 'Tagged Startup', companyStage: 'Startup', companyStageEvidence: 'warm ATS board tagged startup: Tagged Startup', evidence: { startupTagged: true } };
+  const evidenceBackedStartup = { ...shared, canonicalUrl: 'https://jobs.example.test/evidence-startup', company: 'Evidence Startup', companyStage: 'Startup', startupStageEvidenceRef: 'https://portfolio.example.test/evidence-startup', evidence: { startupTagged: true, startupStageEvidenceRef: 'https://portfolio.example.test/evidence-startup' } };
+  const companyRecordStartup = { ...shared, canonicalUrl: 'https://jobs.example.test/company-record-startup', company: 'Company Record Startup', companyRecord: { stage: 'Scale-up', stageEvidence: 'https://companies.example.test/company-record-startup' } };
+  const nativeStartup = { ...shared, startupLaneId: 'yc', sourceId: 'startup-mode', startupEvidence: 'yc board' };
+  const nativeRemote = { ...shared, remoteLaneId: 'himalayas', sourceId: 'remote-mode', remoteEvidence: { country: 'India' } };
+  const result = {
+    observations: [shared, enterprise, taggedStartup, evidenceBackedStartup, companyRecordStartup, nativeStartup, nativeRemote],
+    failures: [{ sourceId: 'ats-warm', provider: 'greenhouse', code: 'REQUEST_TIMEOUT' }],
+    sourceTelemetry: { 'ats-warm': { attempts: 1, error: 'warm timeout' } },
+  };
+
+  const startup = buildFocusedModeFixtures(result, 'startup');
+  assert.equal(startup.yc.candidates.length, 1);
+  assert.deepEqual(startup['startup-employer-boards'].candidates.map((candidate) => candidate.company).sort(), ['Company Record Startup', 'Evidence Startup'].sort());
+  assert.equal(startup['startup-employer-boards'].manifest.status, 'degraded');
+
+  const remote = buildFocusedModeFixtures(result, 'remote');
+  assert.equal(remote.himalayas.candidates.length, 1);
+  assert.deepEqual(remote['remote-ats'].candidates.map((candidate) => candidate.company).sort(), ['Company Record Startup', 'Enterprise Co', 'Evidence Startup', 'Tagged Startup'].sort());
+  assert.equal(remote['remote-ats'].manifest.status, 'degraded');
+  assert.equal(remote.himalayas.candidates[0].remoteEvidence.country, 'India');
+});
+
+test('daily mode dispatch selects Startup and Remote with mode-specific run identity and no second source function fetch', async () => {
+  const { root, config } = testConfig();
+  config.opportunityLedgerPath = path.join(root, 'opportunity-ledger.tsv');
+  const startupCandidate = rawPortalJob(1601, { company: 'Startup Dispatch Co' });
+  const startupRunId = `daily-morning-startup-${NOW}`;
+  const startup = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    mode: 'startup',
+    runId: null,
+    canaryEvidence: canaryEvidence(config, startupRunId, [startupCandidate]),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    sourceFunctions: { 'startup-employer-boards': () => { throw new Error('focused startup must use shared fixture'); } },
+    sourceFixtures: Object.fromEntries([
+      'startup-employer-boards', 'vc-portfolio-boards', 'yc', 'wellfound',
+      'india-startup-directories', 'startup-watchlist', 'funding-hiring-signals',
+    ].map((laneId) => [laneId, laneId === 'startup-employer-boards'
+      ? { candidates: [startupCandidate], manifest: { status: 'ok' } }
+      : { candidates: [], manifest: { status: 'empty' } }])),
+  }));
+  assert.equal(startup.mode, 'startup');
+  assert.match(startup.runId, /morning-startup/);
+  assert.equal(startup.shortlist[0].company, 'Startup Dispatch Co');
+  assert.deepEqual(startup.deliveryCanary.discoveryProfile, { schedule: 'morning', mode: 'startup', locationPreset: 'india' });
+  assert.equal(startup.deliveryCanary.valid, false);
+  assert.ok(startup.deliveryCanary.invalidReasons.some((reason) => /run outcome is degraded/.test(reason)));
+
+  const remoteCandidate = rawPortalJob(1602, {
+    company: 'Remote Dispatch Co',
+    location: 'Remote - India',
+    description: 'Worldwide remote including India. Full-time AI Engineer role for 0-1 years.',
+  });
+  const remoteRunId = `daily-morning-remote-${NOW}`;
+  const remote = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    mode: 'remote',
+    runId: null,
+    canaryEvidence: canaryEvidence(config, remoteRunId, [remoteCandidate]),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    sourceFunctions: { 'remote-ats': () => { throw new Error('focused remote must use shared fixture'); } },
+    sourceFixtures: Object.fromEntries([
+      'remote-ats', 'yc', 'wellfound', 'bounded-remote-search',
+      'himalayas', 'jobicy', 'weworkremotely', 'remotive', 'remoteok',
+    ].map((laneId) => [laneId, laneId === 'remote-ats'
+      ? { candidates: [remoteCandidate], manifest: { status: 'ok' } }
+      : { candidates: [], manifest: { status: 'empty' } }])),
+  }));
+  assert.equal(remote.mode, 'remote');
+  assert.match(remote.runId, /morning-remote/);
+  assert.equal(remote.shortlist[0].company, 'Remote Dispatch Co');
+  assert.deepEqual(remote.deliveryCanary.discoveryProfile, { schedule: 'morning', mode: 'remote', locationPreset: 'india' });
+  assert.equal(remote.deliveryCanary.valid, false);
+  assert.ok(remote.deliveryCanary.invalidReasons.some((reason) => /run outcome is degraded/.test(reason)));
+  assert.deepEqual(Object.keys(remote.deliveryCanary).sort(), Object.keys(startup.deliveryCanary).sort());
+});
+
+test('unknown daily mode is rejected before any discovery transport call', async () => {
+  const { config } = testConfig({ trackedBoards: ['must-not-fetch'] });
+  let calls = 0;
+  await assert.rejects(
+    runDailyNormal(runOptions(config, async () => { calls += 1; throw new Error('discovery should not run'); }, { mode: 'sideways' })),
+    /unknown daily mode: sideways/,
+  );
+  assert.equal(calls, 0);
 });

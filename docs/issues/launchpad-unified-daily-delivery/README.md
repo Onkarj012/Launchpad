@@ -1,8 +1,10 @@
-# Launchpad unified daily delivery issues
+# Launchpad unified daily delivery historical issue pack
 
 Parent specification: [Launchpad Unified Daily Delivery](../../spec/launchpad-unified-daily-delivery.md)
 
-## Dependency order
+This directory preserves the older local **01–08** unified-delivery issue pack. These numbers are not LP-001–LP-019. The files are specifications/history, not the live status authority. GitHub owns live issue state, and [../../STATUS.md](../../STATUS.md) is the sole repository execution-status index.
+
+## Historical dependency order
 
 ```text
 01 → 02 ──────────────┐
@@ -14,13 +16,11 @@ Parent specification: [Launchpad Unified Daily Delivery](../../spec/launchpad-un
 06 (independent)
 ```
 
-Issue 01 is the release-blocking wiring change and must land first. Issue 02 makes it the executed path — 01 without 02 fixes a function nothing calls. Issues 03, 04, 05, and 07 can proceed in parallel after 01. Issue 06 is independent of everything and does not block promotion. Issue 08 is the promotion gate and requires 01 through 05.
-
-Current release position is conditional go: discovery-only production is safe to run, and the automated delivery path is incomplete. No issue status below claims production-complete.
+The unified daily path is now locally implemented in the current dirty working tree and is stabilizing behind live gates. This is **not** a conditional-go, production-safe, production-ready, or promoted claim. The fail-closed canary still requires clean same-version evidence and seven consecutive valid runs.
 
 ## Test seam
 
-All behavior is asserted through one seam: the unified daily run, invoked with configuration, an injected transport, an injected clock, an optional durable store, and ledger rows. Existing prior art is the daily runner test. Do not add seams below it.
+Unified behavior is asserted at the daily-run boundary with injected configuration, transport, clock, durable state, and ledger rows. Local deterministic evidence does not replace production-shadow evidence.
 
 ## Issues
 

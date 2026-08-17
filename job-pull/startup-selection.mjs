@@ -1,10 +1,10 @@
 import { sourceQuality } from './dedup.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
+import { scoreState, scoringQueueRecord, splitScoredEntries } from './mode-scoring.mjs';
 import { WATERFALL, waterfallBand } from './normal-selection.mjs';
 
 function fitScore(entry) {
-  const candidate = entry.candidate || entry;
-  return Number(candidate.matchScore ?? candidate.score ?? entry.matchScore ?? entry.score ?? 0);
+  return scoreState(entry).score ?? Number.NEGATIVE_INFINITY;
 }
 
 function startupRank(entry) { return Number((entry.candidate || entry).startupPriority ?? 0); }
@@ -32,10 +32,11 @@ export function selectStartupApplications(entries, { minimum = 10, preferred = 1
     const readiness = applicationReadiness(candidate, eligibility);
     return { ...entry, candidate, eligibility, freshness, readiness, waterfallBand: waterfallBand({ ...entry, candidate, eligibility, freshness }) };
   }).filter((entry) => entry.readiness.ready && entry.waterfallBand);
+  const { scored, scoringQueue, scoredCount, unscoredCount, scoringFailedCount } = splitScoredEntries(ready);
   const queues = new Map(WATERFALL.map((band) => [band, []]));
-  for (const entry of ready) queues.get(entry.waterfallBand).push(entry);
+  for (const entry of scored) queues.get(entry.waterfallBand).push(entry);
   for (const queue of queues.values()) queue.sort(compareStartup);
-  const target = Math.min(maximum, ready.length);
+  const target = Math.min(maximum, scored.length);
   const selected = [];
   const companyCounts = new Map();
   const seen = new Set();
@@ -63,7 +64,12 @@ export function selectStartupApplications(entries, { minimum = 10, preferred = 1
   }
   return {
     selected,
-    readyPoolCount: ready.length,
+    readyPoolCount: scored.length,
+    scoringQueue: scoringQueue.map(scoringQueueRecord),
+    scoredCount,
+    unscoredCount,
+    scoringFailedCount,
+    readyCount: ready.length,
     minimum,
     preferred: Math.min(preferred, maximum),
     maximum,
@@ -78,4 +84,3 @@ export function selectStartupApplications(entries, { minimum = 10, preferred = 1
     }, {}),
   };
 }
-

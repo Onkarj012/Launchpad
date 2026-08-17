@@ -3,9 +3,9 @@ const APAC = /\bapac\b|asia[ -]?pacific/i;
 const GLOBAL = /\bworldwide\b|\bworld[ -]?wide\b|\bglobal(?:ly)?\b|\banywhere\b/i;
 const REMOTE = /\bremote\b|work[ -]?from[ -]?home|distributed|anywhere/i;
 const EOR = /\bemployer\s+of\s+record\b|\beor\b/i;
-const COUNTRY_RESTRICTION = /(?:authorized\s+to\s+work\s+in|work\s+authorization(?:\s+in)?|must\s+(?:be\s+located|reside)|(?:citizenship|citizens?|residency)\s*(?:required|only|of)|(?:payroll|employment)\s+(?:only\s+)?in|(?:payroll|employment)(?:\s+\w+){0,3}\s+in|based\s+in|(?:anywhere|worldwide|global)\s+(?:in|within))\s+(?:the\s+)?(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\b|\b(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\s+only\b|\b(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\s+(?:citizens?|payroll)\s+only\b/i;
-const INDIA_EXCLUSION = /excluding\s+india|except\s+india|india\s+(?:excluded|not\s+available)|not\s+(?:open|available)\s+to\s+india/i;
-const GIG = /\bgig\b|freelance|commission(?:[ -]only)?|project[ -]only|temporary|short[ -]term|as[ -]needed|piecework|volunteer/i;
+const COUNTRY_RESTRICTION = /(?:authorized\s+to\s+work\s+in|work\s+authorization(?:\s+in)?|work\s+permit\s+(?:for|in)|must\s+(?:be\s+located|reside)|(?:citizenship|citizens?|residency|residents?)\s*(?:required|only|of|from)|(?:payroll|employment)\s+(?:only\s+)?in|(?:payroll|employment)(?:\s+\w+){0,3}\s+in|based\s+in|(?:anywhere|worldwide|global)\s+(?:in|within))\s+(?:the\s+)?(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\b|\b(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\s+(?:only|citizens?|citizenship|residency|residents?|payroll|work\s+permit)(?:\s+only)?\b/i;
+const INDIA_EXCLUSION = /excluding\s+india|except\s+india|india\s+(?:excluded|not\s+available)|india\s+is\s+not\s+(?:supported|eligible|included)|not\s+(?:open|available)\s+to\s+india/i;
+const GIG = /\bgig\b|freelance|commission[ -]only|project[ -]only|temporary|short[ -]term|as[ -]needed|piecework|volunteer/i;
 const STABLE = /full[ -]?time\s+contract(?:or)?|long[ -]?term|ongoing|indefinite|permanent\s+contract(?:or)?|12[ -]?month|employee[- ]?equivalent|regular\s+(?:salary|payroll|employment)/i;
 const PAYROLL = /payroll|salary|monthly\s+pay|regular\s+pay|paid\s+(?:through|via|by)|compensation/i;
 

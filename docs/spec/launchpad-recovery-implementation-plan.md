@@ -1,20 +1,22 @@
-# Implementation plan — DCO-2026-07-25 Launchpad Production Recovery
+# Historical implementation plan — DCO-2026-07-25 Launchpad Production Recovery
 
-Status: revised after review by gpt-5.6-sol (codex) and kimi-k2.7-code (opencode-go)
+> **Historical execution plan, not current status.** This document preserves the dated branch, inventory, test counts, implementation gaps, and proposed waves reviewed on 2026-07-25. Many claims were superseded by later working-tree implementation, including schedule/mode dispatch, Workday freshness, suppression/surfacing, and the canary evaluator. Do not use this file as a tracker or release baseline. See [`../STATUS.md`](../STATUS.md) for current execution status. The DCO remains the design/acceptance contract.
+
+Status at the time: revised after review by gpt-5.6-sol (codex) and kimi-k2.7-code (opencode-go)
 Date: 2026-07-25
-Branch: `codex/conversion-plan-implementation`
+Historical branch: `codex/conversion-plan-implementation`
 Source DCO: `docs/spec/launchpad-production-recovery-dco.md`
 
-Goal: get Launchpad producing 10–15 truthful application-ready roles per day, as fast as
+Historical goal: get Launchpad producing 10–15 truthful application-ready roles per day, as fast as
 possible, with no weakened gates, no fabricated evidence, and no skipped verification.
 
 ---
 
-## 0. Verified ground truth (checked against the code, not the DCO text)
+## 0. Historical verified ground truth (checked on 2026-07-25)
 
 | Claim | Verified | Evidence |
 |---|---|---|
-| Full suite green on working tree | yes | `node --test tests/crawler/*.test.mjs tests/job-pull/*.test.mjs` → 499 pass, 0 fail, 33.7s |
+| Full suite green on that working tree | yes, historical evidence only | `node --test tests/crawler/*.test.mjs tests/job-pull/*.test.mjs` → 499 pass, 0 fail, 33.7s on the dated checkout; not a current baseline |
 | Uncommitted work exists and must be preserved | yes | 6 modified + **8 untracked** (corrected — both reviewers caught the undercount); in-run codex Match Scorer (`job-pull/match-scorer.mjs`, 302 lines) + scoring-gate policy + 7 new tests in modified files + 6 in `tests/job-pull/match-scorer.test.mjs`. Green, never committed. **Not "complete" — see §0.2.** |
 | A1 — `daily` ignores schedule/mode/preset | yes | `crawler/cli.mjs:129-142` — the `daily` branch passes only `config`, `runId`, `scores`, `scorer`, `canaryStore`. `run` (line 146) parses the profile; `daily` does not. |
 | A2 — env default is dev | yes | `crawler/cli.mjs:44` — `explicitOption(args, '--env') ?? 'dev'`. Scheduled launchd command selects production; a bare manual `daily` silently runs dev. |
@@ -146,7 +148,7 @@ the report writer must be authored against the output shape readiness repair pro
 **The seven-run canary could not have passed as scheduled.** Its gates depend on tickets the plan
 put after it: zero-outages-reported-healthy needs `P0-05`; zero-suppressed-selected needs `P0-06`;
 zero-unattributed-loss needs `P0-10`; sub-45-minute duration needs `A7`; **zero duplicate
-requisition collisions needs `P1-01`**, which was in Wave 5. And **no canary evaluator exists** —
+requisition collisions needs `P1-01`**, which was in Wave 5. And **no canary evaluator existed in the dated checkout** —
 `crawler/delivery-canary.mjs:62-182` records counts and deltas and compares by counting runs. It
 cannot enforce a single one of the §14 gates.
 
@@ -186,7 +188,7 @@ which plan is correct — so it happens before the plan is committed to.
 
 Each ticket lists: **owner** (who writes it), **fence** (what/how/stop), **verify** (what I run
 before accepting). Every ticket is a separate commit with its own tests. Full suite must stay
-green at every commit — 499 passing is the floor, never a ratchet down.
+green at every commit — the dated plan used 499 passing as its historical floor. Current verification must use `docs/STATUS.md` and dated run evidence, not this count.
 
 ### Wave 0 — preserve, measure, and deliver something by hand (inline, today)
 
@@ -353,7 +355,7 @@ concurrently, but **merges land in wave order**, and any ticket touching
    Blocking, not a candidate — `DCO-A7` is promoted to W2-1, ahead of the canary.
 5. **Pre-report surfaced mutation** (`crawler/workflow.mjs:372-377`) silently violates the DCO's
    core delivery invariant today. Owned by W2-5.
-6. **"The canary passed" is currently unfalsifiable** — no evaluator exists. Owned by W3-3.
+6. **"The canary passed" is currently unfalsifiable** — no evaluator existed in the dated checkout. Owned by W3-3.
 7. **Stale or missing v4 history snapshot silently becomes zero suppression.** Owned by W3-4.
 
 ## 5. Review status

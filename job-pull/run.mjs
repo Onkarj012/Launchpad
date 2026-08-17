@@ -260,6 +260,14 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
   const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
   const selection = selectCandidates(selectionPool, config);
   const applicationShortlist = selectApplicationShortlist(selection.selected, config);
+  const postSuppressionCandidates = selectionPool.map((entry) => ({
+    ...entry.candidate,
+    eligibility: entry.eligibility,
+    freshness: entry.freshness,
+    selectionTier: entry.selectionTier,
+    freshnessWindow: entry.freshnessWindow,
+    roleFamily: entry.roleFamily,
+  }));
   const verifyQueue = classified
     .filter((entry) => entry.freshness.verifyQueue)
     .map((entry) => ({
@@ -376,6 +384,7 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       selectedCount: records.length,
     },
     scoringQueue: selection.scoringQueue,
+    postSuppressionCandidates,
     scoringCandidates: scoringCandidates.map((entry) => ({
       ...entry.candidate,
       eligibility: entry.eligibility,

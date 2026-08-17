@@ -55,7 +55,7 @@ export function deriveOutreachState({ application = {}, sequence = {}, activitie
   const stopped = stopReason({ application, sequence, activities });
   if (stopped) return { state: 'Stopped', nextAction: null, nextEligibleContact: null, due: false, stopReason: stopped, cadence: cadencePlan({ initialSentAt: sentAtOf(sequence) }) };
   const initial = sentOf(sequence) || Boolean(eventFor(activities, 'Initial Sent'));
-  const initialSentAt = sentAtOf(sequence) ?? eventAt(eventFor(activities, 'Initial Sent'));
+  const initialSentAt = eventAt(eventFor(activities, 'Initial Sent')) ?? sentAtOf(sequence);
   if (!initial || !initialSentAt) return { state: 'Draft', nextAction: 'Send manually', nextEligibleContact: null, due: false, stopReason: null, cadence: cadencePlan() };
 
   const followup1 = Boolean(eventFor(activities, 'Follow-up 1 Sent'));

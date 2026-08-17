@@ -1,13 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
-import { runNormalMode } from '../../job-pull/normal-mode.mjs';
+import { runNormalMode as runNormalModeAgainstRealLedger } from '../../job-pull/normal-mode.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { selectNormalApplications } from '../../job-pull/normal-selection.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
 import { loadConfig } from '../../job-pull/config.mjs';
+import { readOpportunityLedger } from '../../job-pull/opportunity-ledger.mjs';
 
 const NOW = '2026-07-23T06:30:00.000Z';
+
+// Every test in this file gets its own fresh, isolated opportunity ledger by
+// default. Durable surfaced-state tests opt in explicitly.
+function runNormalMode(options = {}) {
+  const opportunityLedgerPath = path.join(mkdtempSync(path.join(os.tmpdir(), 'normal-mode-ledger-')), 'opportunity-ledger.tsv');
+  return runNormalModeAgainstRealLedger({ opportunityLedgerPath, ...options });
+}
 const config = loadConfig();
 
 function raw(index, overrides = {}) {
@@ -158,6 +169,27 @@ test('v4 historical identity match is suppressed before the shortlist/Notion-pla
   });
   assert.equal(unsuppressed.shortlist.length, 1);
   assert.equal(unsuppressed.historicalSuppressions.length, 0);
+});
+
+test('normal mode records surfaced candidates and suppresses a repeat within seven days', async () => {
+  const candidate = raw(3, { company: 'LP-003 Unique Company', url: 'https://portal.example.test/lp-003-cooldown' });
+  const opportunityLedgerPath = path.join(mkdtempSync(path.join(os.tmpdir(), 'lp-003-ledger-')), 'opportunity-ledger.csv');
+  const options = {
+    clock: () => NOW,
+    sourceFunctions: allFunctions({ 'tracked-ats': [candidate] }),
+    notionGateway: { planWrites: ({ operations }) => ({ operations }) },
+    opportunityLedgerPath,
+    commitSurfaced: true,
+  };
+  const first = await runNormalMode(options);
+  assert.equal(first.shortlist.length, 1);
+  const surfaced = readOpportunityLedger(opportunityLedgerPath).rows.find((row) => row.canonical_url === first.shortlist[0].canonicalUrl);
+  assert.ok(surfaced);
+  assert.equal(surfaced.times_surfaced, '1');
+
+  const second = await runNormalMode(options);
+  assert.equal(second.funnel.lifecycle.suppressedCooldown, 1);
+  assert.equal(second.funnel.firstFailures.suppressedCooldown, 1);
 });
 
 test('fatal core failure occurs before planning or transactional execution', async () => {

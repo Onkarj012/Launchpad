@@ -10,7 +10,7 @@ import { researchContact } from '../../outreach-v5/research.mjs';
 
 test('contact research is free-first, records public evidence, and leaves missing email blank', async () => {
   const providers = providersFor({ failure: true });
-  const result = await researchContact({ application: application('one'), providers, now: OUTREACH_FIXTURE_NOW });
+  const result = await researchContact({ application: application('one'), providers, selectContact: (candidates) => candidates[0], now: OUTREACH_FIXTURE_NOW });
   assert.equal(result.status, 'found');
   assert.equal(result.contact.email, null);
   assert.equal(result.contact.recommendedChannel, 'LinkedIn');
@@ -31,12 +31,36 @@ test('optional provider failures do not block a later evidence-backed email path
       apollo: async () => { calls.push('apollo'); throw new Error('credit provider down'); },
       hunter: async () => { calls.push('hunter'); return [contact('two', { email: 'person-two@example.com', emailEvidence: 'Hunter result', recommendedChannel: 'Email' })]; },
     },
+    allowPaid: true,
+    selectContact: (candidates) => candidates[0],
     now: OUTREACH_FIXTURE_NOW,
   });
   assert.equal(result.status, 'found');
   assert.equal(result.contact.email, 'person-two@example.com');
   assert.deepEqual(calls, ['hiringAuthors', 'companyTeamPages', 'publicProfiles', 'apollo', 'hunter']);
   assert.equal(result.failures[0].source, 'apollo');
+});
+
+test('contact research requires explicit selection when candidates are available', async () => {
+  const result = await researchContact({ application: application('selection'), providers: providersFor(), now: OUTREACH_FIXTURE_NOW });
+  assert.equal(result.status, 'needs-selection');
+  assert.equal(result.contact, null);
+  assert.equal(result.candidates.length, 1);
+});
+
+test('contact research skips paid providers by default when free providers return nothing', async () => {
+  const calls = [];
+  const providers = {
+    hiringAuthors: async () => { calls.push('hiringAuthors'); return []; },
+    companyTeamPages: async () => { calls.push('companyTeamPages'); return []; },
+    publicProfiles: async () => { calls.push('publicProfiles'); return []; },
+    apollo: async () => { calls.push('apollo'); return [contact('paid')]; },
+  };
+  const result = await researchContact({ application: application('paid-default'), providers, now: OUTREACH_FIXTURE_NOW });
+  assert.equal(result.status, 'not-found');
+  assert.equal(result.contact, null);
+  assert.deepEqual(calls, ['hiringAuthors', 'companyTeamPages', 'publicProfiles']);
+  assert.equal(result.attempts.find((attempt) => attempt.source === 'apollo').status, 'skipped');
 });
 
 test('outreach identity is deterministic for application x person x channel', () => {
@@ -49,12 +73,38 @@ test('outreach identity is deterministic for application x person x channel', ()
 
 test('deep personalization is capped at six and lighter paths cover the remainder', async () => {
   const apps = Array.from({ length: 8 }, (_, index) => application(`app-${index}`, 100 - index));
-  const prepared = await prepareOutreach({ applications: apps, providers: providersFor(), deepLimit: 6, now: OUTREACH_FIXTURE_NOW });
+  const prepared = await prepareOutreach({ applications: apps, providers: providersFor(), selectContact: (candidates) => candidates[0], deepLimit: 6, now: OUTREACH_FIXTURE_NOW });
   assert.equal(prepared.status, 'ready');
   assert.equal(prepared.deepCount, 6);
   assert.equal(prepared.lightCount, 2);
   assert.equal(prepared.results[0].draft.depth, 'deep');
   assert.equal(prepared.results.at(-1).draft.depth, 'light');
+});
+
+test('outreach preparation pauses for contact selection instead of drafting automatically', async () => {
+  const prepared = await prepareOutreach({ applications: [application('needs-selection')], providers: providersFor(), now: OUTREACH_FIXTURE_NOW });
+  assert.equal(prepared.status, 'ready');
+  assert.equal(prepared.needsSelectionCount, 1);
+  assert.equal(prepared.results[0].status, 'needs-selection');
+  assert.equal(prepared.results[0].draft, undefined);
+});
+
+test('outreach preparation drafts from the explicitly selected candidate', async () => {
+  const providers = {
+    hiringAuthors: async () => [
+      contact('top', { relevanceScore: 100 }),
+      contact('chosen', { relevanceScore: 10 }),
+    ],
+  };
+  const prepared = await prepareOutreach({
+    applications: [application('selected')],
+    providers,
+    selectContact: (candidates) => candidates.find(({ contact: candidate }) => candidate.personId === 'chosen'),
+    now: OUTREACH_FIXTURE_NOW,
+  });
+  assert.equal(prepared.results[0].status, 'draft-ready');
+  assert.equal(prepared.results[0].research.contact.personId, 'chosen');
+  assert.match(prepared.results[0].draft.body, /Hi Person chosen/);
 });
 
 test('attachment preparation requires exact Ready resume state and matching role artifact', () => {
@@ -92,10 +142,28 @@ test('manual send confirmation is the only path that changes Sent state and it i
   assert.equal(confirmed.status, 'confirmed');
   assert.equal(gateway.pages.outreach[0].values.sent, true);
   assert.equal(gateway.pages.activity.length, 1);
+  assert.deepEqual(gateway.pages.activity[0].values.outreach, [stored.page.id]);
   const repeated = await confirmManualSend({ gateway, outreach: { ...draft, id: stored.page.id }, application: app, confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: OUTREACH_FIXTURE_NOW }, now: OUTREACH_FIXTURE_NOW });
   assert.equal(repeated.status, 'noop');
   assert.equal(gateway.pages.activity.length, 1);
   assert.equal(gateway.calls.some((call) => call.method === 'send'), false);
+});
+
+test('initial-send cadence uses the append-only Activity timestamp over Outreach Sent At', () => {
+  const sequenceSentAt = '2026-07-01T09:00:00.000Z';
+  const activitySentAt = '2026-07-05T09:00:00.000Z';
+  const derived = deriveOutreachState({
+    application: application('activity-authority'),
+    sequence: { sent: true, sentAt: sequenceSentAt },
+    activities: [{ eventType: 'Initial Sent', eventAt: activitySentAt }],
+    now: '2026-07-08T09:00:00.000Z',
+  });
+  assert.deepEqual(derived.cadence.map((item) => item.dueAt), [
+    '2026-07-05T09:00:00.000Z',
+    '2026-07-08T09:00:00.000Z',
+    '2026-07-15T09:00:00.000Z',
+    '2026-07-22T09:00:00.000Z',
+  ]);
 });
 
 test('a manually confirmed response stops the sequence, updates derived application state, and blocks later sends', async () => {
@@ -143,6 +211,7 @@ test('batch persistence preserves no-contact and draft-blocked outcomes without 
   const prepared = await prepareOutreach({
     applications: [application('ok'), application('blocked', 89, { resumeState: 'Not Started' })],
     providers: providersFor(),
+    selectContact: (candidates) => candidates[0],
     attachmentExpected: (current) => current.id === 'blocked',
     now: OUTREACH_FIXTURE_NOW,
   });

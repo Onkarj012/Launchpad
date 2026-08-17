@@ -1,6 +1,6 @@
 # Launchpad v5 operator handoff
 
-Status: local integration complete; live credential, smoke, and production gates remain open.
+Status: local v5 foundation and unified daily implementation are present in the dirty working tree; live credential, clean-release, canary, and promotion gates remain open. See [STATUS.md](STATUS.md). GitHub issues are the live issue-status authority.
 
 ## Local commands
 
@@ -8,37 +8,45 @@ Status: local integration complete; live credential, smoke, and production gates
 node launchpad-v5.mjs help
 node launchpad-v5.mjs validate
 node launchpad-v5.mjs rehearse
+
+node crawler/cli.mjs daily morning --mode normal|startup|remote --location-preset india|pune --run-id <id>
+node crawler/cli.mjs daily midday  --mode normal|startup|remote --location-preset india|pune --run-id <id>
 ```
 
-The rehearsal is the safe handoff check. It uses deterministic fixtures, a no-write planning gateway, and local in-memory queue/outreach fakes. It must report `externalWrites: 0`, `externalNetwork: false`, `browserAutomation: false`, `applicationsSubmitted: false`, `autonomousSending: false`, `pendingTransactions: 0`, and `legacyFallback: false`.
+The rehearsal is fixture-backed and safe. The daily path performs one shared crawl and then the requested mode selector. Midday Remote skips native remote feeds. Neither local validation nor rehearsal proves installed scheduling, external source yield, live Notion, browser access, or production readiness.
 
 ## Agent commands
 
-- `/morning` means Normal. Use `/morning startup` or `/morning remote` only when that source emphasis is wanted.
-- `/make-applications` reads only user-checked Applications v5 `Make Resume` rows and compiles locally.
-- `/outreach` researches evidence and stores drafts. The user reviews and sends manually.
-- `/linkedin-leads` is explicit and read-only. Morning only suggests it after a material verified shortfall.
+- `/morning` means unified daily Normal. `/morning startup` and `/morning remote` select focused ranking/source emphasis over the shared gates.
+- `/make-applications` reads only user-checked Applications v5 `Make Resume` rows and compiles locally. It never checks `Make Resume` or `Applied?`.
+- `/outreach` performs free-first research and prepares draft content. No Gmail draft adapter or send provider is guaranteed.
+- `/linkedin-leads` is explicit and read-only. It never connects, messages, or runs automatically.
 - `/followups` reads/drafts due actions from v5 Outreach and Activity cadence.
 - `/sync` observes user-set `Applied?` and confirmed outcomes idempotently.
-- Apify is `node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json` only; no profile is selected by default.
+- Apify remains explicit and default-off: `node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json`.
 
-## Live preflight
+## v5 boundary
 
-Before live use, run `node launchpad-v5.mjs validate`. A live gateway also requires a protected credential file outside this repository and the external transaction journal at `/Users/onkarj012/.local/state/launchpad-v5/transactions.json`. Its parent directory is owner-only (`0700`) and the journal is owner-only (`0600`). The gateway refuses undeclared or legacy identifiers and refuses live writes without a reservation.
+Applications, Companies, Outreach, Activity, and Referrals v5 are the only active runtime stores. The local manifest validator requires exactly ten directed reciprocal relation entries. v3/v4 are historical read-only systems and are never write, migration, archive, delete, or fallback targets.
 
-The remaining live sequence is deliberately manual:
+Before any authorized live write, run `node launchpad-v5.mjs validate`. The live gateway also requires a protected external credential and transaction journal at `/Users/onkarj012/.local/state/launchpad-v5/transactions.json`. The gateway refuses undeclared or legacy identifiers and refuses writes without a reservation.
 
-1. Validate the manifest and v5 views against the current authorized workspace.
-2. Run the bounded synthetic reserve → write → fetch/relation verify → commit smoke, plus an injected abort path.
-3. Verify the written synthetic row, Company relation, views, journal state, and rollback/abort evidence.
-4. Only then run one bounded production Normal morning workflow and inspect every row and relation manually.
+## Remaining live sequence
 
-This handoff does not perform those steps, create credentials, browse, write Notion, or claim live success.
+1. Establish a clean committed revision for the implementation to be evaluated.
+2. Validate the manifest and v5 views against the authorized workspace.
+3. Run the bounded synthetic reserve → write → fetch/relation verify → commit smoke plus an injected abort path.
+4. Retain the written synthetic row, relation/view, journal, and abort evidence.
+5. Run the fail-closed production-shadow canary using matching evidence and Markdown/JSON report pairs.
+6. Accumulate seven consecutive valid runs for the same code/config version, each matching careful manual review of the same inventory.
+7. Promote only after explicit operator review.
+
+None of these live steps, a commit/push, or promotion is claimed by this handoff.
 
 ## Recovery
 
-Pending external journal entries require explicit operator recovery. Inspect the journal, verify whether a remote page exists, then mark the entry committed or aborted using the gateway's recovery path. Never delete pending state or rerun blindly. Rotate credentials by replacing the external 0600-style file without printing its contents.
+Pending external-journal entries require explicit recovery. Verify whether a remote page exists, then mark the entry committed or aborted through the gateway recovery path. Never delete pending state or rerun blindly. Rotate credentials by replacing the protected file without printing its contents.
 
 ## Safety boundary
 
-No auto-apply, no autonomous sending, no automatic LinkedIn computer use, no legacy fallback, no migration/archive/delete of historical systems, local-only resume compilation, and PDF-only dated output are release gates.
+No auto-apply, autonomous sending, automatic LinkedIn computer use, credential creation, user-checkbox changes, legacy fallback, or historical-system mutation. Resume compilation is local-only and dated output is PDF-only. External actions require a separately explicit, authorized, scoped path.

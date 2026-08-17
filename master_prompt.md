@@ -1,7 +1,7 @@
 # Master Prompt — Job Search OS
 
-> Single source of truth for targeting, scoring, resume tailoring, and outreach.
-> Claude reads this file for every daily pull, every resume tailor, and every cold email.
+> Single source of truth for targeting, scoring, resume tailoring, and outreach policy.
+> Claude reads this file for every daily pull, every resume tailor, and every requested outreach draft. Current execution status lives only in `docs/STATUS.md`.
 > Resume **content** comes from `resumes/master/Master_Resume_ATS.tex`; **layout** comes from the frozen template `resumes/templates/Onkar_Template.tex`. This file holds the **rules**.
 
 ---
@@ -52,7 +52,7 @@
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
 3. **Employment / paid** — allow full-time or explicitly paid internship; disallowed/unknown-pay internships → drop.
 4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
-   - **Workday exception:** `*.myworkdayjobs.com` `postedOn` bumps on internal req refresh and does not reliably reflect true listing age. Workday-sourced `postedAt` without a corroborated original date is treated as undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
+   - **Workday exception:** only a usable DETAIL `startDate` is trusted as Workday freshness evidence. LIST `postedOn`, including bounded labels such as `Posted Today`, is not sufficient and stays undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
 5. **Liveness** — confirmed dead/expired → drop. Inconclusive checks stay `Not Verified`, never invented as Active.
 6. **Cross-day suppression** (opportunity ledger, `career-ops/data/opportunity-ledger.tsv`) — applied/contacted/interviewing/rejected requisitions never resurface; surfaced-but-unactioned roles get a 7-day cooldown; a Workday refresh is the same requisition, not a new opportunity.
 
@@ -200,7 +200,7 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
   2. **Proof** — ONE best-matching project, one sentence, concrete result.
   3. **Soft CTA** — 15-min chat, low pressure.
 - **Tone:** direct, no fluff, no over-flattery.
-- **Output:** Gmail draft via `create_draft` (Onkar reviews + sends manually). Log link in Outreach DB.
+- **Output:** evidence-backed draft text and, when explicitly authorized, v5 Outreach draft state. A Gmail draft-only adapter is not currently guaranteed or implemented in the active workflow; never claim a Gmail draft exists unless an authorized adapter returns evidence. Onkar always reviews and sends manually.
 
 **Skeleton:**
 ```
@@ -233,22 +233,26 @@ Onkar
 
 | Say | Claude does |
 |---|---|
-| "morning" / `/morning` | Manual once-daily routine: discovery leads → Strict and fallback sections → readiness/composition handoff → due-follow-up evidence. Discovery and surfacing only, never applies |
+| "morning" / `/morning` | Unified daily path, Normal by default; explicit Startup or Remote source emphasis. One shared crawl → shared gates/scoring/suppression → requested mode selector → final-shortlist handoff. Never applies or sends |
 | "pull today's jobs" / `/pull-jobs` | Tracked + warm reverse ATS + public sources + optional Indeed → normalize → gate → freshness/dedup → Match and Conversion Score → 25–35 local leads plus a verified-original-ATS ten-role shortlist when inventory supports it |
-| "follow-ups?" / `/followups` | Read user-supplied tracker/ledger evidence against the 3/7-day application, 4-day outreach, and 1/3-day conversation cadence → draft only on request, never send |
-| "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each `Make Resume`-checked row; leave application state and tracker changes to the user |
-| "run outreach" / `/outreach` | Batch cold email: find a verified recruiter/lead per company (Explorium, free-first, ≤2/company) → draft personalized email + attach that role's resume → log Outreach DB → Gmail draft; never send |
+| "follow-ups?" / `/followups` | Read v5 Outreach/Activity cadence evidence → draft only on request, never send |
+| "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each user-checked `Make Resume` row; never check `Make Resume` or `Applied?` |
+| "run outreach" / `/outreach` | Free-first contact research and evidence-backed draft preparation; persist only through an explicitly authorized v5 path. No Gmail draft or send guarantee |
+| "linkedin leads" / `/linkedin-leads` | Explicit read-only hiring-post rescue. Never invoked automatically and never sends/connects/messages |
+| "sync" / `/sync` | Observe user-set `Applied?` and confirmed outcomes, then synchronize idempotent v5 state. Never sets `Applied?` itself |
 | "tailor for <row/company>" / `/resume-latex` | Read JD → select profile and two supported projects → create matrix/provenance sidecars → compile and verify one-page PDF |
 | "check my resume" / `/resume-check` | Brutal recruiter review of the `.tex` source vs a pasted JD (or generic fallback) → per-section gaps + rewrites + overall verdict |
 | "quick add this job" / `/quick-add` | Capture → gate/dedup → Match and Conversion Score → propose a local lead record with explicit readiness status |
-| "draft cold email for <company/contact>" | Draft one evidence-backed human message only when requested; never send or claim contact |
+| "draft cold email for <company/contact>" | Draft one evidence-backed human message only when requested; never send, claim delivery, or claim contact without evidence |
 
 - **Pull sources:** tracked `career-ops/scan.mjs`; full reverse `scan-ats-full.mjs` across Greenhouse/Lever/Ashby/Workday; YC/a16z and dated public feeds; WebSearch across ATS domains, LinkedIn, Naukri, Wellfound, Instahyre, and company careers; every `companies.json` slug; Indeed MCP when connected. Unavailable sources are reported, never assumed.
-- **Trigger:** manual once daily — run `/morning` or `/pull-jobs`. No cron is configured. Add automation only when Onkar asks later.
-- **Discovery restrictions:** no email ingestion, logged-in/computer-use portal browsing, application submission, or outreach action.
+- **Canonical local daily commands:** `node crawler/cli.mjs daily morning|midday --mode normal|startup|remote --location-preset india|pune`. The implementation performs one shared crawl and then the requested mode selector; Midday Remote skips native remote feeds. `/morning` delegates to this surface.
+- **Scheduling:** local launchd generation/install support exists for morning and midday. Do not claim it is installed, enabled, healthy, or production-verified without retained machine evidence. Cloud scheduling is not the active contract.
+- **Discovery restrictions:** no email ingestion, logged-in/computer-use portal browsing, application submission, outreach send, or user-owned checkbox change.
 - **Dedup:** canonical URL → provider+Job ID → normalized company/title/location → local write ledger → JD fingerprint where description exists. `fingerprint-core.mjs` supplies SimHash; `detect-reposts.mjs` is a separate repost-pattern report.
 - **Watchlist growth:** propose a verified ATS+slug addition for manual approval; never alter `companies.json` as a side effect of a lead or application state.
-- **Selection checkboxes (Applications v4):** `Make Resume` = Onkar's pick of rows for Claude to build resumes for (read by `/make-applications` + `/outreach`, never set by Claude). `Applied?` = Onkar's post-submission progress tally, ticked with Applied Date, never set by any skill. `Auto-Suggest` = cloud opinion only.
+- **Selection checkboxes (Applications v5):** `Make Resume` = Onkar's pick of rows for Claude to build resumes for (read by `/make-applications` and outreach preparation, never set by an agent). `Applied?` = Onkar's post-submission progress tally, observed by `/sync`, never set by any skill. `Auto-Suggest` = system opinion only.
+- **Runtime generation:** v5 is current. v3/v4 are historical read-only systems and may supply bounded identity/history evidence only; no write, migration, fallback, archive, or delete action is permitted.
 
 ---
 
@@ -265,17 +269,17 @@ Onkar
   - Browserless liveness: `node check-liveness.mjs --api-only --json ...`
   - Fingerprint dedup primitive: `career-ops/fingerprint-core.mjs`; repost pattern report: `node detect-reposts.mjs --summary`
   - Follow-up cadence logic: `career-ops/followup-cadence.mjs`
-- Tracking: Notion `Job Search` page → Companies / Applications / Outreach DBs
+- Tracking: Launchpad v5 Applications, Companies, Outreach, Activity, and Referrals are the sole active runtime stores. The identifiers below document historical v3/v4 systems only and remain read-only.
   - Page: https://app.notion.com/p/3885c2b5d1b081458df2c68954540105
   - Applications data source (v3, archived — read-only history, no new writes): `d8d525b0-e436-44b7-ae65-28c08a358684`
   - Companies data source: `9cb28730-1c2e-4e81-bb54-4cb1ac4b3a1d`
   - Outreach data source: `bf40caf6-8b07-4c55-9d21-787b8033f454`
-  - **Applications v4 (current, source of truth as of 2026-07-09):** built per `NOTION_V4_SETUP.md`, all 44 open v3 rows migrated in, v3 DB renamed "Applications (v3 archive)".
+  - **Applications v4 (historical read-only snapshot; formerly current as of 2026-07-09):** built per `NOTION_V4_SETUP.md`, all 44 open v3 rows migrated in, v3 DB renamed "Applications (v3 archive)".
     - Applications v4 data source: `7bc3de3a-91d9-4391-8b22-9e68b264e8d2` (DB page: https://app.notion.com/p/d7db471ca1fb4686868b4ca4c9f56824)
     - Activity data source: `76a31def-a145-45db-9b82-0c263b80ab1b` (DB page: https://app.notion.com/p/abe8d58130844fd480c24b4edb285dee)
     - Adds vs v3: `Fingerprint`, `Liveness`, `Liveness Checked`, `Freshness`, `Next Follow-up`, `Follow-up Count`, `Last Activity`, `Hook`, `Rationale`, `Experience Asked`, `CTC/Salary`, `Work Mode`, richer `Status`/`Resume Status`; `Activity` DB replaces ad-hoc follow-up tracking with a dual-relation log.
     - Views: Today's Pull, To Apply, Follow-up Due, Pipeline (board), Archive (Applications v4); Due (Activity).
-  - **Conversion-plan additions (approved and applied 2026-07-21, see `conversion/SCHEMA_PROPOSAL.md`):** Applications v4 gained `Original ATS URL`, `Original ATS Verified At`, `Application Readiness`, `Conversion Score`, `Resume Variant`, `Submitted Answers Path`, `Recruiter Contacted`, `Hiring Manager Contacted`, `Referral Requested`, `First Follow-up Date`, `Second Follow-up Date`, `First Human Response Date`, `Interview Stage`, `Rejection Timing`, `Rejection Reason`, `Source Category`, `Proof-of-Fit Path`, and a `Referrals` relation. Outreach gained `Contact Role`, `Contact Channel`, `Sequence Stage`, `Last Contact Date`, `Next Eligible Contact`, `Duplicate Guard`, `Response Outcome`. Activity gained `Source Category`, `Resume Variant`, `Rejection Timing`, `Evidence Link`, and its `Type` select expanded with `Recruiter Screen`, `Technical Interview`, `Assessment`, `Profile View`, `Resume Download`, `Rejection`.
+  - **Historical v4 conversion-plan additions (applied 2026-07-21, see `conversion/SCHEMA_PROPOSAL.md`):** Applications v4 gained `Original ATS URL`, `Original ATS Verified At`, `Application Readiness`, `Conversion Score`, `Resume Variant`, `Submitted Answers Path`, `Recruiter Contacted`, `Hiring Manager Contacted`, `Referral Requested`, `First Follow-up Date`, `Second Follow-up Date`, `First Human Response Date`, `Interview Stage`, `Rejection Timing`, `Rejection Reason`, `Source Category`, `Proof-of-Fit Path`, and a `Referrals` relation. Outreach gained `Contact Role`, `Contact Channel`, `Sequence Stage`, `Last Contact Date`, `Next Eligible Contact`, `Duplicate Guard`, `Response Outcome`. Activity gained `Source Category`, `Resume Variant`, `Rejection Timing`, `Evidence Link`, and its `Type` select expanded with `Recruiter Screen`, `Technical Interview`, `Assessment`, `Profile View`, `Resume Download`, `Rejection`.
     - **Referrals (new, dedicated DB):** `Person`, `Application` (dual relation to Applications v4), `Relationship Signal`, `Requested At`, `Response`, `Referral Submitted At`, `Outcome`, `Notes`. Data source: `346c1a15-3808-4e4a-bcb7-8d24f0ea597a` (DB page: https://app.notion.com/p/c72c4997616745428d28e7340336d32d).
     - The local TSV templates (`conversion/templates/*.tsv`) and `conversion/report.mjs` still work standalone; nothing in the pipeline writes to these new Notion fields automatically yet — skills that populate Applications v4 rows should start filling them in going forward.
 - Skills (project-scoped, single-slash): `.agents/skills/morning`, `.agents/skills/daily-job-pull`, `.agents/skills/application-readiness`, `.agents/skills/make-applications`, `.agents/skills/conversion-ops`, `.agents/skills/proof-of-fit`, `.agents/skills/interview-loop`, `.agents/skills/followups`, `.agents/skills/application-agent`, `.agents/skills/resume-latex`, `.agents/skills/resume-check`, `.agents/skills/quick-add`

@@ -6,9 +6,10 @@ import { applicationReadiness } from './normal-readiness.mjs';
 import { runNormalSourcePlan } from './normal-sources.mjs';
 import { selectNormalApplications } from './normal-selection.mjs';
 import { readLedger } from './ledger.mjs';
-import { readOpportunityLedger } from './opportunity-ledger.mjs';
+import { readOpportunityLedger, recordSurfaced } from './opportunity-ledger.mjs';
 import { enrichWorkdayCandidates } from './workday-enrichment.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
+import { buildReconciliation, scorePoolInRun, scorerIsBroken, scoringGateError } from './mode-scoring.mjs';
 
 export class NormalModeError extends Error {
   constructor(message, stage = 'normal-mode') { super(message); this.name = 'NormalModeError'; this.stage = stage; }
@@ -144,120 +145,13 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
   };
 }
 
-function reconciliationLine({ eligible, scored, ready, selected, causes }) {
-  const causeText = Object.entries(causes)
-    .flatMap(([stage, stageCauses]) => Object.entries(stageCauses).map(([cause, count]) => `${stage}:${cause}=${count}`))
-    .join(',');
-  return `eligible=${eligible}; scored=${scored}; ready=${ready}; selected=${selected}; causes=${causeText || 'none'}`;
-}
-
-function buildReconciliation({ eligible, historicalSuppressed, selection, selected, runFailed = false }) {
-  const ready = selection.readyCount;
-  const scored = selection.scoredCount;
-  const notReady = Math.max(0, eligible - historicalSuppressed - ready);
-  const readyNotScored = Math.max(0, ready - scored);
-  const selectedGap = Math.max(0, scored - selected);
-  const causes = {
-    eligibleToReady: {
-      HISTORICAL_SUPPRESSION: historicalSuppressed,
-      NOT_APPLICATION_READY: notReady,
-    },
-    readyToScored: {
-      UNSCORED: selection.unscoredCount,
-      SCORING_FAILED: selection.scoringFailedCount,
-    },
-    scoredToSelected: {
-      ...(runFailed ? { RUN_FAILED_INCOMPLETE_SCORING: selectedGap } : { SELECTION_RULES: selectedGap }),
-    },
-  };
-  return {
-    eligible,
-    scored,
-    ready,
-    selected,
-    causes,
-    deltas: {
-      eligibleToReady: eligible - ready,
-      readyToScored: readyNotScored,
-      scoredToSelected: selectedGap,
-    },
-    line: reconciliationLine({ eligible, scored, ready, selected, causes }),
-  };
-}
-
-// Broken-scorer reason codes, read from job-pull/match-scorer.mjs: a missing
-// binary and an auth failure abort the batch before it starts, and repeated
-// invalid output means the scorer cannot produce usable scores at all.
-const BROKEN_SCORER_REASON_CODES = new Set([
-  'SCORER_BINARY_MISSING', 'SCORER_BINARY_NOT_ABSOLUTE', 'SCORER_AUTH_FAILED',
-  'SCORER_SPAWN_FAILED', 'SCORER_OUTPUT_INVALID', 'SCORER_CARDINALITY_MISMATCH',
-  'SCORER_URL_MISMATCH', 'SCORER_TIMEOUT', 'SCORER_DEADLINE_EXCEEDED', 'SCORER_ABORTED',
-]);
-
-/**
- * Gate policy (docs/spec/match-scoring.md §6): the run fails only when the
- * scorer is genuinely broken — a run-level reason code, or more than half the
- * batch lost. A failed chunk records one failure per row, so the failed-row
- * share tracks the failed-chunk share; past half, the scorer is broken, not
- * unlucky.
- */
-function scorerIsBroken(telemetry) {
-  if (telemetry.degraded === true && BROKEN_SCORER_REASON_CODES.has(telemetry.reasonCode)) return true;
-  return telemetry.attempted > 0 && telemetry.failures.length / telemetry.attempted > 0.5;
-}
-
-function scoringGateError(selection, scorerTelemetry = null) {
-  const causes = selection.scoringQueue.map((candidate) => {
-    const reason = candidate.scoringFailureReason || candidate.scoringQueueReason;
-    return `${candidate.company} — ${candidate.title}: ${reason}`;
-  });
-  const scorerCause = scorerTelemetry
-    ? `; scorer broken: reason-code=${scorerTelemetry.reasonCode ?? 'none'}, degraded=${scorerTelemetry.degraded}, attempted=${scorerTelemetry.attempted}, failed=${scorerTelemetry.failures.length}`
-    : '';
-  const error = new NormalModeError(
-    `complete scoring required before selection: unscored=${selection.unscoredCount}, scoring-failed=${selection.scoringFailedCount}${scorerCause}${causes.length ? `; ${causes.join('; ')}` : ''}`,
-    'scoring',
-  );
-  return error;
-}
-
-function hasUsableMatchScore(candidate) {
-  const raw = candidate?.matchScore ?? candidate?.score;
-  if (raw === null || raw === undefined || raw === '' || typeof raw === 'boolean') return false;
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 && value <= 100;
-}
-
-/**
- * In-run Match Score step. Default is OFF: without an injected scorer the pool
- * is returned untouched and telemetry is null, keeping runs fully offline. The
- * scorer only sees rows that still lack a usable Match Score — a --scores-json
- * manual override always wins on any row it covers.
- */
-async function scorePoolInRun(candidates, scorer, { runId = null, runAt = null } = {}) {
-  if (typeof scorer !== 'function') return { pool: candidates, telemetry: null };
-  const unscored = candidates.filter((candidate) => !hasUsableMatchScore(candidate));
-  if (!unscored.length) return { pool: candidates, telemetry: { attempted: 0, chunks: 0, failures: [], degraded: false, reasonCode: null } };
-  const scoring = await scorer(unscored, { runId, runAt });
-  const merged = new Map((Array.isArray(scoring?.scored) ? scoring.scored : []).map((candidate) => [candidate.canonicalUrl, candidate]));
-  return {
-    pool: candidates.map((candidate) => merged.get(candidate.canonicalUrl) ?? candidate),
-    telemetry: {
-      attempted: unscored.length,
-      chunks: Number.isFinite(Number(scoring?.chunks)) ? Number(scoring.chunks) : 0,
-      failures: Array.isArray(scoring?.failures) ? scoring.failures : [],
-      degraded: scoring?.degraded === true,
-      reasonCode: scoring?.reasonCode ?? null,
-    },
-  };
-}
-
 /** Complete fixture/injection seam for India-first Normal mode. */
 export async function runNormalMode({
   mode = 'normal', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
-  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer,
+  opportunityLedgerPath = null,
+  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer, commitSurfaced = false,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -275,20 +169,21 @@ export async function runNormalMode({
     const normalConfig = structuredClone(baseConfig);
     normalConfig.run = { ...normalConfig.run, minimumTotal: 10, maximumTotal: 20, strictTarget: 10 };
     const effectiveLedgerRows = ledgerRows ?? readLedger().rows;
-    const effectiveOpportunityLedgerRows = opportunityLedgerRows ?? readOpportunityLedger().rows;
+    const effectiveOpportunityLedgerRows = opportunityLedgerRows ?? readOpportunityLedger(opportunityLedgerPath ?? undefined).rows;
     const pipeline = runPipeline({
       config: normalConfig, conversionPlan: baseConversionPlan, now: runAt, runId,
       ledgerRows: effectiveLedgerRows, opportunityLedgerRows: effectiveOpportunityLedgerRows, sources: sourceResults, dryRun: true,
+      ...(opportunityLedgerPath ? { opportunityLedgerPath } : {}),
     });
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
-    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.scoringCandidates, historicalV4Rows);
+    const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
     const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));
     const selection = selectNormalApplications(selectionEntries, { maximumPerCompany: normalConfig.run.maximumPerCompany });
-    const eligibleCount = pipeline.scoringCandidates.length;
+    const eligibleCount = pipeline.postSuppressionCandidates.length;
     const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
     const scorerRan = scorerTelemetry !== null;
     // Gate policy (docs/spec/match-scoring.md §6): with no scorer in the run
@@ -312,7 +207,7 @@ export async function runNormalMode({
     ];
     const verificationQueue = verificationCandidates.map((candidate) => verificationRecord(candidate, candidate.eligibility || null)).filter(Boolean);
     if (incompleteScoring) {
-      const error = scoringGateError(selection, scorerRan ? scorerTelemetry : null);
+      const error = scoringGateError(NormalModeError, selection, scorerRan ? scorerTelemetry : null);
       error.details = {
         scoringQueue: selection.scoringQueue,
         scoring: {
@@ -358,6 +253,7 @@ export async function runNormalMode({
       if (notionGateway.kind !== 'fake-transactional-v5' || typeof notionGateway.executeWrites !== 'function') throw new NormalModeError('live or non-transactional gateway execution is disabled; inject the Issue03 fake gateway', 'notion');
       transaction = await notionGateway.executeWrites({ operations: plannedOperations });
     }
+    if (commitSurfaced) recordSurfaced(shortlist, { path: opportunityLedgerPath || undefined, now: runAt });
     for (const source of sourceResults) {
       source.manifest.selected = 0;
       source.manifest.selected += shortlist.filter((candidate) => candidate.normalLaneId === source.manifest.sourceId).length;

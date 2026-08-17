@@ -9,6 +9,9 @@ job-pull/scratch/
 job-pull/run-state.json
 connector-inbox/
 config/crawler-v2-live-test.json
+/RAW.json
+/OUT-legacy.json
+/MANIFEST-legacy.json
 
 # macOS
 .DS_Store

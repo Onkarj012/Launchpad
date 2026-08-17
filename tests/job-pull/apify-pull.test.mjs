@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readPath, mapItem, validateConfig, RunError, buildPreflight, parseArgs, pullAll, readConfig, selectProfiles } from '../../job-pull/apify-pull.mjs';
+import { emptyApifySeenCache, loadApifySeenCache, saveApifySeenCache } from '../../job-pull/apify-seen-cache.mjs';
+import { budgetBlockReason, emptyApifyBudgetState, loadApifyBudgetState, saveApifyBudgetState } from '../../job-pull/apify-budget-state.mjs';
 import { prepareApifyRecords } from '../../job-pull/apify-prepare.mjs';
 import { prepare } from '../../job-pull/public-search-prepare.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
@@ -171,16 +176,165 @@ test('selected rescue pull reports honest success telemetry and does not run uns
     fetchImpl: async (...args) => { calls += 1; return successfulFetch([{ jobUrl: 'https://jobs.example/1', companyName: 'Acme', jobTitle: 'AI Engineer', jobDescription: 'Build AI.' }])(...args); },
     pollIntervalMs: 0,
     clock: () => 1000,
+    seenCache: emptyApifySeenCache(),
+    budgetState: emptyApifyBudgetState(),
   });
   assert.equal(calls, 3);
   assert.equal(result.status, 'ok');
   assert.equal(result.records.length, 1);
   assert.deepEqual(result.summary['linkedin-jobs'], {
     profile: 'linkedin-jobs', actorId: 'cheap_scraper~linkedin-job-scraper', label: 'linkedin', source: 'apify-linkedin',
-    sourceCategory: 'india-niche', status: 'ok', fetched: 1, prepared: 1, eligible: null, eligibleKnown: false,
+    sourceCategory: 'india-niche', status: 'ok', fetched: 1, prepared: 1, skippedSeen: 0, eligible: null, eligibleKnown: false,
     latencyMs: 0, failureReason: null,
   });
   assert.equal(result.summary['naukri-fresher'], undefined);
+});
+
+test('Apify seen cache round-trips through a file with deduped sorted profile keys', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apify-seen-cache-'));
+  const file = path.join(dir, 'nested', 'cache.json');
+  try {
+    const saved = saveApifySeenCache(file, { profiles: { linkedin: ['b', 'a', 'b', 42] } }, '2026-08-04T00:00:00.000Z');
+    assert.deepEqual(saved, {
+      schemaVersion: 1,
+      updatedAt: '2026-08-04T00:00:00.000Z',
+      profiles: { linkedin: ['42', 'a', 'b'] },
+    });
+    assert.equal(readFileSync(file, 'utf8').endsWith('\n'), true);
+    assert.deepEqual(loadApifySeenCache(file), saved);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Apify budget gate allows usage under all caps and reports each cap independently', () => {
+  const nowIso = '2026-08-04T00:00:00.000Z';
+  const limits = { monthlyBudgetUsd: 5, maxRunsPerMonth: 6, maxRunCostUsd: 0.75 };
+  assert.equal(budgetBlockReason({ state: { months: { '2026-08': { runs: 2, spendUsd: 1 } } }, nowIso, estimatedCostUsd: 0.5, ...limits }), null);
+  assert.equal(budgetBlockReason({ state: { months: { '2026-08': { runs: 6, spendUsd: 1 } } }, nowIso, estimatedCostUsd: 0, ...limits }), 'MONTHLY_RUN_CAP_EXCEEDED');
+  assert.equal(budgetBlockReason({ state: { months: { '2026-08': { runs: 2, spendUsd: 4.75 } } }, nowIso, estimatedCostUsd: 0.5, ...limits }), 'MONTHLY_BUDGET_CAP_EXCEEDED');
+  assert.equal(budgetBlockReason({ state: { months: { '2026-08': { runs: 2, spendUsd: 1 } } }, nowIso, estimatedCostUsd: 0.76, ...limits }), 'RUN_COST_CAP_EXCEEDED');
+});
+
+test('pullAll blocks an actor at the monthly run cap without calling Apify', async () => {
+  let calls = 0;
+  const budgetState = { ...emptyApifyBudgetState(), months: { '2026-08': { runs: 6, spendUsd: 0 } } };
+  const result = await pullAll({
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 5, maxRunsPerMonth: 6, maxRunCostUsd: 0.75 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 0.5, enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  }, 'token-fixture', {
+    profile: 'demo',
+    fetchImpl: async () => { calls += 1; throw new Error('must not call Apify'); },
+    clock: () => '2026-08-04T00:00:00.000Z',
+    seenCache: emptyApifySeenCache(),
+    budgetState,
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.summary.demo.status, 'unavailable');
+  assert.equal(result.summary.demo.failureReason, 'MONTHLY_RUN_CAP_EXCEEDED');
+});
+
+test('pullAll records a successful actor run in injected Apify budget state', async () => {
+  const budgetState = emptyApifyBudgetState();
+  await pullAll({
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 5, maxRunsPerMonth: 6, maxRunCostUsd: 0.75 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 0.5, enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  }, 'token-fixture', {
+    profile: 'demo',
+    fetchImpl: successfulFetch([{ url: 'https://jobs.example/new', company: 'Acme', title: 'AI Engineer' }]),
+    pollIntervalMs: 0,
+    clock: () => '2026-08-04T00:00:00.000Z',
+    seenCache: emptyApifySeenCache(),
+    budgetState,
+  });
+  assert.equal(budgetState.months['2026-08'].runs, 1);
+  assert.equal(budgetState.months['2026-08'].spendUsd, 0.5);
+});
+
+test('Apify budget state round-trips through a temp file', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apify-budget-state-'));
+  const file = path.join(dir, 'nested', 'budget.json');
+  const state = {
+    ...emptyApifyBudgetState(),
+    months: { '2026-08': { runs: 2, spendUsd: 1.5 } },
+  };
+  try {
+    const saved = saveApifyBudgetState(file, state, '2026-08-04T00:00:00.000Z');
+    assert.deepEqual(loadApifyBudgetState(file), saved);
+    assert.equal(readFileSync(file, 'utf8').endsWith('\n'), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pullAll filters prior seen records while retaining fetched and skippedSeen telemetry', async () => {
+  const config = {
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+  const seenCache = { ...emptyApifySeenCache(), profiles: { demo: ['https://jobs.example/seen'] } };
+  const result = await pullAll(config, 'token-fixture', {
+    profile: 'demo',
+    fetchImpl: successfulFetch([
+      { url: 'https://jobs.example/seen', company: 'Acme', title: 'Seen Engineer' },
+      { url: 'https://jobs.example/new', company: 'Acme', title: 'New Engineer' },
+    ]),
+    pollIntervalMs: 0,
+    clock: () => 1000,
+    seenCache,
+    budgetState: emptyApifyBudgetState(),
+  });
+  assert.deepEqual(result.records.map((record) => record.url), ['https://jobs.example/new']);
+  assert.equal(result.summary.demo.fetched, 2);
+  assert.equal(result.summary.demo.prepared, 1);
+  assert.equal(result.summary.demo.skippedSeen, 1);
+});
+
+test('pullAll mutates an injected seen cache and does not write its cache path', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apify-seen-cache-'));
+  const cachePath = path.join(dir, 'cache.json');
+  const seenCache = emptyApifySeenCache();
+  const cacheReference = seenCache;
+  try {
+    await pullAll({
+      rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1 },
+      actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+    }, 'token-fixture', {
+      profile: 'demo',
+      fetchImpl: successfulFetch([{ url: 'https://jobs.example/new', company: 'Acme', title: 'New Engineer' }]),
+      pollIntervalMs: 0,
+      clock: () => 1000,
+      seenCachePath: cachePath,
+      seenCache,
+      budgetState: emptyApifyBudgetState(),
+    });
+    assert.strictEqual(seenCache, cacheReference);
+    assert.deepEqual(seenCache.profiles.demo, ['https://jobs.example/new']);
+    assert.equal(existsSync(cachePath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pullAll lets every record through with a fresh empty seen cache', async () => {
+  const seenCache = emptyApifySeenCache();
+  const result = await pullAll({
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', enabled: false, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  }, 'token-fixture', {
+    profile: 'demo',
+    fetchImpl: successfulFetch([
+      { url: 'https://jobs.example/one', company: 'Acme', title: 'One Engineer' },
+      { url: 'https://jobs.example/two', company: 'Acme', title: 'Two Engineer' },
+    ]),
+    pollIntervalMs: 0,
+    clock: () => 1000,
+    seenCache,
+    budgetState: emptyApifyBudgetState(),
+  });
+  assert.equal(result.records.length, 2);
+  assert.equal(result.summary.demo.skippedSeen, 0);
+  assert.equal(result.summary.demo.prepared, 2);
 });
 
 test('duplicate actor IDs never cause a second Apify call and remain visible as degraded', async () => {
@@ -197,6 +351,8 @@ test('duplicate actor IDs never cause a second Apify call and remain visible as 
     fetchImpl: async (...args) => { calls += 1; return successfulFetch([{ url: 'https://jobs.example/1', company: 'Acme', title: 'AI Engineer' }])(...args); },
     pollIntervalMs: 0,
     clock: () => 1000,
+    seenCache: emptyApifySeenCache(),
+    budgetState: emptyApifyBudgetState(),
   });
   assert.equal(calls, 3);
   assert.equal(result.status, 'degraded');
@@ -209,6 +365,8 @@ test('missing token is unavailable, nonfatal, and makes no Apify calls', async (
   const result = await pullAll(CONFIG, null, {
     profile: 'foundit-fresher',
     fetchImpl: async () => { calls += 1; throw new Error('must not call Apify'); },
+    seenCache: emptyApifySeenCache(),
+    budgetState: emptyApifyBudgetState(),
   });
   assert.equal(calls, 0);
   assert.equal(result.status, 'unavailable');
@@ -230,6 +388,8 @@ test('timeout and partial actor failure are reported without hiding a healthy ac
     pollIntervalMs: 0,
     runTimeoutMs: 1000,
     clock: () => { const value = time; time += 1000; return value; },
+    seenCache: emptyApifySeenCache(),
+    budgetState: emptyApifyBudgetState(),
   });
   assert.equal(timeout.status, 'failed');
   assert.equal(timeout.summary.slow.failureReason, 'timeout');
@@ -248,6 +408,8 @@ test('timeout and partial actor failure are reported without hiding a healthy ac
       : successfulFetch([{ url: 'https://jobs.example/2', company: 'Acme', title: 'Backend Engineer' }])(url, options),
     pollIntervalMs: 0,
     clock: () => 1000,
+    seenCache: emptyApifySeenCache(),
+    budgetState: emptyApifyBudgetState(),
   });
   assert.equal(partial.status, 'degraded');
   assert.equal(partial.summary.broken.failureReason, 'api-failure');
@@ -267,6 +429,8 @@ test('dataset schema drift is a failed actor result, never a successful empty ru
       : response({ unexpected: 'object' }),
     pollIntervalMs: 0,
     clock: () => '2026-07-23T06:30:00.000Z',
+    seenCache: emptyApifySeenCache(),
+    budgetState: emptyApifyBudgetState(),
   });
   assert.equal(result.status, 'failed');
   assert.equal(result.records.length, 0);

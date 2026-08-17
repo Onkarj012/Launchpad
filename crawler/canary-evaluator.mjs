@@ -6,18 +6,77 @@ export const DELIVERY_CANARY_EVALUATION_SCHEMA = 'LaunchpadDeliveryCanaryEvaluat
 export const DEFAULT_CANARY_RUNS = 7;
 export const ROUTINE_DURATION_LIMIT_MS = 45 * 60 * 1000;
 
-const DEFAULT_CODE_PATHS = Object.freeze([
+export const DEFAULT_CANARY_CODE_PATHS = Object.freeze([
   'crawler/daily-runner.mjs',
-  'crawler/daily-report.mjs',
+  'crawler/operator.mjs',
+  'crawler/ats-warm.mjs',
+  'crawler/ats-batch-1.mjs',
+  'crawler/ats-batch-2.mjs',
+  'crawler/ats-enterprise.mjs',
+  'crawler/brave-search.mjs',
+  'crawler/chromium-fallback.mjs',
+  'crawler/commercial-rescue.mjs',
+  'crawler/connector-inbox.mjs',
+  'crawler/discovery-profile.mjs',
+  'crawler/indeed-inbox.mjs',
+  'crawler/india-startup-lanes.mjs',
+  'crawler/original-listing-resolver.mjs',
+  'crawler/reserve.mjs',
+  'crawler/run.mjs',
+  'crawler/schedules.mjs',
+  'crawler/theirstack.mjs',
+  'crawler/v4-history-snapshot.mjs',
+  'crawler/vc-portfolio-watchlist.mjs',
+  'crawler/yc-discovery.mjs',
+  'crawler/bounded-concurrency.mjs',
   'crawler/workflow.mjs',
   'crawler/delivery-canary.mjs',
   'crawler/canary-evaluator.mjs',
   'crawler/cli.mjs',
+  'crawler/board-registry.mjs',
+  'crawler/board-rotation-state.mjs',
+  'crawler/historical-suppression.mjs',
+  'crawler/identity.mjs',
+  'career-ops/providers/workday.mjs',
   'config/crawler-v2.json',
+  'config/reverse-warm-set.json',
+  'config/vc-portfolio-watchlist.json',
+  'config/job-pull.json',
+  'config/conversion-plan.json',
+  'config/board-registry.json',
   'config/match-score.schema.json',
+  'job-pull/config.mjs',
+  'job-pull/warm-set.mjs',
+  'job-pull/run.mjs',
+  'job-pull/candidate.mjs',
+  'job-pull/eligibility.mjs',
+  'job-pull/freshness.mjs',
+  'job-pull/dedup.mjs',
+  'job-pull/conversion-score.mjs',
   'job-pull/match-scorer.mjs',
+  'job-pull/opportunity-ledger.mjs',
+  'job-pull/mode-scoring.mjs',
   'job-pull/normal-mode.mjs',
+  'job-pull/normal-readiness.mjs',
+  'job-pull/normal-sources.mjs',
   'job-pull/normal-selection.mjs',
+  'job-pull/workday-enrichment.mjs',
+  'job-pull/startup-mode.mjs',
+  'job-pull/startup-sources.mjs',
+  'job-pull/startup-enrichment.mjs',
+  'job-pull/startup-selection.mjs',
+  'job-pull/remote-mode.mjs',
+  'job-pull/remote-sources.mjs',
+  'job-pull/remote-enrichment.mjs',
+  'job-pull/remote-selection.mjs',
+  'job-pull/remote-adapters/himalayas.mjs',
+  'job-pull/remote-adapters/jobicy.mjs',
+  'job-pull/remote-adapters/remoteok.mjs',
+  'job-pull/remote-adapters/remotive.mjs',
+  'job-pull/remote-adapters/weworkremotely.mjs',
+  'career-ops/providers/himalayas.mjs',
+  'career-ops/providers/jobicy.mjs',
+  'career-ops/providers/weworkremotely.mjs',
 ]);
 
 function stable(value) {
@@ -29,7 +88,7 @@ function stable(value) {
 export function computeCanaryVersion({
   config = {},
   root = process.cwd(),
-  codePaths = DEFAULT_CODE_PATHS,
+  codePaths = DEFAULT_CANARY_CODE_PATHS,
 } = {}) {
   const hash = createHash('sha256');
   hash.update(JSON.stringify(stable(config)));
@@ -47,21 +106,48 @@ function orderedRuns(input) {
     .sort((left, right) => String(left.runAt).localeCompare(String(right.runAt)));
 }
 
+const DISCOVERY_PROFILE_FIELDS = Object.freeze(['schedule', 'mode', 'locationPreset']);
+const DISCOVERY_PROFILE_VALUES = Object.freeze({
+  schedule: new Set(['morning', 'midday']),
+  mode: new Set(['normal', 'startup', 'remote']),
+  locationPreset: new Set(['india', 'pune']),
+});
+
+export function normalizeCanaryDiscoveryProfile(profile) {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+  const normalized = {};
+  for (const field of DISCOVERY_PROFILE_FIELDS) {
+    if (typeof profile[field] !== 'string') return null;
+    const value = profile[field].trim().toLowerCase();
+    if (!DISCOVERY_PROFILE_VALUES[field].has(value)) return null;
+    normalized[field] = value;
+  }
+  return normalized;
+}
+
+function sameDiscoveryProfile(left, right) {
+  return DISCOVERY_PROFILE_FIELDS.every((field) => left?.[field] === right?.[field]);
+}
+
 function currentVersionStreak(runs) {
-  if (!runs.length) return { version: null, runs: [], invalidRunIds: [] };
+  if (!runs.length) return { version: null, discoveryProfile: null, runs: [], invalidRunIds: [] };
   const latest = runs.at(-1);
   const version = latest?.codeConfigVersion ?? null;
+  const discoveryProfile = normalizeCanaryDiscoveryProfile(latest?.discoveryProfile);
   const streak = [];
   const invalidRunIds = [];
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const run = runs[index];
-    if (run?.valid !== true || (run.codeConfigVersion ?? null) !== version) {
-      if (run?.valid !== true) invalidRunIds.push(run?.runId ?? null);
+    const runProfile = normalizeCanaryDiscoveryProfile(run?.discoveryProfile);
+    if (run?.valid !== true || !discoveryProfile || !runProfile
+      || (run.codeConfigVersion ?? null) !== version
+      || !sameDiscoveryProfile(runProfile, discoveryProfile)) {
+      if (run?.valid !== true || !runProfile) invalidRunIds.push(run?.runId ?? null);
       break;
     }
     streak.unshift(run);
   }
-  return { version, runs: streak, invalidRunIds: invalidRunIds.filter(Boolean) };
+  return { version, discoveryProfile, runs: streak, invalidRunIds: invalidRunIds.filter(Boolean) };
 }
 
 function versionChanges(runs) {
@@ -131,6 +217,21 @@ function reportGate(runs) {
   };
 }
 
+function manualInventoryGate(runs) {
+  const failing = runs.filter((run) => run.engineering?.manualInventoryMatch !== true);
+  return {
+    id: 'manual-inventory-match',
+    description: 'Every valid run matches the manually verified delivery inventory.',
+    passed: runs.length > 0 && failing.length === 0,
+    evidence: {
+      evaluatedRunIds: runs.map((run) => run.runId),
+      failingRunIds: failing.map((run) => run.runId),
+      observed: Object.fromEntries(runs.map((run) => [run.runId, run.engineering?.manualInventoryMatch === true])),
+      required: true,
+    },
+  };
+}
+
 export function evaluateDeliveryCanary(input = [], {
   requiredRuns = DEFAULT_CANARY_RUNS,
   durationLimitMs = ROUTINE_DURATION_LIMIT_MS,
@@ -148,15 +249,17 @@ export function evaluateDeliveryCanary(input = [], {
     zeroGate('funnel-reconciliation', 'Zero unattributed funnel loss.', runs, 'unattributedFunnelLoss'),
     durationGate(runs, durationLimitMs),
     reportGate(runs),
+    manualInventoryGate(runs),
     {
       id: 'seven-consecutive-valid-runs',
-      description: 'Seven consecutive valid runs share one recorded code/config version.',
-      passed: runs.length >= requiredRuns && Boolean(streak.version),
+      description: 'Seven consecutive valid runs share one recorded code/config version and normalized discovery profile.',
+      passed: runs.length >= requiredRuns && Boolean(streak.version) && Boolean(streak.discoveryProfile),
       evidence: {
         requiredRuns,
         consecutiveRuns: runs.length,
         runIds: runs.map((run) => run.runId),
         version: streak.version,
+        discoveryProfile: streak.discoveryProfile,
         versionChanges: changes,
       },
     },
@@ -168,6 +271,7 @@ export function evaluateDeliveryCanary(input = [], {
       count: runs.length,
       required: requiredRuns,
       version: streak.version,
+      discoveryProfile: streak.discoveryProfile,
       runIds: runs.map((run) => run.runId),
       invalidRunIds: streak.invalidRunIds,
       evaluatedRunCount: allRuns.length,
