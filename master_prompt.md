@@ -10,8 +10,9 @@
 
 - **Name:** Onkar Jadhav
 - **Title:** AI / Full-Stack Software Engineer
-- **Location:** Pune, Maharashtra, India
-- **Education:** B.Tech Computer Science, PCCOE (9.17 CGPA), graduating Jun 2026
+- **Home location:** Pune, Maharashtra, India
+- **Current employment:** Capgemini — A4 Analyst — Navi Mumbai — since 10 Aug 2026. In Java Full Stack (JFS) course training; no project or client work yet. Never describe this training as project, production, or client experience.
+- **Education:** B.Tech Computer Science, PCCOE (9.17 CGPA), 2026
 - **Email:** onkarj012@gmail.com · **GitHub:** github.com/Onkarj012 · **LinkedIn:** linkedin.com/in/onkarj012
 - **Headline products:** Stride (shipped, in use), Lore Engine, StockXpert, GovBench, PromptForge
 
@@ -40,7 +41,7 @@
 
 ### Work mode & location
 - **Onsite / hybrid:** Pune metro only — Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, and nearby Pune tech corridors.
-- **Remote:** must explicitly permit India, APAC/Asia-Pacific, or worldwide/global participation without excluding India. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop.
+- **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. Timezone must be compatible with IST or left unspecified; US-hours-only and overnight-only overlap → drop.
 
 ### Employment type & must-haves
 - Full-time engineering roles or explicitly paid/stipended engineering internships.
@@ -48,13 +49,13 @@
 - Unpaid, equity-only, commission-only, volunteer, part-time, and contract roles → drop.
 
 ### Hard gates (run first, every pull — fail any → drop, never written to Notion)
-1. **Location authorization** — onsite/hybrid must offer Pune metro; remote eligibility must explicitly include India/APAC/worldwide-with-India-ok.
+1. **Location authorization** — onsite/hybrid must offer Pune metro; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
 3. **Employment / paid** — allow full-time or explicitly paid internship; disallowed/unknown-pay internships → drop.
 4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
    - **Workday exception:** only a usable DETAIL `startDate` is trusted as Workday freshness evidence. LIST `postedOn`, including bounded labels such as `Posted Today`, is not sufficient and stays undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
 5. **Liveness** — confirmed dead/expired → drop. Inconclusive checks stay `Not Verified`, never invented as Active.
-6. **Cross-day suppression** (opportunity ledger, `career-ops/data/opportunity-ledger.tsv`) — applied/contacted/interviewing/rejected requisitions never resurface; surfaced-but-unactioned roles get a 7-day cooldown; a Workday refresh is the same requisition, not a new opportunity.
+6. **Cross-day suppression** (opportunity ledger, `career-ops/data/opportunity-ledger.tsv`) — applied/contacted/interviewing/rejected requisitions never resurface; surfaced-but-unactioned roles get a 7-day cooldown; a Workday refresh of the same provider+requisition is the same opportunity, not a new one. Distinct requisitions at the same company/title/location stay distinct.
 
 Mechanical values and aliases live in `config/job-pull.json`; this section is the human-readable policy. Everything else (stack fit, role flavor, pure-frontend-ness, etc.) is **soft** — it lowers Skill match / Domain relevance in § 3, not a gate.
 
@@ -104,10 +105,12 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 ### Structure (fixed)
 1. **Heading** — unchanged.
 2. **Summary** — rewritten per JD to lead with the strongest truthful hook and the role's highest-value language without becoming a keyword list.
-3. **Experience** — **Stride is ALWAYS here** (it's a shipped product in use):
-   - Title: **Lead Engineer**
-   - Dates: **April 2026 – Present**
-   - Lead bullet states traction (production, active trial users) — see content rules.
+3. **Experience** — two entries, current employment first:
+   - **Capgemini** — A4 Analyst — Navi Mumbai — Aug 2026 – Present. Frozen block: one line stating Java Full Stack (JFS) training. Never tailored per JD, never given achievement, metric, client, or project bullets, and never described as project or production experience until real assigned work exists.
+   - **Stride is ALWAYS here** (it's a shipped product in use):
+     - Title: **Lead Engineer**
+     - Dates: **April 2026 – Present**
+     - Lead bullet states traction (production, active trial users) — see content rules.
 4. **Projects** — **exactly 2**, picked from the pool by best JD-keyword match:
    - Pool: **Lore Engine, StockXpert, GovBench, PromptForge**
    - (Vaani excluded — too little owned detail.)
@@ -151,7 +154,7 @@ Before selecting projects or rewriting any line, build an auditable matrix with 
 
 ### Hard constraints
 - **Exactly ONE visually balanced page.** No conspicuous dead zone, overflow, crowding, or tiny type. Never lengthen a bullet, add a weak claim, repeat a keyword, or pad the summary solely to occupy space. If overfull, trim the weakest content first; if underfilled, improve selection and spacing within the liked template without inventing or padding content.
-- Total project slots on page = **3** (1 Stride experience block + 2 projects). Never more, never fewer.
+- Total substantive slots on page = **3** (1 Stride experience block + 2 projects), plus the compact frozen Capgemini employment block. Never more, never fewer.
 - **Publications** (`PUBLICATIONS` slot): include **only** for research / ML-research / applied-science / quant JDs, or when a JD names publications/papers as a plus. For all other JDs, empty the slot so no `\section{Publications}` header prints. When included it competes for the one-page budget: tighten spacing or trim the weakest project bullet to stay at exactly one page — never drop a mandatory project slot or pad to fit. Two approved papers, both stock/trading deep-learning work (co-author): (1) *HybridSwingNet…* — Scientific Reports (Nature Portfolio), accepted/in press 2026; (2) *Stock Recommendations Leveraging AI/ML…* — ICT4SD 2025 (Scopus-indexed, Springer). Print exactly as in the master source; do not upgrade "accepted, in press" to "published", claim first authorship, or invent a DOI.
 - Never fabricate. Only reframe / reorder / select from the approved master sources with claim provenance.
 - Mirror the JD's vocabulary where truthful and evidence-backed.

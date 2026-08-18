@@ -263,3 +263,15 @@ test('provider families carry typed identity, evidence, geography, capabilities,
   assert.equal(samples.workday.tenant, 'finastra');
   assert.ok(samples.workday.url.includes('/wday/cxs/finastra/finc/jobs'));
 });
+
+test('locationPreset pune ranks pune-relevant boards ahead of others in a lane', () => {
+  const registry = {
+    boards: [
+      { scheduleLane: 'atsWarm', enabled: true, activationState: 'enabled', provider: 'greenhouse', slug: 'remote-co', company: 'Remote Co', indiaRelevant: false, puneRelevant: false },
+      { scheduleLane: 'atsWarm', enabled: true, activationState: 'enabled', provider: 'greenhouse', slug: 'pune-co', company: 'Pune Co', indiaRelevant: true, puneRelevant: true },
+      { scheduleLane: 'atsWarm', enabled: true, activationState: 'enabled', provider: 'greenhouse', slug: 'india-co', company: 'India Co', indiaRelevant: true, puneRelevant: false },
+    ],
+  };
+  const boards = projectLaneBoards(registry, 'atsWarm', { locationPreset: 'pune' });
+  assert.deepEqual(boards.map((board) => board.slug), ['pune-co', 'india-co', 'remote-co']);
+});

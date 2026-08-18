@@ -76,8 +76,8 @@ site:<ats-domain> "<role term>" ("remote India" OR "India remote" OR APAC OR wor
 Templates:
 
 ```text
-site:<board> "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR internship) (Pune OR Hinjawadi OR PCMC)
-site:<board> "<role term>" (fresher OR "new grad" OR graduate OR "0-1 year" OR internship) ("remote India" OR APAC OR worldwide)
+site:<board> "<role term>" ("new grad" OR graduate OR "0-1 year" OR internship) (Pune OR Hinjawadi OR PCMC)
+site:<board> "<role term>" ("new grad" OR graduate OR "0-1 year" OR internship) ("remote India" OR APAC)
 ("careers" OR "we're hiring") "<role term>" (Pune OR "remote India" OR APAC) -site:linkedin.com -site:naukri.com
 ```
 
@@ -111,7 +111,7 @@ Bangalore/Bengaluru, Mumbai, Hyderabad, or any other city without a Pune locatio
 
 ### Remote accepted
 
-Must explicitly say India, APAC/Asia-Pacific, or worldwide/global without excluding India. Reject bare `Remote`, US/Canada/EU/UK/LATAM-only, incompatible country lists, or unclear eligibility.
+Must explicitly say India or APAC/Asia-Pacific. Context-free worldwide/global tokens are not eligibility. Reject bare `Remote`, US/Canada/EU/UK/LATAM-only, incompatible country lists, or unclear eligibility. Timezone must be IST-compatible, flexible, or unspecified.
 
 Search snippets do not prove geo eligibility. Preserve evidence from ATS/feed/JD.
 
@@ -120,7 +120,7 @@ Search snippets do not prove geo eligibility. Preserve evidence from ATS/feed/JD
 - Primary: age ≤24h at one captured run timestamp.
 - Extended: age >24h and ≤72h.
 - Older or undated: not curated.
-- Prefer ATS `publishedAt`/`first_published`/`createdAt`/Workday `postedOn` over board-relative text.
+- Prefer ATS `publishedAt`/`first_published`/`createdAt`/Workday DETAIL `startDate` over list `postedOn` or board-relative text.
 - Do not infer posting time from discovery time or email alert time.
 
 ## ATS endpoints
@@ -164,11 +164,12 @@ node job-pull/run.mjs --public-json PREPARED.json
 ## Dedup
 
 ```text
-Dedup Key = normalize(company) + "|" + normalize(title) + "|" + normalize(location)
+Dedup Key = provider + "|" + requisition/job id
+fallback = canonical URL, then normalize(company) + "|" + normalize(title) + "|" + normalize(location)
 normalize = lowercase, strip punctuation, collapse whitespace, normalize known aliases
 ```
 
-Dedup sequence: canonical URL → provider+Job ID → Dedup Key → committed/pending ledger → JD fingerprint when description exists. Use `fingerprint-core.mjs` for fingerprint similarity. `detect-reposts.mjs` detects repost patterns; it is not universal SimHash cluster output.
+Dedup sequence: canonical URL → provider+Job ID (primary durable identity) → last-resort company|title|location only when neither side has a requisition id → committed/pending ledger → JD fingerprint when description exists. Use `fingerprint-core.mjs` for fingerprint similarity. `detect-reposts.mjs` detects repost patterns; it is not universal SimHash cluster output.
 
 ## Weekly coverage audit
 

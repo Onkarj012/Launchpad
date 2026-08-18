@@ -304,3 +304,19 @@ test('scoring prompt constrains codex to the chunk file only', async () => {
   const prompt = calls[0].args[calls[0].args.length - 1];
   assert.ok(prompt.includes('Do not open, search, or explore any other file in the repository'));
 });
+
+test('parent abort signal stops scoring before later chunks run', async () => {
+  const controller = new AbortController();
+  let chunks = 0;
+  const result = await scoreCandidates([candidate(1), candidate(2), candidate(3), candidate(4)], {
+    chunkSize: 1,
+    signal: controller.signal,
+    async scoreChunk() {
+      chunks += 1;
+      if (chunks === 1) controller.abort();
+      return [scoreRow(candidate(chunks))];
+    },
+  });
+  assert.ok(chunks < 4);
+  assert.equal(result.degraded || result.reasonCode != null || result.failures.length > 0, true);
+});

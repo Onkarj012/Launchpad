@@ -235,6 +235,7 @@ export async function scoreCandidates(candidates, {
   runId = randomUUID(),
   runAt = null,
   wholeTimeoutMs = DEFAULT_WHOLE_TIMEOUT_MS,
+  signal = null,
 } = {}) {
   const list = Array.isArray(candidates) ? candidates : [];
   if (!list.length) return { scored: [], failures: [], chunks: 0, degraded: false, reasonCode: null };
@@ -255,6 +256,9 @@ export async function scoreCandidates(candidates, {
   const effectiveWholeTimeoutMs = resolveWholeTimeoutMs(wholeTimeoutMs);
   const deadlineAt = Date.now() + effectiveWholeTimeoutMs;
   const abortController = new AbortController();
+  if (signal?.aborted) abortController.abort(signal.reason);
+  const onParentAbort = () => abortController.abort(signal?.reason);
+  signal?.addEventListener?.('abort', onParentAbort, { once: true });
 
   const recordChunkFailure = (chunk, reason, stderr = null) => {
     for (const candidate of chunk) {
@@ -269,6 +273,12 @@ export async function scoreCandidates(candidates, {
 
   // Nightly batch: chunks run sequentially, one failure never aborts the rest.
   for (let index = 0; index < chunks.length && !aborted; index++) {
+    if (signal?.aborted || abortController.signal.aborted) {
+      aborted = true;
+      reasonCode = reasonCode || 'SCORER_ABORTED';
+      degraded = true;
+      break;
+    }
     const chunk = chunks[index];
     let returned;
     try {
@@ -480,6 +490,7 @@ export function createCodexScorer({
   wholeTimeoutMs,
   reasoningEffort = 'low',
   execFileImpl = execFile,
+  signal = null,
 } = {}) {
   const binary = resolveCodexBinary(codexBinary);
   const resolvedWorkDir = path.resolve(workDir);
@@ -532,6 +543,7 @@ export function createCodexScorer({
 
   return (candidates, options = {}) => scoreCandidates(candidates, {
     wholeTimeoutMs: effectiveWholeTimeoutMs,
+    signal,
     ...options,
     scoreChunk,
   });

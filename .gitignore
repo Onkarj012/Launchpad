@@ -1,5 +1,13 @@
 # vendored / local state
-career-ops/
+career-ops/*
+!career-ops/providers/
+!career-ops/providers/**
+!career-ops/scan.mjs
+!career-ops/scan-ats-full.mjs
+!career-ops/fingerprint-core.mjs
+!career-ops/followup-cadence.mjs
+!career-ops/package.json
+!career-ops/package-lock.json
 logs/
 /.agent/
 /.claude/

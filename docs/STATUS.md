@@ -31,7 +31,20 @@ When sources conflict, do not infer a promotion from prose. Re-run the allowed l
 
 ## Current local position
 
-The unified daily path is implemented in the working tree and is stabilizing behind live gates:
+Working-tree implementation of the Launchpad readiness plan (P00–P03 code, not live proof):
+
+- Resume queue defaults to `createLocalResumeBuilder()` / `createLocalPdfVerifier()`. The builder compiles a tailored source; it does not invent slots.
+- Durable opportunity identity prefers provider + requisition id. Distinct requisitions no longer collapse on company+title+location.
+- Workday DETAIL `startDate` remains the only trusted Workday freshness evidence.
+- Original-listing resolver forwards configured `maxHosts` and `maxRequests`.
+- Codex scoring honors the parent `AbortSignal` and cannot extend past remaining run time.
+- Remote eligibility requires explicit India or APAC. Context-free worldwide/global tokens are not India Eligible. Timezone overlap is checked against IST.
+- `locationPreset` reorders projected boards so Pune-relevant hosts are fetched first.
+- Canary fingerprint walks the tracked import graph and fails if a tracked file is missing. `writeDeliveryCanaryReport()` emits the report/sidecar pair the evaluator already validates.
+- Daily notify fires on every terminal outcome with run identity.
+- Sequence skills have numbered steps and done-when criteria. Guardrail vocabulary lives in `.agents/skills/guardrails.md`. The `launchpad` router names all fifteen skills. Four supporting skills stay unmirrored by design.
+
+The unified daily path remains:
 
 ```sh
 node crawler/cli.mjs daily morning --mode normal  --location-preset india

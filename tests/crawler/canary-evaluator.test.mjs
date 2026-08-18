@@ -168,3 +168,11 @@ test('default fingerprint changes for policy, identity, Workday provider, and ev
     previous = changed;
   }
 });
+
+test('fingerprint fails closed when a tracked file is missing', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'launchpad-canary-missing-'));
+  assert.throws(
+    () => computeCanaryVersion({ root, codePaths: ['crawler/daily-runner.mjs'] }),
+    /missing tracked file/,
+  );
+});

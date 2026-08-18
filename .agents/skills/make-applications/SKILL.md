@@ -1,13 +1,27 @@
 ---
 name: make-applications
-description: Process the user-controlled Make Resume queue from Applications v5, build role-specific resumes locally, and set only the derived v5 resume state after verification. Never checks the queue or submits an application.
+description: Batch-build every user-checked Make Resume v5 row into a local verified PDF.
 disable-model-invocation: true
 ---
 
 # Resume queue
 
-Read `readMakeResumeQueue()` from `resume-v5/queue-reader.mjs`; it queries Applications v5 directly and refuses legacy targets. Process the returned rows with `processMakeResumeQueue()` from `resume-v5/resume-queue.mjs`.
+Vocabulary: `../guardrails.md`. Read `readMakeResumeQueue()` from `resume-v5/queue-reader.mjs`. Process with `processMakeResumeQueue()` from `resume-v5/resume-queue.mjs`.
 
-For each checked row, set Building, run the existing local template-based resume build, verify the exact PDF plus source, matrix, and provenance sidecars, then set Ready, Failed, or Stale. Preserve the frozen template and master evidence source. `Make Resume` and `Applied?` are never changed. Compilation is local-only and `resumes/output/<date>/` contains PDFs only.
+## Steps
 
-Report every selected row, artifact path, verification result, and failure. Never attach a stale or mismatched artifact, write a legacy tracker, auto-apply, or send outreach.
+1. Query Applications v5 with the fixed Make Resume filter. Refuse legacy targets.
+2. For each checked row: set `resumeState` to Building only.
+3. Tailor that row with the `resume-latex` sequence. Do not invent slot content.
+4. Call `createLocalResumeBuilder()` then `createLocalPdfVerifier()` from `resume-v5/local-builder.mjs`.
+5. Set Ready, Failed, or Stale from `verifyResumeArtifact()`. Never change `Make Resume` or `Applied?`.
+6. Report every selected row, artifact path, and verification result.
+
+## Done when
+
+- Every checked row has a terminal `resumeState` of Ready, Failed, or Stale
+- Ready rows have PDF + source + matrix + provenance and `verifyFile` `PASS`
+- No user-owned checkbox changed
+- Failures are listed rather than skipped
+
+user-owned. local-compile. v5-only. no auto-apply.

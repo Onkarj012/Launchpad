@@ -5,7 +5,7 @@ This is Onkar Jadhav's job-search system: discover roles → score against targe
 ## Source of truth
 - **`master_prompt.md`** (project root) is the single source of truth for targeting, scoring rubric, resume tailoring rules, and outreach. Every skill reads it. Change behavior there, not here — this file does **not** duplicate the rubric.
 - **`docs/STATUS.md`** is the sole repository index for current execution status. GitHub issues remain the live issue-status authority; dated plans, audits, probes, and local issue packs are design/history.
-- **Resume layout:** `resumes/templates/Onkar_Template.tex` is the single canonical, frozen layout template. Every tailored resume starts as a copy of it; only its `%== TAILOR-START/END ==` slots (HEADLINE, SUMMARY, COURSEWORK, EXPERIENCE-BULLETS, PROJECTS, SKILLS) are editable per JD.
+- **Resume layout:** `resumes/templates/Onkar_Template.tex` is the single canonical, frozen layout template. Every tailored resume starts as a copy of it; only its `%== TAILOR-START/END ==` slots (HEADLINE, SUMMARY, COURSEWORK, STRIDE-BULLETS, PROJECTS, PUBLICATIONS, SKILLS) are editable per JD. The Capgemini employment block in Experience is frozen and never tailored.
 - **Resume content:** `resumes/master/Master_Resume_ATS.tex` is the approved-evidence source of truth. Never invent experience — tailoring only reframes/reorders/selects from it.
 
 ## Frozen identity (do not re-ask)
@@ -13,8 +13,8 @@ This is Onkar Jadhav's job-search system: discover roles → score against targe
 - **Email:** onkarj012@gmail.com · **Phone:** +91-7058604679
 - **GitHub:** github.com/Onkarj012 · **LinkedIn:** linkedin.com/in/onkarj012 · **Portfolio:** leo4.dev
 - **Location:** Pune, Maharashtra, India
-- **Education:** B.Tech Computer Science, PCCOE (SPPU) — 9.17 CGPA — graduating Jun 2026
-- **Status:** final-year student / new-grad, fresher (0–1 yr)
+- **Education:** B.Tech Computer Science, PCCOE (SPPU) — 9.17 CGPA — 2026
+- **Status:** employed — Capgemini, A4 Analyst, Navi Mumbai, since 10 Aug 2026; currently in Java Full Stack (JFS) course training with no project work yet. Still early-career (0–1 yr) for targeting purposes. Searching for an AI/ML/full-stack role in Pune metro or India-eligible remote.
 - **Target titles:** AI/LLM Engineer, Agentic AI Engineer, ML Engineer, Full-Stack (AI-leaning), Backend (Python), New-grad SWE
 - **Headline work:** Stride (shipped, in use — always in Experience as Lead Engineer), Lore Engine (RAG), StockXpert (DL equity), GovBench (LLM governance), PromptForge (agentic). Vaani exists but is never put on tailored resumes.
 - Full targeting/gates/rubric live in `master_prompt.md` §§ 2–4.

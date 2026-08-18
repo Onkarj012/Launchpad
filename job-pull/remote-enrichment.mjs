@@ -1,7 +1,9 @@
 const INDIA = /\bindia\b|\bindian\b/i;
 const APAC = /\bapac\b|asia[ -]?pacific/i;
-const GLOBAL = /\bworldwide\b|\bworld[ -]?wide\b|\bglobal(?:ly)?\b|\banywhere\b/i;
 const REMOTE = /\bremote\b|work[ -]?from[ -]?home|distributed|anywhere/i;
+const IST_TZ = /\b(?:ist|india(?:n)?\s+standard\s+time|asia\/kolkata|asia\/calcutta|(?:utc|gmt)\s*[+-]\s*5(?:[:.]?3(?:0)?)?|(?:utc|gmt)\s+offsets?[^0-9]{0,12}5(?:[.:]5|[:.]30)?)\b/i;
+const FLEXIBLE_TZ = /\b(?:any\s+schedule|flexible\s+(?:hours|schedule)|async(?:hronous)?|no\s+timezone|timezone[ -]?agnostic)\b/i;
+const INCOMPATIBLE_TZ = /\b(?:est|edt|pst|pdt|cst|cdt|eastern(?:\s+time)?|pacific(?:\s+time)?|us\s+(?:hours|business\s+hours)|must\s+overlap\s+(?:est|pst|us)|overnight)\b/i;
 const EOR = /\bemployer\s+of\s+record\b|\beor\b/i;
 const COUNTRY_RESTRICTION = /(?:authorized\s+to\s+work\s+in|work\s+authorization(?:\s+in)?|work\s+permit\s+(?:for|in)|must\s+(?:be\s+located|reside)|(?:citizenship|citizens?|residency|residents?)\s*(?:required|only|of|from)|(?:payroll|employment)\s+(?:only\s+)?in|(?:payroll|employment)(?:\s+\w+){0,3}\s+in|based\s+in|(?:anywhere|worldwide|global)\s+(?:in|within))\s+(?:the\s+)?(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\b|\b(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\s+(?:only|citizens?|citizenship|residency|residents?|payroll|work\s+permit)(?:\s+only)?\b/i;
 const INDIA_EXCLUSION = /excluding\s+india|except\s+india|india\s+(?:excluded|not\s+available)|india\s+is\s+not\s+(?:supported|eligible|included)|not\s+(?:open|available)\s+to\s+india/i;
@@ -44,14 +46,12 @@ export function classifyRemoteEligibility(candidate) {
 
   const hasIndia = INDIA.test(combined);
   const hasApac = APAC.test(combined);
-  const hasGlobal = GLOBAL.test(combined);
   const hasEor = candidate.eor?.available === true || EOR.test(combined);
   const explicitIndia = candidate.remoteEligibility?.status === 'India Eligible' || hasIndia;
   if (hasEor && explicitIndia) {
     return { eligible: true, status: 'India Eligible', classification: 'stable-eor', code: 'REMOTE_STABLE_EOR_INDIA', evidence: remote.scope || remote.payroll || candidate.remoteEligibility?.evidence || combined, reasons: [] };
   }
   if (hasApac) return { eligible: true, status: 'India Eligible', classification: 'apac', code: 'REMOTE_APAC', evidence: remote.scope || combined, reasons: [] };
-  if (hasGlobal) return { eligible: true, status: 'India Eligible', classification: 'global', code: 'REMOTE_GLOBAL', evidence: remote.scope || combined, reasons: [] };
   if (explicitIndia) return { eligible: true, status: 'India Eligible', classification: 'india', code: 'REMOTE_INDIA', evidence: remote.scope || candidate.location || combined, reasons: [] };
   if (hasEor) return { eligible: false, status: 'Needs Verification', classification: 'stable-eor', code: 'REMOTE_EOR_INDIA_AVAILABILITY_UNPROVEN', evidence: remote.payroll || combined, reasons: ['REMOTE_EOR_INDIA_AVAILABILITY_UNPROVEN'] };
   if (REMOTE.test(combined)) return { eligible: false, status: 'Needs Verification', classification: null, code: 'REMOTE_SCOPE_AMBIGUOUS', evidence: remote.scope || candidate.location || combined, reasons: ['REMOTE_SCOPE_AMBIGUOUS'] };
@@ -76,10 +76,35 @@ export function classifyRemoteEmployment(candidate) {
   return { eligible: true, status: 'Eligible', category: 'Full-time Employee', code: 'REMOTE_FULL_TIME', evidence: candidate.employment?.evidence || combined, reasons: [] };
 }
 
+export function classifyRemoteTimezone(candidate) {
+  const combined = combinedText(candidate);
+  const evidence = evidenceValue(candidate.timezoneOverlap?.evidence)
+    || evidenceValue(candidate.remoteEvidence?.timezone)
+    || evidenceValue(candidate.timezoneEvidence)
+    || '';
+  const hours = Number(candidate.timezoneOverlap?.minimumHours ?? candidate.timezoneOverlap?.hours);
+  if (FLEXIBLE_TZ.test(evidence) || FLEXIBLE_TZ.test(combined)) {
+    return { accepted: true, code: 'REMOTE_TZ_FLEXIBLE', evidence: evidence || combined };
+  }
+  if (IST_TZ.test(evidence) || IST_TZ.test(combined)) {
+    return { accepted: true, code: 'REMOTE_TZ_IST', evidence: evidence || combined };
+  }
+  if (Number.isFinite(hours) && hours >= 4) {
+    return { accepted: true, code: 'REMOTE_TZ_OVERLAP', evidence: evidence || `${hours}h` };
+  }
+  const overnight = candidate.timezoneOverlap?.status === 'overnight'
+    || (Number.isFinite(hours) && hours === 0 && INCOMPATIBLE_TZ.test(evidence));
+  if ((INCOMPATIBLE_TZ.test(evidence) || overnight) && !(Number.isFinite(hours) && hours >= 4)) {
+    return { accepted: false, code: 'REMOTE_TZ_INCOMPATIBLE', evidence: evidence || candidate.timezoneOverlap?.status || combined };
+  }
+  return { accepted: true, code: 'REMOTE_TZ_UNSPECIFIED', evidence: evidence || null };
+}
+
 export function enrichRemoteCandidate(candidate) {
   const eligibility = classifyRemoteEligibility(candidate);
   const employment = classifyRemoteEmployment(candidate);
-  const remoteReady = eligibility.eligible && employment.eligible;
+  const timezone = classifyRemoteTimezone(candidate);
+  const remoteReady = eligibility.eligible && employment.eligible && timezone.accepted;
   return {
     ...candidate,
     remoteEligibility: { status: eligibility.status === 'Eligible' ? 'India Eligible' : eligibility.status === 'Not Eligible' ? 'Not Eligible' : 'Not Verified', evidence: eligibility.evidence || candidate.remoteEligibility?.evidence || null },
@@ -87,10 +112,10 @@ export function enrichRemoteCandidate(candidate) {
     remoteEmploymentDecision: employment,
     remoteEmploymentCategory: employment.category,
     remoteReady,
-    timezoneDecision: { accepted: true, evidence: candidate.timezoneOverlap?.evidence || null },
+    timezoneDecision: timezone,
     evidence: {
       ...(candidate.evidence || {}),
-      remote: { ...(candidate.evidence?.remote || candidate.remoteEvidence || {}), eligibility, employment, timezone: { accepted: true } },
+      remote: { ...(candidate.evidence?.remote || candidate.remoteEvidence || {}), eligibility, employment, timezone },
     },
   };
 }

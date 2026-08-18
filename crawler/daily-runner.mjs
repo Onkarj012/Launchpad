@@ -530,8 +530,12 @@ async function runDailyNormalImpl({
     // keeps the run byte-identical to the pre-scorer behaviour — offline, no
     // child processes.
     scorer: scorer === 'codex'
-      // Scoring keeps a minimum runway so discovery cannot starve the scorer.
-      ? createCodexScorer({ wholeTimeoutMs: Math.max(dailyExecution.scorerFloorMs, dailyExecution.remainingMs()) })
+      // Scoring may use the reserved floor only when that time still remains.
+      // Never extend past the parent deadline, and honor its AbortSignal.
+      ? createCodexScorer({
+        wholeTimeoutMs: Math.min(dailyExecution.remainingMs(), Math.max(1, dailyExecution.scorerFloorMs)),
+        signal: dailyExecution.signal,
+      })
       : (scorer ?? undefined),
     ...(selectedMode === 'normal' ? { includeCrawlerLanes: true } : {}),
     enrichmentBudget: config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,

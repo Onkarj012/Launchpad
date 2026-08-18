@@ -12,7 +12,7 @@ This is Onkar Jadhav's job-search system: discover roles → score against targe
 
 ## Identity
 
-Onkar Jadhav · onkarj012@gmail.com · +91-7058604679 · Pune, Maharashtra, India · B.Tech Computer Science, PCCOE (SPPU), 9.17 CGPA, graduating Jun 2026. Target titles: AI/LLM Engineer, Agentic AI Engineer, ML Engineer, Full-Stack AI, Backend Python, and new-grad SWE.
+Onkar Jadhav · onkarj012@gmail.com · +91-7058604679 · home Pune, Maharashtra, India · B.Tech Computer Science, PCCOE (SPPU), 9.17 CGPA, 2026. Currently employed: Capgemini, A4 Analyst, Navi Mumbai, since 10 Aug 2026, in Java Full Stack (JFS) course training with no project work yet. Target titles: AI/LLM Engineer, Agentic AI Engineer, ML Engineer, Full-Stack AI, Backend Python, and early-career SWE.
 
 ## Public v5 workflow
 

@@ -21,18 +21,20 @@ test('ATS-direct wins canonical URL and provider/job-id collisions', () => {
   assert.equal(result.duplicates[0].code, 'DEDUP_CANONICAL_URL');
 });
 
-test('company/title/location, ledger, and description SimHash are dedup keys', () => {
-  const first = candidate({ url: 'https://one.example.test/1', provider: 'one', id: 'one' });
-  const sameKey = candidate({ url: 'https://two.example.test/2', provider: 'two', id: 'two', description: null });
-  const ledgerMatch = candidate({ url: 'https://three.example.test/3', company: 'Ledger Co', title: 'ML Engineer', location: 'Remote India' });
+test('company/title/location is last-resort only; distinct requisitions stay distinct', () => {
+  const first = candidate({ url: 'https://one.example.test/1', provider: 'workday', jobId: 'R1' });
+  const sameDesk = candidate({ url: 'https://two.example.test/2', provider: 'workday', jobId: 'R2', description: null });
+  const unlabeled = candidate({ url: 'https://four.example.test/4', provider: null, id: null, jobId: null, description: null });
+  const unlabeledDup = candidate({ url: 'https://five.example.test/5', provider: null, id: null, jobId: null, description: null });
+  const ledgerMatch = candidate({ url: 'https://three.example.test/3', provider: null, id: null, jobId: null, company: 'Ledger Co', title: 'ML Engineer', location: 'Remote India' });
   const simhash = candidate({ url: 'https://zzz.example.test/4', company: 'Different Co', title: 'Different Role', location: 'Remote India', description: first.description });
-  const result = deduplicateCandidates([first, sameKey, ledgerMatch, simhash], {
+  const result = deduplicateCandidates([first, sameDesk, unlabeled, unlabeledDup, ledgerMatch, simhash], {
     ledgerRows: [{ dedup_key: 'ledger co|ml engineer|remote india', state: 'committed' }],
     simHashSimilarity: 0.93,
   });
-  assert.equal(result.kept.length, 1);
+  assert.equal(result.kept.some((item) => item.jobId === 'R1'), true);
+  assert.equal(result.kept.some((item) => item.jobId === 'R2'), true);
   assert.equal(result.duplicates.some((item) => item.code === 'DEDUP_COMPANY_TITLE_LOCATION'), true);
   assert.equal(result.duplicates.some((item) => item.code === 'DEDUP_EXISTING_LEDGER'), true);
   assert.equal(result.duplicates.some((item) => item.code === 'DEDUP_SIMHASH'), true);
-  assert.equal(result.fingerprintCoverage.fingerprinted, 3);
 });

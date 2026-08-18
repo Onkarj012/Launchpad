@@ -178,6 +178,20 @@ test('run resolver uses injected transport, preserves discoveryUrl, and fails cl
   assert.equal(requests[0].options.purpose, 'original-listing-resolution');
 });
 
+test('run resolver forwards configured maxHosts and maxRequests', async () => {
+  const requests = [];
+  const resolve = createCrawlerRunResolver({
+    config: { sources: { originalListingResolver: { maxRedirects: 1, maxHosts: 1, maxRequests: 1, maxBytes: 500 } } },
+    runAt: '2026-07-24T10:00:00.000Z',
+    transport: async (url) => {
+      requests.push(url);
+      return { status: 200, headers: { location: 'https://other.example/jobs/1' }, body: '' };
+    },
+  });
+  await resolve({ canonicalUrl: 'https://www.indeed.com/viewjob?id=2' });
+  assert.equal(requests.length, 1);
+});
+
 test('operator runs a configured career-site discovery into durable SQLite', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-operator-'));
   const config = {

@@ -1,5 +1,6 @@
 import { readMakeResumeQueue } from './queue-reader.mjs';
 import { verifyResumeArtifact } from './artifact-state.mjs';
+import { createLocalPdfVerifier, createLocalResumeBuilder } from './local-builder.mjs';
 
 function updater(gateway) {
   if (typeof gateway?.updatePage !== 'function') throw new Error('v5 resume queue requires gateway.updatePage');
@@ -15,7 +16,13 @@ async function updateState(updatePage, applicationId, resumeState) {
  * callback is the existing local resume pipeline adapter; this module never
  * compiles or changes either checkbox.
  */
-export async function processMakeResumeQueue({ gateway, build, verifyPdf, now = () => Date.now(), pageSize = 100 } = {}) {
+export async function processMakeResumeQueue({
+  gateway,
+  build = createLocalResumeBuilder(),
+  verifyPdf = createLocalPdfVerifier(),
+  now = () => Date.now(),
+  pageSize = 100,
+} = {}) {
   if (typeof build !== 'function') throw new Error('a local resume build adapter is required');
   const updatePage = updater(gateway);
   const queue = await readMakeResumeQueue({ gateway, pageSize });

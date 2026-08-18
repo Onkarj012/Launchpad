@@ -5,7 +5,7 @@ import { fetchHimalayas, buildHimalayasRequestPlan, HIMALAYAS_SEARCH_URL } from 
 import { fetchJobicy } from '../../job-pull/remote-adapters/jobicy.mjs';
 import { fetchWeWorkRemotely } from '../../job-pull/remote-adapters/weworkremotely.mjs';
 import { fetchRemotive } from '../../job-pull/remote-adapters/remotive.mjs';
-import { enrichRemoteCandidate, classifyRemoteEligibility, classifyRemoteEmployment } from '../../job-pull/remote-enrichment.mjs';
+import { enrichRemoteCandidate, classifyRemoteEligibility, classifyRemoteEmployment, classifyRemoteTimezone } from '../../job-pull/remote-enrichment.mjs';
 import { runRemoteMode } from '../../job-pull/remote-mode.mjs';
 import { REMOTE_SOURCE_LANES } from '../../job-pull/remote-sources.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/remote-transaction.mjs';
@@ -89,7 +89,7 @@ test('Remotive preserves provider dates and real employment/location fields, but
   assert.equal(run.shortlist.some((item) => item.provider === 'remotive' && item.waterfallBand === 'strict-0-24h'), false);
 });
 
-test('Real adapter country-restriction evidence rejects US-only/EU-only roles downstream while explicit India/worldwide roles pass and bare "remote" stays in verification', () => {
+test('Real adapter country-restriction evidence rejects US-only/EU-only roles downstream while explicit India/APAC roles pass and context-free worldwide stays in verification', () => {
   const base = { title: 'Engineer', workMode: 'remote' };
   const usOnly = classifyRemoteEligibility({ ...base, location: 'USA', remoteEvidence: { country: 'USA only (Remotive candidate_required_location)' } });
   assert.equal(usOnly.status, 'Not Eligible');
@@ -104,8 +104,8 @@ test('Real adapter country-restriction evidence rejects US-only/EU-only roles do
   assert.equal(india.classification, 'india');
 
   const worldwide = classifyRemoteEligibility({ ...base, location: '', remoteEvidence: { country: 'Worldwide (Himalayas locationRestrictions: empty)' } });
-  assert.equal(worldwide.status, 'India Eligible');
-  assert.equal(worldwide.classification, 'global');
+  assert.equal(worldwide.status, 'Needs Verification');
+  assert.equal(worldwide.code, 'REMOTE_SCOPE_AMBIGUOUS');
 
   const bareRemote = classifyRemoteEligibility({ ...base, location: 'Remote', remoteEvidence: {} });
   assert.equal(bareRemote.code, 'REMOTE_SCOPE_AMBIGUOUS');
@@ -131,10 +131,10 @@ test('Adapter-populated countryRestrictionEvidence and employmentType flow throu
   assert.equal(operation.payload.countryRestrictionEvidence, 'India (Himalayas locationRestrictions)');
 });
 
-test('Remote eligibility classifies India, APAC, global, and India-available EOR evidence explicitly', () => {
+test('Remote eligibility classifies India, APAC, and India-available EOR evidence explicitly', () => {
   assert.equal(candidate({ location: 'Remote - India' }).remoteEligibilityDecision.classification, 'india');
   assert.equal(candidate({ location: 'Remote - APAC', description: 'Remote across APAC including India. Full-time role.' }).remoteEligibilityDecision.classification, 'apac');
-  assert.equal(candidate({ location: 'Worldwide remote', description: 'Worldwide remote including India. Full-time role.' }).remoteEligibilityDecision.classification, 'global');
+  assert.equal(candidate({ location: 'Worldwide remote', description: 'Worldwide remote including India. Full-time role.' }).remoteEligibilityDecision.classification, 'india');
   const eor = candidate({ location: 'Remote - India', employment: { type: 'contract', evidence: 'Full-time contractor, ongoing, regular salary through India payroll' }, eor: { available: true, evidence: 'Employer of Record available in India' } });
   assert.equal(eor.remoteEligibilityDecision.classification, 'stable-eor');
   assert.equal(eor.remoteEmploymentDecision.category, 'Stable EOR');
@@ -174,12 +174,18 @@ test('Bare remote and country/citizenship/payroll restrictions go to Needs Verif
   assert.equal(candidate({ location: 'Remote', description: 'Work remotely anywhere within Europe. Full-time role.' }).remoteEligibilityDecision.status, 'Not Eligible');
 });
 
-test('All timezone requirements are accepted, while stable Contractor/EOR requires stability and payroll evidence', () => {
-  const stable = candidate({ location: 'Remote - APAC', timezoneOverlap: { status: 'overnight', minimumHours: 0, evidence: 'any schedule accepted' }, employment: { type: 'contract', evidence: 'Long-term full-time contractor with regular salary via India payroll' } });
+test('Timezone overlap is real: IST/flexible accepted, overnight US hours rejected, unspecified left open', () => {
+  const stable = candidate({ location: 'Remote - APAC', timezoneOverlap: { status: 'flexible', minimumHours: 6, evidence: 'any schedule accepted' }, employment: { type: 'contract', evidence: 'Long-term full-time contractor with regular salary via India payroll' } });
   const unstable = candidate({ location: 'Remote - India', employment: { type: 'contract', evidence: 'contract role, stability not stated' } });
+  const overnight = classifyRemoteTimezone({ timezoneOverlap: { status: 'overnight', minimumHours: 0, evidence: 'must overlap EST business hours overnight' } });
+  const ist = classifyRemoteTimezone({ timezoneOverlap: { evidence: 'Himalayas timezoneRestrictions (UTC offsets): 5.5' } });
   assert.equal(stable.timezoneDecision.accepted, true);
   assert.equal(stable.remoteEmploymentDecision.category, 'Stable Contractor');
   assert.equal(unstable.remoteEmploymentDecision.status, 'Needs Verification');
+  assert.equal(overnight.accepted, false);
+  assert.equal(overnight.code, 'REMOTE_TZ_INCOMPATIBLE');
+  assert.equal(ist.accepted, true);
+  assert.equal(ist.code, 'REMOTE_TZ_IST');
 });
 
 test('Gigs, commission-only, temporary, project-only, and unpredictable freelance roles are rejected', () => {

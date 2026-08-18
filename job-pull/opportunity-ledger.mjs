@@ -2,7 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, u
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { candidateDedupKey } from './candidate.mjs';
+import { candidateDedupKey, canonicalizeUrl } from './candidate.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_OPPORTUNITY_LEDGER_PATH = path.resolve(MODULE_DIR, '../career-ops/data/opportunity-ledger.tsv');
@@ -125,7 +125,9 @@ export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUN
     const recorded = [];
     for (const candidate of candidates) {
       const key = candidateDedupKey(candidate);
-      let row = rows.find((entry) => entry.dedup_key === key);
+      const url = canonicalizeUrl(candidate.canonicalUrl || candidate.url);
+      let row = rows.find((entry) => entry.dedup_key === key)
+        || (url ? rows.find((entry) => canonicalizeUrl(entry.canonical_url) === url) : null);
       if (!row) {
         row = {
           dedup_key: key,

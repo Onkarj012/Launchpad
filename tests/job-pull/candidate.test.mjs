@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, candidateRequisitionKey, companyTitleLocationKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 
 test('candidate normalization retains discovery, application, remote, and work-condition evidence', () => {
   const candidate = normalizeCandidate({
@@ -22,4 +22,22 @@ test('candidate normalization retains discovery, application, remote, and work-c
   assert.equal(candidate.timezoneOverlap.minimumHours, 4);
   assert.equal(candidate.eor.available, true);
   assert.equal(candidate.equipment.available, false);
+});
+
+test('durable identity prefers provider and requisition over company title location', () => {
+  const first = normalizeCandidate({
+    url: 'https://acme.wd1.myworkdayjobs.com/Careers/job/Pune/Engineer_R1',
+    company: 'Acme', title: 'Software Engineer', location: 'Pune',
+    postedAt: '2026-07-14T08:00:00.000Z', provider: 'workday', jobId: 'R1',
+    employment: { type: 'full-time' }, liveness: { status: 'Active' },
+  });
+  const second = normalizeCandidate({
+    url: 'https://acme.wd1.myworkdayjobs.com/Careers/job/Pune/Engineer_R2',
+    company: 'Acme', title: 'Software Engineer', location: 'Pune',
+    postedAt: '2026-07-14T08:00:00.000Z', provider: 'workday', jobId: 'R2',
+    employment: { type: 'full-time' }, liveness: { status: 'Active' },
+  });
+  assert.equal(companyTitleLocationKey(first), companyTitleLocationKey(second));
+  assert.equal(candidateRequisitionKey(first), 'workday|r1');
+  assert.notEqual(candidateDedupKey(first), candidateDedupKey(second));
 });

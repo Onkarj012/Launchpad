@@ -1,11 +1,26 @@
 ---
 name: quick-add
-description: Prepare one user-supplied role for the Launchpad v5 verification and scoring path. Never treats a discovery link as ready and never applies or sends.
+description: Normalize one user-found role into a planned v5 Applications row.
 disable-model-invocation: true
 ---
 
 # Quick add
 
-Accept one role supplied by the user, normalize it through the current CandidateV1/readiness gates, preserve discovery and original-application evidence, and show the planned Applications v5 operation. A portal, LinkedIn, or search link remains a lead until an active original employer or ATS destination is resolved.
+Vocabulary: `../guardrails.md`. Fields: `references/lead-fields.md`.
 
-Only an explicitly authorized v5 gateway may write the reviewed operation. Leave `Make Resume` and `Applied?` false. Unknown facts stay unknown. Never write a legacy target, submit an application, or send a message.
+## Steps
+
+1. Take the user-supplied company, role, location, and source link.
+2. Normalize through CandidateV1 and the current readiness gates.
+3. Keep discovery URL and original-application evidence separate. A portal or LinkedIn link stays a lead until an active employer/ATS destination is resolved.
+4. Show the planned Applications v5 operation. Do not write unless the user authorizes a live v5 gateway.
+5. Leave `Make Resume` and `Applied?` false.
+
+## Done when
+
+- The candidate is valid CandidateV1 or the missing field is named
+- Original-application status is Resolved, Direct ATS, or explicitly Needs Verification
+- The planned v5 operation is shown
+- No write happened without explicit authorization
+
+fail-closed. v5-only. no auto-apply.

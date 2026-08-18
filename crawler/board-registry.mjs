@@ -488,7 +488,27 @@ export function migrateFromLegacySources({
 }
 
 /** Adapter-shaped projection for one scheduled crawler lane. Only enabled boards. */
-export function projectLaneBoards(registry, lane, { enabledOnly = true } = {}) {
+function boardMentions(board, pattern) {
+  return [board.company, board.board, board.slug, board.boardKey, board.site, board.url]
+    .some((value) => typeof value === 'string' && pattern.test(value));
+}
+
+function boardLocationRank(board, locationPreset) {
+  const pune = board.puneRelevant === true || boardMentions(board, /\bpune|pcmc|hinjawadi|pimpri/i);
+  const india = board.indiaRelevant === true || pune || boardMentions(board, /\bindia\b/i);
+  if (locationPreset === 'pune') {
+    if (pune) return 0;
+    if (india) return 1;
+    return 2;
+  }
+  if (locationPreset === 'india') {
+    if (india) return 0;
+    return 1;
+  }
+  return 0;
+}
+
+export function projectLaneBoards(registry, lane, { enabledOnly = true, locationPreset = null } = {}) {
   const boards = [];
   for (const entry of registry?.boards ?? []) {
     if (entry.scheduleLane !== lane) continue;
@@ -496,13 +516,24 @@ export function projectLaneBoards(registry, lane, { enabledOnly = true } = {}) {
     if (enabledOnly && entry.activationState === 'proposed') continue;
     boards.push(toAdapterBoard(entry));
   }
-  return boards;
+  if (!locationPreset) return boards;
+  return [...boards].sort((left, right) => {
+    const rank = boardLocationRank(left, locationPreset) - boardLocationRank(right, locationPreset);
+    if (rank) return rank;
+    return String(left.company || left.board || left.slug || '').localeCompare(String(right.company || right.board || right.slug || ''));
+  });
+}
+
+function withLocationFlags(board, entry) {
+  if (entry.indiaRelevant) board.indiaRelevant = true;
+  if (entry.puneRelevant) board.puneRelevant = true;
+  return board;
 }
 
 function toAdapterBoard(entry) {
   const provider = entry.provider;
   if (provider === 'workday') {
-    return {
+    return withLocationFlags({
       provider,
       company: entry.company,
       tenant: entry.tenant,
@@ -513,7 +544,7 @@ function toAdapterBoard(entry) {
       probeStatus: entry.probeStatus,
       probedAt: entry.probedAt,
       evidenceRef: entry.evidenceRef,
-    };
+    }, entry);
   }
   if (['smartrecruiters', 'workable', 'teamtailor', 'recruitee'].includes(provider)) {
     const out = {
@@ -533,7 +564,7 @@ function toAdapterBoard(entry) {
     return out;
   }
   if (provider === 'pinpoint') {
-    return {
+    return withLocationFlags({
       provider,
       slug: entry.slug || entry.boardKey,
       company: entry.company,
@@ -541,7 +572,7 @@ function toAdapterBoard(entry) {
       probeStatus: entry.probeStatus,
       probedAt: entry.probedAt,
       evidenceRef: entry.evidenceRef,
-    };
+    }, entry);
   }
   // greenhouse / lever / ashby
   const out = {
@@ -552,7 +583,7 @@ function toAdapterBoard(entry) {
   if (entry.indiaFirst) out.indiaFirst = true;
   if (entry.startupTagged) out.startupTagged = true;
   if (entry.enabled === false) out.enabled = false;
-  return out;
+  return withLocationFlags(out, entry);
 }
 
 /**
@@ -691,17 +722,18 @@ export function resolveBoardRegistry(config) {
  * Return a config whose sources.*.boards are projected from the unified registry.
  * When no registry is configured, returns config unchanged (test / inline fixtures).
  */
-export function withRegistryProjectedBoards(config) {
+export function withRegistryProjectedBoards(config, { locationPreset = null, sourcePlan = null } = {}) {
   const registry = resolveBoardRegistry(config);
   if (!registry) return config;
+  const preset = locationPreset || sourcePlan?.locationPreset || null;
   const sources = { ...(config.sources ?? {}) };
   for (const lane of SCHEDULE_LANES) {
     sources[lane] = {
       ...(sources[lane] ?? {}),
-      boards: projectLaneBoards(registry, lane),
+      boards: projectLaneBoards(registry, lane, { locationPreset: preset }),
     };
   }
-  return { ...config, boardRegistry: registry, sources };
+  return { ...config, boardRegistry: registry, sources, discoveryBoardPriority: preset };
 }
 
 export function findBoard(registry, predicate) {

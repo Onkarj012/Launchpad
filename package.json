@@ -1,0 +1,12 @@
+{
+  "name": "launchpad",
+  "private": true,
+  "type": "module",
+  "description": "Onkar Jadhav job-search operator. Tests use node:test; no install is required for the local suite.",
+  "scripts": {
+    "validate": "node launchpad-v5.mjs validate",
+    "safety": "node crawler/safety-contract.mjs",
+    "test": "node --test tests/crawler/*.test.mjs tests/job-pull/*.test.mjs tests/notion-v5/*.test.mjs tests/resume-v5/*.test.mjs tests/outreach-v5/*.test.mjs tests/v5/*.test.mjs",
+    "rehearse": "node launchpad-v5.mjs rehearse"
+  }
+}

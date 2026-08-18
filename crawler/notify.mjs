@@ -16,3 +16,39 @@ export function notifyDesktop({ title, message, spawn = spawnSync } = {}) {
     return { sent: false, reason: error.message };
   }
 }
+
+/**
+ * Notify every terminal daily outcome with run identity. Best-effort: never
+ * throws, never changes the run exit code.
+ */
+export function notifyRunOutcome({
+  runId,
+  status,
+  schedule,
+  mode,
+  locationPreset,
+  freshCount = 0,
+  error,
+  notify = notifyDesktop,
+  now = () => new Date(),
+} = {}) {
+  const sentAt = (typeof now === 'function' ? now() : now);
+  const iso = sentAt instanceof Date ? sentAt.toISOString() : String(sentAt);
+  const identity = [runId || 'unknown-run', schedule, mode, locationPreset].filter(Boolean).join(' · ');
+  const fatal = status === 'fatal';
+  const title = fatal ? 'Launchpad — run failed' : 'Launchpad — daily run';
+  const message = fatal
+    ? `${identity} failed: ${error ?? 'see logs'}`
+    : `${identity}: ${freshCount} fresh match${freshCount === 1 ? '' : 'es'}`;
+  const delivery = notify({ title, message }) ?? { sent: true, reason: null };
+  return {
+    runId: runId ?? null,
+    status: status ?? null,
+    schedule: schedule ?? null,
+    mode: mode ?? null,
+    locationPreset: locationPreset ?? null,
+    sentAt: iso,
+    sent: delivery.sent !== false,
+    reason: delivery.reason ?? null,
+  };
+}

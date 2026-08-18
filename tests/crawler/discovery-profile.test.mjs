@@ -164,7 +164,8 @@ test('daily command notifies once when the run is fatal', async () => {
   assert.equal(exitCode, 1);
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].title, 'Launchpad — run failed');
-  assert.match(notifications[0].message, /daily run command-daily-fatal failed: source timeout/);
+  assert.match(notifications[0].message, /command-daily-fatal/);
+  assert.match(notifications[0].message, /source timeout/);
 });
 
 test('daily command notifies once for fresh Strict Hot/Active matches', async () => {
@@ -182,13 +183,13 @@ test('daily command notifies once for fresh Strict Hot/Active matches', async ()
     notify: (details) => { notifications.push(details); },
   });
   assert.equal(exitCode, 0);
-  assert.deepEqual(notifications, [{
-    title: 'Launchpad — fresh matches',
-    message: '2 new Strict Hot/Active matches ready',
-  }]);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, 'Launchpad — daily run');
+  assert.match(notifications[0].message, /command-daily-fresh/);
+  assert.match(notifications[0].message, /2 fresh matches/);
 });
 
-test('daily command does not notify when there are no fresh strict matches', async () => {
+test('daily command still notifies a terminal receipt when there are no fresh strict matches', async () => {
   const notifications = [];
   const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-no-fresh', '--lock-path', path.join(mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-')), 'daily.lock')], {
     dailyRunner: async () => ({
@@ -203,7 +204,9 @@ test('daily command does not notify when there are no fresh strict matches', asy
     notify: (details) => { notifications.push(details); },
   });
   assert.equal(exitCode, 0);
-  assert.equal(notifications.length, 0);
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0].message, /command-daily-no-fresh/);
+  assert.match(notifications[0].message, /0 fresh matches/);
 });
 
 test('operator passes profile metadata into workflow config and result metadata', async () => {

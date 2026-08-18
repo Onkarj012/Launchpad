@@ -6,6 +6,38 @@ export const DELIVERY_CANARY_EVALUATION_SCHEMA = 'LaunchpadDeliveryCanaryEvaluat
 export const DEFAULT_CANARY_RUNS = 7;
 export const ROUTINE_DURATION_LIMIT_MS = 45 * 60 * 1000;
 
+export const DEFAULT_CANARY_ENTRYPOINTS = Object.freeze([
+  'crawler/daily-runner.mjs',
+  'crawler/cli.mjs',
+]);
+
+const RELATIVE_IMPORT = /(?:import|export)\s+(?:[^'"\n]+from\s+)?['"](\.\.?\/[^'"]+)['"]/g;
+
+export function collectTrackedModuleGraph(entrypoints = DEFAULT_CANARY_ENTRYPOINTS, { root = process.cwd() } = {}) {
+  const files = new Set();
+  const queue = [...entrypoints];
+  while (queue.length) {
+    const relative = queue.pop();
+    if (files.has(relative)) continue;
+    const resolved = path.resolve(root, relative);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`canary fingerprint missing tracked file: ${relative}`);
+    }
+    files.add(relative);
+    if (!/\.(mjs|js|cjs)$/.test(relative)) continue;
+    const source = fs.readFileSync(resolved, 'utf8');
+    for (const match of source.matchAll(RELATIVE_IMPORT)) {
+      const spec = match[1].split('?')[0];
+      const imported = path.normalize(path.join(path.dirname(relative), spec)).replaceAll('\\', '/');
+      const withExt = [imported, `${imported}.mjs`, `${imported}.js`, path.join(imported, 'index.mjs')]
+        .map((candidate) => candidate.replaceAll('\\', '/'))
+        .find((candidate) => fs.existsSync(path.resolve(root, candidate)));
+      if (withExt) queue.push(withExt);
+    }
+  }
+  return [...files].sort();
+}
+
 export const DEFAULT_CANARY_CODE_PATHS = Object.freeze([
   'crawler/daily-runner.mjs',
   'crawler/operator.mjs',
@@ -88,14 +120,21 @@ function stable(value) {
 export function computeCanaryVersion({
   config = {},
   root = process.cwd(),
-  codePaths = DEFAULT_CANARY_CODE_PATHS,
+  codePaths,
+  entrypoints = DEFAULT_CANARY_ENTRYPOINTS,
 } = {}) {
+  const paths = codePaths
+    ? [...codePaths]
+    : [...new Set([...collectTrackedModuleGraph(entrypoints, { root }), ...DEFAULT_CANARY_CODE_PATHS])];
   const hash = createHash('sha256');
   hash.update(JSON.stringify(stable(config)));
-  for (const relative of [...codePaths].sort()) {
+  for (const relative of [...paths].sort()) {
     const resolved = path.resolve(root, relative);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`canary fingerprint missing tracked file: ${relative}`);
+    }
     hash.update(relative);
-    hash.update(fs.existsSync(resolved) ? fs.readFileSync(resolved) : 'MISSING');
+    hash.update(fs.readFileSync(resolved));
   }
   return `sha256:${hash.digest('hex')}`;
 }

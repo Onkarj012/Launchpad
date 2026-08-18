@@ -408,8 +408,28 @@ export function normalizedKey(value) {
     .replace(/\s+/g, ' ');
 }
 
-export function candidateDedupKey(candidate) {
+export function companyTitleLocationKey(candidate) {
   return [candidate.company, candidate.title, candidate.location].map(normalizedKey).join('|');
+}
+
+export function candidateRequisitionKey(candidate) {
+  const provider = normalizedKey(candidate.provider);
+  const jobId = normalizedKey(candidate.jobId);
+  if (provider && jobId) return `${provider}|${jobId}`;
+  return null;
+}
+
+/**
+ * Durable identity prefers provider + requisition/job id so two Workday
+ * requisitions at the same company/title/location stay distinct. Canonical
+ * URL is the next fallback; company|title|location is last-resort only.
+ */
+export function candidateDedupKey(candidate) {
+  const requisition = candidateRequisitionKey(candidate);
+  if (requisition) return requisition;
+  const url = canonicalizeUrl(candidate.canonicalUrl || candidate.url);
+  if (url) return `url|${url}`;
+  return companyTitleLocationKey(candidate);
 }
 
 export function buildPayloadRecord(candidate, selection = {}) {

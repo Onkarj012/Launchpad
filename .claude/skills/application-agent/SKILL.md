@@ -1,11 +1,26 @@
 ---
 name: application-agent
-description: Prepare one evidence-backed Launchpad v5 application package for a named role. Research, verify original application, tailor a local resume, and optionally prepare outreach. Never auto-applies or sends.
+description: Prepare one evidence-backed v5 application package for a named role.
 disable-model-invocation: true
 ---
 
 # Single-role application
 
-Require company, role, current JD, and a source link. Resolve the original active employer/ATS destination before calling a role application-ready. Use the v5 Applications row and its Companies relation only; refuse legacy targets.
+Vocabulary: `../guardrails.md`. Require company, role, current JD, and a source link.
 
-Run the existing resume-v5 queue/artifact gates locally from the frozen template and approved master evidence. Outreach is opt-in and uses `prepareOutreach()` / `persistOutreach()` from `outreach-v5/workflow.mjs`; it creates a draft record only. `Applied?` changes only after the user's own confirmation and `/sync` observes it. No auto-apply, auto-send, fabricated contact, or legacy fallback.
+## Steps
+
+1. Resolve the original active employer/ATS destination. Stop at Needs Verification if it is still a lead.
+2. Use the v5 Applications row and its Companies relation only.
+3. Tailor and verify the resume through the `resume-latex` sequence and `resume-v5` gates.
+4. Outreach is opt-in: `prepareOutreach()` / `persistOutreach()` from `outreach-v5/workflow.mjs` create a draft record only.
+5. `Applied?` changes only after the user confirms and `/sync` observes it.
+
+## Done when
+
+- Original application is resolved or explicitly blocked
+- Resume is Ready (or the block is reported)
+- Optional outreach is draft-only, never sent
+- No user-owned checkbox changed
+
+user-owned. draft-only. v5-only. no auto-apply.

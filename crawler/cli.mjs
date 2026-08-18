@@ -20,7 +20,7 @@ import { installSchedules } from './install-schedule.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
 import { createJsonCanaryStore, loadDeliveryCanaryEvidence } from './delivery-canary.mjs';
 import { acquireCrawlerRunLock } from './run-lock.mjs';
-import { notifyDesktop } from './notify.mjs';
+import { notifyDesktop, notifyRunOutcome } from './notify.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -41,6 +41,27 @@ export const READINESS_TEST_GLOBS = Object.freeze([
   'tests/outreach-v5/*.test.mjs',
   'tests/v5/*.test.mjs',
 ]);
+
+const READINESS_TEST_DIRS = Object.freeze([
+  'tests/crawler',
+  'tests/job-pull',
+  'tests/notion-v5',
+  'tests/resume-v5',
+  'tests/outreach-v5',
+  'tests/v5',
+]);
+
+export function discoverReadinessTests(root = process.cwd()) {
+  const files = [];
+  for (const relative of READINESS_TEST_DIRS) {
+    const directory = path.join(root, relative);
+    if (!fs.existsSync(directory)) continue;
+    for (const name of fs.readdirSync(directory).sort()) {
+      if (name.endsWith('.test.mjs')) files.push(path.join(relative, name));
+    }
+  }
+  return files;
+}
 
 function explicitOption(args, name) {
   const index = args.indexOf(name);
@@ -92,12 +113,14 @@ function configuredSourceIds(config) {
 }
 
 function localReadiness(config, args) {
+  const inventory = discoverReadinessTests();
   const runTests = args.includes('--run-tests');
   const testRun = runTests
     ? spawnSync(process.execPath, ['--test', ...READINESS_TEST_GLOBS], { cwd: process.cwd(), encoding: 'utf8', shell: true })
     : null;
   const testOutput = `${testRun?.stdout ?? ''}\n${testRun?.stderr ?? ''}`;
-  const testTotal = Number(testOutput.match(/# tests (\d+)/)?.[1] ?? 0);
+  const testTotal = Number(testOutput.match(/# tests (\d+)/)?.[1] ?? inventory.length);
+  const inventoryEmpty = inventory.length === 0;
   const git = spawnSync('git', ['status', '--porcelain'], { cwd: process.cwd(), encoding: 'utf8' });
   const dirtyPaths = String(git.stdout ?? '').split(/\r?\n/).filter(Boolean).map((line) => line.slice(3));
   const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' });
@@ -111,7 +134,7 @@ function localReadiness(config, args) {
   const theirStackCredentialsAvailable = config.sources.theirstack?.enabled !== true || Boolean(process.env[theirStackKeyName]);
   const credentialsAvailable = braveCredentialsAvailable && theirStackCredentialsAvailable;
   const evidence = buildLocalReadinessEvidence({
-    testsPassed: runTests && testRun.status === 0,
+    testsPassed: runTests && testRun.status === 0 && !inventoryEmpty && testTotal > 0,
     testTotal,
     dirtyPaths,
     operationalEvidence,
@@ -173,24 +196,19 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
         canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
       });
       emit(result);
-      if (result.outcome?.status === 'fatal') {
-        try {
-          notify({
-            title: 'Launchpad — run failed',
-            message: `daily run ${result.runId ?? ''} failed: ${result.outcome?.errors?.[0]?.message ?? result.outcome?.errors?.[0] ?? 'see logs'}`,
-          });
-        } catch {}
-      } else {
-        const freshCount = (result.shortlist ?? []).filter((candidate) => candidate.selectionTier === 'Strict' && ['Hot', 'Active'].includes(candidate.freshnessWindow)).length;
-        if (freshCount > 0) {
-          try {
-            notify({
-              title: 'Launchpad — fresh matches',
-              message: `${freshCount} new Strict Hot/Active match${freshCount === 1 ? '' : 'es'} ready`,
-            });
-          } catch {}
-        }
-      }
+      const freshCount = (result.shortlist ?? []).filter((candidate) => candidate.selectionTier === 'Strict' && ['Hot', 'Active'].includes(candidate.freshnessWindow)).length;
+      try {
+        notifyRunOutcome({
+          runId: result.runId,
+          status: result.outcome?.status,
+          schedule,
+          mode: value(argv, '--mode', 'normal'),
+          locationPreset: value(argv, '--location-preset', 'india'),
+          freshCount,
+          error: result.outcome?.errors?.[0]?.message ?? result.outcome?.errors?.[0],
+          notify,
+        });
+      } catch {}
       return result.outcome?.status === 'fatal' ? 1 : 0;
     } finally {
       lock.release();

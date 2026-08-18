@@ -200,6 +200,9 @@ function resolverSettings(config) {
   const settings = {};
   if (configured.maxRedirects != null) settings.maxRedirects = configured.maxRedirects;
   if (configured.maxBytes != null) settings.maxBytes = configured.maxBytes;
+  if (configured.maxHosts != null) settings.maxHosts = configured.maxHosts;
+  if (configured.maxRequests != null) settings.maxRequests = configured.maxRequests;
+  if (configured.requestBudget != null && settings.maxRequests == null) settings.maxRequests = configured.requestBudget;
   return settings;
 }
 
@@ -349,7 +352,7 @@ async function readConnectorInbox({ inboxDir, runAt, resolver }) {
 export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null }) {
   // Project boards from the unified registry when configured; tests that inject
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
-  const projected = withRegistryProjectedBoards(config);
+  const projected = withRegistryProjectedBoards(config, { locationPreset: profile?.locationPreset, sourcePlan: profile?.sourcePlan });
   const sources = projected.sources;
   const plans = [];
   if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
