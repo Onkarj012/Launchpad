@@ -65,6 +65,17 @@ test('recordSurfaced upserts by dedup key and bumps the last time only', () => {
   assert.equal(rows[0].times_surfaced, '2');
 });
 
+test('recordSurfaced keeps distinct provider requisitions separate despite shared URL and desk', () => {
+  const ledgerPath = tempLedger();
+  recordSurfaced([
+    candidate('https://example.test/shared', { provider: 'workday', id: null, jobId: 'REQ-1' }),
+    candidate('https://example.test/shared', { provider: 'workday', id: null, jobId: 'REQ-2' }),
+  ], { path: ledgerPath, now: NOW });
+  const rows = readOpportunityLedger(ledgerPath).rows;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.dedup_key), ['workday|req 1', 'workday|req 2']);
+});
+
 test('historical run collection extracts only surfaced selections and deduplicates them', () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'job-pull-history-'));
   const item = candidate();

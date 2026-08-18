@@ -1,4 +1,4 @@
-import { parseJobicyResponse } from '../../career-ops/providers/jobicy.mjs';
+import { parseJobicyResponse } from '../../vendor/career-ops/providers/jobicy.mjs';
 
 // Live-verified 2026-07-24: GET https://jobicy.com/api/v2/remote-jobs?count=50
 // still returns { jobCount, jobs: [...] } with count=50 honored exactly (50 jobs

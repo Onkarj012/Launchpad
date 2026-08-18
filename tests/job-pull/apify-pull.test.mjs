@@ -251,6 +251,39 @@ test('pullAll records a successful actor run in injected Apify budget state', as
   assert.equal(budgetState.months['2026-08'].spendUsd, 0.5);
 });
 
+test('Apify dataset retrieval is hard-capped, paginates from persisted offset, and reconciles estimated versus actual usage', async () => {
+  const config = {
+    rescue: { maxProfilesPerRun: 1, maxReturnedItemsPerProfile: 2, runTimeoutSeconds: 1, monthlyBudgetUsd: 5, maxRunsPerMonth: 6, maxRunCostUsd: 0.75 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 0.5, enabled: false, input: { maxItems: 5 }, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+  const budgetState = emptyApifyBudgetState();
+  const seenCache = emptyApifySeenCache();
+  const offsets = [];
+  const fetchImpl = async (url, options) => {
+    if (options?.method === 'POST') return response({ data: { id: 'run-1', status: 'RUNNING' } });
+    if (url.includes('/actor-runs/')) return response({ data: { id: 'run-1', status: 'SUCCEEDED', defaultDatasetId: 'dataset-1', costUsd: 0.2 } });
+    const offset = Number(new URL(url).searchParams.get('offset'));
+    offsets.push(offset);
+    const items = offset === 0
+      ? [1, 2, 3].map((id) => ({ url: `https://jobs.example/${id}`, company: 'Acme', title: `Engineer ${id}` }))
+      : [{ url: 'https://jobs.example/3', company: 'Acme', title: 'Engineer 3' }];
+    return response(items);
+  };
+  const first = await pullAll(config, 'token-fixture', { profile: 'demo', fetchImpl, pollIntervalMs: 0, clock: () => '2026-08-04T00:00:00.000Z', seenCache, budgetState });
+  assert.equal(first.records.length, 2);
+  assert.deepEqual(offsets, [0]);
+  assert.equal(budgetState.retrieval.demo.nextOffset, 2);
+  assert.equal(budgetState.months['2026-08'].estimatedItems, 5);
+  assert.equal(budgetState.months['2026-08'].actualItems, 2);
+  assert.equal(budgetState.months['2026-08'].actualSpendUsd, 0.2);
+
+  const second = await pullAll(config, 'token-fixture', { profile: 'demo', fetchImpl, pollIntervalMs: 0, clock: () => '2026-08-04T00:00:00.000Z', seenCache, budgetState });
+  assert.equal(second.records.length, 1);
+  assert.deepEqual(offsets, [0, 2]);
+  assert.equal(budgetState.retrieval.demo.lastOffset, 2);
+  assert.equal(budgetState.retrieval.demo.nextOffset, 3);
+});
+
 test('Apify budget state round-trips through a temp file', () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'apify-budget-state-'));
   const file = path.join(dir, 'nested', 'budget.json');

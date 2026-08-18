@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertValidConfig, assertValidConversionPlan, loadConfig, loadConversionPlan } from './job-pull/config.mjs';
@@ -21,10 +21,19 @@ import { provisioningPreflight, smokeV5 } from './notion-v5/provision.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const COMMAND_CONFIG_PATH = path.join(ROOT, 'config/launchpad-v5.commands.json');
+const ROUTED_SKILLS = Object.freeze([
+  'application-agent', 'application-readiness', 'conversion-ops', 'daily-job-pull', 'followups',
+  'interview-loop', 'linkedin-leads', 'make-applications', 'morning', 'outreach', 'proof-of-fit',
+  'quick-add', 'resume-check', 'resume-latex', 'sync',
+]);
 const MIRRORED_SKILLS = Object.freeze([
   'application-agent', 'daily-job-pull', 'followups', 'linkedin-leads', 'make-applications',
   'morning', 'outreach', 'quick-add', 'resume-check', 'resume-latex', 'sync',
 ]);
+const SUPPORTING_SKILLS = Object.freeze(['application-readiness', 'conversion-ops', 'interview-loop', 'proof-of-fit']);
+const SEQUENTIAL_SKILLS = Object.freeze(['resume-latex', 'make-applications', 'quick-add', 'application-agent']);
+const ROUTER_SKILL = 'launchpad';
+const GUARDRAILS_PATH = '.agents/skills/guardrails.md';
 const REHEARSAL_NOW = '2026-07-23T06:30:00.000Z';
 
 export class LaunchpadV5OperatorError extends Error {
@@ -77,6 +86,70 @@ function readable(filePath) {
   try { readFileSync(filePath); return true; } catch { return false; }
 }
 
+function skillPair(root, skill) {
+  const canonicalPath = path.join(root, `.agents/skills/${skill}/SKILL.md`);
+  const mirrorPath = path.join(root, `.claude/skills/${skill}/SKILL.md`);
+  if (!readable(canonicalPath)) return { skill, identical: false, unavailable: 'canonical .agents SKILL.md is missing' };
+  if (!readable(mirrorPath)) return { skill, identical: false, unavailable: 'Claude SKILL.md mirror is missing' };
+  const canonical = readFileSync(canonicalPath, 'utf8');
+  const mirror = readFileSync(mirrorPath, 'utf8');
+  return { skill, identical: canonical === mirror, canonicalBytes: canonical.length, mirrorBytes: mirror.length };
+}
+
+function oneLineDescriptionIssue(root, surface, skill) {
+  const filePath = path.join(root, surface, 'skills', skill, 'SKILL.md');
+  if (!readable(filePath)) return { surface, skill, reason: 'SKILL.md is missing' };
+  const descriptionLine = readFileSync(filePath, 'utf8').split(/\r?\n/).find((line) => /^description\s*:/i.test(line));
+  const value = descriptionLine?.replace(/^description\s*:\s*/i, '').trim() ?? '';
+  if (!value || value === '|' || value === '>') return { surface, skill, reason: 'description must be nonempty and one line' };
+  return null;
+}
+
+function markdownSection(text, heading) {
+  const headingStart = text.indexOf(`## ${heading}`);
+  if (headingStart < 0) return null;
+  const bodyStart = text.indexOf('\n', headingStart);
+  if (bodyStart < 0) return '';
+  const nextHeading = text.indexOf('\n## ', bodyStart + 1);
+  return text.slice(bodyStart + 1, nextHeading < 0 ? text.length : nextHeading);
+}
+
+function numberedProcedureIssue(root, surface, skill) {
+  const filePath = path.join(root, surface, 'skills', skill, 'SKILL.md');
+  if (!readable(filePath)) return { surface, skill, reason: 'sequential SKILL.md is missing' };
+  const text = readFileSync(filePath, 'utf8');
+  const procedure = markdownSection(text, text.includes('## Procedure') ? 'Procedure' : 'Steps');
+  const doneWhen = markdownSection(text, 'Done when');
+  if (!procedure || !/^\s*\d+\.\s+\S/m.test(procedure)) return { surface, skill, reason: 'procedure has no numbered steps' };
+  if (!doneWhen || !doneWhen.trim()) return { surface, skill, reason: 'Done when section is empty or missing' };
+  if (!/\b(?:exactly|every|each|zero|count|PASS|terminal|only)\b/i.test(doneWhen)) return { surface, skill, reason: 'Done when has no measurable condition' };
+  return null;
+}
+
+function routedSkillsFromRouter(text) {
+  const section = text.match(/^## Routed skills\s*\n([\s\S]*)$/m);
+  return section ? [...section[1].matchAll(/^\|[^|\n]+\|\s*`([^`\n]+)`\s*\|\s*$/gm)].map((match) => match[1]) : [];
+}
+
+function routerContractIssues(root) {
+  const filePath = path.join(root, `.agents/skills/${ROUTER_SKILL}/SKILL.md`);
+  if (!readable(filePath)) return [{ surface: '.agents', skill: ROUTER_SKILL, reason: 'router SKILL.md is missing' }];
+  const text = readFileSync(filePath, 'utf8');
+  const mappedSkills = routedSkillsFromRouter(text);
+  const counts = new Map();
+  for (const skill of mappedSkills) counts.set(skill, (counts.get(skill) ?? 0) + 1);
+  const issues = [];
+  if (!/^disable-model-invocation:\s*false\s*$/m.test(text)) issues.push({ surface: '.agents', skill: ROUTER_SKILL, reason: 'disable-model-invocation must be false' });
+  for (const skill of ROUTED_SKILLS) {
+    const count = counts.get(skill) ?? 0;
+    if (count !== 1) issues.push({ surface: '.agents', skill: ROUTER_SKILL, reason: `${skill} mapped ${count} times` });
+  }
+  for (const skill of mappedSkills) {
+    if (!ROUTED_SKILLS.includes(skill)) issues.push({ surface: '.agents', skill: ROUTER_SKILL, reason: `unexpected routed skill ${skill}` });
+  }
+  return issues;
+}
+
 export function validateV5Surface({ root = ROOT } = {}) {
   const config = assertCommandConfig(commandConfig());
   const manifest = loadManifest(path.join(root, 'config/notion-v5.manifest.json'));
@@ -86,17 +159,39 @@ export function validateV5Surface({ root = ROOT } = {}) {
   const conversionPlan = loadConversionPlan();
   assertValidConfig(policy);
   assertValidConversionPlan(conversionPlan);
-  const mirrorResults = MIRRORED_SKILLS.map((skill) => {
-    const canonicalPath = path.join(root, `.agents/skills/${skill}/SKILL.md`);
-    const mirrorPath = path.join(root, `.claude/skills/${skill}/SKILL.md`);
-    if (!readable(canonicalPath)) return { skill, identical: false, unavailable: 'canonical .agents skill is not readable or is missing' };
-    if (!readable(mirrorPath)) return { skill, identical: false, unavailable: 'Claude mirror is not readable or is missing' };
-    const canonical = readFileSync(canonicalPath, 'utf8');
-    const mirror = readFileSync(mirrorPath, 'utf8');
-    return { skill, identical: canonical === mirror, canonicalBytes: canonical.length, mirrorBytes: mirror.length };
-  });
-  const nonIdentical = mirrorResults.filter((result) => !result.identical);
-  const status = nonIdentical.length ? 'blocked' : 'valid';
+  const mirrorResults = MIRRORED_SKILLS.map((skill) => skillPair(root, skill));
+  const routerResult = skillPair(root, ROUTER_SKILL);
+  const guardrailsCanonicalPath = path.join(root, GUARDRAILS_PATH);
+  const guardrailsMirrorPath = path.join(root, '.claude/skills/guardrails.md');
+  const guardrailsResult = readable(guardrailsCanonicalPath) && readable(guardrailsMirrorPath)
+    ? { identical: readFileSync(guardrailsCanonicalPath, 'utf8') === readFileSync(guardrailsMirrorPath, 'utf8') }
+    : { identical: false };
+  const nonIdentical = [...mirrorResults, routerResult].filter((result) => !result.identical);
+  const parityIssues = nonIdentical.map((result) => ({ skill: result.skill, reason: result.unavailable ?? 'canonical and Claude files differ' }));
+  if (!guardrailsResult.identical) parityIssues.push({ skill: 'guardrails', reason: 'canonical and Claude guardrails differ or are missing' });
+
+  const staticIssues = [];
+  for (const skill of [...ROUTED_SKILLS, ROUTER_SKILL]) {
+    const canonicalIssue = oneLineDescriptionIssue(root, '.agents', skill);
+    if (canonicalIssue) staticIssues.push(canonicalIssue);
+  }
+  for (const skill of [...MIRRORED_SKILLS, ROUTER_SKILL]) {
+    const mirrorIssue = oneLineDescriptionIssue(root, '.claude', skill);
+    if (mirrorIssue) staticIssues.push(mirrorIssue);
+  }
+  for (const skill of SEQUENTIAL_SKILLS) {
+    for (const surface of ['.agents', '.claude']) {
+      if (surface === '.claude' && !MIRRORED_SKILLS.includes(skill)) continue;
+      const issue = numberedProcedureIssue(root, surface, skill);
+      if (issue) staticIssues.push(issue);
+    }
+  }
+  staticIssues.push(...routerContractIssues(root));
+  for (const skill of SUPPORTING_SKILLS) {
+    if (existsSync(path.join(root, `.claude/skills/${skill}`))) staticIssues.push({ surface: '.claude', skill, reason: 'supporting skill mirror directory must remain absent' });
+  }
+  const issues = [...parityIssues, ...staticIssues];
+  const status = issues.length ? 'blocked' : 'valid';
   return {
     status,
     schemaVersion: 'LaunchpadV5OperatorValidationV1',
@@ -107,7 +202,10 @@ export function validateV5Surface({ root = ROOT } = {}) {
     policy: policy.schemaVersion,
     conversionPlan: conversionPlan.schemaVersion,
     mirroredSkills: mirrorResults.map((result) => result.skill),
-    mirrorIssues: nonIdentical.map((result) => ({ skill: result.skill, reason: result.unavailable ?? 'canonical and Claude files differ' })),
+    mirrorIssues: parityIssues,
+    skillContractIssues: staticIssues,
+    router: { mappedSkills: readable(path.join(root, `.agents/skills/${ROUTER_SKILL}/SKILL.md`)) ? routedSkillsFromRouter(readFileSync(path.join(root, `.agents/skills/${ROUTER_SKILL}/SKILL.md`), 'utf8')) : [], mirrored: routerResult.identical },
+    supportingSkills: { localOnly: SUPPORTING_SKILLS, mirrorsAbsent: SUPPORTING_SKILLS.every((skill) => !existsSync(path.join(root, `.claude/skills/${skill}`))) },
     legacyFallback: false,
   };
 }

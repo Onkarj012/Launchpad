@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { trackedCandidatesFromJson, runTrackedScan } from '../../job-pull/adapters/tracked.mjs';
-import { reverseAtsCandidatesFromJson, REVERSE_ATS } from '../../job-pull/adapters/reverse-ats.mjs';
+import { reverseAtsCandidatesFromJson, REVERSE_ATS, runReverseAtsScan } from '../../job-pull/adapters/reverse-ats.mjs';
+import { fullScan, seedFromHistory } from '../../job-pull/reverse-warm-scan.mjs';
 import { importPublicSearchCandidates } from '../../job-pull/adapters/public-search.mjs';
 import { importIndeedCandidates } from '../../job-pull/adapters/indeed.mjs';
 import { deriveProvider, normalizeSourceRecords } from '../../job-pull/adapters/common.mjs';
@@ -38,6 +42,64 @@ test('public search keeps Not Verified and Indeed is honestly unavailable', () =
 
 test('scanner wrappers fail clearly when --json is not implemented', () => {
   assert.throws(() => runTrackedScan({ careerOpsDir: '/tmp', execute: () => 'human scanner output' }), /contract error.*expected JSON/);
+});
+
+test('tracked scanner executes vendored code with mutable state cwd and tracked config', () => {
+  const stateDir = path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-career-ops-')), 'state');
+  let invocation;
+  runTrackedScan({
+    careerOpsDir: stateDir,
+    execute: (command, args, options) => {
+      invocation = { command, args, options };
+      return JSON.stringify({ offers: [] });
+    },
+  });
+  assert.equal(invocation.command, process.execPath);
+  assert.match(invocation.args[0], /vendor\/career-ops\/scan\.mjs$/);
+  assert.equal(invocation.options.cwd, stateDir);
+  assert.match(invocation.options.env.CAREER_OPS_PORTALS, /config\/career-ops-portals\.yml$/);
+  assert.equal(existsSync(stateDir), true);
+});
+
+test('reverse ATS scanner uses the supplied mutable state cwd', () => {
+  const stateDir = path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-reverse-ats-')), 'state');
+  let invocation;
+  runReverseAtsScan({
+    careerOpsDir: stateDir,
+    execute: (command, args, options) => {
+      invocation = { command, args, options };
+      return JSON.stringify({ offers: [] });
+    },
+  });
+  assert.equal(invocation.command, process.execPath);
+  assert.match(invocation.args[0], /job-pull\/reverse-warm-scan\.mjs$/);
+  assert.equal(invocation.options.cwd, stateDir);
+  assert.equal(existsSync(stateDir), true);
+});
+
+test('reverse full scan and history use runtime state paths', () => {
+  let fullInvocation;
+  fullScan({
+    ats: ['greenhouse'],
+    sinceDays: 3,
+    portalsPath: path.resolve('config/career-ops-portals.yml'),
+    execute: (command, args, options) => {
+      fullInvocation = { command, args, options };
+      return JSON.stringify({ offers: [] });
+    },
+  }, () => {});
+  assert.equal(fullInvocation.command, process.execPath);
+  assert.match(fullInvocation.args[0], /vendor\/career-ops\/scan-ats-full\.mjs$/);
+  assert.equal(fullInvocation.options.cwd, process.cwd());
+  assert.equal(fullInvocation.options.env.CAREER_OPS_PORTALS, path.resolve('config/career-ops-portals.yml'));
+
+  let historyPath;
+  seedFromHistory({ dryRun: true, warmSetPath: path.join(os.tmpdir(), 'unused-warm-set.json') }, () => {}, (scanHistoryPath) => {
+    historyPath = scanHistoryPath;
+    return { boards: { greenhouse: [], lever: [], ashby: [], workday: [] } };
+  });
+  assert.equal(historyPath, path.join(process.cwd(), 'data', 'scan-history.tsv'));
+  assert.notEqual(historyPath, path.join(process.cwd(), 'career-ops', 'data', 'scan-history.tsv'));
 });
 
 test('known public ATS URLs classify as direct metadata without claiming a new scanner', () => {

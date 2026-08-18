@@ -102,27 +102,155 @@ export async function provisionV5({ manifest = loadManifest(), credentialFile = 
   }
 }
 
-export async function smokeV5({ manifest = loadManifest(), credentialFile = null, enabled = false, gateway = null, journalPath = null, journal = null, company = { name: 'Launchpad v5 synthetic company', canonicalDomain: 'synthetic.launchpad-v5.invalid' }, application = { Role: 'Synthetic AI Engineer', Company: 'Launchpad v5 synthetic company', 'Application Ready': true }, transaction = {}, runId = application?.['Run ID'] ?? transaction?.runId ?? null } = {}) {
-  const preflight = provisioningPreflight({ manifest, enabled, credentialFile, journalPath, injectedGateway: Boolean(gateway), runId });
-  if (!preflight.ok) return { status: 'blocked', live: false, ...preflight };
-  const dedupKey = String(runId);
-  const payload = { ...application, 'Run ID': runId, 'Dedup Key': dedupKey };
-  const client = gateway ?? createNotionV5Gateway({ manifest, credentialFile, live: true, journalPath, journal });
-  const result = await client.writeApplications([{ operation: 'create', resource: 'application', dedupKey, payload, company }], { ...transaction, journalPath, journal, keyOf: transaction.keyOf ?? (() => dedupKey) });
-  const freshCommit = result.status === 'committed'
-    && result.committed?.length === 1
-    && result.verified?.length === 1
-    && result.failed?.length === 0
-    && result.recovery?.length === 0
-    && result.skipped?.length === 0;
-  return { status: freshCommit ? 'passed' : result.status === 'noop' ? 'blocked' : 'failed', live: Boolean(client.live), runId, dedupKey, result };
+const SMOKE_STORE_ORDER = Object.freeze(['companies', 'applications', 'outreach', 'activity']);
+
+function smokeKey(runId, store) { return `smoke:${runId}:${store}`; }
+function smokeId(entry) { return entry?.pageId ?? null; }
+function smokeSafeValues(values = {}) {
+  return Object.fromEntries(Object.entries(values).filter(([key]) => !['makeResume', 'applied', 'Make Resume', 'Applied?'].includes(key)));
 }
 
-export function provisioningPreflight({ manifest, enabled = false, credentialFile = null, journalPath = null, injectedGateway = false, runId = null } = {}) {
+function smokeRelations(ids) {
+  return [
+    { pageId: ids.applications, store: 'applications', property: 'company', expectedPageId: ids.companies },
+    { pageId: ids.companies, store: 'companies', property: 'applications', expectedPageId: ids.applications },
+    { pageId: ids.outreach, store: 'outreach', property: 'application', expectedPageId: ids.applications },
+    { pageId: ids.applications, store: 'applications', property: 'outreach', expectedPageId: ids.outreach },
+    { pageId: ids.activity, store: 'activity', property: 'application', expectedPageId: ids.applications },
+    { pageId: ids.applications, store: 'applications', property: 'activity', expectedPageId: ids.activity },
+    { pageId: ids.activity, store: 'activity', property: 'outreach', expectedPageId: ids.outreach },
+    { pageId: ids.outreach, store: 'outreach', property: 'activity', expectedPageId: ids.activity },
+  ];
+}
+
+export async function smokeV5({ manifest = loadManifest(), credentialFile = null, enabled = false, gateway = null, journalPath = null, journal = null, company = { name: 'Launchpad v5 synthetic company', canonicalDomain: 'synthetic.launchpad-v5.invalid' }, application = { Role: 'Synthetic AI Engineer', Company: 'Launchpad v5 synthetic company', 'Application Ready': true }, transaction = {}, runId = application?.['Run ID'] ?? transaction?.runId ?? null } = {}) {
+  const preflight = provisioningPreflight({ manifest, enabled, credentialFile, journalPath, journal, injectedGateway: Boolean(gateway), runId });
+  if (!preflight.ok) return { status: 'blocked', live: false, ...preflight };
+
+  const normalizedRunId = String(runId).trim();
+  const keys = Object.fromEntries(SMOKE_STORE_ORDER.map((store) => [store, smokeKey(normalizedRunId, store)]));
+  const evidence = {
+    created: [], createdIds: [], recovered: [], recoveredIds: [], relationVerificationCount: 0, relationChecks: [], failures: [],
+    journal: { outcome: 'not-started', keys: Object.values(keys) }, pendingRecoveryCount: 0,
+  };
+  const client = gateway ?? createNotionV5Gateway({ manifest, credentialFile, live: true, journalPath, journal });
+  const durableJournal = journal ?? createTransactionJournal({ journalPath });
+  client.journal = durableJournal;
+
+  let reservation;
+  try {
+    reservation = durableJournal.reserve(SMOKE_STORE_ORDER.map((store) => ({ key: keys[store], target: store })));
+  } catch (error) {
+    evidence.failures.push({ stage: 'reserve', error: structuredError(error) });
+    return { status: 'failed', live: Boolean(client.live), runId: normalizedRunId, keys, evidence };
+  }
+
+  const recoveryKeys = new Set([...(reservation.pendingKeys ?? []), ...(reservation.verifiedKeys ?? [])].map(String));
+  if (recoveryKeys.size) {
+    for (const key of reservation.reserved ?? []) if (durableJournal.get(key)?.state === 'pending') durableJournal.markAborted(key, new NotionV5Error('smoke run encountered an existing journal recovery entry', { code: 'JOURNAL_RECOVERY_REQUIRED', stage: 'smoke' }));
+    evidence.journal.outcome = 'recovery-required';
+    evidence.pendingRecoveryCount = durableJournal.recover().length;
+    return { status: 'blocked', live: Boolean(client.live), runId: normalizedRunId, code: 'JOURNAL_RECOVERY_REQUIRED', keys, evidence };
+  }
+
+  const committedKeys = new Set((reservation.committedKeys ?? []).map(String));
+  if (committedKeys.size && committedKeys.size !== SMOKE_STORE_ORDER.length) {
+    for (const key of reservation.reserved ?? []) if (durableJournal.get(key)?.state === 'pending') durableJournal.markAborted(key, new NotionV5Error('smoke journal is incomplete and requires explicit recovery', { code: 'JOURNAL_RECOVERY_REQUIRED', stage: 'smoke' }));
+    evidence.journal.outcome = 'recovery-required';
+    evidence.pendingRecoveryCount = durableJournal.recover().length;
+    return { status: 'blocked', live: Boolean(client.live), runId: normalizedRunId, code: 'JOURNAL_RECOVERY_REQUIRED', keys, evidence };
+  }
+
+  const ids = {};
+  if (committedKeys.size === SMOKE_STORE_ORDER.length) {
+    for (const store of SMOKE_STORE_ORDER) {
+      const id = smokeId(durableJournal.get(keys[store]));
+      if (!id) {
+        evidence.failures.push({ stage: 'recovery', error: structuredError(new NotionV5Error('committed smoke journal entry lacks a page id', { code: 'JOURNAL_INVALID', stage: 'smoke', target: store })) });
+        evidence.journal.outcome = 'invalid';
+        evidence.pendingRecoveryCount = durableJournal.recover().length;
+        return { status: 'blocked', live: Boolean(client.live), runId: normalizedRunId, code: 'JOURNAL_INVALID', keys, evidence };
+      }
+      ids[store] = id;
+      evidence.recovered.push({ store, key: keys[store], id });
+      evidence.recoveredIds.push(id);
+    }
+  }
+
+  const runValues = smokeSafeValues(application);
+  const companyValues = smokeSafeValues(company);
+  const companyName = `${companyValues.name ?? companyValues.Name ?? 'Launchpad v5 synthetic company'} [${normalizedRunId}]`;
+  const applicationName = `${runValues.name ?? runValues.Name ?? runValues.Role ?? 'Synthetic AI Engineer'} [${normalizedRunId}]`;
+  const values = {
+    companies: { ...companyValues, name: companyName, companyKey: keys.companies },
+    applications: { ...runValues, name: applicationName, Company: companyName, 'Run ID': normalizedRunId, 'Dedup Key': keys.applications },
+    outreach: { name: `Synthetic outreach [${normalizedRunId}]`, application: [ids.applications], duplicateKey: keys.outreach, draftState: 'Prepared' },
+    activity: { name: `Synthetic activity [${normalizedRunId}]`, application: [ids.applications], outreach: [ids.outreach], idempotencyKey: keys.activity, eventType: 'Smoke', actionState: 'Verified' },
+  };
+
+  const verify = async () => {
+    for (const relation of smokeRelations(ids)) {
+      const result = await client.verifyRelation(relation);
+      if (result !== true && result?.verified !== true) throw new NotionV5Error('smoke relation verification did not confirm the expected v5 page', { code: 'RELATION_VERIFICATION_FAILED', stage: 'smoke', target: relation.store });
+      evidence.relationVerificationCount++;
+      evidence.relationChecks.push({ ...relation, verified: true });
+    }
+  };
+
+  if (!committedKeys.size) {
+    try {
+      for (const store of SMOKE_STORE_ORDER) {
+        client.activeJournal = durableJournal;
+        client.activeTransactionKey = keys[store];
+        try {
+          const page = await client.createPage(store, store === 'applications' ? { ...values[store], Company: undefined, company: [ids.companies] } : values[store]);
+          if (!page?.id) throw new NotionV5Error(`smoke ${store} response omitted a page id`, { code: 'RESPONSE_INVALID', stage: 'smoke', target: store });
+          ids[store] = page.id;
+          evidence.created.push({ store, key: keys[store], id: page.id });
+          evidence.createdIds.push(page.id);
+          durableJournal.recordTarget(keys[store], { pageId: page.id });
+          if (store === 'applications') values.outreach.application = [ids.applications];
+          if (store === 'outreach') values.activity.outreach = [ids.outreach];
+          if (store === 'applications') values.activity.application = [ids.applications];
+        } finally {
+          client.activeTransactionKey = null;
+          client.activeJournal = null;
+        }
+      }
+      await verify();
+      if (typeof transaction.commit === 'function') await transaction.commit(evidence);
+      for (const key of Object.values(keys)) durableJournal.markVerified(key);
+      for (const key of Object.values(keys)) durableJournal.markCommitted(key);
+      evidence.journal.outcome = 'committed';
+      evidence.pendingRecoveryCount = durableJournal.recover().length;
+      return { status: 'passed', live: Boolean(client.live), runId: normalizedRunId, outcome: 'fresh', idempotent: false, keys, evidence };
+    } catch (error) {
+      evidence.failures.push({ stage: error?.stage ?? 'smoke', error: structuredError(error) });
+      for (const key of Object.values(keys)) if (durableJournal.get(key)?.state === 'pending' || durableJournal.get(key)?.state === 'verified') durableJournal.markAborted(key, error);
+      evidence.journal.outcome = 'aborted';
+      evidence.pendingRecoveryCount = durableJournal.recover().length;
+      return { status: 'failed', live: Boolean(client.live), runId: normalizedRunId, keys, evidence, recovery: { rollbackPerformed: false, deletionPerformed: false, createdIds: evidence.created.map(({ id }) => id), action: 'manual reconciliation required; no rollback or deletion was performed' } };
+    }
+  }
+
+  try {
+    await verify();
+    evidence.journal.outcome = 'committed';
+    evidence.pendingRecoveryCount = durableJournal.recover().length;
+    return { status: 'passed', live: Boolean(client.live), runId: normalizedRunId, outcome: 'idempotent', idempotent: true, keys, evidence };
+  } catch (error) {
+    evidence.failures.push({ stage: error?.stage ?? 'smoke', error: structuredError(error) });
+    evidence.journal.outcome = 'committed';
+    evidence.pendingRecoveryCount = durableJournal.recover().length;
+    return { status: 'failed', live: Boolean(client.live), runId: normalizedRunId, outcome: 'idempotent-verification-failed', idempotent: true, keys, evidence };
+  }
+}
+
+export function provisioningPreflight({ manifest, enabled = false, credentialFile = null, journalPath = null, journal = null, injectedGateway = false, runId = null } = {}) {
   if (!enabled) return { ok: false, code: 'LIVE_OPT_IN_REQUIRED', reason: 'enabled: true is required' };
   if (!runId || !String(runId).trim()) return { ok: false, code: 'SMOKE_RUN_ID_REQUIRED', reason: 'a unique smoke run ID is required' };
   if (!injectedGateway && !credentialFile) return { ok: false, code: 'CREDENTIAL_REQUIRED', reason: 'external credential file is required' };
-  if (!injectedGateway && !journalPath) return { ok: false, code: 'JOURNAL_PATH_REQUIRED', reason: 'explicit external journal path is required' };
+  if (!journal && !journalPath) return { ok: false, code: 'JOURNAL_PATH_REQUIRED', reason: 'explicit external journal path is required' };
   if (isPlaceholderIdentifier(manifest?.parent?.id) || !isNotionIdentifier(manifest?.parent?.id) || isLegacyNotionId(manifest?.parent?.id)) return { ok: false, code: 'PARENT_REQUIRED', reason: 'real authorized v5 parent page id is required' };
   return { ok: true };
 }

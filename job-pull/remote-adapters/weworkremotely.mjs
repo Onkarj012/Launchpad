@@ -1,4 +1,4 @@
-import { parseWwrFeed } from '../../career-ops/providers/weworkremotely.mjs';
+import { parseWwrFeed } from '../../vendor/career-ops/providers/weworkremotely.mjs';
 
 // Live-verified 2026-07-24: GET https://weworkremotely.com/remote-jobs.rss still
 // returns the documented <rss><channel><item>...</item></channel></rss> shape with

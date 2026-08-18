@@ -1,4 +1,4 @@
-import { parseHimalayasResponse } from '../../career-ops/providers/himalayas.mjs';
+import { parseHimalayasResponse } from '../../vendor/career-ops/providers/himalayas.mjs';
 
 // Live-verified 2026-07-24 against https://himalayas.app/docs/remote-jobs-api and
 // direct curl of both endpoints. Himalayas exposes two distinct endpoints:

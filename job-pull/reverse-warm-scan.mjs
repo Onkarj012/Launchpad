@@ -28,20 +28,20 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import path from 'node:path';
+import yaml from 'js-yaml';
 
-import { makeHttpCtx } from '../career-ops/providers/_http.mjs';
-import greenhouse from '../career-ops/providers/greenhouse.mjs';
-import lever from '../career-ops/providers/lever.mjs';
-import ashby from '../career-ops/providers/ashby.mjs';
-import workday from '../career-ops/providers/workday.mjs';
-import { buildTitleFilter, buildLocationFilter, loadSeenUrls } from '../career-ops/scan.mjs';
+import { makeHttpCtx } from '../vendor/career-ops/providers/_http.mjs';
+import greenhouse from '../vendor/career-ops/providers/greenhouse.mjs';
+import lever from '../vendor/career-ops/providers/lever.mjs';
+import ashby from '../vendor/career-ops/providers/ashby.mjs';
+import workday from '../vendor/career-ops/providers/workday.mjs';
+import { buildTitleFilter, buildLocationFilter, loadSeenUrls } from '../vendor/career-ops/scan.mjs';
 import {
   classifyPostingDate,
   serializeAtsOffer,
   ATS_JSON_SCHEMA_VERSION,
-} from '../career-ops/scan-ats-full.mjs';
+} from '../vendor/career-ops/scan-ats-full.mjs';
 import {
   WARM_ATS,
   loadWarmSet,
@@ -54,16 +54,13 @@ import {
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const CAREER_OPS_DIR = path.join(REPO_ROOT, 'career-ops');
+const VENDORED_CAREER_OPS_DIR = path.join(REPO_ROOT, 'vendor', 'career-ops');
 const DEFAULT_WARM_SET = path.join(REPO_ROOT, 'config', 'reverse-warm-set.json');
-const DEFAULT_PORTALS = path.join(CAREER_OPS_DIR, 'portals.yml');
-const DEFAULT_SCAN_HISTORY = path.join(CAREER_OPS_DIR, 'data', 'scan-history.tsv');
+const DEFAULT_PORTALS = path.join(REPO_ROOT, 'config', 'career-ops-portals.yml');
+const DEFAULT_SCAN_HISTORY = path.join(process.cwd(), 'data', 'scan-history.tsv');
 
 const PROVIDERS = { greenhouse, lever, ashby, workday };
 const CONCURRENCY = 20;
-
-// js-yaml lives in career-ops/node_modules, not job-pull's — resolve it there.
-const careerOpsRequire = createRequire(path.join(CAREER_OPS_DIR, 'package.json'));
 
 function valueOf(args, flag, fallback = null) {
   const i = args.indexOf(flag);
@@ -102,7 +99,6 @@ async function warmScan(opts, log) {
   if (!existsSync(opts.portalsPath)) {
     throw new Error(`portals.yml not found at ${opts.portalsPath} — the warm scan reuses its title_filter/location_filter.`);
   }
-  const yaml = careerOpsRequire('js-yaml');
   const config = yaml.load(readFileSync(opts.portalsPath, 'utf-8'));
   const titleFilter = buildTitleFilter(config?.title_filter);
   const locationFilter = buildLocationFilter(config?.location_filter);
@@ -175,10 +171,16 @@ async function warmScan(opts, log) {
 // ── full scan (delegate + promote) ──────────────────────────────────
 
 function fullScan(opts, log) {
-  const script = path.join(CAREER_OPS_DIR, 'scan-ats-full.mjs');
+  const script = path.join(VENDORED_CAREER_OPS_DIR, 'scan-ats-full.mjs');
   const args = [script, '--ats', opts.ats.join(','), '--seeds', 'yc,a16z', '--since', String(opts.sinceDays), '--dry-run', '--json'];
   log(`Delegating to full reverse scan: scan-ats-full.mjs (${opts.ats.join(',')})`);
-  const stdout = execFileSync(process.execPath, args, { cwd: CAREER_OPS_DIR, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const execute = opts.execute || execFileSync;
+  const stdout = execute(process.execPath, args, {
+    cwd: process.cwd(),
+    env: { ...process.env, CAREER_OPS_PORTALS: path.resolve(opts.portalsPath) },
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const result = JSON.parse(stdout.trim());
   result.mode = 'full';
 
@@ -196,6 +198,14 @@ function fullScan(opts, log) {
   return result;
 }
 
+function seedFromHistory(opts, log, readHistory = warmSetFromScanHistory) {
+  const set = readHistory(opts.scanHistoryPath || DEFAULT_SCAN_HISTORY);
+  if (!opts.dryRun) saveWarmSet(opts.warmSetPath, set, new Date().toISOString());
+  const msg = `Seeded warm set from scan-history: ${warmSetSize(set)} boards${opts.dryRun ? ' (dry-run — not written)' : ` → ${opts.warmSetPath}`}`;
+  if (opts.json) process.stdout.write(JSON.stringify({ seeded: true, warmBoards: warmSetSize(set), boards: set.boards }) + '\n');
+  else log(msg);
+}
+
 // ── main ────────────────────────────────────────────────────────────
 
 async function main() {
@@ -203,11 +213,7 @@ async function main() {
   const log = opts.json ? (...a) => console.error(...a) : (...a) => console.log(...a);
 
   if (opts.seedFromHistory) {
-    const set = warmSetFromScanHistory(DEFAULT_SCAN_HISTORY);
-    if (!opts.dryRun) saveWarmSet(opts.warmSetPath, set, new Date().toISOString());
-    const msg = `Seeded warm set from scan-history: ${warmSetSize(set)} boards${opts.dryRun ? ' (dry-run — not written)' : ` → ${opts.warmSetPath}`}`;
-    if (opts.json) process.stdout.write(JSON.stringify({ seeded: true, warmBoards: warmSetSize(set), boards: set.boards }) + '\n');
-    else log(msg);
+    seedFromHistory(opts, log);
     return;
   }
 
@@ -235,4 +241,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   });
 }
 
-export { warmScan, fullScan };
+export { warmScan, fullScan, seedFromHistory };

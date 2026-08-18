@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Vocabulary: `../guardrails.md`. Fields: `references/lead-fields.md`.
 
-## Steps
+## Procedure
 
 1. Take the user-supplied company, role, location, and source link.
 2. Normalize through CandidateV1 and the current readiness gates.
@@ -18,9 +18,9 @@ Vocabulary: `../guardrails.md`. Fields: `references/lead-fields.md`.
 
 ## Done when
 
-- The candidate is valid CandidateV1 or the missing field is named
-- Original-application status is Resolved, Direct ATS, or explicitly Needs Verification
-- The planned v5 operation is shown
-- No write happened without explicit authorization
+- CandidateV1 validation passes, or every missing required field is named.
+- Original-application status is exactly `Resolved`, `Direct ATS`, or `Needs Verification` with evidence.
+- Exactly one planned v5 operation is shown for the normalized role.
+- The unapproved write count is zero, and `Make Resume` and `Applied?` remain false.
 
 fail-closed. v5-only. no auto-apply.

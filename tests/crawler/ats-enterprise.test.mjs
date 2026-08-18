@@ -5,7 +5,7 @@ import {
   preselectWorkdayListRow,
   workdayDetailUrl,
 } from '../../crawler/ats-enterprise.mjs';
-import { parsePostedOn } from '../../career-ops/providers/workday.mjs';
+import { parsePostedOn } from '../../vendor/career-ops/providers/workday.mjs';
 import { resolveJobIdentity } from '../../crawler/identity.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
 
@@ -365,6 +365,9 @@ test('Workday DETAIL hydration populates JD, location, requisition ID, experienc
   );
   assert.ok(candidate.experience?.evidence || candidate.experience?.minYears != null);
   assert.equal(candidate.evidence.detailHydration.status, 'succeeded');
+  assert.equal(candidate.postedAt, '2026-07-15T00:00:00.000Z');
+  assert.equal(candidate.evidence.freshness.kind, 'workday-startDate');
+  assert.equal(classifyFreshness(candidate, { now: '2026-07-24T10:00:00.000Z' }).eligible, true);
   assert.equal(result.telemetry.workdayDetail.succeeded, 1);
   assert.equal(workdayDetailUrl(listUrl, '/job/Pune-India-Office/Associate-Software-Engineer_R15032'), detailUrl);
 });
@@ -595,7 +598,7 @@ test('hydrated Workday candidate with a future start date remains undated and un
   assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified', providerStartDate: '2026-07-24T00:00:00.000Z', providerPostedOn: null });
 });
 
-test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, and remains in VerifyQueue', async () => {
+test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, and uses DETAIL freshness', async () => {
   const listUrl = 'https://reliaquest.wd5.myworkdayjobs.com/wday/cxs/reliaquest/ReliaQuest_Careers/jobs';
   const calls = [];
   const transport = async (url, options) => {
@@ -717,11 +720,10 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
   assert.equal(result.telemetry.workdayDetail.succeeded, 1);
   assert.deepEqual(result.telemetry.workdayDetail.selectedByReason, { 'target-title-pune': 1 });
 
-  // The LIST postedOn label remains uncorroborated for freshness classification.
+  // DETAIL startDate outranks the LIST relative label for freshness.
   const freshness = classifyFreshness(ase, { now: runAt });
-  assert.equal(freshness.window, 'VerifyQueue');
-  assert.equal(freshness.verifyQueue, true);
-  assert.equal(freshness.workdayUncorroborated, true);
+  assert.notEqual(freshness.window, 'VerifyQueue');
+  assert.notEqual(freshness.workdayUncorroborated, true);
   const identity = resolveJobIdentity(ase);
   assert.equal(identity.identity.providerJobId, 'workday|r15032');
   assert.equal(identity.code, 'NEW_TO_ME');

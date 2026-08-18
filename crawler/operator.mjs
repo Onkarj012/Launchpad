@@ -122,11 +122,15 @@ Usage:
   node crawler/cli.mjs daily [morning] [--config FILE] [--env production|live-test|dev] [--run-id ID] [--scores-json FILE] [--no-scorer]
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
   node crawler/cli.mjs install-schedule [--dry-run]
+  node crawler/cli.mjs promote-schedule --revision <40hex> [--canary-log FILE] [--release-root DIR] [--release-state FILE] [--mode normal|startup|remote] [--location-preset india|pune] [--dry-run]
+  node crawler/cli.mjs rollback-schedule [--release-state FILE] [--dry-run]
   node crawler/cli.mjs schedule-health [--config FILE]
 
-The crawler performs discovery and produces a planning-only handoff. It never applies or sends.
+The crawler performs discovery and produces a planning-only handoff. It never applies or sends automatically.
 install-schedule installs local launchd agents for the morning and midday
-schedules; schedule-health reports durable per-schedule run history.
+schedules; promote-schedule installs only a verified canary-gated immutable
+release checkout; rollback-schedule restores the retained prior release.
+schedule-health reports durable per-schedule run history.
 Commercial rescue remains explicit and
 requires separate configured credentials and operator invocation.
 `;
@@ -296,10 +300,12 @@ function verificationResolution(observation, error) {
 }
 
 /** Build the one resolver shared by all resolver-capable sources in a run. */
-export function createCrawlerRunResolver({ config, transport, runAt }) {
+export function createCrawlerRunResolver({ config, transport, runAt, signal = null, deadline = null }) {
   const resolver = createOriginalListingResolver({
     transport,
     runAt,
+    signal,
+    deadline,
     ...resolverSettings(config),
   });
 
@@ -602,7 +608,7 @@ export async function runCrawlerOperator({
   const profile = buildDiscoveryProfile({ mode, locationPreset, schedule });
   const nowValue = typeof clock.now === 'function' ? clock.now() : new Date().toISOString();
   const runAt = nowValue instanceof Date ? nowValue.toISOString() : String(nowValue);
-  const resolver = createCrawlerRunResolver({ config, transport, runAt });
+  const resolver = createCrawlerRunResolver({ config, transport, runAt, signal, deadline });
   const databasePath = path.resolve(config.databasePath);
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   const store = suppliedStore ?? openCrawlerStore(databasePath);

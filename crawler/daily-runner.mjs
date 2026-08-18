@@ -232,8 +232,7 @@ export function normalizeDailyMode(mode = 'normal') {
 }
 
 function candidateIdentity(candidate) {
-  return candidate?.canonicalUrl
-    || [candidate?.provider, candidate?.providerJobId ?? candidate?.jobId, candidateDedupKey(candidate)].filter(Boolean).join('|');
+  return candidateDedupKey(candidate);
 }
 
 function isSharedDirectAts(candidate, sourceId) {
@@ -524,6 +523,8 @@ async function runDailyNormalImpl({
     opportunityLedgerRows,
     opportunityLedgerPath: opportunityLedgerPath ?? config.opportunityLedgerPath,
     scores,
+    scoringSignal: dailyExecution.signal,
+    scoringRemainingMs: dailyExecution.remainingMs(),
     commitSurfaced: false,
     // Match scoring is opt-in: 'codex' constructs the real codex CLI scorer
     // (production), an injected async function fakes it (tests). The default

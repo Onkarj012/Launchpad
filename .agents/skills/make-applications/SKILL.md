@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Vocabulary: `../guardrails.md`. Read `readMakeResumeQueue()` from `resume-v5/queue-reader.mjs`. Process with `processMakeResumeQueue()` from `resume-v5/resume-queue.mjs`.
 
-## Steps
+## Procedure
 
 1. Query Applications v5 with the fixed Make Resume filter. Refuse legacy targets.
 2. For each checked row: set `resumeState` to Building only.
@@ -19,9 +19,10 @@ Vocabulary: `../guardrails.md`. Read `readMakeResumeQueue()` from `resume-v5/que
 
 ## Done when
 
-- Every checked row has a terminal `resumeState` of Ready, Failed, or Stale
-- Ready rows have PDF + source + matrix + provenance and `verifyFile` `PASS`
-- No user-owned checkbox changed
-- Failures are listed rather than skipped
+- Every selected row has exactly one terminal `resumeState`: `Ready`, `Failed`, or `Stale`.
+- The count of terminal rows equals the count of selected rows; no selected row is skipped.
+- Each `Ready` row has PDF, source, matrix, and provenance artifacts, and `verifyFile` returns `PASS`.
+- The count of mutations to `Make Resume` and `Applied?` is zero.
+- Every failed row is listed with its reason and artifact state.
 
 user-owned. local-compile. v5-only. no auto-apply.

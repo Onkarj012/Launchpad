@@ -54,11 +54,7 @@
       "indian",
       "apac",
       "asia pacific",
-      "asia-pacific",
-      "worldwide",
-      "world wide",
-      "global",
-      "anywhere"
+      "asia-pacific"
     ],
     "remoteDeniedScopes": [
       "us only",

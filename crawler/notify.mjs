@@ -1,4 +1,9 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+export const NOTIFICATION_RECEIPT_SCHEMA = 'LaunchpadNotificationReceiptV1';
+export const DEFAULT_NOTIFICATION_LOG = 'logs/notification-receipts.jsonl';
 
 /**
  * Best-effort local desktop notification. Never throws — a notification
@@ -24,6 +29,7 @@ export function notifyDesktop({ title, message, spawn = spawnSync } = {}) {
 export function notifyRunOutcome({
   runId,
   status,
+  outcome,
   schedule,
   mode,
   locationPreset,
@@ -32,23 +38,62 @@ export function notifyRunOutcome({
   notify = notifyDesktop,
   now = () => new Date(),
 } = {}) {
-  const sentAt = (typeof now === 'function' ? now() : now);
-  const iso = sentAt instanceof Date ? sentAt.toISOString() : String(sentAt);
+  const terminalStatus = status ?? outcome?.status ?? null;
+  const fatal = outcome?.fatal === true || terminalStatus === 'fatal';
+  const degraded = outcome?.degraded === true || (!fatal && terminalStatus != null && terminalStatus !== 'ok');
   const identity = [runId || 'unknown-run', schedule, mode, locationPreset].filter(Boolean).join(' · ');
-  const fatal = status === 'fatal';
   const title = fatal ? 'Launchpad — run failed' : 'Launchpad — daily run';
   const message = fatal
     ? `${identity} failed: ${error ?? 'see logs'}`
     : `${identity}: ${freshCount} fresh match${freshCount === 1 ? '' : 'es'}`;
-  const delivery = notify({ title, message }) ?? { sent: true, reason: null };
+  let iso;
+  try {
+    const sentAt = typeof now === 'function' ? now() : now;
+    const date = sentAt instanceof Date ? sentAt : new Date(sentAt);
+    iso = Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+  } catch {
+    iso = new Date().toISOString();
+  }
+  let delivery;
+  try {
+    delivery = notify({ title, message }) ?? { sent: true, reason: null };
+  } catch (notifyError) {
+    delivery = { sent: false, reason: notifyError?.message ?? 'notifier failed' };
+  }
   return {
+    schemaVersion: NOTIFICATION_RECEIPT_SCHEMA,
     runId: runId ?? null,
-    status: status ?? null,
-    schedule: schedule ?? null,
-    mode: mode ?? null,
-    locationPreset: locationPreset ?? null,
+    discoveryProfile: {
+      schedule: schedule ?? null,
+      mode: mode ?? null,
+      locationPreset: locationPreset ?? null,
+    },
+    outcome: {
+      status: terminalStatus,
+      fatal,
+      degraded,
+    },
+    freshCount: Number.isFinite(Number(freshCount)) ? Number(freshCount) : 0,
     sentAt: iso,
     sent: delivery.sent !== false,
     reason: delivery.reason ?? null,
   };
+}
+
+/**
+ * Append one safe terminal receipt to a local JSONL log. Never throws.
+ */
+export function persistNotificationReceipt(
+  receipt,
+  filePath = DEFAULT_NOTIFICATION_LOG,
+  { fsApi = fs, pathApi = path } = {},
+) {
+  const target = filePath ?? DEFAULT_NOTIFICATION_LOG;
+  try {
+    fsApi.mkdirSync(pathApi.dirname(target), { recursive: true });
+    fsApi.appendFileSync(target, `${JSON.stringify(receipt)}\n`, 'utf8');
+    return { persisted: true, path: target, reason: null };
+  } catch (error) {
+    return { persisted: false, path: target, reason: error?.message ?? 'receipt persistence failed' };
+  }
 }

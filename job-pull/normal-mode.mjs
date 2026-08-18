@@ -151,7 +151,7 @@ export async function runNormalMode({
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(),
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
   opportunityLedgerPath = null,
-  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer, commitSurfaced = false,
+  historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer, scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -178,7 +178,7 @@ export async function runNormalMode({
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate, eligibility: candidate.eligibility, freshness: candidate.freshness,
     }));

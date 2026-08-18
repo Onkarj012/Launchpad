@@ -12,22 +12,31 @@ function candidate(overrides = {}) {
   });
 }
 
-test('ATS-direct wins canonical URL and provider/job-id collisions', () => {
-  const aggregator = candidate({ source: 'Indeed', sourceKind: 'aggregator', provider: 'indeed' });
+test('ATS-direct wins provider/job-id collisions', () => {
+  const aggregator = candidate({ source: 'aggregator', sourceKind: 'aggregator', provider: 'greenhouse' });
   const direct = candidate({ source: 'greenhouse-api', sourceKind: 'ats-direct', provider: 'greenhouse' });
   const result = deduplicateCandidates([aggregator, direct]);
   assert.equal(result.kept.length, 1);
   assert.equal(result.kept[0].provider, 'greenhouse');
-  assert.equal(result.duplicates[0].code, 'DEDUP_CANONICAL_URL');
+  assert.equal(result.duplicates[0].code, 'DEDUP_PROVIDER_JOB_ID');
+});
+
+test('distinct durable requisitions never merge through a shared URL', () => {
+  const first = candidate({ provider: 'workday', jobId: 'REQ-1' });
+  const second = candidate({ provider: 'workday', jobId: 'REQ-2', description: first.description });
+  assert.equal(deduplicateCandidates([
+    { ...first, canonicalUrl: 'https://jobs.example.test/shared' },
+    { ...second, canonicalUrl: 'https://jobs.example.test/shared' },
+  ]).kept.length, 2);
 });
 
 test('company/title/location is last-resort only; distinct requisitions stay distinct', () => {
   const first = candidate({ url: 'https://one.example.test/1', provider: 'workday', jobId: 'R1' });
   const sameDesk = candidate({ url: 'https://two.example.test/2', provider: 'workday', jobId: 'R2', description: null });
-  const unlabeled = candidate({ url: 'https://four.example.test/4', provider: null, id: null, jobId: null, description: null });
+  const unlabeled = candidate({ url: 'https://aaa.example.test/4', provider: null, id: null, jobId: null, description: first.description });
   const unlabeledDup = candidate({ url: 'https://five.example.test/5', provider: null, id: null, jobId: null, description: null });
   const ledgerMatch = candidate({ url: 'https://three.example.test/3', provider: null, id: null, jobId: null, company: 'Ledger Co', title: 'ML Engineer', location: 'Remote India' });
-  const simhash = candidate({ url: 'https://zzz.example.test/4', company: 'Different Co', title: 'Different Role', location: 'Remote India', description: first.description });
+  const simhash = candidate({ url: 'https://zzz.example.test/4', provider: null, id: null, jobId: null, company: 'Different Co', title: 'Different Role', location: 'Remote India', description: first.description });
   const result = deduplicateCandidates([first, sameDesk, unlabeled, unlabeledDup, ledgerMatch, simhash], {
     ledgerRows: [{ dedup_key: 'ledger co|ml engineer|remote india', state: 'committed' }],
     simHashSimilarity: 0.93,

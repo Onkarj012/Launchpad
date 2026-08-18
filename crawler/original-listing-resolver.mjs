@@ -476,6 +476,35 @@ function responseBytes(response) {
   return Number.isFinite(length) ? length : 0;
 }
 
+function remainingDeadlineMs(deadline) {
+  if (deadline == null) return Infinity;
+  if (typeof deadline === 'number') return Math.max(0, deadline - Date.now());
+  if (Number.isFinite(Number(deadline.deadlineMs))) return Math.max(0, Number(deadline.deadlineMs) - Date.now());
+  if (Number.isFinite(Number(deadline.remainingMs))) return Math.max(0, Number(deadline.remainingMs));
+  return Infinity;
+}
+
+async function boundedTransport(transport, url, options, { signal, remainingMs }) {
+  const request = transport(url, options);
+  if (!Number.isFinite(remainingMs)) return request;
+  let timer;
+  let abortHandler;
+  try {
+    return await Promise.race([
+      request,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('original-listing resolver deadline exceeded')), remainingMs);
+        abortHandler = () => reject(new Error('original-listing resolver aborted'));
+        if (signal?.aborted) abortHandler();
+        else signal?.addEventListener?.('abort', abortHandler, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abortHandler);
+  }
+}
+
 function looksBlocked(response, status) {
   if (BLOCKED_STATUSES.has(status)) return true;
   const body = htmlBody(response);
@@ -631,6 +660,8 @@ export function createOriginalListingResolver({
   requestBudget,
   config,
   budget,
+  signal = null,
+  deadline = null,
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('createOriginalListingResolver requires injected transport');
   const limits = normalizeOriginalListingResolverBudget({
@@ -642,9 +673,9 @@ export function createOriginalListingResolver({
     ...(config || {}),
   });
   const redirectLimit = limits.maxRedirects;
-  const hostLimit = Math.max(1, limits.maxHosts);
-  const requestLimit = Math.max(1, limits.maxRequests);
-  const byteLimit = Math.max(1, limits.maxBytes);
+  const hostLimit = Math.max(0, limits.maxHosts);
+  const requestLimit = Math.max(0, limits.maxRequests);
+  const byteLimit = Math.max(0, limits.maxBytes);
 
   return async function resolveOriginalListing(observation = {}) {
     const discoveryUrl = canonical(observation.discoveryUrl ?? observation.canonicalUrl ?? observation.url);
@@ -657,6 +688,9 @@ export function createOriginalListingResolver({
     const chain = [];
     const seen = new Set();
     for (let hop = 0; hop <= redirectLimit; hop += 1) {
+      if (signal?.aborted) return resolutionFailure(observation, 'aborted', chain, {}, telemetry);
+      const remainingMs = remainingDeadlineMs(deadline);
+      if (remainingMs <= 0) return resolutionFailure(observation, 'deadline-exceeded', chain, {}, telemetry);
       // A redirect into an unsupported host is a classification failure, not
       // a loop, even when canonicalization makes the destination recur.
       if (hop > 0 && classifyOriginalListingUrl(current).kind === 'unsupported') {
@@ -682,23 +716,27 @@ export function createOriginalListingResolver({
       let response;
       try {
         telemetry.requests += 1;
-        response = await transport(current, {
+        response = await boundedTransport(transport, current, {
           method: 'GET',
           redirect: 'manual',
           maxBytes: byteLimit,
+          signal,
+          deadline,
+          remainingMs,
           purpose: 'original-listing-resolution',
           runAt,
           hop,
           budget: limits,
           telemetry: { ...telemetry },
-        });
+        }, { signal, remainingMs });
       } catch (error) {
-        return resolutionFailure(observation, 'transport-error', chain, { error: error?.message || 'transport-error' }, telemetry);
+        const reason = signal?.aborted ? 'aborted' : remainingDeadlineMs(deadline) <= 0 ? 'deadline-exceeded' : 'transport-error';
+        return resolutionFailure(observation, reason, chain, { error: error?.message || reason }, telemetry);
       }
 
       const status = Number(response?.status ?? 200);
       telemetry.bytesObserved += responseBytes(response);
-      if (Number.isFinite(Number(response?.byteLength)) && Number(response.byteLength) > byteLimit) {
+      if (responseBytes(response) > byteLimit || (Number.isFinite(Number(response?.byteLength)) && Number(response.byteLength) > byteLimit)) {
         return resolutionFailure(observation, 'response-too-large', chain, {}, telemetry);
       }
 

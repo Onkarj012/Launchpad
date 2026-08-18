@@ -44,8 +44,12 @@ export function classifyRemoteEligibility(candidate) {
     return { eligible: false, status: 'Not Eligible', classification: null, code: 'REMOTE_PROVIDER_MARKED_INELIGIBLE', evidence: candidate.remoteEligibility.evidence || null, reasons: ['REMOTE_PROVIDER_MARKED_INELIGIBLE'] };
   }
 
-  const hasIndia = INDIA.test(combined);
-  const hasApac = APAC.test(combined);
+  const scopeEvidence = [candidate.location, candidate.workMode, remote.scope, remote.country, remote.workAuthorization, remote.payroll, candidate.remoteEligibility?.evidence]
+    .map(evidenceValue).filter(Boolean).join(' · ');
+  const roleIndiaEvidence = /\b(?:remote|work(?:ing)?|hire|hiring|open|available|eligible|including|candidates?|applicants?|payroll|employment|employer of record|eor)\b[^.!?\n]{0,80}\b(?:india|indian)\b|\b(?:india|indian)\b[^.!?\n]{0,80}\b(?:remote|work(?:ing)?|hire|hiring|open|available|eligible|candidates?|applicants?|payroll|employment|employer of record|eor)\b/i.test(combined);
+  const roleApacEvidence = /\b(?:remote|work(?:ing)?|hire|hiring|open|available|eligible|including|candidates?|applicants?)\b[^.!?\n]{0,80}\b(?:apac|asia[ -]?pacific)\b|\b(?:apac|asia[ -]?pacific)\b[^.!?\n]{0,80}\b(?:remote|work(?:ing)?|hire|hiring|open|available|eligible|candidates?|applicants?)\b/i.test(combined);
+  const hasIndia = candidate.remoteEligibility?.status === 'India Eligible' || INDIA.test(scopeEvidence) || roleIndiaEvidence;
+  const hasApac = APAC.test(scopeEvidence) || roleApacEvidence;
   const hasEor = candidate.eor?.available === true || EOR.test(combined);
   const explicitIndia = candidate.remoteEligibility?.status === 'India Eligible' || hasIndia;
   if (hasEor && explicitIndia) {

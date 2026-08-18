@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { decodeEntities } from '../career-ops/providers/_html-entities.mjs';
+import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
 
 export const CANDIDATE_SCHEMA_VERSION = 'CandidateV1';
 
@@ -414,7 +414,7 @@ export function companyTitleLocationKey(candidate) {
 
 export function candidateRequisitionKey(candidate) {
   const provider = normalizedKey(candidate.provider);
-  const jobId = normalizedKey(candidate.jobId);
+  const jobId = normalizedKey(candidate.jobId ?? candidate.providerJobId ?? candidate.requisitionId);
   if (provider && jobId) return `${provider}|${jobId}`;
   return null;
 }

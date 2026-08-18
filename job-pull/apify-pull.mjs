@@ -35,6 +35,7 @@ export class RunError extends Error {
 export const API_BASE = 'https://api.apify.com/v2';
 export const DEFAULT_POLL_INTERVAL_MS = 10_000;
 export const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_MAX_RETURNED_ITEMS = 250;
 const NATIVE_REMOTE_LABELS = new Set(['himalayas', 'remotive', 'we-work-remotely']);
 
 function parseValue(args, name, fallback = null) {
@@ -141,6 +142,8 @@ export function validateConfig(config) {
   if (!config || typeof config !== 'object' || !Array.isArray(config.actors)) {
     throw new RunError('apify config must be an object with an "actors" array', 'config');
   }
+  const returnedCap = Number(config.rescue?.maxReturnedItemsPerProfile ?? DEFAULT_MAX_RETURNED_ITEMS);
+  if (!Number.isInteger(returnedCap) || returnedCap < 1) throw new RunError('rescue.maxReturnedItemsPerProfile must be a positive integer', 'config');
   const profiles = new Set();
   config.actors.forEach((actor, index) => {
     if (!actor || typeof actor !== 'object') throw new RunError(`actors[${index}] must be an object`, 'config');
@@ -225,7 +228,8 @@ export function buildPreflight(config, profileInput = []) {
     actorIds.add(actor.id);
   });
   const maxRuntimeSeconds = Number(config.rescue?.runTimeoutSeconds ?? DEFAULT_RUN_TIMEOUT_MS / 1000);
-  const maxRecords = selected.reduce((sum, actor) => sum + (expectedItems(actor) || 0), 0);
+  const returnedCap = Number(config.rescue?.maxReturnedItemsPerProfile ?? DEFAULT_MAX_RETURNED_ITEMS);
+  const maxRecords = selected.reduce((sum, actor) => sum + Math.min(expectedItems(actor) || 0, returnedCap), 0);
   const maxQueries = selected.reduce((sum, actor) => sum + expectedQueries(actor), 0);
   const actorRuns = actorIds.size;
   return {
@@ -280,6 +284,8 @@ export async function runActor(actor, token, fetchImpl = fetch, {
   runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
   sleepImpl = sleep,
   clock = () => Date.now(),
+  maxReturnedItems = DEFAULT_MAX_RETURNED_ITEMS,
+  datasetOffset = 0,
 } = {}) {
   const startRes = await fetchImpl(`${API_BASE}/acts/${encodeURIComponent(actor.id)}/runs?token=${encodeURIComponent(token)}`, {
     method: 'POST',
@@ -295,6 +301,7 @@ export async function runActor(actor, token, fetchImpl = fetch, {
   const deadline = startedAt + runTimeoutMs;
   let status = startBody.data.status;
   let datasetId = startBody.data.defaultDatasetId;
+  let actualCostUsd = Number(startBody?.data?.usage?.costUsd ?? startBody?.data?.costUsd ?? startBody?.data?.totalCostUsd);
   while (status && !['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
     if (clockMillis(clock) > deadline) throw new RunError(`timed out after ${runTimeoutMs / 1000}s waiting for run ${runId}`, 'timeout');
     if (pollIntervalMs > 0) await sleepImpl(pollIntervalMs);
@@ -303,17 +310,20 @@ export async function runActor(actor, token, fetchImpl = fetch, {
     const pollBody = await jsonResponse(pollRes, 'actor poll');
     status = pollBody?.data?.status;
     datasetId = pollBody?.data?.defaultDatasetId ?? datasetId;
+    if (!Number.isFinite(actualCostUsd)) actualCostUsd = Number(pollBody?.data?.usage?.costUsd ?? pollBody?.data?.costUsd ?? pollBody?.data?.totalCostUsd);
     if (!status) throw new RunError('actor poll response schema drift: missing data.status', 'schema-drift');
   }
   if (status === 'TIMED-OUT') throw new RunError(`run ended with status ${status}`, 'timeout');
   if (status !== 'SUCCEEDED') throw new RunError(`run ended with status ${status || 'UNKNOWN'}`, 'api-failure');
   if (!datasetId) throw new RunError('run succeeded but no defaultDatasetId was returned', 'schema-drift');
 
-  const itemsRes = await fetchImpl(`${API_BASE}/datasets/${datasetId}/items?clean=true&format=json&token=${encodeURIComponent(token)}`);
+  const limit = Math.max(1, Math.trunc(Number(maxReturnedItems)) || DEFAULT_MAX_RETURNED_ITEMS);
+  const offset = Math.max(0, Math.trunc(Number(datasetOffset)) || 0);
+  const itemsRes = await fetchImpl(`${API_BASE}/datasets/${datasetId}/items?clean=true&format=json&limit=${limit}&offset=${offset}&token=${encodeURIComponent(token)}`);
   if (!itemsRes.ok) throw apiError(`dataset fetch failed: ${itemsRes.status} ${await responseText(itemsRes)}`);
   const items = await jsonResponse(itemsRes, 'dataset');
   if (!Array.isArray(items)) throw new RunError('dataset response schema drift: expected an array', 'schema-drift');
-  return items;
+  return { items: items.slice(0, limit), actualCostUsd: Number.isFinite(actualCostUsd) ? actualCostUsd : null, offset, limit };
 }
 
 function failureReason(error) {
@@ -402,12 +412,17 @@ export async function pullAll(config, token, {
     }
     const startedAt = clockMillis(clock);
     try {
-      const items = await runActor(actor, token, fetchImpl, {
+      const retrieval = budgetState.retrieval?.[actor.profile] ?? { nextOffset: 0 };
+      const datasetOffset = Math.max(0, Number(retrieval.nextOffset) || 0);
+      const actorResult = await runActor(actor, token, fetchImpl, {
         pollIntervalMs,
         runTimeoutMs: runTimeoutMs ?? Number(config.rescue?.runTimeoutSeconds ?? DEFAULT_RUN_TIMEOUT_MS / 1000) * 1000,
         sleepImpl,
         clock,
+        maxReturnedItems: config.rescue?.maxReturnedItemsPerProfile ?? DEFAULT_MAX_RETURNED_ITEMS,
+        datasetOffset,
       });
+      const items = actorResult.items;
       const mapped = [];
       let invalid = 0;
       for (const item of items) {
@@ -435,7 +450,19 @@ export async function pullAll(config, token, {
         failureReason: degraded ? 'partial-failure' : null,
       });
       records.push(...mapped);
-      recordApifyRun(budgetState, nowIso, estimatedCostUsd);
+      recordApifyRun(budgetState, nowIso, estimatedCostUsd, {
+        estimatedItems: expectedItems(actor) || 0,
+        actualItems: items.length,
+        actualCostUsd: actorResult.actualCostUsd,
+      });
+      budgetState.retrieval = budgetState.retrieval || {};
+      budgetState.retrieval[actor.profile] = {
+        nextOffset: datasetOffset + items.length,
+        lastOffset: datasetOffset,
+        lastReturnedItems: items.length,
+        estimatedItems: expectedItems(actor) || null,
+        actualItems: items.length,
+      };
       const profileSeen = seenCache.profiles[actor.profile] || (seenCache.profiles[actor.profile] = []);
       seenCache.profiles[actor.profile] = [...new Set([
         ...profileSeen,

@@ -385,3 +385,44 @@ test('budget config is normalized and exposed in telemetry', () => {
   });
   assert.equal(extractProviderFingerprint('https://boards.greenhouse.io/acme/jobs/42').requisitionId, '42');
 });
+
+test('resolver forwards and enforces redirect, host, request, byte, signal, and deadline budgets', async () => {
+  const captured = [];
+  const redirect = createOriginalListingResolver({
+    maxRedirects: 0, maxHosts: 4, maxRequests: 8, maxBytes: 10,
+    transport: async (url, options) => {
+      captured.push({ url, options });
+      return { status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/1' }, body: '' };
+    },
+  });
+  const redirectResult = await redirect(observation('https://www.indeed.com/viewjob?id=budget'));
+  assert.equal(redirectResult.evidence.resolution.reason, 'redirect-limit-exceeded');
+  assert.equal(captured[0].options.maxBytes, 10);
+  assert.equal(captured[0].options.budget.maxRedirects, 0);
+  assert.equal(captured[0].options.budget.maxHosts, 4);
+  assert.equal(captured[0].options.budget.maxRequests, 8);
+
+  const hostLimited = createOriginalListingResolver({
+    maxRedirects: 2, maxHosts: 1, maxRequests: 8, transport: async () => ({
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/1' }, body: '',
+    }),
+  });
+  assert.equal((await hostLimited(observation('https://www.indeed.com/viewjob?id=host'))).evidence.resolution.reason, 'host-budget-exceeded');
+
+  const requestLimited = createOriginalListingResolver({
+    maxRedirects: 2, maxHosts: 4, maxRequests: 1, transport: async () => ({
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/1' }, body: '',
+    }),
+  });
+  assert.equal((await requestLimited(observation('https://www.indeed.com/viewjob?id=request'))).evidence.resolution.reason, 'request-budget-exceeded');
+
+  const byteLimited = createOriginalListingResolver({ maxBytes: 10, transport: async () => ({ status: 200, body: 'x'.repeat(11) }) });
+  assert.equal((await byteLimited(observation('https://boards.greenhouse.io/acme/jobs/1'))).evidence.resolution.reason, 'response-too-large');
+
+  const controller = new AbortController();
+  controller.abort();
+  let called = false;
+  const aborted = createOriginalListingResolver({ signal: controller.signal, transport: async () => { called = true; } });
+  assert.equal((await aborted(observation('https://boards.greenhouse.io/acme/jobs/1'))).evidence.resolution.reason, 'aborted');
+  assert.equal(called, false);
+});

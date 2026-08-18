@@ -50,16 +50,48 @@ test('quarantines malformed rows while valid siblings survive', () => {
   assert.equal(result.observations[1].postedAt, null);
 });
 
-test('suppresses duplicates deterministically by provider id, URL, and identity', () => {
+test('deduplicates by durable provider ID or canonical URL while preserving distinct requisitions', () => {
+  const first = baseRecord({
+    providerJobId: 'apna-1',
+    url: 'https://apna.co/job/ai-engineer-1',
+  });
+  const duplicateByProviderJobId = baseRecord({
+    providerJobId: 'apna-1',
+    url: 'https://apna.co/job/ai-engineer-1-mirror',
+  });
+  const duplicateByCanonicalUrl = baseRecord({
+    providerJobId: 'apna-4',
+    url: first.url,
+  });
+  const distinctSecondRequisition = baseRecord({
+    providerJobId: 'apna-2',
+    url: 'https://apna.co/job/ai-engineer-2',
+  });
+  const distinctThirdRequisition = baseRecord({
+    providerJobId: 'apna-3',
+    url: 'https://apna.co/job/ai-engineer-3',
+  });
+
   const result = normalizeConnectorEnvelope(envelope([
-    baseRecord(),
-    baseRecord({ providerJobId: 'apna-2', url: 'https://apna.co/job/other' }),
-    baseRecord({ providerJobId: 'apna-3', url: 'https://apna.co/job/third', title: 'AI Engineer' }),
+    first,
+    duplicateByProviderJobId,
+    duplicateByCanonicalUrl,
+    distinctSecondRequisition,
+    distinctThirdRequisition,
   ]));
 
-  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations.length, 3);
   assert.equal(result.manifest.duplicates, 2);
-  assert.deepEqual(result.observations[0].raw, baseRecord());
+  assert.deepEqual(result.observations.map(({ providerJobId, canonicalUrl }) => ({ providerJobId, canonicalUrl })), [
+    { providerJobId: 'apna-1', canonicalUrl: first.url },
+    { providerJobId: 'apna-2', canonicalUrl: distinctSecondRequisition.url },
+    { providerJobId: 'apna-3', canonicalUrl: distinctThirdRequisition.url },
+  ]);
+  assert.deepEqual(result.observations[0].raw, first);
+  assert.deepEqual(result.quarantine.map(({ index, record }) => ({ index, record })), [
+    { index: 1, record: duplicateByProviderJobId },
+    { index: 2, record: duplicateByCanonicalUrl },
+  ]);
 });
 
 test('rejects invalid envelope schema and provider without throwing', () => {

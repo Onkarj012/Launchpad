@@ -1,6 +1,7 @@
 import { buildOutreachDraft, storeOutreachDraft } from './draft.mjs';
 import { deriveOutreachState } from './cadence.mjs';
 import { evidenceUrls } from './evidence.mjs';
+import { observedReplyActivityKey } from './gmail.mjs';
 import { assertManualOutcomeConfirmation, assertManualSendConfirmation, outreachActivityKey } from './idempotency.mjs';
 import { researchContact } from './research.mjs';
 
@@ -39,6 +40,49 @@ function activityFilter(key) {
 }
 
 function pageId(page) { return page?.id ?? page?.pageId ?? null; }
+
+function replyNotes({ outreach, application, binding, reply }) {
+  return JSON.stringify({
+    provider: 'gmail',
+    observation: 'reply',
+    gmailMessageId: reply.gmailMessageId,
+    gmailThreadId: reply.gmailThreadId,
+    outreachId: outreach.id,
+    applicationId: application.id,
+    duplicateKey: binding.duplicateKey,
+    gmailDraftId: binding.gmailDraftId ?? null,
+    bindingIdempotencyKey: binding.idempotencyKey ?? null,
+  });
+}
+
+function replyStopsComplete(outreach, application) {
+  return outreach?.response === 'Replied'
+    && outreach?.outcome === 'Replied'
+    && outreach?.nextEligibleContact == null
+    && outreach?.draftState === 'Stopped'
+    && application?.outreachState === 'Stopped'
+    && application?.nextAction == null;
+}
+
+function journalRecoveryError(eventKey) {
+  return new OutreachWorkflowError('reply activity journal entry requires explicit recovery before retry', 'JOURNAL_RECOVERY_REQUIRED', { eventKey });
+}
+
+function activityKeyOf(activity) {
+  return activity?.idempotencyKey ?? activity?.['Idempotency Key'] ?? activity?.values?.idempotencyKey ?? null;
+}
+
+function mergeActivities(...groups) {
+  const merged = [];
+  const seen = new Set();
+  for (const activity of groups.flatMap((group) => Array.isArray(group) ? group : [])) {
+    const identity = activity?.id ?? activityKeyOf(activity) ?? `${activity?.eventType ?? ''}:${activity?.eventAt ?? ''}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    merged.push(activity);
+  }
+  return merged;
+}
 
 /** Research and draft without any send-capable connector. */
 export async function prepareOutreach({ applications = [], providers = {}, deepLimit = 6, now = () => Date.now(), attachmentExpected = false, allowPaid = false, selectContact } = {}) {
@@ -105,21 +149,53 @@ export async function confirmManualSend({ gateway, outreach, application, confir
   if (!gateway || typeof gateway.updatePage !== 'function' || typeof gateway.createPage !== 'function') throw new OutreachWorkflowError('an injected gateway with updatePage and createPage is required', 'GATEWAY_REQUIRED');
   if (!outreach?.id || !outreach.duplicateKey) throw new OutreachWorkflowError('outreach page and duplicate key are required', 'OUTREACH_REQUIRED');
   if (!application?.id) throw new OutreachWorkflowError('application id is required', 'APPLICATION_ID_REQUIRED');
-  const before = deriveOutreachState({ application, sequence: outreach, activities: [...activities, ...(outreach.activities ?? [])], now });
+  const suppliedActivities = mergeActivities(activities, outreach.activities);
+  const before = deriveOutreachState({ application, sequence: outreach, activities: suppliedActivities, now });
   if (before.stopReason || before.state === 'Closed') throw new OutreachWorkflowError(`outreach sequence is stopped: ${before.stopReason ?? 'Cadence Closed'}`, 'OUTREACH_STOPPED');
   const eventType = stage === 'Initial' ? 'Initial Sent' : stage === 'Follow-up 1' ? 'Follow-up 1 Sent' : stage === 'Follow-up 2' ? 'Follow-up 2 Sent' : null;
   if (!eventType) throw new OutreachWorkflowError(`unsupported manual contact stage: ${stage}`, 'STAGE_INVALID');
   const sentAt = confirmation.sentAt ? nowIso(confirmation.sentAt) : nowIso(now);
-  const initialSentAt = stage === 'Initial' ? sentAt : outreach.initialSentAt ?? outreach.sentAt;
-  if (!initialSentAt) throw new OutreachWorkflowError('follow-up confirmation requires the initial sent date', 'INITIAL_SENT_DATE_REQUIRED');
-  const dueOffset = stage === 'Initial' ? 3 : stage === 'Follow-up 1' ? 10 : 17;
   const eventKey = outreachActivityKey({ duplicateKey: outreach.duplicateKey, eventType });
-  let existing = [];
-  if (typeof gateway.listRows === 'function') existing = await gateway.listRows('activity', { filter: activityFilter(eventKey) });
+  let existing = suppliedActivities.filter((activity) => activityKeyOf(activity) === eventKey);
+  if (typeof gateway.listRows === 'function') {
+    existing = mergeActivities(existing, await gateway.listRows('activity', { filter: activityFilter(eventKey) }));
+  }
   if (existing?.length) return { status: 'noop', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: existing[0].id ?? null };
 
+  const priorKeys = stage === 'Follow-up 1'
+    ? [outreachActivityKey({ duplicateKey: outreach.duplicateKey, eventType: 'Initial Sent' })]
+    : stage === 'Follow-up 2'
+      ? [
+        outreachActivityKey({ duplicateKey: outreach.duplicateKey, eventType: 'Initial Sent' }),
+        outreachActivityKey({ duplicateKey: outreach.duplicateKey, eventType: 'Follow-up 1 Sent' }),
+      ]
+      : [];
+  for (const priorKey of priorKeys) {
+    const suppliedPrior = suppliedActivities.filter((activity) => activityKeyOf(activity) === priorKey);
+    let observedPrior = suppliedPrior;
+    if (typeof gateway.listRows === 'function') {
+      observedPrior = mergeActivities(observedPrior, await gateway.listRows('activity', { filter: activityFilter(priorKey) }));
+    }
+    if (!observedPrior.length && stage === 'Follow-up 2') {
+      throw new OutreachWorkflowError('Follow-up 2 requires Follow-up 1 activity evidence', 'STAGE_ORDER_INVALID');
+    }
+    if (!observedPrior.length && stage === 'Follow-up 1' && !(outreach.sent === true && (outreach.initialSentAt || outreach.sentAt))) {
+      throw new OutreachWorkflowError('Follow-up 1 requires initial-send evidence', 'STAGE_ORDER_INVALID');
+    }
+    suppliedActivities.push(...observedPrior);
+  }
+
+  const initialActivity = suppliedActivities.find((activity) => activityKeyOf(activity) === outreachActivityKey({ duplicateKey: outreach.duplicateKey, eventType: 'Initial Sent' }));
+  const initialSentAt = stage === 'Initial'
+    ? sentAt
+    : initialActivity?.eventAt ?? initialActivity?.['Event At'] ?? initialActivity?.values?.eventAt ?? outreach.initialSentAt ?? outreach.sentAt;
+  if (!initialSentAt) throw new OutreachWorkflowError('follow-up confirmation requires the initial sent date', 'INITIAL_SENT_DATE_REQUIRED');
+  const dueOffset = stage === 'Initial' ? 3 : stage === 'Follow-up 1' ? 10 : 17;
   const nextEligibleContact = addDays(initialSentAt, dueOffset);
-  await gateway.updatePage('outreach', outreach.id, { sent: true, sentAt, nextEligibleContact, draftState: 'Sent' });
+  const outreachUpdate = stage === 'Initial'
+    ? { sent: true, sentAt, nextEligibleContact, draftState: 'Sent' }
+    : { sent: true, nextEligibleContact, draftState: 'Sent' };
+  await gateway.updatePage('outreach', outreach.id, outreachUpdate);
   const activity = await gateway.createPage('activity', {
     name: `${eventType} — ${outreach.person}`,
     application: [application.id],
@@ -132,12 +208,85 @@ export async function confirmManualSend({ gateway, outreach, application, confir
     notes: `Manual confirmation: ${confirmation.confirmedBy ?? confirmation.source ?? confirmation.note}`,
   });
   const sequence = { ...outreach, sent: true, sentAt: initialSentAt };
-  const activityHistory = [...(existing ?? []), { eventType, eventAt: sentAt, outreachId: outreach.id }];
+  const activityHistory = mergeActivities(suppliedActivities, existing, [{ eventType, eventAt: sentAt, outreachId: outreach.id, idempotencyKey: eventKey }]);
   const derived = deriveOutreachState({ application, sequence, activities: activityHistory, now });
   if (typeof gateway.updatePage === 'function') {
     await gateway.updatePage('applications', application.id, { outreachState: derived.state, nextAction: derived.nextAction });
   }
   return { status: 'confirmed', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(activity), sentAt, nextEligibleContact, derived, evidenceUrls: evidenceUrls({ publicEvidence: outreach.publicEvidence ?? [] }) };
+}
+
+/** Apply one exact, read-only provider reply observation to the matching v5 sequence. */
+export async function recordObservedReply({ gateway, outreach, application, binding, reply, activities = [], journal = null } = {}) {
+  if (!gateway || typeof gateway.updatePage !== 'function' || typeof gateway.createPage !== 'function') throw new OutreachWorkflowError('an injected gateway with updatePage and createPage is required', 'GATEWAY_REQUIRED');
+  if (!outreach?.id || !outreach.duplicateKey) throw new OutreachWorkflowError('outreach page and duplicate key are required', 'OUTREACH_REQUIRED');
+  if (!application?.id) throw new OutreachWorkflowError('application id is required', 'APPLICATION_ID_REQUIRED');
+  if (!binding?.outreachId || binding.outreachId !== outreach.id) throw new OutreachWorkflowError('reply binding does not match the Outreach row', 'REPLY_OUTREACH_MISMATCH');
+  if (!binding.applicationId || binding.applicationId !== application.id || outreach.applicationId && outreach.applicationId !== application.id) throw new OutreachWorkflowError('reply binding does not match the Application row', 'REPLY_APPLICATION_MISMATCH');
+  if (binding.duplicateKey !== outreach.duplicateKey || reply?.outreachId !== binding.outreachId || reply?.duplicateKey !== binding.duplicateKey) throw new OutreachWorkflowError('reply identity does not match the exact Outreach binding', 'REPLY_IDENTITY_MISMATCH');
+  if (reply?.gmailThreadId !== binding.gmailThreadId || !reply.gmailMessageId || !reply.observedAt) throw new OutreachWorkflowError('reply must carry the exact Gmail message/thread binding and observed timestamp', 'REPLY_BINDING_REQUIRED');
+  const eventKey = observedReplyActivityKey({ duplicateKey: binding.duplicateKey, gmailMessageId: reply.gmailMessageId });
+  let existing = mergeActivities(activities, outreach.activities);
+  if (typeof gateway.listRows === 'function') existing = mergeActivities(existing, await gateway.listRows('activity', { filter: activityFilter(eventKey) }));
+  const existingActivity = existing.find((activity) => activityKeyOf(activity) === eventKey) ?? null;
+  const durableJournal = gateway.live === true ? (journal ?? gateway.journal ?? gateway.activeJournal ?? null) : null;
+  const previousJournal = gateway.activeJournal;
+  const previousTransactionKey = gateway.activeTransactionKey;
+  let activeJournalBound = false;
+  let reservedByThisCall = false;
+  let activity = existingActivity;
+
+  try {
+    if (durableJournal) {
+      const reservation = await durableJournal.reserve([{ key: eventKey, target: 'activity' }]);
+      if (reservation.pendingKeys?.includes(eventKey) || reservation.verifiedKeys?.includes(eventKey)) throw journalRecoveryError(eventKey);
+      if (reservation.committedKeys?.includes(eventKey)) {
+        return { status: 'noop', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(existingActivity) ?? durableJournal.get(eventKey)?.pageId ?? null };
+      }
+      reservedByThisCall = reservation.reserved?.includes(eventKey) === true;
+      gateway.activeJournal = durableJournal;
+      gateway.activeTransactionKey = eventKey;
+      activeJournalBound = true;
+      if (activity) durableJournal.recordTarget(eventKey, activity);
+    } else if (activity && replyStopsComplete(outreach, application)) {
+      return { status: 'noop', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(activity) };
+    }
+
+    if (!activity) {
+      activity = await gateway.createPage('activity', {
+        name: `Gmail reply — ${outreach.person}`,
+        application: [application.id],
+        outreach: [outreach.id],
+        eventType: 'Reply Observed',
+        eventAt: reply.observedAt,
+        idempotencyKey: eventKey,
+        actionState: 'Observed',
+        notes: replyNotes({ outreach, application, binding, reply }),
+      });
+      if (durableJournal) durableJournal.recordTarget(eventKey, activity);
+    }
+
+    const needsStopUpdates = !replyStopsComplete(outreach, application);
+    if (needsStopUpdates) {
+      await gateway.updatePage('outreach', outreach.id, { response: 'Replied', outcome: 'Replied', nextEligibleContact: null, draftState: 'Stopped' });
+      await gateway.updatePage('applications', application.id, { outreachState: 'Stopped', nextAction: null });
+    }
+    if (durableJournal) {
+      durableJournal.markVerified(eventKey);
+      durableJournal.markCommitted(eventKey);
+    }
+    return { status: existingActivity ? (needsStopUpdates ? 'recovered' : 'noop') : 'observed', outreachId: outreach.id, applicationId: application.id, eventKey, activityId: pageId(activity), observedAt: reply.observedAt };
+  } catch (error) {
+    if (durableJournal && reservedByThisCall && ['pending', 'verified'].includes(durableJournal.get(eventKey)?.state)) {
+      try { durableJournal.markAborted(eventKey, error); } catch { /* preserve the original failure */ }
+    }
+    throw error;
+  } finally {
+    if (activeJournalBound) {
+      gateway.activeJournal = previousJournal;
+      gateway.activeTransactionKey = previousTransactionKey;
+    }
+  }
 }
 
 export async function recordOutreachOutcome({ gateway, outreach, application, response, outcome = null, confirmation, now = () => Date.now() } = {}) {

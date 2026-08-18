@@ -18,12 +18,16 @@ async function updateState(updatePage, applicationId, resumeState) {
  */
 export async function processMakeResumeQueue({
   gateway,
-  build = createLocalResumeBuilder(),
-  verifyPdf = createLocalPdfVerifier(),
+  build,
+  verifyPdf,
+  builderOptions,
+  verifierOptions,
   now = () => Date.now(),
   pageSize = 100,
 } = {}) {
-  if (typeof build !== 'function') throw new Error('a local resume build adapter is required');
+  const buildAdapter = build ?? createLocalResumeBuilder(builderOptions);
+  const verifyAdapter = verifyPdf ?? createLocalPdfVerifier(verifierOptions);
+  if (typeof buildAdapter !== 'function') throw new Error('a local resume build adapter is required');
   const updatePage = updater(gateway);
   const queue = await readMakeResumeQueue({ gateway, pageSize });
   const results = [];
@@ -32,8 +36,8 @@ export async function processMakeResumeQueue({
     const result = { applicationId: application.id, role: application.role, company: application.companyName ?? application.company, previousState: application.resumeState };
     try {
       await updateState(updatePage, application.id, 'Building');
-      const artifact = await build(application);
-      const verification = await verifyResumeArtifact({ application, artifact, verifyPdf, now });
+      const artifact = await buildAdapter(application);
+      const verification = await verifyResumeArtifact({ application, artifact, verifyPdf: verifyAdapter, now });
       await updateState(updatePage, application.id, verification.state);
       results.push({ ...result, state: verification.state, artifact: verification.ok ? verification : artifact, verification });
     } catch (error) {
@@ -49,4 +53,3 @@ export async function processMakeResumeQueue({
     results,
   };
 }
-

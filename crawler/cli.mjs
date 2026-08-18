@@ -17,10 +17,17 @@ import {
   buildLocalReadinessEvidence,
 } from './readiness.mjs';
 import { installSchedules } from './install-schedule.mjs';
+import { computeCanaryVersion } from './canary-evaluator.mjs';
+import { promoteSchedule, rollbackSchedule } from './release-manager.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
 import { createJsonCanaryStore, loadDeliveryCanaryEvidence } from './delivery-canary.mjs';
 import { acquireCrawlerRunLock } from './run-lock.mjs';
-import { notifyDesktop, notifyRunOutcome } from './notify.mjs';
+import {
+  DEFAULT_NOTIFICATION_LOG,
+  notifyDesktop,
+  notifyRunOutcome,
+  persistNotificationReceipt,
+} from './notify.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -32,15 +39,6 @@ const ENV_CONFIG_PATHS = Object.freeze({
   'live-test': 'config/crawler-v2-live-test.json',
   dev: 'config/crawler-v2-dev.json',
 });
-
-export const READINESS_TEST_GLOBS = Object.freeze([
-  'tests/crawler/*.test.mjs',
-  'tests/job-pull/*.test.mjs',
-  'tests/notion-v5/*.test.mjs',
-  'tests/resume-v5/*.test.mjs',
-  'tests/outreach-v5/*.test.mjs',
-  'tests/v5/*.test.mjs',
-]);
 
 const READINESS_TEST_DIRS = Object.freeze([
   'tests/crawler',
@@ -56,11 +54,55 @@ export function discoverReadinessTests(root = process.cwd()) {
   for (const relative of READINESS_TEST_DIRS) {
     const directory = path.join(root, relative);
     if (!fs.existsSync(directory)) continue;
-    for (const name of fs.readdirSync(directory).sort()) {
-      if (name.endsWith('.test.mjs')) files.push(path.join(relative, name));
-    }
+    const visit = (currentDirectory, currentRelative) => {
+      for (const entry of fs.readdirSync(currentDirectory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+        const entryRelative = path.join(currentRelative, entry.name);
+        if (entry.isDirectory()) visit(path.join(currentDirectory, entry.name), entryRelative);
+        else if (entry.isFile() && entry.name.endsWith('.test.mjs')) files.push(entryRelative);
+      }
+    };
+    visit(directory, relative);
   }
-  return files;
+  return files.sort((left, right) => left.localeCompare(right));
+}
+
+export function runReadinessTests({
+  root = process.cwd(),
+  inventory = discoverReadinessTests(root),
+  spawn = spawnSync,
+} = {}) {
+  const files = [...inventory];
+  if (files.length === 0) {
+    return {
+      inventory: files,
+      status: null,
+      signal: null,
+      error: 'readiness test inventory is empty',
+      stdout: '',
+      stderr: '',
+      testTotal: 0,
+      passed: false,
+    };
+  }
+  const result = spawn(process.execPath, ['--test', ...files], {
+    cwd: root,
+    encoding: 'utf8',
+    shell: false,
+  });
+  const stdout = String(result?.stdout ?? '');
+  const stderr = String(result?.stderr ?? '');
+  const testOutput = `${stdout}\n${stderr}`;
+  const testTotal = Number(testOutput.match(/# tests\s+(\d+)/)?.[1] ?? 0);
+  return {
+    inventory: files,
+    status: result?.status ?? null,
+    signal: result?.signal ?? null,
+    error: result?.error?.message ?? null,
+    stdout,
+    stderr,
+    testTotal,
+    passed: result?.status === 0 && testTotal > 0,
+  };
 }
 
 function explicitOption(args, name) {
@@ -115,11 +157,9 @@ function configuredSourceIds(config) {
 function localReadiness(config, args) {
   const inventory = discoverReadinessTests();
   const runTests = args.includes('--run-tests');
-  const testRun = runTests
-    ? spawnSync(process.execPath, ['--test', ...READINESS_TEST_GLOBS], { cwd: process.cwd(), encoding: 'utf8', shell: true })
-    : null;
+  const testRun = runTests ? runReadinessTests({ inventory }) : null;
   const testOutput = `${testRun?.stdout ?? ''}\n${testRun?.stderr ?? ''}`;
-  const testTotal = Number(testOutput.match(/# tests (\d+)/)?.[1] ?? inventory.length);
+  const testTotal = testRun?.testTotal ?? 0;
   const inventoryEmpty = inventory.length === 0;
   const git = spawnSync('git', ['status', '--porcelain'], { cwd: process.cwd(), encoding: 'utf8' });
   const dirtyPaths = String(git.stdout ?? '').split(/\r?\n/).filter(Boolean).map((line) => line.slice(3));
@@ -134,7 +174,7 @@ function localReadiness(config, args) {
   const theirStackCredentialsAvailable = config.sources.theirstack?.enabled !== true || Boolean(process.env[theirStackKeyName]);
   const credentialsAvailable = braveCredentialsAvailable && theirStackCredentialsAvailable;
   const evidence = buildLocalReadinessEvidence({
-    testsPassed: runTests && testRun.status === 0 && !inventoryEmpty && testTotal > 0,
+    testsPassed: runTests && !inventoryEmpty && testRun?.passed === true,
     testTotal,
     dirtyPaths,
     operationalEvidence,
@@ -149,16 +189,36 @@ function localReadiness(config, args) {
       recognized: true,
     },
   });
-  return { evidence, assessment: assessProductionReadiness(evidence), testExitCode: testRun?.status ?? null };
+  evidence.testSummary = {
+    ...evidence.testSummary,
+    inventory,
+    status: testRun?.status ?? null,
+    signal: testRun?.signal ?? null,
+    error: testRun?.error ?? null,
+  };
+  return {
+    evidence,
+    assessment: assessProductionReadiness(evidence),
+    testExitCode: testRun?.status ?? null,
+    testRun,
+  };
 }
 
-export async function main(argv = process.argv.slice(2), { dailyRunner = runDailyNormal, emit = output, notify = notifyDesktop } = {}) {
+export async function main(argv = process.argv.slice(2), {
+  dailyRunner = runDailyNormal,
+  emit = output,
+  notify = notifyDesktop,
+  releaseApi = { promoteSchedule, rollbackSchedule },
+} = {}) {
   const command = argv[0] ?? 'help';
   if (['help', '--help', '-h'].includes(command)) {
     process.stdout.write(buildCrawlerHelp());
     return 0;
   }
-  const { config, path: configPath } = loadCrawlerConfig(resolveCrawlerConfigPath(argv));
+  const commandConfigPath = argv[0] === 'promote-schedule' && !explicitOption(argv, '--config') && !explicitOption(argv, '--env')
+    ? 'config/crawler-v2.json'
+    : resolveCrawlerConfigPath(argv);
+  const { config, path: configPath } = loadCrawlerConfig(commandConfigPath);
   if (command === 'validate') {
     emit({
       status: 'valid',
@@ -181,11 +241,13 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
     const canaryEvidence = loadDeliveryCanaryEvidence(canaryEvidencePath);
     const lock = acquireCrawlerRunLock(value(argv, '--lock-path', path.join(config.databasePath ? path.dirname(config.databasePath) : '.local/launchpad-crawler', 'daily.lock')));
     try {
+      const mode = value(argv, '--mode', 'normal');
+      const locationPreset = value(argv, '--location-preset', 'india');
       const result = await dailyRunner({
         config,
         schedule,
-        mode: value(argv, '--mode', 'normal'),
-        locationPreset: value(argv, '--location-preset', 'india'),
+        mode,
+        locationPreset,
         runId: value(argv, '--run-id'),
         scores: value(argv, '--scores-json'),
         // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
@@ -195,21 +257,22 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
         canaryEvidence,
         canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
       });
-      emit(result);
+      const exitCode = result.outcome?.status === 'fatal' ? 1 : 0;
       const freshCount = (result.shortlist ?? []).filter((candidate) => candidate.selectionTier === 'Strict' && ['Hot', 'Active'].includes(candidate.freshnessWindow)).length;
-      try {
-        notifyRunOutcome({
-          runId: result.runId,
-          status: result.outcome?.status,
-          schedule,
-          mode: value(argv, '--mode', 'normal'),
-          locationPreset: value(argv, '--location-preset', 'india'),
-          freshCount,
-          error: result.outcome?.errors?.[0]?.message ?? result.outcome?.errors?.[0],
-          notify,
-        });
-      } catch {}
-      return result.outcome?.status === 'fatal' ? 1 : 0;
+      const receipt = notifyRunOutcome({
+        runId: result.runId ?? value(argv, '--run-id'),
+        status: result.outcome?.status,
+        outcome: result.outcome,
+        schedule,
+        mode,
+        locationPreset,
+        freshCount,
+        error: result.outcome?.errors?.[0]?.message ?? result.outcome?.errors?.[0],
+        notify,
+      });
+      const persistence = persistNotificationReceipt(receipt, value(argv, '--notification-log', DEFAULT_NOTIFICATION_LOG));
+      emit({ ...result, notificationReceipt: { ...receipt, persistence } });
+      return exitCode;
     } finally {
       lock.release();
     }
@@ -237,6 +300,34 @@ export async function main(argv = process.argv.slice(2), { dailyRunner = runDail
     const result = installSchedules({ dryRun });
     emit(result);
     return result.agents.every((agent) => agent.dryRun || agent.installed) ? 0 : 1;
+  }
+  if (command === 'promote-schedule') {
+    const revision = explicitOption(argv, '--revision');
+    if (!revision) throw new Error('--revision requires a full 40-hex commit');
+    const canaryEvidence = loadDeliveryCanaryEvidence(value(argv, '--canary-log', 'logs/delivery-canary.json'));
+    const result = await releaseApi.promoteSchedule({
+      sourceRoot: process.cwd(),
+      revision,
+      canaryRecords: Array.isArray(canaryEvidence) ? canaryEvidence : canaryEvidence?.runs ?? [],
+      canaryVersion: computeCanaryVersion({ config, root: process.cwd() }),
+      config,
+      releaseRoot: value(argv, '--release-root', undefined),
+      releaseState: value(argv, '--release-state', undefined),
+      mode: value(argv, '--mode', 'normal'),
+      locationPreset: value(argv, '--location-preset', 'india'),
+      dryRun: argv.includes('--dry-run'),
+    });
+    emit(result);
+    return result.promoted || result.dryRun ? 0 : 1;
+  }
+  if (command === 'rollback-schedule') {
+    const result = await releaseApi.rollbackSchedule({
+      sourceRoot: process.cwd(),
+      releaseState: value(argv, '--release-state', undefined),
+      dryRun: argv.includes('--dry-run'),
+    });
+    emit(result);
+    return result.rolledBack || result.dryRun ? 0 : 1;
   }
   if (command === 'schedule-health') {
     emit(buildScheduleHealthReport({ databasePath: config.databasePath }));

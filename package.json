@@ -8,5 +8,10 @@
     "safety": "node crawler/safety-contract.mjs",
     "test": "node --test tests/crawler/*.test.mjs tests/job-pull/*.test.mjs tests/notion-v5/*.test.mjs tests/resume-v5/*.test.mjs tests/outreach-v5/*.test.mjs tests/v5/*.test.mjs",
     "rehearse": "node launchpad-v5.mjs rehearse"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "js-yaml": "4.3.0",
+    "playwright": "1.61.1"
   }
 }

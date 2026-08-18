@@ -20,7 +20,7 @@ export class NotionV5Error extends Error {
     this.target = target;
     this.details = redactSensitive(details, secrets);
     this.retryable = retryable;
-    this.redactionSecrets = secrets;
+    Object.defineProperty(this, 'redactionSecrets', { value: Object.freeze(secrets), enumerable: false });
   }
 }
 

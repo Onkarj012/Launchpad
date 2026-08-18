@@ -13,7 +13,11 @@
     "cadence": { "type": "object" },
     "dailyTargets": { "type": "object" },
     "checkpoints": { "type": "object" },
-    "salaryFloorLpa": { "type": ["number", "null"], "minimum": 0 }
+    "salaryFloorLpa": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Optional disclosed comparable annual INR floor in LPA; undisclosed compensation remains Not Verified."
+    }
   },
   "additionalProperties": false
 }

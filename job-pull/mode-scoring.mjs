@@ -51,13 +51,40 @@ export function splitScoredEntries(entries) {
   };
 }
 
-export async function scorePoolInRun(candidates, scorer, { runId = null, runAt = null } = {}) {
+function parentScoringError(reasonCode) {
+  const error = new Error(`scoring stopped by parent budget: ${reasonCode}`);
+  error.reasonCode = reasonCode;
+  return error;
+}
+
+async function awaitParentScoringBudget(promise, signal, remainingMs) {
+  const budget = remainingMs != null && Number.isFinite(Number(remainingMs)) ? Math.max(0, Number(remainingMs)) : Infinity;
+  if (!signal?.aborted && !Number.isFinite(budget)) return promise;
+  let timer;
+  let abortHandler;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        if (Number.isFinite(budget)) timer = setTimeout(() => reject(parentScoringError('SCORER_DEADLINE_EXCEEDED')), budget);
+        abortHandler = () => reject(parentScoringError('SCORER_ABORTED'));
+        if (signal?.aborted) abortHandler();
+        else signal?.addEventListener?.('abort', abortHandler, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abortHandler);
+  }
+}
+
+export async function scorePoolInRun(candidates, scorer, { runId = null, runAt = null, signal = null, remainingMs = null } = {}) {
   if (typeof scorer !== 'function') return { pool: candidates, telemetry: null };
   const unscored = candidates.filter((candidate) => !hasUsableMatchScore(candidate));
   if (!unscored.length) return { pool: candidates, telemetry: { attempted: 0, chunks: 0, failures: [], degraded: false, reasonCode: null } };
   let scoring;
   try {
-    scoring = await scorer(unscored, { runId, runAt });
+    scoring = await awaitParentScoringBudget(scorer(unscored, { runId, runAt, signal, remainingMs }), signal, remainingMs);
   } catch (error) {
     return {
       pool: candidates,

@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Vocabulary: `../guardrails.md`. Require company, role, current JD, and a source link.
 
-## Steps
+## Procedure
 
 1. Resolve the original active employer/ATS destination. Stop at Needs Verification if it is still a lead.
 2. Use the v5 Applications row and its Companies relation only.
@@ -18,9 +18,9 @@ Vocabulary: `../guardrails.md`. Require company, role, current JD, and a source 
 
 ## Done when
 
-- Original application is resolved or explicitly blocked
-- Resume is Ready (or the block is reported)
-- Optional outreach is draft-only, never sent
-- No user-owned checkbox changed
+- Original application status is `Resolved` or an explicit block reason is reported.
+- Resume status is `Ready` or the blocking gate is reported with evidence.
+- Optional outreach has exactly one draft-only result and a send count of zero.
+- The count of mutations to `Make Resume` and `Applied?` is zero.
 
 user-owned. draft-only. v5-only. no auto-apply.

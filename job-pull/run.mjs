@@ -410,6 +410,7 @@ function sourceResultFromFixture(kind, fixture, now) {
 }
 
 function discover(options) {
+  if (!options.trackedJson || !options.reverseJson) mkdirSync(options.careerOpsDir, { recursive: true });
   const sources = [];
   try {
     sources.push(options.trackedJson

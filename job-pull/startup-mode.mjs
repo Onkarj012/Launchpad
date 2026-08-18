@@ -166,7 +166,7 @@ function fatalResult(runId, runAt, sourceManifests, companyRecords, error) {
 export async function runStartupMode({
   mode = 'startup', clock = () => new Date().toISOString(), runId: suppliedRunId = null,
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, notionGateway = createNoWriteNotionGateway(), executeGateway = false,
-  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = null, opportunityLedgerPath = null, historicalV4Rows = [], scores, scorer, commitSurfaced = false,
+  config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = null, opportunityLedgerPath = null, historicalV4Rows = [], scores, scorer, scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false,
 } = {}) {
   if (String(mode).toLowerCase() !== 'startup') throw new StartupModeError(`Startup runner only supports startup mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -189,7 +189,7 @@ export async function runStartupMode({
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
     const selectionEntries = scoredPool.map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
     const selection = selectStartupApplications(selectionEntries, { maximumPerCompany: baseConfig.run.maximumPerCompany });
     const eligibleCount = pipeline.postSuppressionCandidates.length;

@@ -2,7 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, u
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { candidateDedupKey, canonicalizeUrl } from './candidate.mjs';
+import { candidateDedupKey, candidateRequisitionKey, canonicalizeUrl, normalizedKey } from './candidate.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_OPPORTUNITY_LEDGER_PATH = path.resolve(MODULE_DIR, '../career-ops/data/opportunity-ledger.tsv');
@@ -125,9 +125,18 @@ export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUN
     const recorded = [];
     for (const candidate of candidates) {
       const key = candidateDedupKey(candidate);
+      const durableKey = candidateRequisitionKey(candidate);
       const url = canonicalizeUrl(candidate.canonicalUrl || candidate.url);
       let row = rows.find((entry) => entry.dedup_key === key)
-        || (url ? rows.find((entry) => canonicalizeUrl(entry.canonical_url) === url) : null);
+        || (!durableKey && url
+          ? rows.find((entry) => {
+            const rowKey = normalizedKey(entry.dedup_key);
+            const rowProvider = normalizedKey(entry.provider);
+            const rowJobId = normalizedKey(entry.job_id ?? entry.jobId ?? entry.provider_job_id);
+            const rowHasDurableKey = Boolean(rowProvider && rowJobId) || (rowProvider && rowKey.startsWith(`${rowProvider}|`));
+            return !rowHasDurableKey && canonicalizeUrl(entry.canonical_url) === url;
+          })
+          : null);
       if (!row) {
         row = {
           dedup_key: key,

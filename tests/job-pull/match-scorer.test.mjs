@@ -311,6 +311,7 @@ test('parent abort signal stops scoring before later chunks run', async () => {
   const result = await scoreCandidates([candidate(1), candidate(2), candidate(3), candidate(4)], {
     chunkSize: 1,
     signal: controller.signal,
+    remainingMs: 1000,
     async scoreChunk() {
       chunks += 1;
       if (chunks === 1) controller.abort();

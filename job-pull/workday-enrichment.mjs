@@ -1,5 +1,5 @@
-import { makeHttpCtx } from '../career-ops/providers/_http.mjs';
-import { fetchWorkdayJobDetail } from '../career-ops/providers/workday.mjs';
+import { makeHttpCtx } from '../vendor/career-ops/providers/_http.mjs';
+import { fetchWorkdayJobDetail } from '../vendor/career-ops/providers/workday.mjs';
 import { preselectWorkdayListRow } from '../crawler/ats-enterprise.mjs';
 import { canonicalizeUrl, extractExperienceYears, stripHtmlToText } from './candidate.mjs';
 

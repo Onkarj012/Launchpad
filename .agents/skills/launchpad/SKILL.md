@@ -6,7 +6,9 @@ disable-model-invocation: false
 
 # Launchpad router
 
-Read `master_prompt.md` and `docs/STATUS.md`. Vocabulary is in `../guardrails.md`. Mirror policy: only the eleven v5 command-surface skills are mirrored into `.claude/skills`. The four supporting skills stay local.
+Read `master_prompt.md` and `docs/STATUS.md`. Vocabulary is in `../guardrails.md`. Mirror policy: the eleven operational skills plus this router are mirrored into `.claude/skills`; the four supporting skills remain `.agents`-only.
+
+## Routed skills
 
 | Request | Skill |
 | --- | --- |
@@ -26,4 +28,4 @@ Read `master_prompt.md` and `docs/STATUS.md`. Vocabulary is in `../guardrails.md
 | Interview prep loop | `interview-loop` |
 | Proof-of-fit artifacts | `proof-of-fit` |
 
-Never auto-apply, send, or check user-owned boxes.
+Never auto-apply or send. Never check, uncheck, or otherwise mutate user-owned boxes. Supporting skills remain local and are routed here without `.claude` mirrors.

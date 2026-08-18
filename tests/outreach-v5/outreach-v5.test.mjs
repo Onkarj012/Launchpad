@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { application, contact, createFakeGateway, OUTREACH_FIXTURE_NOW, providersFor } from '../fixtures/outreach-v5.mjs';
 import { normalizeContactEvidence } from '../../outreach-v5/evidence.mjs';
 import { buildOutreachDraft, storeOutreachDraft } from '../../outreach-v5/draft.mjs';
 import { OUTREACH_CADENCE, cadencePlan, deriveOutreachState, dueCadenceAction } from '../../outreach-v5/cadence.mjs';
-import { confirmManualSend, prepareOutreach, persistOutreach, recordOutreachOutcome } from '../../outreach-v5/workflow.mjs';
+import { createGmailDraft, observeGmailReplies } from '../../outreach-v5/gmail.mjs';
+import { confirmManualSend, prepareOutreach, persistOutreach, recordObservedReply, recordOutreachOutcome } from '../../outreach-v5/workflow.mjs';
 import { outreachActivityKey, outreachDuplicateKey } from '../../outreach-v5/idempotency.mjs';
 import { researchContact } from '../../outreach-v5/research.mjs';
+import { mapProperties } from '../../notion-v5/schema.mjs';
+import * as gmailOutreach from '../../outreach-v5/gmail.mjs';
 
 test('contact research is free-first, records public evidence, and leaves missing email blank', async () => {
   const providers = providersFor({ failure: true });
@@ -219,4 +226,242 @@ test('batch persistence preserves no-contact and draft-blocked outcomes without 
   assert.equal(persisted.status, 'partial');
   assert.equal(gateway.pages.outreach.length, 1);
   assert.equal(persisted.results.find((result) => result.applicationId === 'blocked').status, 'draft-blocked');
+});
+
+test('Gmail seam exposes no send capability and creates a stable idempotent draft', async () => {
+  const calls = [];
+  let existing = null;
+  const draft = buildOutreachDraft({ application: application('gmail-idempotent'), contact: contact('gmail-idempotent', { email: 'person@gmail-idempotent.example.com', emailEvidence: 'public page', recommendedChannel: 'Public Email' }) });
+  const transport = {
+    async lookupDraftByIdempotencyKey(request) { calls.push({ method: 'lookup', request }); return existing; },
+    async createDraft(request) { calls.push({ method: 'create', request }); return { draftId: 'gd-1', messageId: 'gm-1', threadId: 'gt-1' }; },
+  };
+  assert.equal(Object.keys(gmailOutreach).some((name) => /send/i.test(name)), false);
+  const first = await createGmailDraft({ transport, outreachId: 'outreach-gmail-1', draft });
+  existing = first;
+  const replay = await createGmailDraft({ transport, outreachId: 'outreach-gmail-1', draft });
+  assert.equal(first.status, 'created');
+  assert.equal(replay.status, 'replay');
+  assert.equal(calls.filter(({ method }) => method === 'create').length, 1);
+  const createCall = calls.find(({ method }) => method === 'create');
+  assert.equal(createCall.request.idempotencyKey, calls.find(({ method }) => method === 'lookup').request.idempotencyKey);
+  assert.equal(createCall.request.headers['X-Launchpad-Outreach-Id'], 'outreach-gmail-1');
+  assert.equal(createCall.request.metadata.duplicateKey, draft.duplicateKey);
+});
+
+test('Gmail draft passes exact Ready PDF bytes, filename, MIME type, and digest once', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'launchpad-outreach-'));
+  const pdfPath = path.join(directory, 'exact-role.pdf');
+  const bytes = Buffer.from('%PDF-1.7\nexact fixture bytes\n%%EOF\n');
+  await writeFile(pdfPath, bytes);
+  try {
+    const current = application('gmail-attachment', 90, { resumeState: 'Ready' });
+    const draft = buildOutreachDraft({
+      application: current,
+      contact: contact('gmail-attachment', { email: 'person@gmail-attachment.example.com', emailEvidence: 'public page', recommendedChannel: 'Public Email' }),
+      attachmentExpected: true,
+      resumeArtifact: { applicationId: current.id, company: current.companyName, role: current.role, pdfPath, state: 'Ready' },
+    });
+    let request;
+    const receipt = await createGmailDraft({
+      outreachId: 'outreach-gmail-attachment',
+      draft,
+      transport: {
+        async lookupDraftByIdempotencyKey() { return null; },
+        async createDraft(value) { request = value; return { draftId: 'gd-2', messageId: 'gm-2', threadId: 'gt-2' }; },
+      },
+    });
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    assert.equal(receipt.digest, digest);
+    assert.equal(request.attachment.filename, 'exact-role.pdf');
+    assert.equal(request.attachment.mimeType, 'application/pdf');
+    assert.equal(request.attachment.digest, digest);
+    assert.deepEqual(request.attachment.bytes, bytes);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('reply observation binds exact thread, Outreach identity, and duplicate key while remaining read-only', async () => {
+  const draft = buildOutreachDraft({ application: application('gmail-reply'), contact: contact('gmail-reply', { email: 'person@gmail-reply.example.com', emailEvidence: 'public page', recommendedChannel: 'Public Email' }) });
+  const binding = {
+    outreachId: 'outreach-gmail-reply',
+    applicationId: draft.applicationId,
+    duplicateKey: draft.duplicateKey,
+    idempotencyKey: 'launchpad-v5:gmail-draft:outreach-gmail-reply:key',
+    gmailDraftId: 'gd-reply',
+    gmailMessageId: 'gm-outbound',
+    gmailThreadId: 'gt-reply',
+  };
+  const calls = [];
+  const result = await observeGmailReplies({
+    binding,
+    seenMessageIds: ['gm-seen'],
+    transport: {
+      async listMessages(request) {
+        calls.push({ method: 'list', request });
+        return [{ id: 'gm-outbound' }, { id: 'gm-wrong' }, { id: 'gm-reply' }, { id: 'gm-reply' }, { id: 'gm-seen' }];
+      },
+      async readMessage(request) {
+        calls.push({ method: 'read', request });
+        if (request.messageId === 'gm-outbound') return { id: 'gm-outbound', threadId: 'gt-reply', outreachId: binding.outreachId, duplicateKey: binding.duplicateKey, labelIds: ['SENT'] };
+        if (request.messageId === 'gm-wrong') return { id: 'gm-wrong', threadId: 'gt-other', outreachId: binding.outreachId, duplicateKey: binding.duplicateKey, observedAt: OUTREACH_FIXTURE_NOW };
+        if (request.messageId === 'gm-reply') return { id: 'gm-reply', threadId: 'gt-reply', outreachId: binding.outreachId, duplicateKey: binding.duplicateKey, labelIds: ['INBOX'], from: 'person@example.com', body: 'Thanks for reaching out.', observedAt: OUTREACH_FIXTURE_NOW };
+        return null;
+      },
+    },
+  });
+  assert.equal(result.status, 'observed');
+  assert.equal(result.replies.length, 1);
+  assert.deepEqual(result.replies[0], {
+    outreachId: binding.outreachId,
+    applicationId: binding.applicationId,
+    duplicateKey: binding.duplicateKey,
+    idempotencyKey: binding.idempotencyKey,
+    gmailMessageId: 'gm-reply',
+    gmailThreadId: 'gt-reply',
+    observedAt: OUTREACH_FIXTURE_NOW,
+    from: 'person@example.com',
+    subject: null,
+    body: 'Thanks for reaching out.',
+  });
+  assert.deepEqual(calls.map(({ method }) => method), ['list', 'read', 'read', 'read']);
+  assert.equal(calls.some(({ method }) => method.includes('write') || method.includes('create') || method.includes('update')), false);
+});
+
+test('observed reply Activity payload is schema-aware and preserves exact structured identity', async () => {
+  const gateway = createFakeGateway();
+  const current = application('schema-reply');
+  gateway.pages.applications.push({ id: current.id, values: {} });
+  const draft = buildOutreachDraft({ application: current, contact: contact('schema-reply') });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const binding = { outreachId: stored.page.id, applicationId: current.id, duplicateKey: draft.duplicateKey, idempotencyKey: 'gmail-schema-key', gmailDraftId: 'gd-schema', gmailThreadId: 'gt-schema' };
+  const reply = { outreachId: stored.page.id, duplicateKey: draft.duplicateKey, gmailMessageId: 'gm-schema', gmailThreadId: 'gt-schema', observedAt: OUTREACH_FIXTURE_NOW };
+  let mapped;
+  const createPage = gateway.createPage.bind(gateway);
+  gateway.createPage = async (target, values, options) => {
+    if (target === 'activity') mapped = mapProperties('activity', values);
+    return createPage(target, values, options);
+  };
+  await recordObservedReply({ gateway, outreach: { ...draft, id: stored.page.id }, application: current, binding, reply });
+  assert.deepEqual(Object.keys(mapped).sort(), ['Action State', 'Event At', 'Event Type', 'Idempotency Key', 'Name', 'Notes', 'Application', 'Outreach'].sort());
+  assert.equal(mapped['Idempotency Key'].rich_text[0].text.content, 'launchpad-v5:gmail-reply:' + draft.duplicateKey + ':gm-schema');
+  assert.deepEqual(JSON.parse(mapped.Notes.rich_text[0].text.content), {
+    provider: 'gmail',
+    observation: 'reply',
+    gmailMessageId: 'gm-schema',
+    gmailThreadId: 'gt-schema',
+    outreachId: stored.page.id,
+    applicationId: current.id,
+    duplicateKey: draft.duplicateKey,
+    gmailDraftId: 'gd-schema',
+    bindingIdempotencyKey: 'gmail-schema-key',
+  });
+});
+
+test('Activity-create failure leaves both stop updates untouched', async () => {
+  const gateway = createFakeGateway();
+  const current = application('activity-failure');
+  gateway.pages.applications.push({ id: current.id, values: {} });
+  const draft = buildOutreachDraft({ application: current, contact: contact('activity-failure') });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const createPage = gateway.createPage.bind(gateway);
+  gateway.createPage = async (target, values, options) => {
+    if (target === 'activity') throw new Error('activity unavailable');
+    return createPage(target, values, options);
+  };
+  const binding = { outreachId: stored.page.id, applicationId: current.id, duplicateKey: draft.duplicateKey, gmailThreadId: 'gt-failure' };
+  const reply = { outreachId: stored.page.id, duplicateKey: draft.duplicateKey, gmailMessageId: 'gm-failure', gmailThreadId: 'gt-failure', observedAt: OUTREACH_FIXTURE_NOW };
+  await assert.rejects(() => recordObservedReply({ gateway, outreach: { ...draft, id: stored.page.id }, application: current, binding, reply }), /activity unavailable/);
+  assert.equal(gateway.calls.some((call) => call.method === 'updatePage' && ['outreach', 'applications'].includes(call.target)), false);
+});
+
+test('an update failure replays from one Activity and completes both stop updates', async () => {
+  const gateway = createFakeGateway();
+  const current = application('recovery-reply');
+  gateway.pages.applications.push({ id: current.id, values: {} });
+  const draft = buildOutreachDraft({ application: current, contact: contact('recovery-reply') });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const binding = { outreachId: stored.page.id, applicationId: current.id, duplicateKey: draft.duplicateKey, gmailThreadId: 'gt-recovery' };
+  const reply = { outreachId: stored.page.id, duplicateKey: draft.duplicateKey, gmailMessageId: 'gm-recovery', gmailThreadId: 'gt-recovery', observedAt: OUTREACH_FIXTURE_NOW };
+  const updatePage = gateway.updatePage.bind(gateway);
+  let failApplicationUpdate = true;
+  gateway.updatePage = async (target, id, values) => {
+    if (target === 'applications' && failApplicationUpdate) {
+      failApplicationUpdate = false;
+      throw new Error('application stop unavailable');
+    }
+    return updatePage(target, id, values);
+  };
+  await assert.rejects(() => recordObservedReply({ gateway, outreach: { ...draft, id: stored.page.id }, application: current, binding, reply }), /application stop unavailable/);
+  assert.equal(gateway.pages.activity.length, 1);
+  const replay = await recordObservedReply({ gateway, outreach: { ...draft, id: stored.page.id }, application: current, binding, reply });
+  assert.equal(replay.status, 'recovered');
+  assert.equal(gateway.pages.activity.length, 1);
+  assert.equal(gateway.pages.outreach[0].values.response, 'Replied');
+  assert.equal(gateway.pages.outreach[0].values.draftState, 'Stopped');
+  assert.equal(gateway.pages.applications[0].values.outreachState, 'Stopped');
+  assert.equal(gateway.pages.applications[0].values.nextAction, null);
+});
+
+test('an exact observed reply stops the sequence and replay is a noop', async () => {
+  const gateway = createFakeGateway();
+  const current = application('observed-reply');
+  gateway.pages.applications.push({ id: current.id, values: {} });
+  const draft = buildOutreachDraft({ application: current, contact: contact('observed-reply', { email: 'person@observed-reply.example.com', emailEvidence: 'public page', recommendedChannel: 'Public Email' }) });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const binding = { outreachId: stored.page.id, applicationId: current.id, duplicateKey: draft.duplicateKey, idempotencyKey: 'gmail-key', gmailDraftId: 'gd-observed', gmailMessageId: 'gm-outbound-observed', gmailThreadId: 'gt-observed' };
+  const reply = { outreachId: stored.page.id, duplicateKey: draft.duplicateKey, gmailMessageId: 'gm-inbound-observed', gmailThreadId: 'gt-observed', observedAt: OUTREACH_FIXTURE_NOW };
+  const first = await recordObservedReply({ gateway, outreach: { ...draft, id: stored.page.id }, application: current, binding, reply });
+  const repeated = await recordObservedReply({
+    gateway,
+    outreach: { ...draft, id: stored.page.id, response: 'Replied', outcome: 'Replied', nextEligibleContact: null, draftState: 'Stopped' },
+    application: { ...current, outreachState: 'Stopped', nextAction: null },
+    binding,
+    reply,
+  });
+  assert.equal(first.status, 'observed');
+  assert.equal(repeated.status, 'noop');
+  assert.equal(gateway.pages.outreach[0].values.response, 'Replied');
+  assert.equal(gateway.pages.outreach[0].values.nextEligibleContact, null);
+  assert.equal(gateway.pages.applications[0].values.outreachState, 'Stopped');
+  assert.equal(gateway.pages.activity.length, 1);
+  assert.deepEqual(gateway.pages.activity[0].values.application, [current.id]);
+  assert.deepEqual(gateway.pages.activity[0].values.outreach, [stored.page.id]);
+});
+
+test('follow-up stage order is enforced and follow-ups preserve immutable initial sentAt', async () => {
+  const invalidGateway = createFakeGateway();
+  const invalidApplication = application('invalid-jump');
+  invalidGateway.pages.applications.push({ id: invalidApplication.id, values: {} });
+  const invalidDraft = buildOutreachDraft({ application: invalidApplication, contact: contact('invalid-jump') });
+  const invalidStored = await storeOutreachDraft({ gateway: invalidGateway, draft: invalidDraft });
+  await assert.rejects(() => confirmManualSend({
+    gateway: invalidGateway,
+    outreach: { ...invalidDraft, id: invalidStored.page.id, sent: true, sentAt: OUTREACH_FIXTURE_NOW },
+    application: invalidApplication,
+    confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: OUTREACH_FIXTURE_NOW },
+    stage: 'Follow-up 2',
+    now: OUTREACH_FIXTURE_NOW,
+  }), (error) => error.code === 'STAGE_ORDER_INVALID');
+  assert.equal(invalidGateway.calls.some((call) => call.method === 'updatePage' && call.target === 'outreach'), false);
+  assert.equal(invalidGateway.pages.activity.length, 0);
+
+  const gateway = createFakeGateway();
+  const current = application('ordered-stages');
+  gateway.pages.applications.push({ id: current.id, values: {} });
+  const draft = buildOutreachDraft({ application: current, contact: contact('ordered-stages') });
+  const stored = await storeOutreachDraft({ gateway, draft });
+  const outreach = { ...draft, id: stored.page.id };
+  await confirmManualSend({ gateway, outreach, application: current, confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: OUTREACH_FIXTURE_NOW }, now: OUTREACH_FIXTURE_NOW });
+  const initialSentAt = OUTREACH_FIXTURE_NOW;
+  const sentOutreach = { ...outreach, sent: true, sentAt: initialSentAt };
+  await confirmManualSend({ gateway, outreach: sentOutreach, application: current, confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: '2026-07-26T12:00:00.000Z' }, stage: 'Follow-up 1', now: '2026-07-26T12:00:00.000Z' });
+  await confirmManualSend({ gateway, outreach: sentOutreach, application: current, confirmation: { confirmed: true, confirmedBy: 'Onkar', sentAt: '2026-08-02T12:00:00.000Z' }, stage: 'Follow-up 2', now: '2026-08-02T12:00:00.000Z' });
+  const followUps = gateway.calls.filter((call) => call.method === 'updatePage' && call.target === 'outreach').slice(1);
+  assert.equal(followUps.length, 2);
+  assert.equal(Object.hasOwn(followUps[0].values, 'sentAt'), false);
+  assert.equal(Object.hasOwn(followUps[1].values, 'sentAt'), false);
+  assert.equal(gateway.pages.outreach[0].values.sentAt, initialSentAt);
+  assert.deepEqual(gateway.pages.activity.map((page) => page.values.eventType), ['Initial Sent', 'Follow-up 1 Sent', 'Follow-up 2 Sent']);
 });

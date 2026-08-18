@@ -14,6 +14,7 @@ import {
   projectLaneBoards,
   projectTrackedBoards,
   projectTrackedWarmSet,
+  withRegistryProjectedBoards,
   PROVIDER_LANES,
   workdayCxsUrl,
 } from '../../crawler/board-registry.mjs';
@@ -274,4 +275,17 @@ test('locationPreset pune ranks pune-relevant boards ahead of others in a lane',
   };
   const boards = projectLaneBoards(registry, 'atsWarm', { locationPreset: 'pune' });
   assert.deepEqual(boards.map((board) => board.slug), ['pune-co', 'india-co', 'remote-co']);
+});
+
+test('operator location presets project Pune and India priority without changing provider lanes', () => {
+  const registry = {
+    boards: [
+      { scheduleLane: 'atsWarm', enabled: true, activationState: 'enabled', provider: 'greenhouse', slug: 'global-co', company: 'Global Co' },
+      { scheduleLane: 'atsWarm', enabled: true, activationState: 'enabled', provider: 'greenhouse', slug: 'india-co', company: 'India Co', indiaRelevant: true },
+      { scheduleLane: 'atsWarm', enabled: true, activationState: 'enabled', provider: 'greenhouse', slug: 'pune-co', company: 'Pune Co', puneRelevant: true, indiaRelevant: true },
+    ],
+  };
+  const config = { boardRegistry: registry, sources: { atsWarm: {} } };
+  assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'pune' }).sources.atsWarm.boards.map((board) => board.slug), ['pune-co', 'india-co', 'global-co']);
+  assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'india' }).sources.atsWarm.boards.map((board) => board.slug), ['india-co', 'pune-co', 'global-co']);
 });

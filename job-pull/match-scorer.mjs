@@ -236,6 +236,7 @@ export async function scoreCandidates(candidates, {
   runAt = null,
   wholeTimeoutMs = DEFAULT_WHOLE_TIMEOUT_MS,
   signal = null,
+  remainingMs = null,
 } = {}) {
   const list = Array.isArray(candidates) ? candidates : [];
   if (!list.length) return { scored: [], failures: [], chunks: 0, degraded: false, reasonCode: null };
@@ -253,7 +254,9 @@ export async function scoreCandidates(candidates, {
   let aborted = false;
   let consecutiveInvalidOutput = 0;
   let timedOutChunks = 0;
-  const effectiveWholeTimeoutMs = resolveWholeTimeoutMs(wholeTimeoutMs);
+  const configuredTimeoutMs = resolveWholeTimeoutMs(wholeTimeoutMs);
+  const parentBudgetMs = remainingMs != null && Number.isFinite(Number(remainingMs)) ? Math.max(0, Number(remainingMs)) : Infinity;
+  const effectiveWholeTimeoutMs = Math.min(configuredTimeoutMs, parentBudgetMs);
   const deadlineAt = Date.now() + effectiveWholeTimeoutMs;
   const abortController = new AbortController();
   if (signal?.aborted) abortController.abort(signal.reason);
@@ -363,6 +366,14 @@ export async function scoreCandidates(candidates, {
   if (timedOutChunks > 0 && timedOutChunks === chunksAttempted) {
     degraded = true;
     reasonCode = 'SCORER_TIMEOUT';
+  }
+
+  if (aborted) {
+    for (const candidate of list) {
+      if (rowsByUrl.has(candidate.canonicalUrl) || failedUrls.has(candidate.canonicalUrl)) continue;
+      failures.push({ canonicalUrl: candidate.canonicalUrl ?? null, reason: reasonCode || 'SCORER_ABORTED' });
+      failedUrls.add(candidate.canonicalUrl);
+    }
   }
 
   const scored = list.map((candidate) => {

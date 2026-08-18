@@ -36,7 +36,8 @@ test('Pune metro onsite/hybrid passes while other cities fail', () => {
 test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote - India' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - APAC' }), config).geo.pass, true);
-  assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).geo.pass, true);
+  assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).geo.pass, false);
+  assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote', description: 'Worldwide remote including India.' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
   assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, null);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - US only' }), config).geo.pass, false);
@@ -219,7 +220,7 @@ test('annual INR salary below an explicit floor is a hard rejection with evidenc
   assert.ok(result.reasons.includes('SALARY_BELOW_FLOOR'));
 });
 
-test('null or unset salary floor rejects nothing regardless of compensation evidence', () => {
+test('explicitly disabled salary floor rejects nothing regardless of compensation evidence', () => {
   const lowSalary = { minimum: 600000, maximum: 700000, currency: 'INR', period: 'annual', evidence: '₹6-7 lakh per annum' };
   for (const floor of [null, undefined]) {
     const result = classifyCandidate(candidate({ salary: lowSalary }), { ...config, salaryFloorLpa: floor });
@@ -227,8 +228,7 @@ test('null or unset salary floor rejects nothing regardless of compensation evid
     assert.equal(result.salary.code, 'SALARY_FLOOR_DISABLED', String(floor));
     assert.equal(result.eligible, true, String(floor));
   }
-  // Default conversion plan leaves the floor blank/unconfirmed.
-  assert.equal(conversionPolicy.salaryFloorLpa, null);
+  assert.equal(conversionPolicy.salaryFloorLpa, 6);
   assert.equal(classifyCandidate(candidate({ salary: lowSalary }), conversionPolicy).salary.pass, true);
 });
 
@@ -239,6 +239,13 @@ test('missing or ambiguous salary data passes through without invented evidence'
   assert.equal(missing.salary.evidence, null);
   assert.equal(ambiguous.salary.pass, true);
   assert.equal(ambiguous.salary.evidence, null);
+});
+
+test('undisclosed compensation remains Not Verified and is not rejected by the configured six-LPA floor', () => {
+  const result = classifyCandidate(candidate({ salary: {} }), conversionPolicy);
+  assert.equal(result.salary.code, 'SALARY_NOT_VERIFIED');
+  assert.equal(result.salary.pass, true);
+  assert.equal(result.eligible, true);
 });
 
 test('explicit training fee or employment bond language is rejected with the matched evidence', () => {

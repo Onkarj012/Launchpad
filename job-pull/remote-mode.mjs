@@ -190,7 +190,7 @@ export async function runRemoteMode({
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {},
   notionGateway = createNoWriteNotionGateway(), executeGateway = false,
   config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = null, historicalV4Rows = [],
-  opportunityLedgerPath = null, scores, scorer, commitSurfaced = false,
+  opportunityLedgerPath = null, scores, scorer, scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false,
 } = {}) {
   if (String(mode).toLowerCase() !== 'remote') throw new RemoteModeError(`Remote runner only supports remote mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -213,7 +213,7 @@ export async function runRemoteMode({
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt });
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
     const selectionEntries = scoredPool
       .filter((candidate) => candidate.remoteReady === true)
       .map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));

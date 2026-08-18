@@ -50,6 +50,8 @@ export function buildAgentPlist({
   launchAgentsDir = LAUNCH_AGENTS_DIR,
   mode = 'normal',
   locationPreset = 'pune',
+  releaseRevision = null,
+  releasePath = null,
   scheduleConfig = DEFAULT_SCHEDULE_CONFIG,
 } = {}) {
   if (!SCHEDULE_IDS.includes(schedule)) throw new Error(`unsupported crawler schedule: ${schedule}`);
@@ -93,6 +95,8 @@ ${args.map(plistString).join('\n')}
     plistPath: path.join(launchAgentsDir, `${label}.plist`),
     outLog, errLog, content,
     noAutoApply: true,
+    ...(releaseRevision ? { releaseRevision } : {}),
+    ...(releasePath ? { releasePath } : {}),
   };
 }
 
@@ -114,6 +118,53 @@ function statusOf(result) {
   return { status: result?.status ?? null, stdout: String(result?.stdout ?? '').trim(), stderr: String(result?.stderr ?? '').trim() };
 }
 
+function invokeLaunchctl(launchctl, args) {
+  try {
+    return statusOf(launchctl(args));
+  } catch (error) {
+    return { status: null, stdout: '', stderr: error instanceof Error ? error.message : String(error), threw: true };
+  }
+}
+
+function snapshotPlist(plistPath) {
+  const exists = fs.existsSync(plistPath);
+  return { exists, bytes: exists ? fs.readFileSync(plistPath) : null };
+}
+
+function restorePlist(plistPath, snapshot) {
+  if (snapshot.exists) {
+    fs.writeFileSync(plistPath, snapshot.bytes);
+    return { restored: true, exists: true };
+  }
+  if (fs.existsSync(plistPath)) fs.unlinkSync(plistPath);
+  return { restored: true, exists: false };
+}
+
+function recoveryForTouched({ touched, snapshots, launchctl, domain }) {
+  const agents = [];
+  let recovered = true;
+  for (const agent of [...touched].reverse()) {
+    const snapshot = snapshots.get(agent.plistPath);
+    const serviceTarget = `${domain}/${agent.label}`;
+    const bootout = invokeLaunchctl(launchctl, ['bootout', serviceTarget]);
+    let plist;
+    let bootstrap = null;
+    try {
+      plist = restorePlist(agent.plistPath, snapshot);
+      if (snapshot.exists) bootstrap = invokeLaunchctl(launchctl, ['bootstrap', domain, agent.plistPath]);
+    } catch (error) {
+      plist = { restored: false, exists: fs.existsSync(agent.plistPath) };
+      bootstrap = { status: null, stdout: '', stderr: error instanceof Error ? error.message : String(error), threw: true };
+    }
+    const agentRecovered = bootout.status === 0 || bootout.status !== null
+      ? plist.restored && (!snapshot.exists || bootstrap?.status === 0)
+      : false;
+    if (!agentRecovered) recovered = false;
+    agents.push({ label: agent.label, plistPath: agent.plistPath, priorPlistExisted: snapshot.exists, bootout, plist, bootstrap, recovered: agentRecovered });
+  }
+  return { attempted: true, recovered, agents };
+}
+
 /**
  * Generate and install both launchd agents under ~/Library/LaunchAgents.
  * Idempotent: an existing service is booted out (ignoring "not loaded" failure)
@@ -129,28 +180,68 @@ export function installSchedules({
   agents = buildScheduleAgents(),
 } = {}) {
   const domain = `gui/${uid}`;
-  const results = agents.map((agent) => {
-    if (dryRun) return { ...agent, dryRun: true, installed: false };
+  if (dryRun) return {
+    schemaVersion: 'LaunchpadCrawlerInstallScheduleV1',
+    domain,
+    dryRun,
+    agents: agents.map((agent) => ({ ...agent, dryRun: true, installed: false })),
+    noAutoApply: true,
+  };
+
+  const results = [];
+  const touched = [];
+  const snapshots = new Map();
+  let failure = null;
+
+  for (let index = 0; index < agents.length; index += 1) {
+    const agent = agents[index];
+    const serviceTarget = `${domain}/${agent.label}`;
+    const snapshot = snapshotPlist(agent.plistPath);
+    snapshots.set(agent.plistPath, snapshot);
+    touched.push(agent);
     fs.mkdirSync(path.dirname(agent.plistPath), { recursive: true });
     fs.mkdirSync(path.dirname(agent.outLog), { recursive: true });
     fs.writeFileSync(agent.plistPath, agent.content, 'utf8');
-    const serviceTarget = `${domain}/${agent.label}`;
-    const bootout = launchctl(['bootout', serviceTarget]);
-    const bootstrap = launchctl(['bootstrap', domain, agent.plistPath]);
-    return {
+    const bootout = invokeLaunchctl(launchctl, ['bootout', serviceTarget]);
+    const bootstrap = invokeLaunchctl(launchctl, ['bootstrap', domain, agent.plistPath]);
+    const result = {
       ...agent,
       dryRun: false,
       installed: bootstrap.status === 0,
       domain,
       serviceTarget,
-      bootout: statusOf(bootout),
-      bootstrap: statusOf(bootstrap),
+      bootout,
+      bootstrap,
     };
-  });
+    results.push(result);
+    if (bootstrap.status !== 0) {
+      failure = { index, label: agent.label, plistPath: agent.plistPath, stage: 'bootstrap', result: bootstrap };
+      break;
+    }
+  }
+
+  if (failure) {
+    for (let index = results.length; index < agents.length; index += 1) {
+      const agent = agents[index];
+      results.push({ ...agent, dryRun: false, installed: false, domain, serviceTarget: `${domain}/${agent.label}`, skipped: true });
+    }
+    const recovery = recoveryForTouched({ touched, snapshots, launchctl, domain });
+    return {
+      schemaVersion: 'LaunchpadCrawlerInstallScheduleV1',
+      domain,
+      dryRun: false,
+      agents: results,
+      failure,
+      recovery,
+      recovered: recovery.recovered,
+      noAutoApply: true,
+    };
+  }
+
   return {
     schemaVersion: 'LaunchpadCrawlerInstallScheduleV1',
     domain,
-    dryRun,
+    dryRun: false,
     agents: results,
     noAutoApply: true,
   };

@@ -7,7 +7,8 @@
     "runTimeoutSeconds": 600,
     "monthlyBudgetUsd": 5,
     "maxRunsPerMonth": 6,
-    "maxRunCostUsd": 0.75
+    "maxRunCostUsd": 0.75,
+    "maxReturnedItemsPerProfile": 250
   },
   "actors": [
     {

@@ -1,5 +1,5 @@
 import { extractExperienceYears, normalizeCandidate, stripHtmlToText } from '../job-pull/candidate.mjs';
-import { parsePostedOn } from '../career-ops/providers/workday.mjs';
+import { parsePostedOn } from '../vendor/career-ops/providers/workday.mjs';
 
 const SUPPORTED = new Set(['workday', 'successfactors', 'phenom', 'icims', 'jobvite', 'oracle', 'custom']);
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -382,10 +382,10 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
       requisitionId,
       providerStartDate: detail.providerStartDate,
       providerPostedOn: detail.providerPostedOn,
-      freshness: candidate.evidence?.freshness?.kind === 'workday-postedOn'
-        ? candidate.evidence.freshness
-        : hasUsableStartDate
-          ? { kind: 'workday-startDate', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn, detailUrl }
+      freshness: hasUsableStartDate
+        ? { kind: 'workday-startDate', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn, detailUrl }
+        : candidate.evidence?.freshness?.kind === 'workday-postedOn'
+          ? candidate.evidence.freshness
           : { kind: 'workday-unverified', providerStartDate: detail.providerStartDate, providerPostedOn: detail.providerPostedOn },
     },
   }, { runAt, provider: 'workday' });

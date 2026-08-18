@@ -1,4 +1,4 @@
-import { fingerprintText, similarity } from '../career-ops/fingerprint-core.mjs';
+import { fingerprintText, similarity } from '../vendor/career-ops/fingerprint-core.mjs';
 import { candidateDedupKey, candidateRequisitionKey, canonicalizeUrl, companyTitleLocationKey, normalizedKey } from './candidate.mjs';
 
 const ATS_PROVIDERS = new Set(['greenhouse', 'lever', 'ashby', 'workday']);
@@ -34,17 +34,22 @@ function ledgerRows(value) {
 
 function ledgerCollision(candidate, rows) {
   const keys = canonicalCandidateKeys(candidate);
+  const hasDurableIdentity = Boolean(keys.providerJob);
   for (const row of rows) {
     if (!row || (row.state && !['pending', 'committed'].includes(row.state))) continue;
     const rowKey = normalizedKey(row.dedup_key ?? row.dedupKey);
     if (keys.durable && rowKey === normalizedKey(keys.durable)) return { row, key: 'durable' };
     if (keys.providerJob && rowKey === normalizedKey(keys.providerJob)) return { row, key: 'providerJob' };
     if (candidate.jobId && row.job_id != null && String(row.job_id) === String(candidate.jobId)) return { row, key: 'jobId' };
+    const rowProvider = normalizedKey(row.provider);
+    const rowJobId = normalizedKey(row.job_id ?? row.jobId ?? row.provider_job_id);
+    const rowHasDurableIdentity = Boolean(rowProvider && rowJobId)
+      || (rowProvider && rowKey.startsWith(`${rowProvider}|`));
     const rowUrl = canonicalizeUrl(row.url ?? row.canonical_url ?? row.canonicalUrl);
-    if (keys.url && rowUrl && rowUrl === keys.url) return { row, key: 'url' };
+    if (!hasDurableIdentity && !rowHasDurableIdentity && keys.url && rowUrl && rowUrl === keys.url) return { row, key: 'url' };
     // Legacy rows stored company|title|location. Match that only when the
     // candidate has no requisition id and no distinguishing URL.
-    if (!keys.providerJob && keys.companyTitleLocation && rowKey === normalizedKey(keys.companyTitleLocation)) {
+    if (!hasDurableIdentity && !rowHasDurableIdentity && keys.companyTitleLocation && rowKey === normalizedKey(keys.companyTitleLocation)) {
       if (!keys.url || !rowUrl || keys.url === rowUrl) return { row, key: 'companyTitleLocation' };
     }
   }
@@ -94,16 +99,20 @@ export function deduplicateCandidates(candidates, options = {}) {
     let matchEvidence = null;
     for (const prior of kept) {
       const priorKeys = canonicalCandidateKeys(prior);
-      if (keys.url && priorKeys.url && keys.url === priorKeys.url) {
-        winner = prior;
-        code = 'DEDUP_CANONICAL_URL';
-        matchEvidence = keys.url;
-        break;
-      }
       if (keys.providerJob && priorKeys.providerJob && keys.providerJob === priorKeys.providerJob) {
         winner = prior;
         code = 'DEDUP_PROVIDER_JOB_ID';
         matchEvidence = keys.providerJob;
+        break;
+      }
+      // A durable provider/requisition identity outranks every weaker key.
+      // If either row has a durable identity, a different identity is never
+      // merged by URL, title/location, or fuzzy text.
+      if (keys.providerJob || priorKeys.providerJob) continue;
+      if (keys.url && priorKeys.url && keys.url === priorKeys.url) {
+        winner = prior;
+        code = 'DEDUP_CANONICAL_URL';
+        matchEvidence = keys.url;
         break;
       }
       // Company+title+location is last-resort only. Distinct requisitions

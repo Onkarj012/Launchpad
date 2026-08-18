@@ -4,7 +4,7 @@ Onkar Jadhav's job-search system: discover roles → score against targeting →
 
 ## Current release position
 
-The unified daily implementation exists in the dirty working tree and is locally stabilizing. It is **not production-ready, live-verified, or promoted**. GitHub issues are the live status authority; local issue packs, audits, probes, and plans are specifications or history.
+The unified daily implementation exists in the dirty working tree. Launchpad readiness Phase 00 resume queue wiring is locally verified by focused tests, but the system is **not production-ready, live-verified, or promoted**. GitHub issues are the live status authority; local issue packs, audits, probes, and plans are specifications or history.
 
 Launchpad v5 is the sole active runtime contract. v3 and v4 are historical read-only systems with no write, migration, archive, delete, or runtime fallback path.
 

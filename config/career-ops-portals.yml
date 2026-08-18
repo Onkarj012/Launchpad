@@ -1,0 +1,382 @@
+# Portal Scanner Configuration
+# Used by career-ops scan to discover new offers automatically.
+
+scan_history:
+  recheck_after_days: 30
+
+# Broad prefilter only. Root job-pull eligibility is authoritative and rejects
+# bare "Remote", region-restricted remote, and non-Pune onsite/hybrid roles.
+location_filter:
+  always_allow:
+    - "India"
+    - "Pune"
+    - "Pimpri-Chinchwad"
+    - "Pimpri Chinchwad"
+    - "PCMC"
+    - "Hinjawadi"
+    - "Hinjewadi"
+    - "Wakad"
+    - "Baner"
+    - "Kharadi"
+    - "Magarpatta"
+    - "Viman Nagar"
+    - "Talawade"
+  allow:
+    - "India"
+    - "Maharashtra"
+    - "Remote"
+    - "Pune"
+    - "Pimpri"
+    - "Chinchwad"
+    - "Hinjawadi"
+    - "Hinjewadi"
+    - "Wakad"
+    - "Baner"
+    - "Kharadi"
+    - "Magarpatta"
+    - "Viman Nagar"
+    - "Talawade"
+    - "APAC"
+    - "Asia-Pacific"
+    - "Asia Pacific"
+    - "Worldwide"
+    - "Global"
+  block: []
+
+skip_tiers:
+  - "senior"
+
+title_filter:
+  positive:
+    - "AI Engineer"
+    - "LLM Engineer"
+    - "Machine Learning Engineer"
+    - "ML Engineer"
+    - "Agentic"
+    - "Backend Engineer"
+    - "Python Engineer"
+    - "Full Stack Engineer"
+    - "Software Engineer"
+    - "New Grad"
+    - "Entry Level"
+    - "Associate Software Engineer"
+    - "Graduate Software Engineer"
+    - "Software Engineer Intern"
+    - "Machine Learning Intern"
+    - "ML Intern"
+    - "AI Intern"
+    - "Backend Intern"
+    - "AI/ML"
+    - "Software Development Engineer"
+    - "SDE"
+    - "Python Developer"
+    - "Backend Developer"
+    - "Back-end Developer"
+    - "Full Stack Developer"
+    - "Full-Stack Developer"
+    - "AI Developer"
+    - "GenAI Developer"
+    - "Gen AI"
+    - "ML Developer"
+    - "Machine Learning Developer"
+    - "Junior Developer"
+    - "Junior Engineer"
+    - "Associate Engineer"
+    - "Graduate Engineer"
+    - "Member of Technical Staff"
+    - "Software Developer"
+    - "AI/ML Developer"
+  negative:
+    - "Senior"
+    - "Staff Engineer"
+    - "Staff Software"
+    - "Principal"
+    - "Lead"
+    - "Director"
+    - "Manager"
+    - "Head of"
+    - "VP"
+    - "Architect"
+    - "Distinguished"
+    - "Sales"
+    - "Recruiter"
+    - "Marketing"
+    - "Accountant"
+    - "Attorney"
+    - "Designer"
+
+tracked_companies:
+  - name: Stripe
+    careers_url: https://boards.greenhouse.io/stripe
+    api: https://boards-api.greenhouse.io/v1/boards/stripe/jobs
+    enabled: true
+
+  - name: Airbnb
+    careers_url: https://boards.greenhouse.io/airbnb
+    api: https://boards-api.greenhouse.io/v1/boards/airbnb/jobs
+    enabled: true
+
+  - name: Coinbase
+    careers_url: https://boards.greenhouse.io/coinbase
+    api: https://boards-api.greenhouse.io/v1/boards/coinbase/jobs
+    enabled: true
+
+  - name: Robinhood
+    careers_url: https://boards.greenhouse.io/robinhood
+    api: https://boards-api.greenhouse.io/v1/boards/robinhood/jobs
+    enabled: true
+
+  - name: Pinterest
+    careers_url: https://boards.greenhouse.io/pinterest
+    api: https://boards-api.greenhouse.io/v1/boards/pinterest/jobs
+    enabled: true
+
+  - name: Reddit
+    careers_url: https://boards.greenhouse.io/reddit
+    api: https://boards-api.greenhouse.io/v1/boards/reddit/jobs
+    enabled: true
+
+  - name: PhonePe
+    careers_url: https://boards.greenhouse.io/phonepe
+    api: https://boards-api.greenhouse.io/v1/boards/phonepe/jobs
+    enabled: true
+
+  - name: Anthropic
+    careers_url: https://boards.greenhouse.io/anthropic
+    api: https://boards-api.greenhouse.io/v1/boards/anthropic/jobs
+    enabled: true
+
+  - name: Figma
+    careers_url: https://boards.greenhouse.io/figma
+    api: https://boards-api.greenhouse.io/v1/boards/figma/jobs
+    enabled: true
+
+  - name: Discord
+    careers_url: https://boards.greenhouse.io/discord
+    api: https://boards-api.greenhouse.io/v1/boards/discord/jobs
+    enabled: true
+
+  - name: Asana
+    careers_url: https://boards.greenhouse.io/asana
+    api: https://boards-api.greenhouse.io/v1/boards/asana/jobs
+    enabled: true
+
+  - name: Affirm
+    careers_url: https://boards.greenhouse.io/affirm
+    api: https://boards-api.greenhouse.io/v1/boards/affirm/jobs
+    enabled: true
+
+  - name: Brex
+    careers_url: https://boards.greenhouse.io/brex
+    api: https://boards-api.greenhouse.io/v1/boards/brex/jobs
+    enabled: true
+
+  - name: Webflow
+    careers_url: https://boards.greenhouse.io/webflow
+    api: https://boards-api.greenhouse.io/v1/boards/webflow/jobs
+    enabled: true
+
+  - name: Scale AI
+    careers_url: https://boards.greenhouse.io/scaleai
+    api: https://boards-api.greenhouse.io/v1/boards/scaleai/jobs
+    enabled: true
+
+  - name: Postman
+    careers_url: https://boards.greenhouse.io/postman
+    api: https://boards-api.greenhouse.io/v1/boards/postman/jobs
+    enabled: true
+
+  - name: Groww
+    careers_url: https://boards.greenhouse.io/groww
+    api: https://boards-api.greenhouse.io/v1/boards/groww/jobs
+    enabled: true
+
+  - name: Vercel
+    careers_url: https://boards.greenhouse.io/vercel
+    api: https://boards-api.greenhouse.io/v1/boards/vercel/jobs
+    enabled: true
+
+  - name: Slice
+    careers_url: https://boards.greenhouse.io/slice
+    api: https://boards-api.greenhouse.io/v1/boards/slice/jobs
+    enabled: true
+
+  - name: Druva
+    careers_url: https://boards.greenhouse.io/druva
+    api: https://boards-api.greenhouse.io/v1/boards/druva/jobs
+    enabled: true
+
+  - name: 6sense
+    careers_url: https://boards.greenhouse.io/6sense
+    api: https://boards-api.greenhouse.io/v1/boards/6sense/jobs
+    enabled: true
+
+  - name: Mercury
+    careers_url: https://boards.greenhouse.io/mercury
+    api: https://boards-api.greenhouse.io/v1/boards/mercury/jobs
+    enabled: true
+
+  - name: Airtable
+    careers_url: https://boards.greenhouse.io/airtable
+    api: https://boards-api.greenhouse.io/v1/boards/airtable/jobs
+    enabled: true
+
+  - name: Typeface
+    careers_url: https://boards.greenhouse.io/typeface
+    api: https://boards-api.greenhouse.io/v1/boards/typeface/jobs
+    enabled: true
+
+  - name: Observe.AI
+    careers_url: https://boards.greenhouse.io/observeai
+    api: https://boards-api.greenhouse.io/v1/boards/observeai/jobs
+    enabled: true
+
+  - name: Vanta
+    careers_url: https://jobs.ashbyhq.com/vanta
+    enabled: true
+
+  - name: Notion
+    careers_url: https://jobs.ashbyhq.com/notion
+    enabled: true
+
+  - name: Plaid
+    careers_url: https://jobs.ashbyhq.com/plaid
+    enabled: true
+
+  - name: Ramp
+    careers_url: https://jobs.ashbyhq.com/ramp
+    enabled: true
+
+  - name: LangChain
+    careers_url: https://jobs.ashbyhq.com/langchain
+    enabled: true
+
+  - name: Cohere
+    careers_url: https://jobs.ashbyhq.com/cohere
+    enabled: true
+
+  - name: Perplexity
+    careers_url: https://jobs.ashbyhq.com/perplexity
+    enabled: true
+
+  - name: Harvey
+    careers_url: https://jobs.ashbyhq.com/harvey
+    enabled: true
+
+  - name: Sierra
+    careers_url: https://jobs.ashbyhq.com/sierra
+    enabled: true
+
+  - name: Linear
+    careers_url: https://jobs.ashbyhq.com/linear
+    enabled: true
+
+  - name: Writer
+    careers_url: https://jobs.ashbyhq.com/writer
+    enabled: true
+
+  - name: Chatbase
+    careers_url: https://jobs.ashbyhq.com/chatbase
+    enabled: true
+
+  - name: Deepgram
+    careers_url: https://jobs.ashbyhq.com/deepgram
+    enabled: true
+
+  - name: ElevenLabs
+    careers_url: https://jobs.ashbyhq.com/elevenlabs
+    enabled: true
+
+  - name: Suno
+    careers_url: https://jobs.ashbyhq.com/suno
+    enabled: true
+
+  - name: Lovable
+    careers_url: https://jobs.ashbyhq.com/lovable
+    enabled: true
+
+  - name: Cursor
+    careers_url: https://jobs.ashbyhq.com/cursor
+    enabled: true
+
+  - name: Atlan
+    careers_url: https://jobs.ashbyhq.com/atlan
+    enabled: true
+
+  - name: Replit
+    careers_url: https://jobs.ashbyhq.com/replit
+    enabled: true
+
+  - name: Modal
+    careers_url: https://jobs.ashbyhq.com/modal
+    enabled: true
+
+  - name: Pinecone
+    careers_url: https://jobs.ashbyhq.com/pinecone
+    enabled: true
+
+  - name: Fireworks AI
+    careers_url: https://jobs.ashbyhq.com/fireworksai
+    enabled: true
+
+  - name: Vapi
+    careers_url: https://jobs.ashbyhq.com/vapi
+    enabled: true
+
+  - name: Bland AI
+    careers_url: https://jobs.ashbyhq.com/bland
+    enabled: true
+
+  - name: Decagon
+    careers_url: https://jobs.ashbyhq.com/decagon
+    enabled: true
+
+  - name: Anyscale
+    careers_url: https://jobs.ashbyhq.com/anyscale
+    enabled: true
+
+  - name: Baseten
+    careers_url: https://jobs.ashbyhq.com/baseten
+    enabled: true
+
+  - name: CRED
+    careers_url: https://jobs.lever.co/cred
+    enabled: true
+
+  - name: MindTickle
+    careers_url: https://jobs.lever.co/mindtickle
+    enabled: true
+
+  - name: Hevo Data
+    careers_url: https://jobs.lever.co/hevo
+    enabled: true
+
+job_boards:
+  - name: RemoteOK
+    provider: remoteok
+    enabled: true
+
+  - name: Remotive
+    provider: remotive
+    enabled: true
+
+  - name: Himalayas
+    provider: himalayas
+    enabled: true
+
+  - name: EchoJobs
+    provider: echojobs
+    max_pages: 5
+    enabled: true
+
+  - name: Hacker News "Who is hiring?"
+    provider: hackernews
+    enabled: true
+
+  - name: Jobicy
+    provider: jobicy
+    enabled: true
+
+  - name: We Work Remotely
+    provider: weworkremotely
+    enabled: true

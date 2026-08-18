@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MAKE_RESUME_FILTER, readMakeResumeQueue, readAppliedQueue } from '../../resume-v5/queue-reader.mjs';
@@ -84,6 +84,43 @@ test('resume queue builds only selected rows and reports partial artifact failur
   assert.deepEqual(result.results.map((item) => [item.applicationId, item.state]), [['a', 'Ready'], ['b', 'Failed']]);
   assert.deepEqual(updates.map((item) => [item.id, item.values.resumeState]), [['a', 'Building'], ['a', 'Ready'], ['b', 'Building'], ['b', 'Failed']]);
   assert.equal(updates.some((item) => Object.prototype.hasOwnProperty.call(item.values, 'makeResume')), false);
+});
+
+test('resume queue uses default local builder and verifier factories when callbacks are omitted', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'resume-v5-defaults-'));
+  const inputDir = mkdtempSync(path.join(os.tmpdir(), 'resume-v5-default-input-'));
+  const templatePath = path.resolve('resumes/templates/Onkar_Template.tex');
+  mkdirSync(path.join(root, 'resumes', 'templates'), { recursive: true });
+  cpSync(templatePath, path.join(root, 'resumes', 'templates', 'Onkar_Template.tex'));
+  const sourcePath = path.join(inputDir, 'tailored.tex');
+  cpSync(templatePath, sourcePath);
+  const matrixPath = path.join(inputDir, 'tailored.matrix.md');
+  const provenancePath = path.join(inputDir, 'tailored.provenance.md');
+  writeFileSync(matrixPath, 'fixture matrix\n');
+  writeFileSync(provenancePath, 'fixture provenance\n');
+  const application = row('default', { makeResume: true });
+  application.sourcePath = sourcePath;
+  application.matrixPath = matrixPath;
+  application.provenancePath = provenancePath;
+  const updates = [];
+  const gateway = {
+    listRows: async () => [application],
+    updatePage: async (_target, id, values) => updates.push({ id, values }),
+  };
+  const result = await processMakeResumeQueue({
+    gateway,
+    builderOptions: {
+      root,
+      now: () => new Date('2026-08-18T12:00:00.000Z'),
+      compile: (_source, { outputPdfPath }) => { writeFileSync(outputPdfPath, '%PDF-1.4 fixture\n'); return outputPdfPath; },
+    },
+    verifierOptions: { verify: async () => ({ status: 'PASS' }) },
+    now: '2026-08-18T12:00:00.000Z',
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.results[0].state, 'Ready');
+  assert.equal(result.results[0].artifact.sourcePath.endsWith('/resumes/sources/2026-08-18/Onkar_Jadhav_Acme_AI_Engineer.tex'), true);
+  assert.deepEqual(updates.map((item) => item.values), [{ resumeState: 'Building' }, { resumeState: 'Ready' }]);
 });
 
 function syncGateway(applicationRows) {

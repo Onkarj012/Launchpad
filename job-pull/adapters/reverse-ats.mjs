@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { parseJsonOutput, recordsFromResult, deriveProvider, finalizeManifest, normalizeSourceRecords, readJsonInput, sourceManifest, SourceContractError } from './common.mjs';
@@ -42,6 +43,7 @@ export function reverseAtsCandidatesFromJson(result, { runAt = new Date().toISOS
 export function runReverseAtsScan({ careerOpsDir, runAt = new Date().toISOString(), sinceDays = 3, full = false, promote = false, execute = execFileSync, jsonResult = null } = {}) {
   if (jsonResult != null) return reverseAtsCandidatesFromJson(jsonResult, { runAt });
   if (!careerOpsDir) throw new SourceContractError('reverse-ats', 'careerOpsDir is required when no fixture is supplied');
+  mkdirSync(careerOpsDir, { recursive: true });
   let stdout;
   try {
     // Default: warm scan (only boards proven to yield eligible matches — minutes).

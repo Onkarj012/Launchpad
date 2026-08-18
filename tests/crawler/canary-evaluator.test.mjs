@@ -4,8 +4,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  collectTrackedModuleGraph,
+  collectTrackedModuleInventory,
   computeCanaryVersion,
   DEFAULT_CANARY_CODE_PATHS,
+  DEFAULT_CANARY_ENTRYPOINTS,
   evaluateDeliveryCanary,
 } from '../../crawler/canary-evaluator.mjs';
 
@@ -43,6 +46,23 @@ test('seven same-version healthy runs return per-gate passing verdicts with evid
     assert.equal(typeof gate.evidence, 'object');
     assert.ok(Object.keys(gate.evidence).length > 0);
   }
+});
+
+test('seven healthy runs on one UTC day do not satisfy the seven-day canary gate', () => {
+  const runs = Array.from({ length: 7 }, (_, index) => ({
+    ...healthyRecord(index),
+    runAt: `2026-07-01T06:${String(30 + index).padStart(2, '0')}:00.000Z`,
+  }));
+  const evaluation = evaluateDeliveryCanary(runs);
+  const gate = evaluation.gates.find((item) => item.id === 'seven-consecutive-valid-runs');
+
+  assert.equal(evaluation.passed, false);
+  assert.equal(evaluation.streak.count, 7);
+  assert.equal(evaluation.streak.dayCount, 1);
+  assert.deepEqual(evaluation.streak.dates, ['2026-07-01']);
+  assert.equal(gate.passed, false);
+  assert.equal(gate.evidence.dayCount, 1);
+  assert.deepEqual(gate.evidence.dates, ['2026-07-01']);
 });
 
 test('every engineering gate can fail independently and a version change resets the streak', () => {
@@ -112,61 +132,120 @@ test('invalid, fatal invalid, historical profile-less, or mixed-profile records 
   assert.deepEqual(historicalEvaluation.streak.invalidRunIds, ['run-6']);
 });
 
-test('default fingerprint covers mode-critical deterministic policy, inventory, and enrichment inputs', () => {
-  assert.equal(DEFAULT_CANARY_CODE_PATHS.includes('crawler/daily-report.mjs'), false);
-  for (const requiredPath of [
-    'crawler/daily-runner.mjs', 'crawler/operator.mjs', 'crawler/ats-warm.mjs',
-    'crawler/ats-batch-1.mjs', 'crawler/ats-batch-2.mjs', 'crawler/ats-enterprise.mjs',
-    'crawler/brave-search.mjs', 'crawler/commercial-rescue.mjs', 'crawler/connector-inbox.mjs',
-    'crawler/discovery-profile.mjs', 'crawler/india-startup-lanes.mjs',
-    'crawler/original-listing-resolver.mjs', 'crawler/run.mjs', 'crawler/schedules.mjs',
-    'crawler/theirstack.mjs', 'crawler/vc-portfolio-watchlist.mjs', 'crawler/workflow.mjs',
-    'crawler/delivery-canary.mjs', 'crawler/canary-evaluator.mjs', 'crawler/cli.mjs',
-    'crawler/board-registry.mjs', 'crawler/board-rotation-state.mjs', 'crawler/identity.mjs',
-    'career-ops/providers/workday.mjs',
-    'config/crawler-v2.json', 'config/reverse-warm-set.json',
-    'config/vc-portfolio-watchlist.json', 'config/job-pull.json', 'config/conversion-plan.json',
-    'config/board-registry.json', 'config/match-score.schema.json', 'job-pull/config.mjs',
-    'job-pull/warm-set.mjs', 'job-pull/run.mjs', 'job-pull/candidate.mjs', 'job-pull/eligibility.mjs',
-    'job-pull/freshness.mjs', 'job-pull/dedup.mjs', 'job-pull/conversion-score.mjs',
-    'job-pull/match-scorer.mjs', 'job-pull/opportunity-ledger.mjs',
-    'job-pull/mode-scoring.mjs', 'job-pull/normal-mode.mjs',
-    'job-pull/normal-readiness.mjs', 'job-pull/normal-sources.mjs',
-    'job-pull/normal-selection.mjs', 'job-pull/workday-enrichment.mjs',
-    'job-pull/startup-mode.mjs', 'job-pull/startup-sources.mjs',
-    'job-pull/startup-enrichment.mjs', 'job-pull/startup-selection.mjs',
-    'job-pull/remote-mode.mjs', 'job-pull/remote-sources.mjs',
-    'job-pull/remote-enrichment.mjs', 'job-pull/remote-selection.mjs',
-    'job-pull/remote-adapters/himalayas.mjs', 'job-pull/remote-adapters/jobicy.mjs',
-    'job-pull/remote-adapters/remoteok.mjs', 'job-pull/remote-adapters/remotive.mjs',
-    'job-pull/remote-adapters/weworkremotely.mjs', 'career-ops/providers/himalayas.mjs',
-    'career-ops/providers/jobicy.mjs', 'career-ops/providers/weworkremotely.mjs',
-  ]) assert.ok(DEFAULT_CANARY_CODE_PATHS.includes(requiredPath), requiredPath);
+test('default code-path compatibility export contains only operational entrypoints', () => {
+  assert.deepEqual(DEFAULT_CANARY_CODE_PATHS, DEFAULT_CANARY_ENTRYPOINTS);
+  assert.ok(DEFAULT_CANARY_ENTRYPOINTS.includes('vendor/career-ops/runtime.mjs'));
 });
 
-test('default fingerprint changes for policy, identity, Workday provider, and every remote adapter', () => {
+test('default canary graph includes dynamically loaded vendor modules and excludes nested runtime roots', () => {
+  const graph = collectTrackedModuleGraph();
+  assert.ok(graph.includes('vendor/career-ops/runtime.mjs'));
+  assert.ok(graph.includes('vendor/career-ops/providers/greenhouse.mjs'));
+  assert.ok(graph.includes('vendor/career-ops/plugins/_engine.mjs'));
+  assert.equal(graph.some((file) => file.startsWith('career-ops/')), false);
+  assert.equal(graph.includes('career-ops/package.json'), false);
+});
+
+test('recursive graph fingerprints transitive bytes, export-from dependencies, and cycles', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'launchpad-canary-version-'));
-  for (const relative of DEFAULT_CANARY_CODE_PATHS) {
+  const files = {
+    'src/main.mjs': "import { value } from './nested/entry'; export { value } from './nested/entry';",
+    'src/nested/entry/index.mjs': "export { value } from '../leaf.js';",
+    'src/nested/leaf.js': "import { cycle } from './cycle.mjs'; export const value = cycle;",
+    'src/nested/cycle.mjs': "import { value } from './leaf.js'; export const cycle = value;",
+    'config/policy.json': '{"version":1}\n',
+  };
+  for (const [relative, contents] of Object.entries(files)) {
     const file = path.join(root, relative);
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, `${relative}:baseline`);
+    writeFileSync(file, contents);
   }
-  let previous = computeCanaryVersion({ root });
-  for (const relative of [
-    'config/job-pull.json',
-    'crawler/identity.mjs',
-    'career-ops/providers/workday.mjs',
-    'job-pull/remote-adapters/himalayas.mjs',
-    'job-pull/remote-adapters/jobicy.mjs',
-    'job-pull/remote-adapters/remoteok.mjs',
-    'job-pull/remote-adapters/remotive.mjs',
-    'job-pull/remote-adapters/weworkremotely.mjs',
-  ]) {
-    writeFileSync(path.join(root, relative), `${relative}:changed`);
-    const changed = computeCanaryVersion({ root });
-    assert.notEqual(changed, previous, relative);
-    previous = changed;
+  const inventory = collectTrackedModuleInventory(['src/main.mjs'], { root });
+  assert.deepEqual(inventory.map((file) => file.path), [
+    'src/main.mjs', 'src/nested/cycle.mjs', 'src/nested/entry/index.mjs', 'src/nested/leaf.js',
+  ]);
+  assert.ok(inventory.every((file) => Buffer.isBuffer(file.bytes)));
+  assert.deepEqual(collectTrackedModuleGraph(['src/main.mjs'], { root }), inventory.map((file) => file.path));
+
+  let previous = computeCanaryVersion({ root, entrypoints: ['src/main.mjs'], nonCodePaths: ['config/policy.json'] });
+  writeFileSync(path.join(root, 'src/nested/leaf.js'), 'import { cycle } from \'./cycle.mjs\'; export const value = cycle + 1;');
+  let changed = computeCanaryVersion({ root, entrypoints: ['src/main.mjs'], nonCodePaths: ['config/policy.json'] });
+  assert.notEqual(changed, previous);
+  previous = changed;
+  writeFileSync(path.join(root, 'config/policy.json'), '{"version":2}\n');
+  changed = computeCanaryVersion({ root, entrypoints: ['src/main.mjs'], nonCodePaths: ['config/policy.json'] });
+  assert.notEqual(changed, previous);
+});
+
+test('module discovery ignores fake imports outside executable literals and parses JSON only as a leaf', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'launchpad-canary-lexical-'));
+  const files = {
+    'src/main.mjs': `
+      // import './comment-missing.mjs';
+      /** export { value } from './jsdoc-missing.mjs'; */
+      const ordinary = "import './string-missing.mjs'";
+      const template = \`import('./template-missing.mjs')\`;
+      const regex = /import\\(\\s*['"]\\.\\/regex-missing\\.mjs['"]\\s*\\)/;
+      const decimal = 1.25 / 2; import './decimal-dep.mjs';
+      const separated = 1_000 / 2; import './separated-dep.mjs';
+      const hexadecimal = 0x10 / 2; import './hexadecimal-dep.mjs';
+      const binary = 0b10 / 2; import './binary-dep.mjs';
+      const octal = 0o10 / 2; import './octal-dep.mjs';
+      const exponent = 1e2 / 2; import './exponent-dep.mjs';
+      const bigint = 1n / 2n; import './bigint-dep.mjs';
+      let counter = 0;
+      const increment = counter++ / 2; import './increment-dep.mjs';
+      const decrement = counter-- / 2; import './decrement-dep.mjs';
+      import './side-effect.mjs';
+      import { value } from './static.mjs';
+      export { value } from './exported.mjs';
+      import('./dynamic.mjs');
+      import(moduleName);
+      import data from './values.json';
+    `,
+    'src/side-effect.mjs': 'export const sideEffect = true;\n',
+    'src/static.mjs': 'export const value = 1;\n',
+    'src/exported.mjs': 'export const value = 2;\n',
+    'src/dynamic.mjs': 'export const value = 3;\n',
+    'src/values.json': '{"example":"import \'./json-value-missing.mjs\'"}\n',
+  };
+  for (const dependency of [
+    'decimal-dep.mjs', 'separated-dep.mjs', 'hexadecimal-dep.mjs', 'binary-dep.mjs',
+    'octal-dep.mjs', 'exponent-dep.mjs', 'bigint-dep.mjs', 'increment-dep.mjs', 'decrement-dep.mjs',
+  ]) files[`src/${dependency}`] = 'export const value = true;\n';
+  for (const [relative, contents] of Object.entries(files)) {
+    const file = path.join(root, relative);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, contents);
   }
+
+  assert.deepEqual(collectTrackedModuleGraph(['src/main.mjs'], { root }), [
+    'src/bigint-dep.mjs',
+    'src/binary-dep.mjs',
+    'src/decimal-dep.mjs',
+    'src/decrement-dep.mjs',
+    'src/dynamic.mjs',
+    'src/exponent-dep.mjs',
+    'src/exported.mjs',
+    'src/hexadecimal-dep.mjs',
+    'src/increment-dep.mjs',
+    'src/main.mjs',
+    'src/octal-dep.mjs',
+    'src/separated-dep.mjs',
+    'src/side-effect.mjs',
+    'src/static.mjs',
+    'src/values.json',
+  ]);
+});
+
+test('fingerprint fails closed when a local dependency is unresolved', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'launchpad-canary-unresolved-'));
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  writeFileSync(path.join(root, 'src/main.mjs'), "export { value } from './missing';");
+  assert.throws(
+    () => computeCanaryVersion({ root, entrypoints: ['src/main.mjs'], nonCodePaths: [] }),
+    /unresolved local import: src\/main\.mjs -> \.\/missing/,
+  );
 });
 
 test('fingerprint fails closed when a tracked file is missing', () => {

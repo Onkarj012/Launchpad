@@ -192,6 +192,21 @@ test('run resolver forwards configured maxHosts and maxRequests', async () => {
   assert.equal(requests.length, 1);
 });
 
+test('operator resolver receives the parent signal and absolute deadline', async () => {
+  const controller = new AbortController();
+  const deadline = { deadlineMs: Date.now() + 10_000, remainingMs: 10_000 };
+  const seen = [];
+  const resolve = createCrawlerRunResolver({
+    config: { sources: { originalListingResolver: { maxRequests: 1 } } },
+    runAt: '2026-07-24T10:00:00.000Z', signal: controller.signal, deadline,
+    transport: async (_url, options) => { seen.push(options); throw new Error('offline fixture'); },
+  });
+  await resolve({ canonicalUrl: 'https://www.indeed.com/viewjob?id=deadline' });
+  assert.equal(seen[0].signal, controller.signal);
+  assert.equal(seen[0].deadline, deadline);
+  assert.equal(seen[0].remainingMs, 10_000);
+});
+
 test('operator runs a configured career-site discovery into durable SQLite', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-operator-'));
   const config = {

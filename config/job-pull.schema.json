@@ -68,7 +68,15 @@
       "properties": {
         "homeCountry": { "const": "India" },
         "puneMetroAliases": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-        "remoteAllowedScopes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "remoteAllowedScopes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "enum": ["worldwide", "world wide", "global", "anywhere"] }
+          }
+        },
         "remoteDeniedScopes": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false

@@ -12,7 +12,7 @@
 - **Title:** AI / Full-Stack Software Engineer
 - **Home location:** Pune, Maharashtra, India
 - **Current employment:** Capgemini — A4 Analyst — Navi Mumbai — since 10 Aug 2026. In Java Full Stack (JFS) course training; no project or client work yet. Never describe this training as project, production, or client experience.
-- **Education:** B.Tech Computer Science, PCCOE (9.17 CGPA), 2026
+- **Education:** B.Tech Computer Science, PCCOE (9.17 CGPA), final result officially declared; degree certificate pending, 2026
 - **Email:** onkarj012@gmail.com · **GitHub:** github.com/Onkarj012 · **LinkedIn:** linkedin.com/in/onkarj012
 - **Headline products:** Stride (shipped, in use), Lore Engine, StockXpert, GovBench, PromptForge
 
@@ -40,7 +40,7 @@
 - **Shortage fallback:** hard requirement up to 2 yrs. A hard minimum of 3+ yrs is never eligible.
 
 ### Work mode & location
-- **Onsite / hybrid:** Pune metro only — Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, and nearby Pune tech corridors.
+- **Onsite / hybrid:** Pune-wide commute is acceptable — Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, and nearby Pune tech corridors.
 - **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. Timezone must be compatible with IST or left unspecified; US-hours-only and overnight-only overlap → drop.
 
 ### Employment type & must-haves
@@ -49,7 +49,7 @@
 - Unpaid, equity-only, commission-only, volunteer, part-time, and contract roles → drop.
 
 ### Hard gates (run first, every pull — fail any → drop, never written to Notion)
-1. **Location authorization** — onsite/hybrid must offer Pune metro; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
+1. **Location authorization** — onsite/hybrid must offer a Pune-wide location option; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
 3. **Employment / paid** — allow full-time or explicitly paid internship; disallowed/unknown-pay internships → drop.
 4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
@@ -60,7 +60,7 @@
 Mechanical values and aliases live in `config/job-pull.json`; this section is the human-readable policy. Everything else (stack fit, role flavor, pure-frontend-ness, etc.) is **soft** — it lowers Skill match / Domain relevance in § 3, not a gate.
 
 ### Salary
-- `[CONFIRM]` Floor: ______ (LPA). Leave blank = don't filter on comp.
+- **Minimum compensation filter:** ₹6 LPA. Filter out roles with disclosed compensation below ₹6 LPA; undisclosed compensation remains `Not Verified`.
 
 ---
 

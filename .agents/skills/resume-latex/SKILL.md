@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Vocabulary: `../guardrails.md`. Policy: `master_prompt.md`. Layout: `resumes/templates/Onkar_Template.tex`. Evidence: `resumes/master/Master_Resume_ATS.tex`.
 
-## Steps
+## Procedure
 
 1. Copy the frozen template into `resumes/sources/<date>/Onkar_Jadhav_<Company>_<Role>.tex`.
 2. Edit only `%== TAILOR-START/END ==` slots. Capgemini stays frozen. Stride stays in Experience. Exactly two other approved projects go under Engineering Projects. No em dash. No invented claims.
@@ -19,10 +19,10 @@ Vocabulary: `../guardrails.md`. Policy: `master_prompt.md`. Layout: `resumes/tem
 
 ## Done when
 
-- PDF exists at `resumes/output/<date>/Onkar_Jadhav_<Company>_<Role>.pdf`
-- Source plus matrix and provenance sit beside each other under `resumes/sources/<date>/`
-- `verifyFile` returns `PASS`
-- Frozen zones match the template byte-for-byte
-- Missing JD requirements are listed, not invented
+- Exactly one PDF exists at `resumes/output/<date>/Onkar_Jadhav_<Company>_<Role>.pdf`.
+- Exactly three paired source artifacts exist under `resumes/sources/<date>/`: the `.tex`, `.matrix.md`, and `.provenance.md` files.
+- `verifyFile` returns exactly `PASS`, and the frozen-zone comparison reports zero differences.
+- Every unsupported JD requirement is recorded as `Missing`, never invented, in the matrix.
+- The build directory contains zero artifacts and the output directory contains PDFs only.
 
 Stop if LaTeX or verification is unavailable. user-owned boxes stay untouched. local-compile only. no auto-apply.

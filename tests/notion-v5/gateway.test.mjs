@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { inspect } from 'node:util';
 import { createManifestTemplate, isLegacyNotionId, isNotionIdentifier, loadManifest, assertLiveManifest, validateManifest } from '../../notion-v5/manifest.mjs';
 import { buildDatabaseProperties, mapProperties, readPropertyValue, V5_SCHEMA, V5_STORE_KEYS, V5_VIEW_DEFINITIONS, validateViewDefinitions } from '../../notion-v5/schema.mjs';
 import { createNotionV5Gateway, loadExternalCredential, NotionV5Error, NOTION_V5_API_VERSION } from '../../notion-v5/gateway.mjs';
@@ -178,6 +179,23 @@ test('credential files require external regular 0600-style ownership and injecte
   await assert.rejects(() => gateway.request('/data_sources/22222222222222222222222222222222/query'), (error) => { assert.equal(error.message.includes('fixture-secret'), false); assert.equal(structuredError(error).message.includes('fixture-secret'), false); return true; });
 });
 
+test('NotionV5Error keeps redaction secrets out of normal inspection while structured errors remain redacted', () => {
+  const secret = 'fixture-secret';
+  const error = new NotionV5Error(`request failed with ${secret}`, {
+    code: 'FIXTURE_FAILURE',
+    details: { message: `details contain ${secret}`, token: secret },
+    redactionSecrets: [secret],
+  });
+
+  assert.equal(Object.keys(error).includes('redactionSecrets'), false);
+  assert.equal(JSON.stringify(error).includes(secret), false);
+  assert.equal(inspect(error).includes(secret), false);
+  const safe = structuredError(error);
+  assert.equal(safe.message.includes(secret), false);
+  assert.equal(JSON.stringify(safe).includes(secret), false);
+  assert.equal(safe.details.token, '[REDACTED]');
+});
+
 test('data-source pagination uses the pinned endpoint and honors bounded Retry-After', async () => {
   const sleeps = [];
   let calls = 0;
@@ -265,13 +283,115 @@ test('provisioning partial failure reports durable cleanup facts and never claim
   assert.equal(result.recovery.createdObjects.length, 2);
 });
 
-test('smoke requires fresh committed verification and rejects noop', async () => {
-  const noop = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-noop', gateway: { live: true, async writeApplications() { return { status: 'noop', committed: [], verified: [], failed: [], skipped: ['smoke-noop'], recovery: [] }; } } });
-  assert.equal(noop.status, 'blocked');
+function smokeGateway({ failStore = null, failVerification = null } = {}) {
+  const pages = new Map();
+  const calls = { writes: [], verifications: [] };
+  let nextId = 0;
+  return {
+    live: true,
+    calls,
+    async createPage(store, values) {
+      calls.writes.push({ store, values });
+      if (store === failStore) throw new Error(`synthetic ${store} write failure`);
+      const id = `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${String(++nextId).padStart(1, '0')}`;
+      pages.set(id, { store, values: structuredClone(values) });
+      const reciprocalProperty = {
+        companies: { applications: 'company' },
+        applications: { company: 'applications', outreach: 'application', activity: 'application' },
+        outreach: { application: 'outreach', activity: 'outreach' },
+        activity: { application: 'activity', outreach: 'activity' },
+      };
+      for (const [property, relatedIds] of Object.entries(values)) {
+        if (!Array.isArray(relatedIds)) continue;
+        for (const relatedId of relatedIds) {
+          const related = pages.get(relatedId);
+          const relatedProperty = reciprocalProperty[store]?.[property];
+          if (related && relatedProperty) related.values[relatedProperty] = [...(related.values[relatedProperty] ?? []), id];
+        }
+      }
+      return { id };
+    },
+    async verifyRelation({ pageId, store, property, expectedPageId }) {
+      calls.verifications.push({ pageId, store, property, expectedPageId });
+      if (property === failVerification) throw new Error(`synthetic ${store}.${property} verification failure`);
+      const page = pages.get(pageId);
+      const received = page?.values[property] ?? [];
+      if (!received.includes(expectedPageId)) throw new Error(`missing ${store}.${property}`);
+      return { verified: true };
+    },
+  };
+}
 
-  const committed = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-commit', gateway: { live: true, async writeApplications() { return { status: 'committed', committed: [{}], verified: [{}], failed: [], skipped: [], recovery: [] }; } } });
-  assert.equal(committed.status, 'passed');
-  assert.equal(committed.runId, 'smoke-commit');
+test('smoke writes exactly four v5 stores, verifies reciprocal relations, and is idempotent', async () => {
+  const runId = 'smoke-four-store';
+  const journalPath = tempPath('smoke.json');
+  const fake = smokeGateway();
+  const first = await smokeV5({ manifest: realManifest, enabled: true, runId, journalPath, gateway: fake });
+  assert.equal(first.status, 'passed');
+  assert.equal(first.idempotent, false);
+  assert.deepEqual(fake.calls.writes.map(({ store }) => store), ['companies', 'applications', 'outreach', 'activity']);
+  assert.equal(fake.calls.verifications.length, 8);
+  assert.equal(first.evidence.relationVerificationCount, 8);
+  assert.equal(first.evidence.journal.outcome, 'committed');
+  assert.equal(first.evidence.pendingRecoveryCount, 0);
+  assert.equal(first.evidence.created.length, 4);
+  assert.equal(first.evidence.createdIds.length, 4);
+  assert.equal(first.evidence.recoveredIds.length, 0);
+  assert.deepEqual(first.evidence.created.map(({ store }) => store), ['companies', 'applications', 'outreach', 'activity']);
+  const applicationValues = fake.calls.writes.find(({ store }) => store === 'applications').values;
+  assert.equal('makeResume' in applicationValues, false);
+  assert.equal('applied' in applicationValues, false);
+  assert.equal('Make Resume' in applicationValues, false);
+  assert.equal('Applied?' in applicationValues, false);
+  for (const call of fake.calls.writes) assert.match(String(Object.values(call.values).flat().find((value) => String(value).includes(runId))), new RegExp(runId));
+
+  const writesBeforeReplay = fake.calls.writes.length;
+  const replay = await smokeV5({ manifest: realManifest, enabled: true, runId, journalPath, gateway: fake });
+  assert.equal(replay.status, 'passed');
+  assert.equal(replay.idempotent, true);
+  assert.equal(replay.outcome, 'idempotent');
+  assert.equal(fake.calls.writes.length, writesBeforeReplay);
+  assert.equal(replay.evidence.recoveredIds.length, 4);
+  assert.equal(replay.evidence.journal.outcome, 'committed');
+  assert.equal(replay.evidence.pendingRecoveryCount, 0);
+});
+
+test('smoke aborts injected write and verification failures without pending recovery entries', async () => {
+  const writeJournalPath = tempPath('smoke-write-failure.json');
+  const writeFake = smokeGateway({ failStore: 'outreach' });
+  const writeFailure = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-write-failure', journalPath: writeJournalPath, gateway: writeFake });
+  assert.equal(writeFailure.status, 'failed');
+  assert.equal(writeFailure.evidence.journal.outcome, 'aborted');
+  assert.equal(writeFailure.evidence.pendingRecoveryCount, 0);
+  assert.equal(writeFailure.evidence.created.length, 2);
+  assert.equal(writeFailure.evidence.createdIds.length, 2);
+  assert.match(writeFailure.evidence.created[0].id, /^[a-f0-9]{32}$/);
+  assert.equal(createTransactionJournal({ journalPath: writeJournalPath }).recover().length, 0);
+
+  const verifyJournalPath = tempPath('smoke-verify-failure.json');
+  const verifyFake = smokeGateway({ failVerification: 'activity' });
+  const verificationFailure = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-verify-failure', journalPath: verifyJournalPath, gateway: verifyFake });
+  assert.equal(verificationFailure.status, 'failed');
+  assert.equal(verificationFailure.evidence.journal.outcome, 'aborted');
+  assert.equal(verificationFailure.evidence.pendingRecoveryCount, 0);
+  assert.equal(verificationFailure.evidence.created.length, 4);
+  assert.equal(verificationFailure.evidence.createdIds.length, 4);
+  assert.equal(createTransactionJournal({ journalPath: verifyJournalPath }).recover().length, 0);
+});
+
+test('smoke fails closed on pending or verified journal entries', async () => {
+  const journalPath = tempPath('smoke-recovery.json');
+  const journal = createTransactionJournal({ journalPath });
+  journal.reserve([
+    { key: 'smoke:smoke-recovery:companies', target: 'companies' },
+    { key: 'smoke:smoke-recovery:applications', target: 'applications' },
+    { key: 'smoke:smoke-recovery:outreach', target: 'outreach' },
+    { key: 'smoke:smoke-recovery:activity', target: 'activity' },
+  ]);
+  const result = await smokeV5({ manifest: realManifest, enabled: true, runId: 'smoke-recovery', journalPath, gateway: smokeGateway() });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.code, 'JOURNAL_RECOVERY_REQUIRED');
+  assert.equal(result.evidence.pendingRecoveryCount, 4);
 });
 
 test('view definitions cover the required names and filters', () => {

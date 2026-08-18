@@ -105,9 +105,9 @@ A VC-board hit is a lead, not an apply-ready source: always resolve to the portf
 
 ### Onsite/hybrid accepted
 
-Pune metro only: Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, and nearby explicit Pune tech corridors.
+Pune-wide commute is acceptable for onsite/hybrid roles: Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, and nearby explicit Pune tech corridors.
 
-Bangalore/Bengaluru, Mumbai, Hyderabad, or any other city without a Pune location option → reject.
+Bangalore/Bengaluru, Mumbai, Hyderabad, or any other city without a Pune-wide location option → reject.
 
 ### Remote accepted
 
@@ -164,12 +164,12 @@ node job-pull/run.mjs --public-json PREPARED.json
 ## Dedup
 
 ```text
-Dedup Key = provider + "|" + requisition/job id
-fallback = canonical URL, then normalize(company) + "|" + normalize(title) + "|" + normalize(location)
+Durable identity = provider + "|" + requisition/job id
+Fallback identity = canonical URL, then normalize(company) + "|" + normalize(title) + "|" + normalize(location)
 normalize = lowercase, strip punctuation, collapse whitespace, normalize known aliases
 ```
 
-Dedup sequence: canonical URL → provider+Job ID (primary durable identity) → last-resort company|title|location only when neither side has a requisition id → committed/pending ledger → JD fingerprint when description exists. Use `fingerprint-core.mjs` for fingerprint similarity. `detect-reposts.mjs` detects repost patterns; it is not universal SimHash cluster output.
+Provider + requisition/job ID is durable identity. Canonical URL, then company/title/location, are fallbacks only when durable identity is absent. After identity resolution, check the committed/pending ledger and then the JD fingerprint when a description exists. Use `fingerprint-core.mjs` for fingerprint similarity. `detect-reposts.mjs` detects repost patterns; it is not universal SimHash cluster output.
 
 ## Weekly coverage audit
 
