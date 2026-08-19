@@ -1,32 +1,26 @@
 ---
 name: quick-add
-description: Log a single job the user found themselves into the Notion Applications database — score it, position it, and fill only verified fields. Use when the user says "quick add", "/quick-add", "log this job", "add this role", "throw this in the tracker", or pastes one JD they want tracked without running a full pull. Discovery/logging only — never applies, never checks Apply?.
+description: Normalize one user-found role into a planned v5 Applications row.
+disable-model-invocation: true
 ---
 
-# Quick Add
+# Quick add
 
-Log **one** job into the Notion Applications database, fast. For a role the user found themselves and just wants tracked. Not a sourcing sweep — for that use `daily-job-pull`.
+Vocabulary: `../guardrails.md`. Fields: `references/lead-fields.md`.
 
-## Source of truth
-Read `master_prompt.md` (project root) for Targeting, Hard gates, and the Scoring Rubric (§ 2-3). Score the same way `daily-job-pull` does — this skill is the single-row version of the same engine.
+## Procedure
 
-## Input
-A pasted JD, or the fields:
-```
-Role: [title]
-Company: [company]
-Location: [location]
-JD link: [url]
-```
+1. Take the user-supplied company, role, location, and source link.
+2. Normalize through CandidateV1 and the current readiness gates.
+3. Keep discovery URL and original-application evidence separate. A portal or LinkedIn link stays a lead until an active employer/ATS destination is resolved.
+4. Show the planned Applications v5 operation. Do not write unless the user authorizes a live v5 gateway.
+5. Leave `Make Resume` and `Applied?` false.
 
-## Steps
-1. **Gate** — run `master_prompt.md` § 2 Hard gates (location-auth, seniority, paid). If it fails a gate, tell the user which and ask whether to log anyway (don't silently drop a user-supplied role).
-2. **Dedup** — compute the `Dedup Key` (company|title|location, normalized) and check the Applications DB. If it already exists, say so and stop rather than creating a duplicate.
-3. **Score** — run the § 3 rubric: integer 0-100, one-line rationale, single strongest hook (→ Positioning), `Auto-Suggest` boolean.
-4. **Write one row** to Applications: Role, Company (relation — create Companies row if new), Location, Source, Source Rarity, Job ID, Dedup Key, JD Link, JD Text, Posted Date (or "Not Verified"), Date Pulled = today, Match Score, Response Likelihood, Freshness, Company Stage, Auth-Friendly?, Auto-Suggest, Positioning, Status = Researching, Apply? = **unchecked**, Resume Status = Not Started.
-5. **Confirm** — echo back the row: Role @ Company, score, one-line rationale, apply link.
+## Done when
 
-## Rules
-- **Never invent** anything missing — leave the field blank or "Not Verified".
-- `Apply?` stays **unchecked**. This skill discovers and logs only — no apply, no email.
-- One row only. Multiple roles → tell the user to run `daily-job-pull` instead.
+- CandidateV1 validation passes, or every missing required field is named.
+- Original-application status is exactly `Resolved`, `Direct ATS`, or `Needs Verification` with evidence.
+- Exactly one planned v5 operation is shown for the normalized role.
+- The unapproved write count is zero, and `Make Resume` and `Applied?` remain false.
+
+fail-closed. v5-only. no auto-apply.

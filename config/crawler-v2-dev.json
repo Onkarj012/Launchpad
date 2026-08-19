@@ -1,0 +1,305 @@
+{
+  "schemaVersion": "LaunchpadCrawlerConfigV1",
+  "databasePath": ".local/launchpad-crawler/dev.sqlite",
+  "boardRegistryPath": "config/board-registry.json",
+  "sources": {
+    "atsWarm": {
+      "boards": [
+        { "provider": "greenhouse", "slug": "phonepe", "company": "PhonePe", "indiaFirst": true },
+        { "provider": "greenhouse", "slug": "commerceiq", "company": "CommerceIQ", "indiaFirst": true, "startupTagged": true },
+        { "provider": "greenhouse", "slug": "devrev", "company": "DevRev", "indiaFirst": true, "startupTagged": true },
+        { "provider": "greenhouse", "slug": "purestorage", "company": "Pure Storage", "indiaFirst": true },
+        { "provider": "greenhouse", "slug": "zscaler", "company": "Zscaler", "indiaFirst": true },
+        { "provider": "greenhouse", "slug": "postman", "company": "Postman", "indiaFirst": true },
+        { "provider": "greenhouse", "slug": "groww", "company": "Groww", "indiaFirst": true, "startupTagged": true },
+        { "provider": "greenhouse", "slug": "druva", "company": "Druva", "indiaFirst": true, "startupTagged": true },
+        { "provider": "greenhouse", "slug": "6sense", "company": "6sense", "indiaFirst": true, "startupTagged": true },
+        { "provider": "greenhouse", "slug": "observeai", "company": "Observe.AI", "indiaFirst": true, "startupTagged": true },
+        { "provider": "lever", "slug": "meesho", "company": "Meesho", "indiaFirst": true, "startupTagged": true },
+        { "provider": "lever", "slug": "zeta", "company": "Zeta", "indiaFirst": true, "startupTagged": true },
+        { "provider": "lever", "slug": "mindtickle", "company": "Mindtickle", "indiaFirst": true },
+        { "provider": "ashby", "slug": "atlan", "company": "Atlan", "indiaFirst": true, "startupTagged": true },
+        { "provider": "ashby", "slug": "uipath", "company": "UiPath", "indiaFirst": true },
+        { "provider": "ashby", "slug": "plane", "company": "Plane", "indiaFirst": true, "startupTagged": true },
+        { "provider": "ashby", "slug": "bjakcareer", "company": "BJAK", "indiaFirst": true, "startupTagged": true },
+        { "provider": "ashby", "slug": "spotdraft", "company": "SpotDraft", "indiaFirst": true, "startupTagged": true },
+        { "provider": "ashby", "slug": "signoz", "company": "SigNoz", "indiaFirst": true, "startupTagged": true }
+      ],
+      "maxBoards": 20,
+      "maxJobsPerBoard": 100
+    },
+    "atsBatch1": {
+      "boards": [
+        { "provider": "smartrecruiters", "board": "BoschGroup", "company": "Bosch Group", "country": "in" },
+        { "provider": "smartrecruiters", "board": "Visa", "company": "Visa", "country": "in" },
+        {
+          "provider": "workable",
+          "board": "blue-altair",
+          "company": "Blue Altair",
+          "endpoint": "https://apply.workable.com/api/v1/widget/accounts/blue-altair",
+          "indiaRelevant": true,
+          "puneRelevant": true,
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "https://apply.workable.com/api/v1/widget/accounts/blue-altair?state=published (11 live jobs, several Pune, India observed)",
+          "notes": "The adapter's default https://apply.workable.com/api/v3/accounts/<id>/jobs endpoint returns HTTP 404 for every account probed (including known-live Workable customers), so an explicit endpoint override to the v1 widget API is required."
+        },
+        {
+          "provider": "recruitee",
+          "board": "careersdeltacapita",
+          "company": "Delta Capita",
+          "indiaRelevant": true,
+          "puneRelevant": true,
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "https://careersdeltacapita.recruitee.com/api/offers (79 live offers observed)"
+        }
+      ],
+      "disabledBoards": [],
+      "pageSize": 50,
+      "maxPages": 1,
+      "maxJobs": 100,
+      "enrichDetails": true
+    },
+    "atsBatch2": {
+      "boards": [
+        {
+          "provider": "pinpoint",
+          "slug": "infor",
+          "company": "Infor",
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "https://infor.pinpointhq.com/postings.json (197 live postings observed; real Bengaluru and Hyderabad India roles including Data Scientist, Software Engineer, Security Analyst; the underlying ats-batch-2.mjs pinpoint parser was fixed to read the actual { data: [...] } JSON:API shape the live endpoint returns, and its object-shaped location field)"
+        }
+      ],
+      "disabledBoards": [
+        {
+          "provider": "pinpoint",
+          "company": "razorpay / zeta / innovaccer (rejected)",
+          "board": null,
+          "enabled": false,
+          "probeStatus": "rejected-mismatch",
+          "reason": "https://razorpay.pinpointhq.com, https://zeta.pinpointhq.com, and https://innovaccer.pinpointhq.com all resolve to HTTP 200 with a company-branded title tag, but every posting returned is the identical generic Pinpoint demo/template content (\"Head of DEI - UK\", \"Marketing Manager\", \"Customer Service Rep\" with boilerplate descriptions), not the real Indian company's own postings. Treated as unverifiable squatted/demo tenants and not added, per the no-fabrication constraint."
+        }
+      ]
+    },
+    "enterprise": {
+      "boards": [
+        {
+          "provider": "workday",
+          "company": "Mastercard",
+          "tenant": "mastercard",
+          "instance": "wd1",
+          "site": "CorporateCareers",
+          "url": "https://mastercard.wd1.myworkdayjobs.com/wday/cxs/mastercard/CorporateCareers/jobs",
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "tenant discovered via careers.mastercard.com HTML (data-ph-href=mastercard.wd1.myworkdayjobs.com/CorporateCareers); CXS endpoint confirmed live with 1169 total postings"
+        },
+        {
+          "provider": "workday",
+          "company": "Ingram Micro",
+          "tenant": "ingrammicro",
+          "instance": "wd5",
+          "site": "IngramMicro",
+          "url": "https://ingrammicro.wd5.myworkdayjobs.com/wday/cxs/ingrammicro/IngramMicro/jobs",
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "corporate careers.ingrammicro.com returned HTTP 403 to curl (bot-protected); tenant/site found by bounded probe of plausible wd1/wd3/wd5 x External/Careers/IngramMicro combinations, ingrammicro.wd5.myworkdayjobs.com/IngramMicro returned HTTP 200; CXS endpoint confirmed live with 548 total postings"
+        },
+        {
+          "provider": "workday",
+          "company": "ReliaQuest",
+          "tenant": "reliaquest",
+          "instance": "wd5",
+          "site": "ReliaQuest_Careers",
+          "url": "https://reliaquest.wd5.myworkdayjobs.com/wday/cxs/reliaquest/ReliaQuest_Careers/jobs",
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "tenant discovered via reliaquest.com/careers HTML (data-ph-href=reliaquest.wd5.myworkdayjobs.com/ReliaQuest_Careers); CXS endpoint confirmed live with 10 total postings including 'Associate Software Engineer | Pune India Office'"
+        },
+        {
+          "provider": "workday",
+          "company": "Pitney Bowes",
+          "tenant": "pitneybowes",
+          "instance": "wd1",
+          "site": "PBCareers",
+          "url": "https://pitneybowes.wd1.myworkdayjobs.com/wday/cxs/pitneybowes/PBCareers/jobs",
+          "enabled": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-07-24T04:16:00Z",
+          "evidenceRef": "tenant discovered via pitneybowes.com/us/careers.html HTML (pitneybowes.wd1.myworkdayjobs.com/en-US/PBCareers); CXS endpoint confirmed live with 67 total postings (locale prefix dropped from the CXS path; en-US/PBCareers returns HTTP 405)"
+        }
+      ],
+      "disabledBoards": [],
+      "maxPages": 10,
+      "maxJobsPerBoard": 200,
+      "notes": "ats-enterprise.mjs previously issued a plain GET with no body for every provider. Workday's public CXS jobs endpoint returns HTTP 400 on GET and requires a POST with a JSON search body ({ appliedFacets, limit, offset, searchText }); ats-enterprise.mjs and operator.mjs's defaultHttpTransport were fixed to send that for provider workday only (see requestOptions() in crawler/ats-enterprise.mjs). All four boards above were confirmed end-to-end through the real fetch transport, not just via a manual curl probe. maxPages/maxJobsPerBoard mirrors config/crawler-v2.json (see that file's note for why)."
+    },
+    "careerSites": [],
+    "disabledCareerSites": [
+      {
+        "company": "Cybage Software",
+        "websiteUrl": "https://www.cybage.com/careers/open-positions",
+        "enabled": false,
+        "probeStatus": "verified-live-but-nonfunctional",
+        "reason": "Live and Pune-headquartered (curl-confirmed, real per-role pages such as /careers/open-positions/current-openings/c-developer), but those job pages carry no schema.org JobPosting JSON-LD. discoverCompanyCareers() only synthesizes a fallback candidate for sitemap-sourced ('job' kind) URLs, not for pages reached via same-site link-following ('page' kind), so end-to-end this board produces zero observations, then once the page budget reaches the general www.cybage.com/sitemap.xml it starts emitting mislabeled marketing pages (e.g. 'Digital Transformation', 'Retail') as if they were job postings. Verified this behavior by actually running discoverCompanyCareers() against the live site rather than adding on curl evidence alone; left disabled rather than ship mislabeled observations."
+      },
+      {
+        "company": "Birlasoft",
+        "websiteUrl": "https://jobs.birlasoft.com/",
+        "enabled": false,
+        "probeStatus": "verified-live-but-nonfunctional",
+        "reason": "Live, SuccessFactors-powered, with a genuine dedicated job sitemap (https://jobs.birlasoft.com/sitemap.xml, 697 postings, 286 Pune-tagged, curl-confirmed). Not usable as-is: company-careers.mjs's CAREER_RE match tests the full URL including hostname, and every same-site link (CSS, JS, images) on jobs.birlasoft.com matches CAREER_RE purely because the hostname contains the substring 'jobs.', so the bounded page queue fills with static assets before it ever reaches the job sitemap. Confirmed by running discoverCompanyCareers() against the live site and inspecting the fetch order. Left disabled rather than burn the crawl budget on CSS files; would need a company-careers.mjs fix (match CAREER_RE against the path, not the full URL) that is out of scope for this pass.",
+        "note": "Better suited to a direct SuccessFactors enterprise board (career44.sapsf.com, company=birlasoftl) than the generic career-site adapter, but that tenant's public OData job-search contract was not verified this pass."
+      },
+      {
+        "company": "razorpay.pinpointhq.com / zeta.pinpointhq.com / innovaccer.pinpointhq.com",
+        "websiteUrl": null,
+        "enabled": false,
+        "probeStatus": "rejected-mismatch",
+        "reason": "See sources.atsBatch2.disabledBoards: these resolve but return generic Pinpoint demo content, not the named company's real postings."
+      }
+    ],
+    "careerOptions": {
+      "maxPagesPerCompany": 25,
+      "hostLimiterOptions": { "minSpacingMs": 1000, "maxConcurrency": 1 },
+      "retry": { "maxAttempts": 3 }
+    },
+    "searxng": {
+      "enabled": true,
+      "endpoint": "http://127.0.0.1:8080",
+      "dailyBudget": 20,
+      "perQueryResultCap": 10,
+      "queries": [
+        "\"AI Engineer\" Pune fresher jobs",
+        "\"Machine Learning Engineer\" India \"0-2 years\" jobs",
+        "\"Backend Engineer\" Python Pune graduate jobs",
+        "\"Software Engineer\" India new grad careers",
+        "\"Generative AI\" engineer India fresher careers",
+        "site:ycombinator.com/jobs India (\"software engineer\" OR \"AI engineer\" OR \"ML engineer\")",
+        "site:wellfound.com/jobs India remote (junior OR fresher OR \"new grad\") engineer",
+        "site:cutshort.io/job India (AI OR Python OR backend OR \"full stack\") (fresher OR junior)",
+        "site:peerlist.io/company/*/careers India (AI OR software OR backend) engineer",
+        "(site:jobs.ashbyhq.com OR site:job-boards.greenhouse.io OR site:jobs.lever.co) India remote startup (AI OR ML OR Python) engineer",
+        "(Accel OR Peak XV OR Blume Ventures OR Lightspeed India OR Elevation Capital) portfolio careers India engineer"
+      ]
+    },
+    "chromium": {
+      "enabled": false,
+      "renderHosts": []
+    },
+    "brave": {
+      "enabled": false,
+      "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
+      "dailyBudget": 20,
+      "perQueryResultCap": 10,
+      "queries": [],
+      "country": "IN",
+      "searchLang": "en",
+      "maxPages": 1,
+      "roles": ["AI Engineer", "ML Engineer", "Backend Engineer", "Software Engineer"],
+      "geographies": ["Pune", "India"],
+      "experiences": ["fresher", "0-2 years", "new grad"],
+      "ats": ["boards.greenhouse.io", "jobs.lever.co", "myworkdayjobs.com", "jobs.ashbyhq.com"],
+      "career": ["careers"],
+      "startup": ["startup"],
+      "vc": ["Peak XV portfolio", "Accel portfolio", "Lightspeed portfolio", "Antler portfolio", "a16z portfolio"]
+    },
+    "theirstack": {
+      "enabled": false,
+      "apiKeyEnv": "THEIRSTACK_API_KEY",
+      "pageSize": 25,
+      "maxQueriesPerRun": 2,
+      "maxPagesPerQuery": 1,
+      "maxItemsPerRun": 50,
+      "maxCreditsPerRun": 50,
+      "queries": [
+        {
+          "id": "india-ai-ml",
+          "filters": {
+            "posted_at_max_age_days": 14,
+            "job_country_code_or": ["IN"],
+            "job_title_pattern_or": ["\\bAI Engineer\\b", "\\bMachine Learning Engineer\\b", "\\bLLM Engineer\\b", "\\bGenerative AI Engineer\\b"],
+            "employment_statuses_or": ["full_time", "internship"],
+            "is_closed": false,
+            "property_exists_and": ["final_url"]
+          }
+        },
+        {
+          "id": "india-backend-swe",
+          "filters": {
+            "posted_at_max_age_days": 14,
+            "job_country_code_or": ["IN"],
+            "job_title_pattern_or": ["\\bBackend Engineer\\b", "\\bPython Engineer\\b", "\\bSoftware Engineer\\b", "\\bFull Stack Engineer\\b"],
+            "employment_statuses_or": ["full_time", "internship"],
+            "is_closed": false,
+            "property_exists_and": ["final_url"]
+          }
+        }
+      ]
+    },
+    "indeed": {
+      "enabled": false,
+      "inboxDir": "connector-inbox/indeed"
+    },
+    "connectorInbox": {
+      "enabled": false,
+      "inboxDir": "connector-inbox",
+      "providers": ["indeed", "apna", "whatjobs", "ziprecruiter", "dice", "jobs-and-careers"]
+    },
+    "startup": {
+      "fixtures": {},
+      "laneInputs": {}
+    },
+    "indiaStartup": {
+      "enabled": true,
+      "requests": [
+        { "id": "yc", "query": "site:ycombinator.com/jobs India (\"software engineer\" OR \"AI engineer\" OR \"ML engineer\")" },
+        { "id": "vc", "query": "\"CRED\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Razorpay\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Zomato\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"BlinkIt\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Pine Labs\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"OYO\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Agrostar\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Bizongo\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"BlackBuck\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"CleverTap\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Cogoport\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Classplus\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Exotel\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Darwinbox\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
+        { "id": "vc", "query": "\"Innovaccer\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" }
+      ],
+      "queryBudget": 20,
+      "watchlist": "config/vc-portfolio-watchlist.json",
+      "evidenceRef": "docs/research/job-board-source-audit-2026-07-23.md#5-yc-india-and-yc-remote-pages"
+    },
+    "commercialRescue": {
+      "enabled": false,
+      "targetReserve": 12,
+      "maxRecords": 100,
+      "maxCostUsd": 5
+    },
+    "remote": {
+      "enabled": true,
+      "primaryProviders": ["himalayas"],
+      "secondaryProviders": ["jobicy", "weworkremotely", "remotive", "remoteok"],
+      "secondaryCadenceDays": 2,
+      "maxRecordsPrimary": 40,
+      "maxRecordsPerSecondary": 25
+    }
+  },
+  "v4HistorySnapshotMaxAgeDays": 30,
+  "sourceYield": {
+    "minimumFetchedForReview": 100,
+    "minimumRunsForPause": 3
+  }
+}

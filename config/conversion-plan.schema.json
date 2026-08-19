@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Launchpad conversion operations configuration",
+  "type": "object",
+  "required": ["version", "manualSafety", "conversionScore", "composition", "cadence", "dailyTargets", "checkpoints"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "owner": { "const": "conversion-ops" },
+    "version": { "const": 1 },
+    "manualSafety": { "type": "object" },
+    "conversionScore": { "type": "object" },
+    "composition": { "type": "object" },
+    "cadence": { "type": "object" },
+    "dailyTargets": { "type": "object" },
+    "checkpoints": { "type": "object" },
+    "salaryFloorLpa": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Optional disclosed comparable annual INR floor in LPA; undisclosed compensation remains Not Verified."
+    }
+  },
+  "additionalProperties": false
+}

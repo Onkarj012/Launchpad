@@ -18,7 +18,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { entryOnHost } from '../career-ops/scan-ats-full.mjs';
+import { entryOnHost } from '../vendor/career-ops/scan-ats-full.mjs';
 
 export const WARM_SET_SCHEMA_VERSION = 1;
 export const WARM_ATS = ['greenhouse', 'lever', 'ashby', 'workday'];

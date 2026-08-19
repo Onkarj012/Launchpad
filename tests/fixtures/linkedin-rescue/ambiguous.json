@@ -1,0 +1,16 @@
+{
+  "query": "hiring \"Full-Stack AI Engineer\"",
+  "postUrl": "https://www.linkedin.com/posts/ambiguous-hiring-111",
+  "author": {
+    "name": "Sam Patel",
+    "profileUrl": null,
+    "relationship": "Employee"
+  },
+  "timestampEvidence": null,
+  "observedAt": "2026-07-23T06:30:00.000Z",
+  "rawHiringContext": "We may be hiring soon. Reach out if this sounds interesting.",
+  "company": null,
+  "title": null,
+  "location": null,
+  "contactInvitation": "Reach out if this sounds interesting"
+}

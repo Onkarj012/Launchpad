@@ -1,0 +1,22 @@
+{
+  "query": "hiring \"Agentic AI Engineer\"",
+  "postUrl": "https://www.linkedin.com/posts/old-hiring-654",
+  "author": {
+    "name": "Maya Iyer",
+    "profileUrl": "https://www.linkedin.com/in/maya-iyer",
+    "relationship": "Recruiter at OldCo"
+  },
+  "timestampEvidence": "10d",
+  "postedAt": "2026-07-13T06:30:00.000Z",
+  "observedAt": "2026-07-23T06:30:00.000Z",
+  "rawHiringContext": "We are hiring an Agentic AI Engineer in Pune. Full-time, 0-2 years. Apply through our careers page.",
+  "jobLink": "https://jobs.oldco.example/agentic-ai",
+  "company": "OldCo",
+  "title": "Agentic AI Engineer",
+  "location": "Pune, India",
+  "employment": { "type": "full-time", "evidence": "Full-time" },
+  "experience": { "minYears": 0, "maxYears": 2, "evidence": "0-2 years" },
+  "originalApplicationResolution": { "url": "https://jobs.oldco.example/agentic-ai", "evidence": "OldCo careers page evidence", "status": "Resolved Original" },
+  "liveness": { "status": "Active", "evidence": "Page was active when captured" },
+  "scoring": { "matchScore": 80, "rationale": "Agentic AI role." }
+}

@@ -1,12 +1,24 @@
 # vendored / local state
-career-ops/
+/career-ops/
+!/vendor/career-ops/
+!/vendor/career-ops/**
 logs/
+/.agent/
+/.claude/
+/resumes/
+node_modules/
+job-pull/scratch/
+job-pull/run-state.json
+connector-inbox/
+config/crawler-v2-live-test.json
+/RAW.json
+/OUT-legacy.json
+/MANIFEST-legacy.json
 
 # macOS
 .DS_Store
 
-# LaTeX build scratch + artifacts (regenerable)
-resumes/sources/build/
+# LaTeX build artifacts (regenerable)
 *.log
 *.aux
 *.out
@@ -14,6 +26,9 @@ resumes/sources/build/
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+.local/
+.scratch/
 
-# scheduler lock
-.claude/scheduled_tasks.lock
+# t3 app icon assets (local only)
+icon/
+t3.json

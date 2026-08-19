@@ -1,15 +1,27 @@
 {
   "$schema": "https://apify.com (no local schema — see references/sourcing.md)",
-  "note": "Optional structured-board pull layer. Requires APIFY_TOKEN env var. Run: node job-pull/apify-pull.mjs --out RAW.json --config config/apify.json, then feed RAW.json through the existing job-pull/public-search-prepare.mjs --in RAW --out PREPARED step. Actor input/output field names below were checked against each actor's public Apify Store page on 2026-07-15; verify against the live actor before relying on them for a run, since Apify Store listings can change without notice.",
+  "note": "Manual rescue only. Profiles are disabled by default and never selected without --profile. No profile is part of Normal, Startup, or Remote daily discovery. Run: node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json --config config/apify.json.",
+  "rescue": {
+    "defaultEnabled": false,
+    "maxProfilesPerRun": 3,
+    "runTimeoutSeconds": 600,
+    "monthlyBudgetUsd": 5,
+    "maxRunsPerMonth": 6,
+    "maxRunCostUsd": 0.75,
+    "maxReturnedItemsPerProfile": 250
+  },
   "actors": [
     {
+      "profile": "linkedin-jobs",
       "id": "cheap_scraper~linkedin-job-scraper",
       "label": "linkedin",
-      "enabled": true,
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "input": {
         "keyword": ["software engineer", "AI engineer", "machine learning engineer", "backend developer", "new grad software engineer"],
         "locations": ["Pune, Maharashtra, India", "India"],
-        "publishedAt": "r259200",
+        "publishedAt": "r604800",
         "jobType": ["full-time", "internship"],
         "experienceLevel": ["internship", "entry-level"],
         "workType": ["on-site", "hybrid", "remote"],
@@ -18,6 +30,7 @@
       },
       "fieldMap": {
         "url": "jobUrl",
+        "discoveryUrl": "jobUrl",
         "company": "companyName",
         "title": "jobTitle",
         "postedAt": "publishedAt",
@@ -26,24 +39,35 @@
       }
     },
     {
+      "profile": "naukri-fresher",
       "id": "blackfalcondata~naukri-jobs-feed",
       "label": "naukri",
-      "enabled": true,
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
       "input": {
         "searchQueries": [
-          { "keyword": "software engineer fresher", "location": "Pune" },
-          { "keyword": "AI engineer fresher", "location": "Pune" },
-          { "keyword": "machine learning engineer", "location": "Pune" },
-          { "keyword": "backend developer python", "location": "Pune" }
+          "software engineer fresher Pune",
+          "AI engineer fresher Pune",
+          "machine learning engineer Pune",
+          "backend developer python Pune",
+          "graduate engineer trainee Pune",
+          "associate software engineer Pune",
+          "junior software developer Pune",
+          "GenAI engineer Pune",
+          "python FastAPI developer Pune",
+          "Django developer Pune",
+          "junior backend developer Pune"
         ],
-        "experience": "0-1",
-        "datePosted": "3d",
+        "experience": "0-2",
+        "datePosted": "7d",
         "fetchDetails": true,
         "maxResults": 100,
         "descriptionFormat": "text"
       },
       "fieldMap": {
         "url": "portalUrl",
+        "discoveryUrl": "portalUrl",
         "company": "companyName",
         "title": "title",
         "postedAt": "createdDate",
@@ -52,9 +76,65 @@
       }
     },
     {
+      "profile": "foundit-fresher",
+      "id": "scrapesage~foundit-scraper",
+      "label": "foundit",
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
+      "input": {
+        "searchQueries": ["software engineer fresher", "AI engineer", "machine learning engineer fresher", "python developer fresher", "backend developer fresher"],
+        "region": "india",
+        "locations": ["Pune"],
+        "sortBy": "date",
+        "freshnessDays": 7,
+        "includeDescription": true,
+        "maxResults": 100
+      },
+      "fieldMap": {
+        "url": "jobUrl",
+        "discoveryUrl": "jobUrl",
+        "company": "company",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "location",
+        "description": "description"
+      }
+    },
+    {
+      "profile": "hirist-fresher",
+      "id": "logiover~hirist-tech-scraper",
+      "label": "hirist",
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
+      "_note": "scrapeDetails must stay true — with it off the actor emits description: null and every record fails downstream gates.",
+      "input": {
+        "keywords": ["python", "machine-learning", "node-js"],
+        "cities": ["pune", "remote", "anywhere in india"],
+        "experience": "0-2",
+        "maxJobs": 60,
+        "maxPages": 5,
+        "scrapeDetails": true
+      },
+      "fieldMap": {
+        "url": "url",
+        "discoveryUrl": "url",
+        "company": "company",
+        "title": "title",
+        "postedAt": "postedAt",
+        "location": "location",
+        "description": "description"
+      }
+    },
+    {
+      "profile": "wellfound-india",
       "id": "blackfalcondata~wellfound-scraper",
       "label": "wellfound",
-      "enabled": true,
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
+      "_note": "Manual rescue profile; never part of daily discovery.",
       "input": {
         "roles": ["software-engineer", "data-scientist"],
         "location": ["india"],
@@ -64,6 +144,7 @@
       },
       "fieldMap": {
         "url": "portalUrl",
+        "discoveryUrl": "portalUrl",
         "company": "companyName",
         "title": "title",
         "postedAt": "postedAt",
@@ -72,21 +153,22 @@
       }
     },
     {
-      "id": "parsebird~yc-jobs-scraper",
-      "label": "yc",
-      "enabled": true,
+      "profile": "cutshort-india",
+      "id": "thirdwatch~cutshort-jobs-scraper",
+      "label": "cutshort",
+      "enabled": false,
+      "sourceKind": "niche-public",
+      "sourceCategory": "india-niche",
+      "_note": "No posting-date output field is confirmed; undated records remain verification-only downstream.",
       "input": {
-        "searchQuery": "",
-        "roleFilter": "software-engineer",
-        "locationFilter": "India, Remote, Pune",
-        "maxResults": 100,
-        "_TODO": "YC actor's public Store listing does not document a posted-date output field (no 'postedAt'/'createdAt' confirmed) — verify against a live run. fieldMap.postedAt points at 'postedAt' speculatively; if the actor never emits it, records stay undated (correct per the no-inferred-freshness rule — never map scrape time here)."
+        "skills": ["python", "machine-learning", "backend", "full-stack", "react", "node-js"],
+        "maxResults": 60
       },
       "fieldMap": {
-        "url": "url",
-        "company": "companyName",
+        "url": "apply_url",
+        "discoveryUrl": "apply_url",
+        "company": "company_name",
         "title": "title",
-        "postedAt": "postedAt",
         "location": "location",
         "description": "description"
       }

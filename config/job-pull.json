@@ -1,19 +1,35 @@
 {
   "$schema": "./job-pull.schema.json",
-  "schemaVersion": "JobPullPolicyV1",
+  "schemaVersion": "JobPullPolicyV2",
   "timezone": "Asia/Kolkata",
   "run": {
     "cadence": "manual",
     "onceDaily": true,
-    "minimumTotal": 15,
-    "maximumTotal": 20,
+    "minimumTotal": 25,
+    "maximumTotal": 35,
     "strictTarget": 10,
     "maximumPerCompany": 2,
     "maximumFamilyShare": 0.4
   },
+  "applicationShortlist": {
+    "targetCount": 10,
+    "roleTargets": {
+      "ai": 4,
+      "backendFullStack": 2,
+      "newGrad": 2,
+      "adjacent": 1
+    },
+    "maximumStretch": 1,
+    "sourceTargets": {
+      "directOrVcMinimum": 4,
+      "indiaNicheMinimum": 3,
+      "broadRemoteMaximum": 2
+    }
+  },
   "freshness": {
-    "primaryMaximumHours": 24,
-    "extendedMaximumHours": 72
+    "hotMaximumHours": 72,
+    "activeMaximumDays": 7,
+    "backfillMaximumDays": 14
   },
   "geo": {
     "homeCountry": "India",
@@ -38,11 +54,7 @@
       "indian",
       "apac",
       "asia pacific",
-      "asia-pacific",
-      "worldwide",
-      "world wide",
-      "global",
-      "anywhere"
+      "asia-pacific"
     ],
     "remoteDeniedScopes": [
       "us only",
@@ -81,7 +93,8 @@
   },
   "sources": {
     "qualityOrder": ["ats-direct", "niche-public", "aggregator"],
-    "reverseAts": ["greenhouse", "lever", "ashby", "workday"]
+    "reverseAts": ["greenhouse", "lever", "ashby", "workday"],
+    "knownAts": ["greenhouse", "lever", "ashby", "workday", "workable", "smartrecruiters", "breezy", "recruitee"]
   },
   "dedup": {
     "simHashEnabled": true,

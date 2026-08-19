@@ -32,7 +32,7 @@ test('ledger pending, commit, abort, lock, and recovery states are durable', () 
   const reservation = reserveCandidates([candidate()], { path: ledgerPath, runId: 'run-1', now: '2026-07-14T09:00:00.000Z' });
   assert.equal(reservation.reservations[0].state, 'pending');
   assert.equal(pendingLedgerRows(ledgerPath).length, 1);
-  commitRun({ path: ledgerPath, runId: 'run-1', now: '2026-07-14T09:01:00.000Z', pageUrls: { 'example|ai engineer|pune': 'https://notion.test/page' } });
+  commitRun({ path: ledgerPath, runId: 'run-1', now: '2026-07-14T09:01:00.000Z', pageUrls: { [reservation.reservations[0].dedup_key]: 'https://notion.test/page' } });
   assert.equal(pendingLedgerRows(ledgerPath).length, 0);
 
   const second = reserveCandidates([candidate('https://example.test/2', { company: 'Other', jobId: 'job-2' })], { path: ledgerPath, runId: 'run-2', now: '2026-07-14T09:02:00.000Z' });

@@ -1,31 +1,28 @@
 ---
 name: make-applications
-description: Batch-tailor resumes for every Notion Applications row the user has Apply?-checked, compiling each locally and verifying it parses clean before marking it ready. Use when the user says "make applications", "build resumes for today", "make my resumes", "/make-applications", or runs /make-applications. Local-only — never fires in a headless/cloud session since LaTeX compilation needs the Mac toolchain.
+description: Batch-build every user-checked Make Resume v5 row into a local verified PDF.
+disable-model-invocation: true
 ---
 
-# Make Applications
+# Resume queue
 
-Turn today's `Apply?`-checked rows into a ready-to-send apply queue: one tailored, compiled, parse-verified resume per row.
+Vocabulary: `../guardrails.md`. Read `readMakeResumeQueue()` from `resume-v5/queue-reader.mjs`. Process with `processMakeResumeQueue()` from `resume-v5/resume-queue.mjs`.
 
-## Source of truth
-`master_prompt.md` § 4 (tailoring rules) and the `resume-latex` skill (compile + verify mechanics) are authoritative — this skill orchestrates, it does not redefine them.
+## Procedure
 
-## Steps
+1. Query Applications v5 with the fixed Make Resume filter. Refuse legacy targets.
+2. For each checked row: set `resumeState` to Building only.
+3. Tailor that row with the `resume-latex` sequence. Do not invent slot content.
+4. Call `createLocalResumeBuilder()` then `createLocalPdfVerifier()` from `resume-v5/local-builder.mjs`.
+5. Set Ready, Failed, or Stale from `verifyResumeArtifact()`. Never change `Make Resume` or `Applied?`.
+6. Report every selected row, artifact path, and verification result.
 
-1. **Get the queue.** This workspace's Notion plan blocks programmatic queries (`notion-query-data-sources` / `notion-query-database-view` both require Business plan) — do not attempt to auto-query the `Apply?` checkbox. Ask the user directly which rows from today's (or a named) pull they've checked `Apply?` on — they pick from the **To Apply** / **Today's Pull** view themselves and tell you the Company/Role list, or paste the rows. Pull each named row's JD Link/Text via `notion-search` or a direct page URL the user gives you.
-   *Done when:* you have the full list of rows to process, each with its JD Link/Text and Company/Role, confirmed by the user — not guessed from an unreliable query.
+## Done when
 
-2. **For each row**, invoke the `resume-latex` skill's Steps 1-6 (project picker → assemble `.tex` → compile → page-count + fill verify → parse-verify guard) using that row's JD as input.
-   *Done when:* every row has produced either a compiled, parse-verified PDF, or a logged failure with reason (don't silently skip a row that failed to compile).
+- Every selected row has exactly one terminal `resumeState`: `Ready`, `Failed`, or `Stale`.
+- The count of terminal rows equals the count of selected rows; no selected row is skipped.
+- Each `Ready` row has PDF, source, matrix, and provenance artifacts, and `verifyFile` returns `PASS`.
+- The count of mutations to `Make Resume` and `Applied?` is zero.
+- Every failed row is listed with its reason and artifact state.
 
-3. **Save** each output per the `resume-latex` PDF-only contract: `.tex` source in `resumes/sources/`, final PDF-only in `resumes/output/Onkar_Jadhav_<Company>_<Role>.pdf`, build artifacts deleted. After the batch, `resumes/output/` contains only `.pdf` files.
-
-4. **Update** each processed row: `Resume Status = Ready` (on the current v3 DB use its existing "Tailored" option), `Resume PDF` = the output PDF path/link, `Last Activity` = today. Do **not** touch `Status`, `Applied Date`, or `Apply?` — this skill only prepares resumes; applying and the Applied stamp are manual user actions handled after the user actually submits.
-
-5. **Report** a checklist to the user: Company, Role, apply link (JD Link), resume path — the day's apply queue. List any rows that failed Step 2 separately with the reason, so nothing silently drops. Close with the reminder: "After you apply on the portal, mark the row Applied (set Applied Date) so `/followups` can seed the follow-up cadence." Follow-up seeding is **not** automatic — it starts only once the user marks a row Applied.
-
-## Rules
-- Local-only. If invoked in an environment without LaTeX (`pdflatex`) on `PATH`, stop and tell the user to run it locally instead of guessing or skipping the compile step.
-- ATS-clean template (`resumes/master/Master_Resume_ATS.tex`) only — every output here is a portal apply.
-- Never fabricate experience, metrics, or dates. Only reframe/reorder/select from the master resume.
-- Parse-verify (email + phone + ≥N skill keywords survive `pdftotext`) is a hard gate before a row counts as done — a compiled-but-unparseable PDF is a failure, same as a missing one.
+user-owned. local-compile. v5-only. no auto-apply.

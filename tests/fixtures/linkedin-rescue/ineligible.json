@@ -1,0 +1,22 @@
+{
+  "query": "hiring \"ML Engineer\"",
+  "postUrl": "https://www.linkedin.com/posts/senior-ml-987",
+  "author": {
+    "name": "Nora Wilson",
+    "profileUrl": "https://www.linkedin.com/in/nora-wilson",
+    "relationship": "Talent partner at Northstar"
+  },
+  "timestampEvidence": "4h",
+  "postedAt": "2026-07-23T02:30:00.000Z",
+  "observedAt": "2026-07-23T06:30:00.000Z",
+  "rawHiringContext": "We are hiring a Senior Machine Learning Engineer in New York. Full-time role requiring 5+ years of experience.",
+  "jobLink": "https://jobs.northstar.example/senior-ml",
+  "company": "Northstar",
+  "title": "Senior Machine Learning Engineer",
+  "location": "New York, USA",
+  "employment": { "type": "full-time", "evidence": "Full-time role" },
+  "experience": { "minYears": 5, "maxYears": null, "evidence": "5+ years of experience" },
+  "originalApplicationResolution": { "url": "https://jobs.northstar.example/senior-ml", "evidence": "Northstar careers page evidence", "status": "Resolved Original" },
+  "liveness": { "status": "Active", "evidence": "Active original page" },
+  "scoring": { "matchScore": 91, "rationale": "Machine learning keywords present." }
+}

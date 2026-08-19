@@ -2,7 +2,7 @@ import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, re
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { candidateDedupKey } from './candidate.mjs';
+import { candidateDedupKey, canonicalizeUrl } from './candidate.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_LEDGER_PATH = path.resolve(MODULE_DIR, '../career-ops/data/notion-written.tsv');
@@ -108,6 +108,44 @@ export function migrateLedger({ path: ledgerPath = DEFAULT_LEDGER_PATH, dryRun =
   return { path: ledgerPath, dryRun, changed, written: changed && !dryRun, rows, legacy: current.legacy };
 }
 
+export function seedFromNotion(entries, { path: ledgerPath = DEFAULT_LEDGER_PATH, now = new Date().toISOString() } = {}) {
+  return withLedgerLock(ledgerPath, () => {
+    const rows = rowsForMutation(ledgerPath);
+    const existingUrls = new Set(rows.map((row) => canonicalizeUrl(row.canonical_url)).filter(Boolean));
+    const existingKeys = new Set(rows.map((row) => row.dedup_key).filter(Boolean));
+    let added = 0;
+    let skipped = 0;
+    for (const entry of entries) {
+      const canonicalUrl = canonicalizeUrl(entry.url ?? entry.jdLink);
+      const dedupKey = candidateDedupKey({ company: entry.company, title: entry.role ?? entry.title, location: entry.location });
+      if ((canonicalUrl && existingUrls.has(canonicalUrl)) || (dedupKey && existingKeys.has(dedupKey))) {
+        skipped++;
+        continue;
+      }
+      rows.push({
+        dedup_key: dedupKey,
+        job_id: entry.jobId || '',
+        company: entry.company || '',
+        role: entry.role ?? entry.title ?? '',
+        notion_page_url: entry.notionPageUrl || '',
+        date_pulled: entry.datePulled || now.slice(0, 10),
+        state: 'committed',
+        run_id: 'notion-seed',
+        created_at: entry.datePulled || now,
+        updated_at: now,
+        error: null,
+        canonical_url: canonicalUrl,
+        provider: entry.provider || null,
+      });
+      if (canonicalUrl) existingUrls.add(canonicalUrl);
+      if (dedupKey) existingKeys.add(dedupKey);
+      added++;
+    }
+    atomicWrite(ledgerPath, rows);
+    return { added, skipped, total: rows.length };
+  });
+}
+
 function rowsForMutation(ledgerPath) {
   const current = readLedger(ledgerPath);
   return current.legacy ? migrateRows(current.rows) : current.rows;
@@ -205,7 +243,7 @@ function cliValue(args, name) {
 }
 
 function printHelp() {
-  console.log('Usage: node job-pull/ledger.mjs <validate|pending|migrate> [--path FILE] [--dry-run]');
+  console.log('Usage: node job-pull/ledger.mjs <validate|pending|migrate|seed> [--path FILE] [--dry-run] [--in FILE]');
 }
 
 export function main(argv = process.argv.slice(2)) {
@@ -226,6 +264,17 @@ export function main(argv = process.argv.slice(2)) {
   }
   if (command === 'migrate') {
     console.log(JSON.stringify(migrateLedger({ path: ledgerPath, dryRun: argv.includes('--dry-run') }), null, 2));
+    return 0;
+  }
+  if (command === 'seed') {
+    const inputPath = cliValue(argv, '--in');
+    if (!inputPath) {
+      console.error('seed requires --in FILE (JSON array of {company, role, location, url, datePulled})');
+      return 1;
+    }
+    const entries = JSON.parse(readFileSync(inputPath, 'utf8'));
+    const result = seedFromNotion(entries, { path: ledgerPath });
+    console.log(JSON.stringify(result, null, 2));
     return 0;
   }
   printHelp();

@@ -1,0 +1,192 @@
+{
+  "schemaVersion": "LaunchpadV5ManifestV2",
+  "parent": { "type": "page_id", "id": "3a55c2b5-d1b0-817b-acf7-e5fd8b4a153f" },
+  "targets": {
+    "applications": { "name": "Applications v5", "databaseId": "e4ff390d6fd443b9964712946fa353e7", "dataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6" },
+    "companies": { "name": "Companies v5", "databaseId": "67ba28799d314ba08badcb7ce1cd57db", "dataSourceId": "74fe8195-fafc-417d-a982-91e8b54d6fff" },
+    "outreach": { "name": "Outreach v5", "databaseId": "33cd9dbfee0e463e987af1a93dae11d5", "dataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc" },
+    "activity": { "name": "Activity v5", "databaseId": "2900ad1e52a64d49a7c4fca638832ac4", "dataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05" },
+    "referrals": { "name": "Referrals v5", "databaseId": "5b7c1f14723746779c1eb57c84f96357", "dataSourceId": "fafb335b-0707-48be-8877-ee9659bf0ea4" }
+  },
+  "expectedPropertyContracts": {
+    "applications": ["name", "role", "company", "outreach", "activity", "referrals", "jdLink", "originalApplicationUrl", "applicationResolution", "applicationReady", "postedDate", "discoveredAt", "crawledAt", "freshnessTier", "status", "makeResume", "applied", "appliedAt", "resumeState", "outreachState", "nextAction", "employmentCategory", "selectionTier", "relaxation", "roleFamily", "companyStage", "workMode", "location", "matchScore", "conversionScore", "responseLikelihood", "source", "provider", "sourceJobId", "originalApplicationEvidence", "liveness", "requirementsEvidence", "relaxationEvidence", "rationale", "hook", "runId", "dedupKey", "syncKey", "stipendAmount", "stipendCurrency", "stipendPeriod", "stipendMonthlyAmount", "stipendRaw", "stipendEvidence", "stipendTier", "freshness", "readiness"],
+    "companies": ["name", "applications", "canonicalDomain", "careerPageUrl", "atsProvider", "atsBoardUrl", "stage", "fundingDate", "fundingEvidence", "locations", "remotePolicy", "verificationState", "companyKey", "lastVerified"],
+    "outreach": ["name", "application", "activity", "person", "channel", "contactUrl", "preview", "sent", "sentAt", "response", "outcome", "nextEligibleContact", "duplicateKey", "evidenceUrl", "draftState", "email"],
+    "activity": ["name", "application", "outreach", "eventType", "eventAt", "dueAt", "idempotencyKey", "actionState", "notes"],
+    "referrals": ["name", "application", "person", "personUrl", "channel", "status", "requestedAt", "outcome", "duplicateKey", "evidence"]
+  },
+  "viewNames": ["Ready", "Backfill", "Internship", "Startup", "Remote", "Verification", "Resume", "Applied", "Outreach", "Follow-up", "Pipeline", "Archive"],
+  "legacyAuditGaps": ["v3_database_page_ids_not_recorded", "v3_companies_and_outreach_data_source_ids_not_recorded", "v4_companies_database_page_id_not_recorded", "v4_outreach_database_page_id_not_recorded"],
+  "provisionedAt": "2026-07-23",
+  "connectorIdentity": {
+    "workspace": "Onkar Jadhav’s Space",
+    "user": "Onkar Jadhav / leoeccentric@gmail.com",
+    "authorizedOperationally": true
+  },
+  "parentFetched": true,
+  "targetsFetched": {
+    "applications": { "created": true, "databaseFetched": true, "dataSourceFetched": true },
+    "companies": { "created": true, "databaseFetched": true, "dataSourceFetched": true },
+    "outreach": { "created": true, "databaseFetched": true, "dataSourceFetched": true },
+    "activity": { "created": true, "databaseFetched": true, "dataSourceFetched": true },
+    "referrals": { "created": true, "databaseFetched": true, "dataSourceFetched": true }
+  },
+  "liveSchemaSync": {
+    "dataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6",
+    "target": "Applications v5",
+    "syncedAt": "2026-07-23",
+    "verified": true,
+    "fields": {
+      "Stipend Amount": { "type": "number" },
+      "Stipend Currency": { "type": "select", "options": [] },
+      "Stipend Period": { "type": "select", "options": [] },
+      "Stipend Monthly Amount": { "type": "number" },
+      "Stipend Raw": { "type": "rich_text", "text": "text" },
+      "Stipend Evidence": { "type": "rich_text", "text": "text" },
+      "Stipend Tier": { "type": "select", "options": [
+        { "name": "Preferred", "color": "green" },
+        { "name": "Lower-Stipend", "color": "yellow" }
+      ] },
+      "Freshness": { "type": "rich_text", "text": "text" },
+      "Readiness": { "type": "rich_text", "text": "text" }
+    }
+  },
+  "relations": [
+    { "from": "applications.Company", "to": "companies", "fromDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "toDataSourceId": "74fe8195-fafc-417d-a982-91e8b54d6fff", "verified": true },
+    { "from": "companies.Applications", "to": "applications", "fromDataSourceId": "74fe8195-fafc-417d-a982-91e8b54d6fff", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true },
+    { "from": "applications.Outreach", "to": "outreach", "fromDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "toDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "verified": true },
+    { "from": "outreach.Application", "to": "applications", "fromDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true },
+    { "from": "applications.Activity", "to": "activity", "fromDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "toDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "verified": true },
+    { "from": "activity.Application", "to": "applications", "fromDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true },
+    { "from": "outreach.Activity", "to": "activity", "fromDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "toDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "verified": true },
+    { "from": "activity.Outreach", "to": "outreach", "fromDataSourceId": "4b7fbdaa-4838-456e-9021-67b3cac29a05", "toDataSourceId": "c2185ba5-172b-4d2c-aec7-c24b744cd5dc", "verified": true },
+    { "from": "applications.Referrals", "to": "referrals", "fromDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "toDataSourceId": "fafb335b-0707-48be-8877-ee9659bf0ea4", "verified": true },
+    { "from": "referrals.Application", "to": "applications", "fromDataSourceId": "fafb335b-0707-48be-8877-ee9659bf0ea4", "toDataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6", "verified": true }
+  ],
+  "views": {
+    "created": true,
+    "verified": true,
+    "status": "created_with_partial_filter_coverage",
+    "databaseId": "e4ff390d6fd443b9964712946fa353e7",
+    "dataSourceId": "3fa24d92-d7c3-4406-8d5f-79f3916dfdd6",
+    "fetchedAt": "2026-07-23",
+    "required": {
+      "Ready": {
+        "id": "3a55c2b5-d1b0-810d-8ba4-000cf60ecc37",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "partial",
+        "filters": [
+          { "property": "Application Ready", "operator": "equals", "value": true, "configured": true },
+          { "property": "Status", "operator": "equals", "value": "Ready", "configured": false, "omissionReason": "omitted conservatively" }
+        ]
+      },
+      "Backfill": {
+        "id": "3a55c2b5-d1b0-81d6-a8a2-000caa99617d",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "exact",
+        "filters": [
+          { "property": "Selection Tier", "operator": "equals", "value": "Backfill", "configured": true }
+        ]
+      },
+      "Internship": {
+        "id": "3a55c2b5-d1b0-81a1-8437-000cad378c7b",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "exact",
+        "filters": [
+          { "property": "Employment Category", "operator": "equals", "value": "Internship", "configured": true }
+        ]
+      },
+      "Startup": {
+        "id": "3a55c2b5-d1b0-818c-ada2-000c886333a3",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "exact",
+        "filters": [
+          { "property": "Company Stage", "operator": "equals", "value": "Startup", "configured": true }
+        ]
+      },
+      "Remote": {
+        "id": "3a55c2b5-d1b0-818c-b434-000cb954a651",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "exact",
+        "filters": [
+          { "property": "Work Mode", "operator": "equals", "value": "Remote", "configured": true }
+        ]
+      },
+      "Verification": {
+        "id": "3a55c2b5-d1b0-8165-b9d1-000ccfaa9359",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "unfiltered",
+        "filters": [
+          { "property": "Application Resolution", "operator": "equals", "value": "Unresolved", "configured": false, "omissionReason": "omitted conservatively" }
+        ]
+      },
+      "Resume": {
+        "id": "3a55c2b5-d1b0-816e-8b78-000c542879e8",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "exact",
+        "filters": [
+          { "property": "Make Resume", "operator": "equals", "value": true, "configured": true }
+        ]
+      },
+      "Applied": {
+        "id": "3a55c2b5-d1b0-8195-8eb3-000ca6931156",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "exact",
+        "filters": [
+          { "property": "Applied?", "operator": "equals", "value": true, "configured": true }
+        ]
+      },
+      "Outreach": {
+        "id": "3a55c2b5-d1b0-819c-bdb9-000c96bd7727",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "unfiltered",
+        "filters": [
+          { "property": "Outreach State", "operator": "is_not_empty", "configured": false, "omissionReason": "is_not_empty unsupported" }
+        ]
+      },
+      "Follow-up": {
+        "id": "3a55c2b5-d1b0-8121-9ca4-000c02f35cf5",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "unfiltered",
+        "filters": [
+          { "property": "Next Action", "operator": "is_not_empty", "configured": false, "omissionReason": "is_not_empty unsupported" }
+        ]
+      },
+      "Pipeline": {
+        "id": "3a55c2b5-d1b0-8104-b062-000ccce107cd",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "unfiltered",
+        "filters": [
+          { "property": "Status", "operator": "is_not_empty", "configured": false, "omissionReason": "is_not_empty unsupported" }
+        ]
+      },
+      "Archive": {
+        "id": "3a55c2b5-d1b0-8107-b66d-000c8d8c8dda",
+        "type": "table",
+        "sort": { "property": "Name", "direction": "ascending" },
+        "filterCoverage": "partial",
+        "filters": [
+          { "property": "Status", "operator": "equals", "value": "Closed/Expired", "configured": true },
+          { "property": "Status", "operator": "equals", "value": "Rejected", "configured": false, "omissionReason": "omitted conservatively" }
+        ]
+      }
+    }
+  },
+  "smokeRows": {
+    "created": false,
+    "verified": false,
+    "omitted": true,
+    "reason": "connector relation-value serialization unproven"
+  }
+}

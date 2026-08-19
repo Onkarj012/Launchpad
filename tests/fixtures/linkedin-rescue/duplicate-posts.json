@@ -1,0 +1,40 @@
+[
+  {
+    "query": "hiring \"AI/LLM Engineer\"",
+    "postUrl": "https://www.linkedin.com/posts/duplicate-ai-222?utm_campaign=one",
+    "author": { "name": "Jane Rao", "profileUrl": "https://www.linkedin.com/in/jane-rao", "relationship": "Hiring Manager at Acme AI" },
+    "timestampEvidence": "2h",
+    "postedAt": "2026-07-23T04:30:00.000Z",
+    "observedAt": "2026-07-23T06:30:00.000Z",
+    "rawHiringContext": "We are hiring an AI Engineer in Pune for a full-time 0-1 year role. DM me.",
+    "jobLink": "https://jobs.acme.example/roles/ai-engineer?utm_source=linkedin",
+    "company": "Acme AI",
+    "title": "AI Engineer",
+    "location": "Pune, India",
+    "employment": { "type": "full-time", "evidence": "full-time" },
+    "experience": { "minYears": 0, "maxYears": 1, "evidence": "0-1 year" },
+    "originalApplicationResolution": { "url": "https://jobs.acme.example/roles/ai-engineer", "evidence": "Acme careers page", "status": "Resolved Original" },
+    "liveness": { "status": "Active", "evidence": "active" },
+    "scoring": { "matchScore": 82, "rationale": "AI role" },
+    "contactInvitation": { "channel": "DM", "text": "DM me" }
+  },
+  {
+    "query": "hiring \"ML Engineer\"",
+    "postUrl": "https://www.linkedin.com/posts/duplicate-ai-222?utm_campaign=two",
+    "author": { "name": "Jane Rao", "profileUrl": "https://www.linkedin.com/in/jane-rao", "relationship": "Hiring Manager at Acme AI" },
+    "timestampEvidence": "2h",
+    "postedAt": "2026-07-23T04:30:00.000Z",
+    "observedAt": "2026-07-23T06:30:00.000Z",
+    "rawHiringContext": "We are hiring an AI Engineer in Pune for a full-time 0-1 year role. DM me.",
+    "jobLink": "https://jobs.acme.example/roles/ai-engineer?utm_source=duplicate",
+    "company": "Acme AI",
+    "title": "AI Engineer",
+    "location": "Pune, India",
+    "employment": { "type": "full-time", "evidence": "full-time" },
+    "experience": { "minYears": 0, "maxYears": 1, "evidence": "0-1 year" },
+    "originalApplicationResolution": { "url": "https://jobs.acme.example/roles/ai-engineer", "evidence": "Acme careers page", "status": "Resolved Original" },
+    "liveness": { "status": "Active", "evidence": "active" },
+    "scoring": { "matchScore": 82, "rationale": "AI role" },
+    "contactInvitation": { "channel": "DM", "text": "DM me" }
+  }
+]

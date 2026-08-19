@@ -1,0 +1,175 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import os from 'node:os';
+import path from 'node:path';
+import { openCrawlerStore, startCrawlRun, finishCrawlRun } from '../../crawler/run.mjs';
+import { dailyRunIdentity } from '../../crawler/scheduler.mjs';
+import { buildScheduleHealthReport } from '../../crawler/schedule-health.mjs';
+
+function tempDbPath(prefix) {
+  return path.join(mkdtempSync(path.join(os.tmpdir(), prefix)), 'crawler.sqlite');
+}
+
+test('reports no run history without requiring a database file to exist', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-missing-');
+  const report = buildScheduleHealthReport({ databasePath, now: new Date('2026-07-24T05:00:00.000Z') });
+
+  assert.equal(report.schemaVersion, 'LaunchpadScheduleHealthReportV1');
+  assert.equal(report.hasDatabase, false);
+  assert.equal(report.schedules.morning.hasRunHistory, false);
+  assert.equal(report.schedules.morning.lastRun, null);
+  assert.equal(report.schedules.morning.classification.status, 'fresh');
+  assert.equal(report.schedules.midday.hasRunHistory, false);
+  assert.equal(report.noAutoApply, true);
+  assert.equal(report.noAutoSend, true);
+});
+
+test('reads durable counts, duration, source failures, and classification for a completed morning run', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-completed-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'morning', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'morning', clock: { now: () => '2026-07-24T00:30:00.000Z' } });
+  store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, updated_at)
+    VALUES ('ats-warm', 'ats-warm', 'direct', '{}', '{}', ?)`).run('2026-07-24T00:30:00.000Z');
+  store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+    VALUES (?, 'ats-warm', 'fetch', 1, 'terminal', 'example.test', 500, 'boom', ?)`).run(runId, '2026-07-24T00:31:00.000Z');
+  finishCrawlRun(store, runId, {
+    status: 'completed',
+    counts: { ready: 5, verification: 3, rejected: 7, fetched: 40 },
+    telemetry: { workflow: { verificationQueue: [1, 2, 3], sourceYield: { totals: { applicationReady: 5 } } } },
+    clock: { now: () => '2026-07-24T01:35:00.000Z' },
+  });
+  store.close();
+
+  const report = buildScheduleHealthReport({ databasePath, now: new Date(now) });
+  const morning = report.schedules.morning;
+
+  assert.equal(report.hasDatabase, true);
+  assert.equal(morning.hasRunHistory, true);
+  assert.equal(morning.lastRun.runId, runId);
+  assert.equal(morning.lastRun.status, 'completed');
+  assert.equal(morning.lastSuccessfulRun.runId, runId);
+  assert.equal(morning.durationMs, Date.parse('2026-07-24T01:35:00.000Z') - Date.parse('2026-07-24T00:30:00.000Z'));
+  assert.equal(morning.sourceFailures, 1);
+  assert.deepEqual(morning.counts, { ready: 5, verification: 3, rejected: 7 });
+  assert.equal(morning.classification.status, 'fresh');
+  assert.equal(morning.classification.reason, 'current daily run is complete or ready');
+
+  // midday has no rows yet: an empty table is truthfully reported, not fabricated.
+  assert.equal(report.schedules.midday.hasRunHistory, false);
+});
+
+test('classifies an incomplete same-identity run as resumed and leaves lastSuccessfulRun null', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-resumed-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'midday', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'midday', clock: { now: () => '2026-07-24T07:00:00.000Z' } });
+  store.close();
+
+  const report = buildScheduleHealthReport({ databasePath, now: new Date(now) });
+  const midday = report.schedules.midday;
+
+  assert.equal(midday.lastRun.runId, runId);
+  assert.equal(midday.lastRun.status, 'running');
+  assert.equal(midday.classification.status, 'resumed');
+  assert.equal(midday.lastSuccessfulRun, null);
+});
+
+test('falls back to sourceYield totals for ready count when durable counts omit it', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-fallback-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'morning', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'morning', clock: { now: () => '2026-07-24T00:30:00.000Z' } });
+  finishCrawlRun(store, runId, {
+    status: 'completed',
+    counts: { fetched: 10 },
+    telemetry: { workflow: { verificationQueue: [1], sourceYield: { totals: { applicationReady: 2 } } } },
+    clock: { now: () => '2026-07-24T00:45:00.000Z' },
+  });
+  store.close();
+
+  const report = buildScheduleHealthReport({ databasePath, now: new Date(now) });
+  assert.equal(report.schedules.morning.counts.ready, 2);
+  assert.equal(report.schedules.morning.counts.verification, 1);
+  assert.equal(report.schedules.morning.counts.rejected, 0);
+});
+
+test('reports truncation signals and measured duration per source', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-source-signals-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'morning', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'morning', clock: { now: () => '2026-07-24T00:30:00.000Z' } });
+  store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, updated_at)
+    VALUES ('ats-enterprise', 'ats-expanded', 'direct', '{}', '{}', ?)`).run('2026-07-24T00:30:00.000Z');
+  store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json)
+    VALUES (?, 'ats-enterprise', 'truncated', 1, 1, 1, 1, 0, ?)`).run(runId, JSON.stringify({ truncated: true, capHit: 'maxJobsPerBoard', recordsNotExamined: 4 }));
+  finishCrawlRun(store, runId, {
+    status: 'completed_with_failures',
+    telemetry: { sourceDurations: { 'ats-enterprise': 4321 } },
+    clock: { now: () => '2026-07-24T00:45:00.000Z' },
+  });
+  store.close();
+
+  const source = buildScheduleHealthReport({ databasePath, now: new Date(now) }).schedules.morning.sourceTelemetry['ats-enterprise'];
+  assert.deepEqual(source, {
+    status: 'truncated',
+    truncated: true,
+    capHit: 'maxJobsPerBoard',
+    recordsNotExamined: 4,
+    durationMs: 4321,
+  });
+});
+
+test('opens existing database read-only without repairing metadata', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-read-only-');
+  const store = openCrawlerStore(databasePath);
+  store.prepare("UPDATE crawler_meta SET value = 'sentinel' WHERE key = 'schema_version'").run();
+  store.prepare('DELETE FROM crawler_migrations WHERE version = ?').run(4);
+  store.close();
+
+  const report = buildScheduleHealthReport({ databasePath, now: new Date('2026-07-24T05:00:00.000Z') });
+  assert.equal(report.hasDatabase, true);
+
+  const check = new DatabaseSync(databasePath, { readOnly: true });
+  assert.equal(check.prepare("SELECT value FROM crawler_meta WHERE key = 'schema_version'").get().value, 'sentinel');
+  assert.equal(check.prepare('SELECT COUNT(*) AS count FROM crawler_migrations WHERE version = ?').get(4).count, 0);
+  check.close();
+});
+
+test('reports a source with no truncation signals as clean', () => {
+  const databasePath = tempDbPath('launchpad-schedule-health-source-clean-');
+  const store = openCrawlerStore(databasePath);
+  const now = '2026-07-24T05:00:00.000Z';
+  const runId = dailyRunIdentity({ schedule: 'morning', at: now });
+
+  startCrawlRun(store, { runId, schedule: 'morning', clock: { now: () => '2026-07-24T00:30:00.000Z' } });
+  store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, updated_at)
+    VALUES ('ats-warm', 'ats-warm', 'direct', '{}', '{}', ?)`).run('2026-07-24T00:30:00.000Z');
+  store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json)
+    VALUES (?, 'ats-warm', 'succeeded', 1, 1, 1, 1, 0, '{}')`).run(runId);
+  finishCrawlRun(store, runId, {
+    status: 'completed',
+    telemetry: { sourceDurations: { 'ats-warm': 9 } },
+    clock: { now: () => '2026-07-24T00:45:00.000Z' },
+  });
+  store.close();
+
+  const source = buildScheduleHealthReport({ databasePath, now: new Date(now) }).schedules.morning.sourceTelemetry['ats-warm'];
+  assert.deepEqual(source, {
+    status: 'succeeded',
+    truncated: false,
+    capHit: null,
+    recordsNotExamined: null,
+    durationMs: 9,
+  });
+});

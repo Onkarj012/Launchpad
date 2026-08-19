@@ -1,0 +1,170 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  buildAgentPlist,
+  buildScheduleAgents,
+  installSchedules,
+} from '../../crawler/install-schedule.mjs';
+
+function tempDir(prefix) {
+  return mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function fixtureOptions() {
+  return {
+    repoRoot: '/fixture/repo root',
+    cliPath: '/fixture/repo root/crawler/cli.mjs',
+    nodePath: '/fixture/bin/node',
+    logDir: tempDir('launchpad-schedule-logs-'),
+    launchAgentsDir: tempDir('launchpad-launch-agents-'),
+  };
+}
+
+test('generates morning (04:30) and midday (12:30) plists from the schedules.mjs cadence, without calling launchctl', () => {
+  const options = fixtureOptions();
+  const agents = buildScheduleAgents(options);
+  assert.equal(agents.length, 2);
+
+  const morning = agents.find((agent) => agent.schedule === 'morning');
+  const midday = agents.find((agent) => agent.schedule === 'midday');
+  assert.equal(morning.label, 'com.launchpad.crawler.morning');
+  assert.equal(midday.label, 'com.launchpad.crawler.midday');
+  assert.equal(morning.hour, 4);
+  assert.equal(morning.minute, 30);
+  assert.equal(midday.hour, 12);
+  assert.equal(midday.minute, 30);
+
+  for (const agent of agents) {
+    assert.ok(agent.content.includes(`<string>${agent.label}</string>`));
+    assert.ok(agent.content.includes('<string>/fixture/bin/node</string>'));
+    assert.ok(agent.content.includes('<string>/fixture/repo root/crawler/cli.mjs</string>'));
+    assert.ok(agent.content.includes('<string>daily</string>'));
+    assert.ok(agent.content.includes(`<string>${agent.schedule}</string>`));
+    assert.ok(agent.content.includes('<string>--env</string>'));
+    assert.ok(agent.content.includes('<string>production</string>'));
+    assert.ok(agent.content.includes('<string>--mode</string>'));
+    assert.ok(agent.content.includes('<string>normal</string>'));
+    assert.ok(agent.content.includes('<string>--location-preset</string>'));
+    assert.ok(agent.content.includes('<string>pune</string>'));
+    assert.ok(agent.content.includes(`<integer>${agent.hour}</integer>`));
+    assert.ok(agent.content.includes(`<integer>${agent.minute}</integer>`));
+    assert.ok(agent.plistPath.startsWith(options.launchAgentsDir));
+    assert.ok(agent.outLog.startsWith(options.logDir));
+    assert.ok(agent.errLog.startsWith(options.logDir));
+  }
+});
+
+test('single-agent build rejects an unsupported schedule id', () => {
+  assert.throws(() => buildAgentPlist({ schedule: 'evening' }), /unsupported crawler schedule/);
+});
+
+test('dry-run never writes a plist file or invokes launchctl', () => {
+  const options = fixtureOptions();
+  let calls = 0;
+  const launchctl = () => { calls += 1; return { status: 0, stdout: '', stderr: '' }; };
+
+  const result = installSchedules({ dryRun: true, launchctl, uid: 501, agents: buildScheduleAgents(options) });
+  assert.equal(result.dryRun, true);
+  assert.equal(calls, 0);
+  assert.ok(result.agents.every((agent) => agent.dryRun === true && agent.installed === false));
+  assert.equal(fs.readdirSync(options.launchAgentsDir).length, 0);
+});
+
+test('install is idempotent: it boots out any existing service before bootstrap, using an injected launchctl stub', () => {
+  const options = fixtureOptions();
+  const calls = [];
+  const launchctl = (args) => {
+    calls.push(args);
+    if (args[0] === 'bootout') return { status: 1, stdout: '', stderr: 'No such process' }; // not previously loaded
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const result = installSchedules({ dryRun: false, launchctl, uid: 501, agents: buildScheduleAgents(options) });
+  assert.equal(result.domain, 'gui/501');
+  assert.equal(result.agents.length, 2);
+  assert.ok(result.agents.every((agent) => agent.installed === true));
+
+  // bootout then bootstrap, per agent, in order — never a raw load that would error on a second run.
+  const morningCalls = calls.filter((args) => args.some((item) => String(item).includes('com.launchpad.crawler.morning')));
+  assert.equal(morningCalls[0][0], 'bootout');
+  assert.equal(morningCalls[1][0], 'bootstrap');
+
+  for (const agent of result.agents) {
+    assert.ok(fs.existsSync(agent.plistPath));
+    assert.equal(fs.readFileSync(agent.plistPath, 'utf8'), agent.content);
+  }
+});
+
+test('a failed bootstrap is reported as not installed and recovered rather than thrown', () => {
+  const options = fixtureOptions();
+  const launchctl = (args) => (args[0] === 'bootstrap' ? { status: 1, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error' } : { status: 0, stdout: '', stderr: '' });
+
+  const result = installSchedules({ dryRun: false, launchctl, uid: 501, agents: buildScheduleAgents(options) });
+  assert.ok(result.agents.every((agent) => agent.installed === false));
+  assert.equal(result.agents.filter((agent) => agent.skipped !== true).length, 1);
+  assert.equal(result.agents[0].bootstrap.status, 1);
+  assert.equal(result.recovered, true);
+});
+
+test('failed second bootstrap restores existing plist bytes and loaded services', () => {
+  const options = fixtureOptions();
+  const agents = buildScheduleAgents(options);
+  const priorBytes = new Map(agents.map((agent) => [agent.plistPath, `prior-${agent.schedule}\n`]));
+  for (const agent of agents) fs.writeFileSync(agent.plistPath, priorBytes.get(agent.plistPath));
+  const loaded = new Set(agents.map((agent) => agent.label));
+  const calls = [];
+  let failedMiddayCandidate = false;
+  const launchctl = (args) => {
+    calls.push(args);
+    const label = args[0] === 'bootout' ? String(args[1]).split('/').at(-1) : agents.find((agent) => agent.plistPath === args[2])?.label;
+    if (args[0] === 'bootout') {
+      const wasLoaded = loaded.delete(label);
+      return { status: wasLoaded ? 0 : 1, stdout: '', stderr: wasLoaded ? '' : 'No such process' };
+    }
+    if (label === 'com.launchpad.crawler.midday' && !failedMiddayCandidate) {
+      failedMiddayCandidate = true;
+      return { status: 1, stdout: '', stderr: 'candidate failed' };
+    }
+    loaded.add(label);
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const result = installSchedules({ launchctl, uid: 501, agents });
+  assert.equal(result.recovered, true);
+  assert.equal(result.recovery.recovered, true);
+  assert.equal(calls.filter((args) => args[0] === 'bootstrap' && args[2] === agents[1].plistPath).length, 2);
+  assert.equal(calls.filter((args) => args[0] === 'bootstrap' && args[2] === agents[0].plistPath).length, 2);
+  assert.deepEqual(loaded, new Set(agents.map((agent) => agent.label)));
+  for (const agent of agents) assert.equal(fs.readFileSync(agent.plistPath, 'utf8'), priorBytes.get(agent.plistPath));
+  assert.equal(result.agents[1].skipped, undefined);
+});
+
+test('failed second bootstrap removes plists created by an initial install', () => {
+  const options = fixtureOptions();
+  const agents = buildScheduleAgents(options);
+  const loaded = new Set();
+  let failedMiddayCandidate = false;
+  const launchctl = (args) => {
+    const label = args[0] === 'bootout' ? String(args[1]).split('/').at(-1) : agents.find((agent) => agent.plistPath === args[2])?.label;
+    if (args[0] === 'bootout') {
+      loaded.delete(label);
+      return { status: 0, stdout: '', stderr: '' };
+    }
+    if (label === 'com.launchpad.crawler.midday' && !failedMiddayCandidate) {
+      failedMiddayCandidate = true;
+      return { status: 1, stdout: '', stderr: 'candidate failed' };
+    }
+    loaded.add(label);
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const result = installSchedules({ launchctl, uid: 501, agents });
+  assert.equal(result.recovered, true);
+  assert.equal(loaded.size, 0);
+  for (const agent of agents) assert.equal(fs.existsSync(agent.plistPath), false);
+  assert.ok(result.recovery.agents.every((agent) => agent.priorPlistExisted === false));
+});

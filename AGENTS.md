@@ -4,17 +4,19 @@ This is Onkar Jadhav's job-search system: discover roles → score against targe
 
 ## Source of truth
 - **`master_prompt.md`** (project root) is the single source of truth for targeting, scoring rubric, resume tailoring rules, and outreach. Every skill reads it. Change behavior there, not here — this file does **not** duplicate the rubric.
-- **Resume content:** `resumes/master/Master_Resume_ATS.tex` (ATS-clean, default for portal applies) and `resumes/master/Master_Resume.tex` (pretty, for cold-email attachments). Never invent experience — tailoring only reframes/reorders/selects from these.
+- **`docs/STATUS.md`** is the sole repository index for current execution status. GitHub issues remain the live issue-status authority; dated plans, audits, probes, and local issue packs are design/history.
+- **Resume layout:** `resumes/templates/Onkar_Template.tex` is the single canonical, frozen layout template. Every tailored resume starts as a copy of it; only its `%== TAILOR-START/END ==` slots (HEADLINE, SUMMARY, COURSEWORK, STRIDE-BULLETS, PROJECTS, PUBLICATIONS, SKILLS) are editable per JD. The Capgemini employment block in Experience is frozen and never tailored.
+- **Resume content:** `resumes/master/Master_Resume_ATS.tex` is the approved-evidence source of truth. Never invent experience — tailoring only reframes/reorders/selects from it.
 
 ## Frozen identity (do not re-ask)
 - **Name:** Onkar Jadhav
 - **Email:** onkarj012@gmail.com · **Phone:** +91-7058604679
 - **GitHub:** github.com/Onkarj012 · **LinkedIn:** linkedin.com/in/onkarj012 · **Portfolio:** leo4.dev
 - **Location:** Pune, Maharashtra, India
-- **Education:** B.Tech Computer Science, PCCOE (SPPU) — 9.08 CGPA — graduating Jun 2026
-- **Status:** final-year student / new-grad, fresher (0–1 yr)
+- **Education:** B.Tech Computer Science, PCCOE (SPPU) — 9.17 CGPA — final result officially declared; degree certificate pending — 2026
+- **Status:** employed — Capgemini, A4 Analyst, Navi Mumbai, since 10 Aug 2026; currently in Java Full Stack (JFS) course training with no project work yet. Still early-career (0–1 yr) for targeting purposes. Searching for an AI/ML/full-stack role with a Pune-wide onsite/hybrid commute or India-eligible remote.
 - **Target titles:** AI/LLM Engineer, Agentic AI Engineer, ML Engineer, Full-Stack (AI-leaning), Backend (Python), New-grad SWE
-- **Headline work:** Stride (shipped, in use — always in Experience as Founder & Lead Engineer), Lore Engine (RAG), StockXpert (DL equity), GovBench (LLM governance), PromptForge (agentic). Vaani exists but is never put on tailored resumes.
+- **Headline work:** Stride (shipped, in use — always in Experience as Lead Engineer), Lore Engine (RAG), StockXpert (DL equity), GovBench (LLM governance), PromptForge (agentic). Vaani exists but is never put on tailored resumes.
 - Full targeting/gates/rubric live in `master_prompt.md` §§ 2–4.
 
 ## Directory map
@@ -25,31 +27,36 @@ Job Search/
   companies.json       ← Layer-2 ATS watchlist for daily-job-pull
   .agents/skills/     ← all slash skills (project-scoped, single-slash invokable)
   resumes/
-    master/            Master_Resume_ATS.tex (default) + Master_Resume.tex (pretty)
-    bases/             Base1-3 variants (+ previews)
-    sources/           tailored .tex sources + build/ compile scratch
-    output/            final PDFs ONLY — Onkar_Jadhav_<Company>_<Role>.pdf
+    templates/         Onkar_Template.tex ← frozen canonical layout truth (+ preview PDF)
+    master/            Master_Resume_ATS.tex ← content/evidence source of truth
+    sources/           <YYYY-MM-DD>/ tailored .tex sources (date-partitioned) + build/ compile scratch
+    output/            <YYYY-MM-DD>/ final PDFs ONLY — Onkar_Jadhav_<Company>_<Role>.pdf
   prompts/             deep-job-search.md (reference prompt, run occasionally — not a skill)
-  archive/             old PLAN files + old logs (history, out of the way)
+  archive/             old PLAN files, old logs, pre-template resume bases/sources/outputs (history, out of the way)
   logs/                run logs
 ```
 
 ## Skills (single-slash)
-- `/morning` — daily entry point: runs `daily-job-pull` end-to-end, presents Strict-first shortlist, surfaces due follow-ups. Skips if today's pull already ran, unless forced. **Discovery only.**
-- `/daily-job-pull` — full discovery engine (tracked boards, reverse Greenhouse/Lever/Ashby/Workday, public/startup feeds, broad WebSearch, watchlist, optional Indeed) → normalize → gate → score → diversify → log 15-20 to Notion. **Discovery only.** Usually invoked via `/morning`, not directly.
+- `/morning` — daily v5 entry point; no argument means Normal, with `/morning startup` and `/morning remote` as focused modes. The executable local surface is `node crawler/cli.mjs daily morning|midday --mode normal|startup|remote --location-preset india|pune`: one shared crawl, then the requested mode selector. Midday Remote skips native remote feeds.
+- `/daily-job-pull` — v5 discovery engine (ATS, India-first, startup, remote, optional Indeed, and explicit Apify rescue) → normalize → gate → score → select 10–20. Usually invoked via `/morning`; consequential actions remain prohibited.
 - `/quick-add` — log one user-found role (gate → score → single row).
-- `/followups` — surface applications/cold-emails due a follow-up today (fixed cadence), draft on request. **Never sends.**
-- `/resume-latex` — paste a JD → tailored one-page PDF-only to `resumes/output/`.
-- `/make-applications` — batch-tailor every `Apply?`-checked Notion row (local-only).
+- `/followups` — surface v5 Applications/Outreach/Activity due items (fixed cadence), draft on request. **Never sends.**
+- `/resume-latex` — paste a JD → tailored one-page PDF-only to `resumes/output/<date>/`, built from the frozen template.
+- `/make-applications` — batch-tailor every user-checked `Make Resume` v5 row (local-only).
+- `/outreach` — research contacts and prepare v5 drafts; user confirmation is required for any sent-state record. **Never sends.**
+- `/linkedin-leads` — explicit, read-only LinkedIn hiring-post rescue; never called automatically.
+- `/sync` — synchronize observed `Applied?` and confirmed outcomes through v5 Activity idempotently.
 - `/resume-check` — brutal recruiter review of the `.tex` source vs a JD (or generic fallback).
 - `/application-agent` — full single-role workflow (research → fit → resume → optional cold email).
 
 ## Guardrails (non-negotiable)
 - **No auto-apply, ever.** No skill checks `Apply?`, submits an application, or sends an email autonomously. `Apply?` is always a manual user action; `Auto-Suggest` is an opinion, not a command.
-- **Scheduled / cloud runs are discovery-only** — a scheduled `daily-job-pull` scores and logs to Notion and nothing else.
+- **Scheduled execution support is local and bounded** — launchd generation/install code exists, but installed state and production operation require separate retained evidence. Daily execution may update local discovery/opportunity state and plan v5 operations; it never auto-applies, sends, or changes user-owned checkboxes.
 - **Resume compilation is local-only** — needs the Mac LaTeX toolchain; never runs headless/cloud.
-- **PDF-only output** — `resumes/output/` contains only `.pdf`; `.tex` stays in `resumes/sources/`; build artifacts are deleted after every compile.
+- **PDF-only output** — `resumes/output/<date>/` contains only `.pdf`; `.tex` stays in `resumes/sources/<date>/`; build artifacts are deleted after every compile.
 - **Never fabricate** experience, metrics, dates, salaries, contacts, or links. Unknown → blank or "Not Verified".
 - **Notion is the tracker of record** — propose any schema change and get approval before touching live data.
+- **Launchpad v5 is the sole active runtime contract** — v3/v4 are read-only historical systems; no migration, fallback, archive, or delete action is permitted in this scope.
+- **Outreach is draft preparation, not delivery** — the active v5 workflow has no guaranteed Gmail draft adapter or send provider. Local draft text and v5 draft state must not be described as a created Gmail draft.
 
 ## Imported Claude Cowork project instructions

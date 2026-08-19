@@ -1,0 +1,224 @@
+%-------------------------
+% RESUME — Onkar Jadhav
+% CANONICAL LAYOUT TEMPLATE. Frozen preamble + frozen structure.
+% Tailor only inside %== TAILOR-START/END ==  slots: HEADLINE, SUMMARY,
+% COURSEWORK, STRIDE-BULLETS, PROJECTS, PUBLICATIONS, SKILLS. Everything
+% else, including section order and section headings, is frozen.
+% Experience section holds current employment first (Capgemini -- frozen
+% heading and frozen single training line, never tailored, never expanded into
+% project claims) followed by Stride (frozen title/subtitle/date, tailorable
+% bullets). Engineering Projects then holds exactly the two tailorable
+% PROJECTS entries.
+% PUBLICATIONS is optional: fill only for research/ML-research JDs; otherwise
+% empty the slot so its \section header does not print.
+% RESUME_EVIDENCE_V1: each new tailored source requires same-directory
+% <stem>.matrix.md and <stem>.provenance.md sidecars. See resumes/evidence/README.md.
+%------------------------
+
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{ragged2e}
+\usepackage[empty]{fullpage}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{marvosym}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\setlength{\multicolsep}{0pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=1.4cm, top=0.8cm, right=1.2cm, bottom=1cm}
+\usepackage[most]{tcolorbox}
+\tcbset{
+    frame code={}
+    center title,
+    left=0pt, right=0pt, top=0pt, bottom=0pt,
+    colback=gray!20, colframe=white,
+    width=\dimexpr\textwidth\relax,
+    enlarge left by=-2mm,
+    boxsep=4pt, arc=0pt, outer arc=0pt,
+}
+\urlstyle{same}
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+
+\newcommand{\resumeItem}[2]{
+  \item{\textbf{#1}{\hspace{0.5mm}#2 \vspace{-0.5mm}}}
+}
+\newcommand{\resumeSubheading}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & \textit{\footnotesize{#4}} \\
+        \textit{\footnotesize{#3}} & \footnotesize{#2}\\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+\newcommand{\resumeProject}[4]{
+\vspace{0.5mm}\item
+    \begin{tabular*}{0.98\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} \textnormal{---} \textit{#2} & \textit{\footnotesize{#4}} \\
+        \footnotesize{\textit{#3}} & \\
+    \end{tabular*}
+    \vspace{-2.4mm}
+}
+
+\renewcommand{\labelitemi}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=*,labelsep=0mm]}
+\newcommand{\resumeHeadingSkillStart}{\begin{itemize}[leftmargin=*,itemsep=1.7mm, rightmargin=2ex]}
+\newcommand{\resumeItemListStart}{\begin{justify}\begin{itemize}[leftmargin=3ex, rightmargin=2ex, noitemsep,labelsep=1.2mm,itemsep=0mm]\footnotesize}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}\vspace{2mm}}
+\newcommand{\resumeHeadingSkillEnd}{\end{itemize}\vspace{-2mm}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\end{justify}\vspace{-2mm}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
+
+\newcommand{\name}{Onkar Jadhav}
+\newcommand{\phone}{7058604679}
+\newcommand{\emaila}{onkarj012@gmail.com}
+\newcommand{\github}{github.com/Onkarj012}
+\newcommand{\linkedin}{linkedin.com/in/onkarj012}
+
+\begin{document}
+
+%----------HEADING-----------------
+\begin{tabularx}{\linewidth}{L r}
+  \textbf{\Large \name} & {+91-\phone} \\
+%== TAILOR-START: HEADLINE ==
+  {AI / Full-Stack Software Engineer} & \href{mailto:\emaila}{\emaila} \\
+%== TAILOR-END: HEADLINE ==
+  {Pune, Maharashtra} & \href{https://\github}{\github} \\
+  \href{https://leo4.dev}{leo4.dev} & \href{https://\linkedin}{\linkedin}
+\end{tabularx}
+\vspace{-4mm}
+
+%----------SUMMARY-----------------
+\section{\textbf{Summary}}
+\vspace{1mm}
+%== TAILOR-START: SUMMARY ==
+\small{
+AI/full-stack engineer (B.Tech CS, PCCOE, 9.17 CGPA) building full-stack AI products end to end, from React/Next.js frontends to Python/Node backend services. Architected a hybrid RAG system (Next.js + FastAPI, BM25 + pgvector, reciprocal rank fusion) gated behind a deploy-time eval harness, and an agentic creator--critic--evaluator pipeline with cross-model benchmarking. Currently shipping Stride, a five-agent AI product, as Lead Engineer. Strong across React, Next.js, FastAPI, Node.js, RAG, and agentic AI system design.
+}
+%== TAILOR-END: SUMMARY ==
+\vspace{-3mm}
+
+%-----------EDUCATION-----------
+\section{\textbf{Education}}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Bachelor of Technology in Computer Science}{CGPA: 9.17}
+      {Pimpri Chinchwad College of Engineering, Savitribai Phule Pune University}{Nov 2022 -- Jun 2026}
+      \resumeItemListStart
+%== TAILOR-START: COURSEWORK ==
+        \item {Relevant Coursework: Machine Learning, Data Structures \& Algorithms, Database Management Systems, Operating Systems, Computer Networks, Object-Oriented Programming}
+%== TAILOR-END: COURSEWORK ==
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-1mm}
+
+%-----------EXPERIENCE-----------------
+\section{\textbf{Experience}}
+\resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Capgemini}{Navi Mumbai, India}
+      {A4 Analyst}{Aug 2026 -- Present}
+      \resumeItemListStart
+        \item {Currently in the Java Full Stack (JFS) engineering training program.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+%== TAILOR-START: STRIDE-BULLETS ==
+    \resumeSubheading
+      {Stride --- AI-First Adaptive Wellness Platform}{Remote}
+      {Lead Engineer --- React/Next.js, Convex, OpenRouter}{April 2026 -- Present}
+      \resumeItemListStart
+        \item {Architected and shipped Stride to production as sole engineer, owning the full stack --- React/Next.js frontend, backend services, and data layer --- running live with an early private user cohort driving iterative product feedback ahead of public beta.}
+        \item {Architected five specialised domain agents (diet, workout, sleep, hydration, habits) sharing a behavioral memory layer, with multi-provider LLM routing via OpenRouter across Anthropic Claude, OpenAI GPT, and Gemini --- eliminating vendor lock-in across five concurrent agent types.}
+        \item {Separated LLM reasoning from deterministic computation (BMR/NEAT/EAT/TEF calculator), eliminating opaque model arithmetic errors; implemented CI-style quality gates before each capability release.}
+        \item {Selected Convex for real-time reactive state over a REST + WebSockets stack, keeping five concurrent agent types in sync across the frontend without manual polling logic.}
+      \resumeItemListEnd
+%== TAILOR-END: STRIDE-BULLETS ==
+
+\resumeSubHeadingListEnd
+\vspace{-2mm}
+
+%-----------ENGINEERING PROJECTS-----------------
+\section{\textbf{Engineering Projects}}
+\resumeSubHeadingListStart
+
+%== TAILOR-START: PROJECTS ==
+    \resumeProject
+      {Lore Engine}{RAG Platform with Deploy-Gated Evaluation Harness}
+      {Next.js, FastAPI, PostgreSQL, pgvector, BM25, Celery, Redis, Cloudflare R2, OpenAI, Anthropic Claude}
+      {2026 -- Present}
+      \resumeItemListStart
+        \item {Architected a full-stack RAG application ingesting \textbf{6,000+ MediaWiki pages} per series into a hybrid retrieval pipeline (BM25 + pgvector via reciprocal rank fusion) --- chosen over pure vector search to handle exact entity and proper-noun matching that semantic models fail on.}
+        \item {Designed section-aware chunking at H2/H3 boundaries with enriched \texttt{[Series][Page][Section]} metadata and spoiler-filter tags per chunk, demonstrating fine-grained context control over large knowledge bases.}
+        \item {Established a \textbf{50-question per-series ground-truth eval harness} measuring retrieval MRR and end-to-end answer accuracy, gating every deploy --- the same CI/CD-for-AI pattern required in production LLM analytics systems.}
+        \item {Built an async ingestion pipeline (Celery, Redis, Cloudflare R2) that fetches from the MediaWiki API and converts wikitext to markdown, scaling to \textbf{$\sim$5M vectors per series} in pgvector --- chosen over Pinecone/Weaviate to stay in one network hop.}
+      \resumeItemListEnd
+    \vspace{-2mm}
+
+    \resumeProject
+      {PromptForge}{Agentic LLM Orchestration \& Cross-Model Benchmarking Platform}
+      {Node.js, Express.js, BullMQ, Convex, OpenRouter, React.js}
+      {Jan 2026 -- Feb 2026}
+      \resumeItemListStart
+        \item {Architected a creator--critic--evaluator agentic orchestration pipeline, scoring prompt clarity, constraint coverage, and token efficiency across versioned, regression-tracked revision trails --- treating prompts as testable production artifacts.}
+        \item {Implemented cross-model routing across OpenAI, Anthropic, Gemini, and open-source models via OpenRouter for objective quality, latency, and cost-per-output benchmarking.}
+        \item {Built a fault-tolerant async backend using BullMQ workers with idempotent retries and Convex persistence, supporting reliable regression testing at scale without job loss on provider timeouts.}
+        \item {Emitted structured prompt outputs with metadata --- token budget, latency profile, expected output shape, version changelog --- enabling prompts to be reviewed and deployed like code.}
+      \resumeItemListEnd
+%== TAILOR-END: PROJECTS ==
+
+\resumeSubHeadingListEnd
+\vspace{-2mm}
+
+%-----------PUBLICATIONS (research JDs only)-----------------
+% OPTIONAL SECTION. Include ONLY for research / ML-research / applied-science JDs.
+% For every other JD, leave the slot below EMPTY so no \section header prints.
+%== TAILOR-START: PUBLICATIONS ==
+\section{\textbf{Publications}}
+\resumeSubHeadingListStart
+  \resumeItem{HybridSwingNet for Explainable Swing Trading Using Multi-Encoder Deep Learning and Confidence-Calibrated Signal Execution.}{\textit{Scientific Reports} (Nature Portfolio) --- co-author; accepted, in press, 2026.}
+  \resumeItem{Stock Recommendations Leveraging AI/ML for Informed Long-Term Investment Decisions.}{Sambare, Deore, Itkar, \textbf{Jadhav}, Joshi --- \textit{ICT4SD 2025} (Intl. Conf. on ICT for Sustainable Development), Scopus-indexed (Springer).}
+\resumeSubHeadingListEnd
+\vspace{-8.5mm}
+%== TAILOR-END: PUBLICATIONS ==
+
+%-----------TECHNICAL SKILLS-----------------
+\section{\textbf{Technical Skills}}
+ \begin{itemize}[leftmargin=0.05in, label={}]
+    \small{\item{
+%== TAILOR-START: SKILLS ==
+     \textbf{Frontend}{: React.js, Next.js, Tailwind CSS, HTML, CSS} \\
+     \textbf{Backend}{: FastAPI, Node.js, Express.js, BullMQ, Celery, Redis, REST APIs, WebSockets} \\
+     \textbf{AI / ML}{: LLM Orchestration, Agentic Workflows, RAG Pipelines, Deploy-Gated Evaluation, pgvector, BM25, Reciprocal Rank Fusion, Multi-Agent Systems, Prompt Engineering, Behavioral Memory, TensorFlow, OpenRouter} \\
+     \textbf{Languages}{: Python, TypeScript, JavaScript, SQL, C++, Java} \\
+     \textbf{Databases}{: PostgreSQL (+ pgvector), MongoDB, Convex} \\
+     \textbf{Cloud \& DevOps}{: AWS, Cloudflare R2, Git, GitHub, async job pipelines, CI-style eval gating} \\
+     \textbf{System Design}{: Multi-agent coordination, hybrid retrieval, event-driven architecture, snapshot-first serving} \\
+%== TAILOR-END: SKILLS ==
+    }}
+ \end{itemize}
+\vspace{-8pt}
+
+\end{document}

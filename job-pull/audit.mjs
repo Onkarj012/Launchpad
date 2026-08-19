@@ -26,7 +26,9 @@ function readManifestFiles(paths) {
 }
 
 function manifestCandidates(manifests) {
-  return manifests.flatMap((manifest) => manifest.candidates || manifest.selected || manifest.offers || []);
+  return manifests.flatMap((manifest) => [manifest.candidates, manifest.selected, manifest.offers, manifest.verifyQueue]
+    .filter(Array.isArray)
+    .flat());
 }
 
 function urlInLedger(url, rows) {
@@ -41,7 +43,7 @@ export function classifyMiss(url, { manifests = [], ledgerRows = [], candidates 
   const matchingCandidates = candidates.filter((candidate) => canonicalizeUrl(candidate.canonicalUrl || candidate.url) === canonical);
   if (matchingCandidates.length) {
     const candidate = matchingCandidates[0];
-    if (candidate.freshness?.code === 'FRESHNESS_UNDATED' || candidate.postedAt == null) return { url, classification: 'date-parse', reasonCode: 'AUDIT_UNDATED_OR_DATE_PARSE', evidence: candidate.postedAt ?? null };
+    if (candidate.freshness?.code === 'FRESHNESS_UNDATED_VERIFY_QUEUE' || candidate.postedAt == null) return { url, classification: 'date-parse', reasonCode: 'AUDIT_UNDATED_OR_DATE_PARSE', evidence: candidate.postedAt ?? null };
     if (candidate.liveness?.status === 'Not Verified') return { url, classification: 'liveness-uncertainty', reasonCode: 'AUDIT_LIVENESS_NOT_VERIFIED', evidence: candidate.liveness.evidence || null };
     if (candidate.eligibility && !candidate.eligibility.eligible) return { url, classification: 'title-geo-pay-false-negative', reasonCode: candidate.eligibility.reasons?.[0] || 'AUDIT_GATE_REJECTION', evidence: candidate.eligibility };
     if (candidate.selectionTier == null || candidate.selected === false) return { url, classification: 'selection-cap', reasonCode: 'AUDIT_NOT_SELECTED', evidence: candidate.selectionReason || null };
