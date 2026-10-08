@@ -15,6 +15,37 @@ import {
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
 import { openCrawlerStore } from '../../crawler/run.mjs';
 import { HIMALAYAS_SEARCH_URL } from '../../job-pull/remote-adapters/himalayas.mjs';
+
+test('morning trial runs YC India and remote search in each mode and stops after seven IST dates', async () => {
+  const config = { sources: {
+    yc: { enabled: true, trialStartDate: '2026-10-08' },
+    hn: { enabled: true, trialStartDate: '2026-10-08' },
+    searxng: { enabled: true, endpoint: 'https://search.test', queries: [] },
+  } };
+  const args = {
+    config, runAt: '2026-10-07T18:30:00.000Z', schedule: 'morning',
+    transport: async (url) => {
+      assert.match(new URL(url).searchParams.get('q'), /\(India OR remote\)/);
+      return { status: 200, body: { results: [] } };
+    },
+    resolver: async () => ({ status: 'verification' }),
+  };
+  for (const mode of ['normal', 'startup', 'remote']) {
+    const plans = buildSourcePlans({ ...args, profile: { mode } });
+    const yc = plans.find(({ id }) => id === 'yc-discovery');
+    assert.ok(yc);
+    const result = await yc.fetch();
+    assert.equal(result.telemetry.requests, 1);
+    assert.equal(result.manifest.status, 'empty');
+    assert.ok(plans.find(({ id }) => id === 'hn-discovery'));
+  }
+  for (const runAt of ['2026-10-07T18:29:59.000Z', '2026-10-14T18:30:00.000Z']) {
+    const plans = buildSourcePlans({ ...args, runAt, profile: { mode: 'normal' } });
+    assert.ok(plans.every(({ id }) => !['hn-discovery', 'yc-discovery'].includes(id)));
+  }
+  const midday = buildSourcePlans({ ...args, schedule: 'midday', profile: { mode: 'normal' } });
+  assert.ok(midday.every(({ id }) => !['hn-discovery', 'yc-discovery'].includes(id)));
+});
 import { JOBICY_FEED_URL } from '../../job-pull/remote-adapters/jobicy.mjs';
 import { WWR_FEED_URL } from '../../job-pull/remote-adapters/weworkremotely.mjs';
 import { REMOTIVE_FEED_URL } from '../../job-pull/remote-adapters/remotive.mjs';

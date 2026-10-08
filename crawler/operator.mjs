@@ -16,6 +16,8 @@ import {
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
 import { discoverTheirStack } from './theirstack.mjs';
 import { discoverYcJobs } from './yc-discovery.mjs';
+import { discoverHnJobs } from './hn-discovery.mjs';
+import { isSourceTrialActive } from './source-yield.mjs';
 import { buildVcWatchlistRequests, loadVcPortfolioWatchlist } from './vc-portfolio-watchlist.mjs';
 import { runCommercialRescue } from './commercial-rescue.mjs';
 import { openCrawlerStore } from './run.mjs';
@@ -135,6 +137,7 @@ Usage:
   node crawler/cli.mjs daily [morning] [--config FILE] [--env production|live-test|dev] [--run-id ID] [--scores-json FILE] [--no-scorer] [--execute-writes --credential-file FILE --journal FILE]
   node crawler/cli.mjs audit-v5-journal --credential-file ABS_PATH --journal ABS_PATH --receipt ABS_PATH
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
+  node crawler/cli.mjs trial-yield --trial-start YYYY-MM-DD --runs FILE
   node crawler/cli.mjs install-schedule [--dry-run]
   node crawler/cli.mjs promote-schedule --revision <40hex> [--canary-log FILE] [--release-root DIR] [--release-state FILE] [--mode normal|startup|remote] [--location-preset india|pune] [--dry-run]
   node crawler/cli.mjs rollback-schedule [--release-state FILE] [--dry-run]
@@ -546,6 +549,15 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
   const projected = withRegistryProjectedBoards(config, { locationPreset: profile?.locationPreset, sourcePlan: profile?.sourcePlan });
   const sources = projected.sources;
+  const hnPlans = isSourceTrialActive(sources.hn, runAt) && schedule !== 'midday'
+    ? [sourcePlan('hn-discovery', 'startup-sources', 'hn-discovery', ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => discoverHnJobs({ ...sources.hn, transport, resolveOriginalListing: resolver, runAt, signal: sourceSignal, deadline: sourceDeadline }), { trustClass: 'aggregator', maxDurationMs: sources.hn.maxDurationMs })]
+    : [];
+  const ycPlans = isSourceTrialActive(sources.yc, runAt) && schedule !== 'midday'
+    ? [sourcePlan('yc-discovery', 'startup-sources', 'yc-discovery', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
+      if (!sources.searxng?.enabled || !sources.searxng.endpoint) throw new Error('YC trial requires configured SearXNG');
+      return discoverYcJobs({ ...sources.yc, transport: searxngTransport(sources.searxng.endpoint, transport), resolveOriginalListing: resolver, runAt, signal: sourceSignal, deadline: sourceDeadline });
+    }, { trustClass: 'aggregator', maxDurationMs: sources.yc.maxDurationMs })]
+    : [];
   const plannerConfig = projected.sourcePlanner ?? {};
   const plannerEnabled = plannerConfig.enabled === true && plannerConfig.legacyPlannerRollback !== true;
   const boardPlan = plannerEnabled ? planBoundedSources({
@@ -998,7 +1010,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       deadline: sourceDeadline,
     });
   }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
-  return plans;
+  return [...plans, ...hnPlans, ...ycPlans];
 }
 
 /**

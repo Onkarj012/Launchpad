@@ -3,6 +3,7 @@ import { isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallow
 import { applyOriginalListingResolution } from './original-listing-resolver.mjs';
 
 export const YC_DISCOVERY_MANIFEST_VERSION = 'YcDiscoveryManifestV1';
+const YC_INDIA_REMOTE_QUERY = '(site:ycombinator.com/jobs OR site:ycombinator.com/companies) (India OR remote) ("software engineer" OR "AI engineer" OR "ML engineer" OR "backend engineer" OR "full stack engineer")';
 
 // Verified live against https://www.ycombinator.com/jobs/role/all/india on
 // 2026-07-24: individual job listings resolve to
@@ -114,7 +115,7 @@ function observationFrom(listing, query, runAt) {
  */
 export async function discoverYcJobs({
   transport,
-  queries,
+  queries = [YC_INDIA_REMOTE_QUERY],
   resolveOriginalListing,
   runAt = new Date().toISOString(),
   dailyBudget,
@@ -127,7 +128,10 @@ export async function discoverYcJobs({
   if (typeof resolveOriginalListing !== 'function') {
     throw new TypeError('discoverYcJobs requires an injected original-listing resolver so no YC lead is marked ready unresolved');
   }
-  const configuredQueries = list(queries).filter((query) => /ycombinator\.com\/jobs/i.test(query));
+  const configuredQueries = list(queries).filter((query) => /ycombinator\.com\/(?:jobs|companies)/i.test(query)).map((query) => {
+    if (/\bIndia\b/i.test(query) && /\bremote\b/i.test(query)) return query;
+    return `${query.replace(/\b(?:India|remote)\b/gi, '').trim()} (India OR remote)`;
+  });
   if (!configuredQueries.length) throw new Error('discoverYcJobs requires at least one site:ycombinator.com/jobs query');
   const budget = Math.max(0, Number(dailyBudget ?? configuredQueries.length));
   const activeQueries = configuredQueries.slice(0, budget);
@@ -138,15 +142,17 @@ export async function discoverYcJobs({
   const telemetry = {
     queriesGenerated: configuredQueries.length, budgetRequested: budget, budgetUsed: 0,
     resultCount: 0, duplicateResults: 0, extracted: 0, resolved: 0, unresolved: 0,
-    malformedResponses: 0, retryable: 0, terminal: 0,
+    malformedResponses: 0, retryable: 0, terminal: 0, requests: 0,
   };
   const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
+  let interrupted = false;
 
   for (const query of activeQueries) {
-    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { break; }
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { interrupted = true; break; }
     telemetry.budgetUsed += 1;
     let response; let outcome = 'terminal'; let reason = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      telemetry.requests += 1;
       try { response = await requestWithDeadline(transport, query, { endpoint: 'yc-discovery', runAt, attempt }, { signal, deadline }); }
       catch (error) {
         reason = error?.message || 'transport-error';
@@ -162,7 +168,7 @@ export async function discoverYcJobs({
       outcome = retryableStatus(status) ? 'retryable' : 'terminal';
       break;
     }
-    if (outcome === 'interrupted') break;
+    if (outcome === 'interrupted') { interrupted = true; break; }
     if (outcome !== 'success') {
       telemetry[outcome] += 1;
       receipts.push({ query, status: outcome, reason });
@@ -203,7 +209,7 @@ export async function discoverYcJobs({
       }
       observations.push(observation);
     }
-    if (outcome === 'interrupted') break;
+    if (outcome === 'interrupted') { interrupted = true; break; }
     receipts.push({ query, status: 'succeeded', results: Math.min(rows.length, perQueryResultCap), extracted: extractedForQuery });
   }
 
@@ -214,6 +220,11 @@ export async function discoverYcJobs({
     manifest: {
       schemaVersion: YC_DISCOVERY_MANIFEST_VERSION,
       runAt,
+      status: telemetry.retryable || telemetry.terminal || telemetry.malformedResponses ? 'failed' : observations.length ? 'ok' : 'empty',
+      reason: telemetry.retryable || telemetry.terminal || telemetry.malformedResponses ? 'search-failed' : observations.length ? null : 'no-job-listings',
+      interrupted,
+      truncated: activeQueries.length < configuredQueries.length,
+      naturalTerminal: !interrupted && activeQueries.length === configuredQueries.length,
       queries: activeQueries,
       telemetry,
       noAutoApply: true,

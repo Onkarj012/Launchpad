@@ -14,6 +14,25 @@ const jsonLdPage = (posting) => ({
   })}</script>`,
 });
 
+test('YC discovery searches India and remote routes, including individual company job pages', async () => {
+  const queries = [];
+  const result = await discoverYcJobs({
+    runAt: '2026-10-08T08:00:00.000Z',
+    transport: async (query) => {
+      queries.push(query);
+      return { status: 200, body: { results: [
+        { url: 'https://www.ycombinator.com/companies/orbit/jobs/123-junior-backend', title: 'Junior Backend Engineer at Orbit', description: 'Remote worldwide, new grads welcome.' },
+      ] } };
+    },
+    resolveOriginalListing: async () => ({ status: 'verification' }),
+  });
+  assert.match(queries[0], /\(India OR remote\)/);
+  assert.match(queries[0], /site:ycombinator\.com\/companies/);
+  assert.equal(result.observations[0].company, 'Orbit');
+  assert.equal(result.observations[0].classification, 'lead');
+  assert.equal(result.verificationQueue.length, 1);
+});
+
 test('extractYcJobListings keeps only real per-job YC URLs, deduplicated, with a derived company', () => {
   const rows = [
     { url: 'https://www.ycombinator.com/companies/signoz/jobs/el80mDr-ex-founders', title: 'Founding Engineer at SigNoz | Y Combinator' },
@@ -54,7 +73,7 @@ test('resolves a YC lead to its real employer ATS page and classifies it direct'
     queries: [YC_QUERY],
     resolveOriginalListing,
     transport: async (query) => {
-      assert.equal(query, YC_QUERY);
+      assert.match(query, /\(India OR remote\)/);
       return { status: 200, body: { results: [{ url: ycUrl, title: 'Founding Engineer at SigNoz | Y Combinator' }] } };
     },
   });

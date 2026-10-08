@@ -23,6 +23,7 @@ import { buildScheduleHealthReport } from './schedule-health.mjs';
 import { createJsonCanaryStore, loadDeliveryCanaryEvidence } from './delivery-canary.mjs';
 import { acquireCrawlerRunLock } from './run-lock.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
+import { buildAvenueTrialReport } from './source-yield.mjs';
 import {
   DEFAULT_NOTIFICATION_LOG,
   notifyDesktop,
@@ -194,6 +195,8 @@ function configuredSourceIds(config) {
   if (config.sources.theirstack?.enabled) ids.push('theirstack');
   if (config.sources.indeed?.enabled) ids.push('indeed-inbox');
   if (config.sources.indiaStartup?.enabled) ids.push('india-startup');
+  if (config.sources.hn?.enabled) ids.push('hn-discovery');
+  if (config.sources.yc?.enabled) ids.push('yc-discovery');
   return ids;
 }
 
@@ -269,6 +272,15 @@ export async function main(argv = process.argv.slice(2), {
     const writtenReceipt = writeAuditReceipt(options.receiptPath, receipt, undefined, [credential]);
     emit({ ...receipt, receiptPath: writtenReceipt });
     return receipt.phase4.blocked ? 1 : 0;
+  }
+  if (command === 'trial-yield') {
+    const runsPath = explicitOption(argv, '--runs');
+    if (!runsPath) throw new Error('trial-yield requires --runs FILE');
+    const input = JSON.parse(fs.readFileSync(path.resolve(runsPath), 'utf8'));
+    const runs = Array.isArray(input) ? input : input.runs;
+    if (!Array.isArray(runs)) throw new Error('trial-yield requires an array of retained crawler reports');
+    emit(buildAvenueTrialReport(runs, { trialStartDate: explicitOption(argv, '--trial-start') }));
+    return 0;
   }
   const dailySchedule = command === 'daily' ? positional(argv)[1] ?? 'morning' : null;
   const dailyWriteOptions = command === 'daily'

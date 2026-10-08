@@ -6,6 +6,55 @@ const keyFor = (candidate, fallback) => {
   return `${provider}:${String(board).trim().toLowerCase().replace(/\s+/g, '-')}`;
 };
 
+// Allow an explicitly enabled avenue for seven IST dates from its trial start.
+export function isSourceTrialActive(source, runAt) {
+  if (source?.enabled !== true || !/^\d{4}-\d{2}-\d{2}$/.test(source.trialStartDate || '')) return false;
+  const start = Date.parse(`${source.trialStartDate}T00:00:00+05:30`);
+  const now = Date.parse(runAt);
+  return Number.isFinite(start) && new Date(start + 19800000).toISOString().slice(0, 10) === source.trialStartDate
+    && now >= start && now < start + 7 * 86400000;
+}
+
+// Report each avenue's retained seven-day yield without inventing missing observations.
+export function buildAvenueTrialReport(runs = [], { trialStartDate } = {}) {
+  const startAt = `${trialStartDate}T00:00:00+05:30`;
+  if (!isSourceTrialActive({ enabled: true, trialStartDate }, startAt)) throw new TypeError('requires valid trialStartDate');
+  const expectedDates = Array.from({ length: 7 }, (_, index) => new Date(Date.parse(startAt) + 19800000 + index * 86400000).toISOString().slice(0, 10));
+  const sources = ['hn-discovery', 'yc-discovery'].map((sourceId) => {
+    const days = new Set();
+    const seenRuns = new Set();
+    const row = { sourceId, requests: 0, fetched: 0, leads: 0, verification: 0, applicationReady: 0 };
+    for (const input of runs) {
+      const run = input.crawler ?? input;
+      const runAt = run.runAt ?? run.run?.startedAt;
+      if (!isSourceTrialActive({ enabled: true, trialStartDate }, runAt)) continue;
+      const key = run.runId ?? run.run?.runId;
+      if (!key || seenRuns.has(key)) continue;
+      seenRuns.add(key);
+      const source = run.sourceTelemetry?.[sourceId];
+      if (!source) continue;
+      const detail = source.detail ?? {};
+      const telemetry = detail.telemetry ?? {};
+      const yields = run.sourceYield?.sources;
+      row.requests += number(telemetry.requests);
+      row.fetched += number(telemetry.fetched ?? telemetry.resultCount);
+      row.leads += number(telemetry.extracted);
+      row.verification += number(telemetry.unresolved);
+      const healthy = ['ok', 'empty', 'succeeded'].includes(source.status)
+        && (source.naturalTerminal ?? detail.naturalTerminal) === true
+        && !source.truncated && !detail.truncated
+        && Number.isFinite(telemetry.requests) && Array.isArray(yields);
+      if (!healthy) continue;
+      const date = new Date(Date.parse(runAt) + 19800000).toISOString().slice(0, 10);
+      days.add(date);
+      row.applicationReady += yields.filter((yieldRow) => yieldRow.provider === sourceId).reduce((sum, yieldRow) => sum + number(yieldRow.applicationReady), 0);
+    }
+    const complete = expectedDates.every((date) => days.has(date));
+    return { ...row, daysObserved: days.size, missingDates: expectedDates.filter((date) => !days.has(date)), applicationReadyPerRequest: row.requests ? row.applicationReady / row.requests : null, decision: complete ? row.applicationReady ? 'keep' : 'drop' : 'insufficient-evidence' };
+  });
+  return { schemaVersion: 'LaunchpadAvenueTrialYieldV1', trialStartDate, trialEndDate: expectedDates.at(-1), timezone: 'Asia/Kolkata', sources, countScope: 'per-run observations, not unique roles across the week', requestScope: 'discovery requests only; employer resolver requests excluded', automaticPause: false, noAutoApply: true };
+}
+
 function blank(sourceId, candidate = {}) {
   return {
     sourceId,
@@ -29,7 +78,10 @@ function blank(sourceId, candidate = {}) {
 export function buildSourceYieldReport(records = [], sourceTelemetry = {}, options = {}) {
   const rows = {};
   for (const record of records) {
-    const candidate = record?._crawlerReserveEntry?.candidate || record;
+    const preparedCandidate = record?._crawlerReserveEntry?.candidate || record;
+    const candidate = ['hn-discovery', 'yc-discovery'].includes(record?.sourceId)
+      ? { ...preparedCandidate, provider: record.sourceId }
+      : preparedCandidate;
     const prepared = record?._crawlerReserveEntry || {};
     const sourceId = keyFor(candidate, record?.sourceId);
     const row = rows[sourceId] ||= blank(sourceId, candidate);
