@@ -41,7 +41,7 @@
 
 ### Work mode & location
 - **Onsite / hybrid:** Pune-wide commute is acceptable. Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, Kalyani Nagar, Koregaon Park, Yerwada, Hadapsar, Mundhwa, Aundh, Pashan, Balewadi, Bavdhan, Kothrud, Shivajinagar, Senapati Bapat Road, Wagholi, Kondhwa, Undri, Pimpri, Chinchwad, Pimple Saudagar, Nigdi, Bhosari, Moshi, Sus, Maan, and Marunji count as Pune even without the word "Pune". Match whole names. Sus and Maan require Maharashtra, MH, or a six-digit 411xxx/412xxx pin code in the same location option. Chakan, Talegaon, Ranjangaon, and Shikrapur are excluded even when their address says Pune. Multi-city listings pass with a separate eligible Pune option.
-- **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. US or EU hours and overnight-only overlap are allowed with the label `Night hours (IST)`.
+- **Remote:** India and APAC/Asia-Pacific remain eligible. Remote roles marked worldwide, anywhere or global pass when the listing states no country limit and requires no foreign work authorization; label them `Remote: worldwide, no country limit`. US/Canada/EU/UK/LATAM-only roles and roles requiring foreign work authorization → drop. Bare `Remote` → drop. US or EU hours and overnight-only overlap are allowed with the label `Night hours (IST)`.
 - **Shifts:** night and rotating shifts are allowed for Pune onsite/hybrid and remote roles with the label `Night hours (IST)`. A label never rejects a role.
 - **Notice:** listings asking for immediate joiners or a notice of 30 days or less are allowed with the label `Notice risk`. A label never rejects a role.
 
@@ -57,7 +57,7 @@
 - TCS, Infosys, Wipro, Cognizant, Accenture, HCL, Tech Mahindra and LTIMindtree pass only for AI/ML or product engineering titles. Generic services titles are rejected with `SERVICES_MAJOR_GENERIC_ROLE`, even when the description mentions AI or product work. Other companies are unaffected by this rule. All other gates still apply.
 
 ### Hard gates (run first, every pull — fail any → drop, never written to Notion)
-1. **Location authorization** — onsite/hybrid must offer a Pune-wide location option; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
+1. **Location authorization** — onsite/hybrid must offer a Pune-wide location option; remote eligibility must explicitly include India or APAC, or be worldwide/anywhere/global without a country limit or foreign work-authorization requirement.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
 3. **Employment / paid** — allow full-time or engineering internships with a stated stipend ≥ ₹40k/month and a stated PPO path; missing, unverified, or below-floor stipend and missing PPO path → drop.
 4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
