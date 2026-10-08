@@ -16,6 +16,7 @@ import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
+import { renderLocalLeadReport } from '../../crawler/local-lead-report.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -1425,3 +1426,57 @@ test('unknown daily mode is rejected before any discovery transport call', async
 
 // Route fixture totals through the explicit scoring input after the shared crawl.
 function runDailyNormal(options) { return runDailyNormalActual(withManualFixtureScores(options)); }
+
+test('daily run retains hiring challenges and off-campus drives as dated items outside role selection', async () => {
+  const { root, config } = testConfig();
+  config.hiringEventsPath = path.join(root, 'hiring-events.json');
+  const items = [
+    { kind: 'hiring-challenge', title: 'Acme Backend Hiring Challenge', company: 'Acme', url: 'https://acme.example.test/challenge', date: '2026-08-01', deadline: '2026-07-31T18:30:00Z' },
+    { kind: 'off-campus-drive', title: 'Graduate Engineering Drive', company: 'Example Labs', url: 'https://labs.example.test/drive', date: '2026-08-02', deadline: '2026-07-30' },
+  ];
+  writeFileSync(config.hiringEventsPath, JSON.stringify({ items }));
+  const result = await runDailyNormal(runOptions(config, fakeTransport({})));
+  assert.deepEqual(result.hiringEvents, { items, quarantine: [] });
+  assert.deepEqual(result.shortlist, []);
+  assert.equal(result.funnel.lifecycle.normalized, 0);
+  assert.deepEqual(JSON.parse(readFileSync(config.hiringEventsPath, 'utf8')), { items });
+});
+
+test('daily run holds undated or malformed hiring events instead of inventing dates', async () => {
+  const { root, config } = testConfig();
+  config.hiringEventsPath = path.join(root, 'hiring-events.json');
+  const event = { kind: 'hiring-challenge', title: 'Backend Hiring Challenge', company: 'Acme', url: 'https://acme.example.test/challenge', date: '2026-08-01', deadline: null };
+  const invalid = [
+    { ...event, date: null },
+    { ...event, date: '2026-02-30' },
+    { ...event, deadline: '2026-07-31T23:59:00' },
+    { ...event, deadline: '2026-02-30T23:59:00+05:30' },
+    { ...event, url: 'javascript:alert(1)' },
+    { ...event, kind: 'job' },
+  ];
+  writeFileSync(config.hiringEventsPath, JSON.stringify({ items: [...invalid, event] }));
+  const result = await runDailyNormal(runOptions(config, fakeTransport({})));
+  assert.deepEqual(result.hiringEvents.items, [event]);
+  assert.deepEqual(result.hiringEvents.quarantine.map(({ index }) => index), [0, 1, 2, 3, 4, 5]);
+  assert.ok(result.hiringEvents.quarantine.every(({ errors }) => errors.length > 0));
+});
+
+test('local report shows each hiring event date and deadline in IST without inventing missing deadline times', async () => {
+  const { root, config } = testConfig();
+  config.hiringEventsPath = path.join(root, 'hiring-events.json');
+  writeFileSync(config.hiringEventsPath, JSON.stringify({ items: [
+    { kind: 'hiring-challenge', title: 'Backend | Hiring Challenge', company: 'Acme', url: 'https://acme.example.test/challenge', date: '2026-08-02T00:30:00+05:30', deadline: '2026-07-31T18:30:00Z' },
+    { kind: 'off-campus-drive', title: 'Graduate Drive', company: 'Example Labs', url: 'https://labs.example.test/drive', date: '2026-08-02', deadline: '2026-07-30' },
+    { kind: 'hiring-challenge', title: 'Undisclosed Deadline', company: null, url: 'https://acme.example.test/next', date: '2026-08-03', deadline: null },
+    { kind: 'off-campus-drive', title: 'Undated Drive', url: 'https://labs.example.test/next', date: null, deadline: null },
+  ] }));
+  const result = await runDailyNormal(runOptions(config, fakeTransport({})));
+  const report = renderLocalLeadReport(result, { now: NOW });
+  assert.match(report, /## Hiring challenges and off-campus drives/);
+  assert.ok(report.includes('| Hiring challenge | Backend \\| Hiring Challenge | Acme | https://acme.example.test/challenge | 2026-08-02 00:30:00 IST | 2026-08-01 00:00:00 IST |'));
+  assert.ok(report.includes('| Off-campus drive | Graduate Drive | Example Labs | https://labs.example.test/drive | 2026-08-02 | 2026-07-30 |'));
+  assert.ok(report.includes('| Hiring challenge | Undisclosed Deadline | Not Verified | https://acme.example.test/next | 2026-08-03 | Not Verified |'));
+  assert.match(report, /Date-only values have no verified time/);
+  assert.match(report, /Held item 4: date must be a valid/);
+  assert.doesNotMatch(report, /Undated Drive/);
+});
