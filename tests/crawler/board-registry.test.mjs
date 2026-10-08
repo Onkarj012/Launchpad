@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   activateBoard,
   applyPromotionProposals,
@@ -11,17 +13,20 @@ import {
   loadBoardRegistry,
   migrateFromLegacySources,
   normalizeRegistryBoard,
+  probeRegistryBoard,
+  saveBoardRegistry,
   projectLaneBoards,
   projectTrackedBoards,
   projectTrackedWarmSet,
   planBoundedSources,
+  planBoardRotation,
   withRegistryProjectedBoards,
   PROVIDER_LANES,
   workdayCxsUrl,
 } from '../../crawler/board-registry.mjs';
 import { buildBoardPromotionProposals } from '../../crawler/board-promotion.mjs';
-import { buildSourcePlans, loadCrawlerConfig } from '../../crawler/operator.mjs';
-import { trackedBoards } from '../../crawler/daily-runner.mjs';
+import { buildSourcePlans, loadCrawlerConfig, runCrawlerOperator } from '../../crawler/operator.mjs';
+import { trackedBoards, runDailyNormal } from '../../crawler/daily-runner.mjs';
 import { loadWarmSet, warmSetSize, WARM_ATS } from '../../job-pull/warm-set.mjs';
 
 const crawlerConfig = JSON.parse(fs.readFileSync('config/crawler-v2.json', 'utf8'));
@@ -288,7 +293,7 @@ test('operator location presets project Pune and India priority without changing
   };
   const config = { boardRegistry: registry, sources: { atsWarm: {} } };
   assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'pune' }).sources.atsWarm.boards.map((board) => board.slug), ['pune-co', 'india-co', 'global-co']);
-  assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'india' }).sources.atsWarm.boards.map((board) => board.slug), ['india-co', 'pune-co', 'global-co']);
+  assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'india' }).sources.atsWarm.boards.map((board) => board.slug), ['pune-co', 'india-co', 'global-co']);
 });
 
 test('bounded source planning is deterministic, explains all outcomes, and resumes productive work', () => {
@@ -355,4 +360,320 @@ test('bounded source planning advances deferred exploration from durable state w
   assert.equal(first.state.explorationCursor, 1);
   assert.equal(first.state.trackedAts.rotation.cursor, 0);
   assert.ok(first.boardPlan.decisions.every((decision) => decision.reason));
+});
+
+// Prove that one public feed supplies geography and retained probe evidence.
+test('one public board GET sets relevance and a probe record that survives registry storage', async () => {
+  const registry = { schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [normalizeRegistryBoard({
+    provider: 'greenhouse', slug: 'probe-co', company: 'Probe Co', evidenceRef: 'https://probe.example/careers',
+  })] };
+  const calls = [];
+  const result = await probeRegistryBoard(registry, 'greenhouse:probe-co', {
+    runAt: '2026-10-08T02:15:00.000Z',
+    foundVia: 'employer-careers-link',
+    transport: async (url, options) => {
+      calls.push({ url, method: options.method });
+      return { status: 200, body: { jobs: [
+        { id: 1, title: 'Software Engineer', location: { name: 'Pune, India' } },
+        { id: 2, title: 'Backend Engineer', location: { name: 'Bengaluru, India' } },
+        { id: 3, title: 'Software Engineer', location: { name: 'Boston, United States' } },
+      ] } };
+    },
+  });
+  assert.deepEqual(calls, [{ url: 'https://boards-api.greenhouse.io/v1/boards/probe-co/jobs?content=true', method: 'GET' }]);
+  const board = findBoard(result, 'greenhouse:probe-co');
+  assert.equal(board.puneRelevant, true);
+  assert.equal(board.indiaRelevant, true);
+  assert.deepEqual(board.probe, {
+    probedAt: '2026-10-08T02:15:00.000Z', foundVia: 'employer-careers-link',
+    sourceUrl: calls[0].url, jobCount: 3, indiaJobCount: 2, usOnly: false, complete: true, zeroIndiaSince: null,
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launchpad-registry-'));
+  try {
+    const file = path.join(dir, 'boards.json');
+    saveBoardRegistry(file, result);
+    assert.deepEqual(findBoard(loadBoardRegistry(file), board.id).probe, board.probe);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Each feed uses its own location shape, including structured country evidence.
+test('public probes use provider feeds and clear stale relevance without guessing unknown locations', async () => {
+  const samples = [
+    { provider: 'lever', slug: 'lever-co', body: [{ categories: { location: 'Bengaluru, India' } }], expected: [false, true, 1] },
+    { provider: 'ashby', slug: 'ashby-co', body: { jobs: [{ location: 'Pune, India' }, { location: 'New York, United States' }] }, expected: [true, true, 1] },
+    { provider: 'smartrecruiters', board: 'sr-co', body: { content: [{ location: { city: 'Pune', country: 'in' } }] }, expected: [true, true, 1] },
+    { provider: 'workday', tenant: 'us-co', instance: 'wd1', site: 'External', endpoint: 'https://us-co.example/jobs', body: { jobPostings: [{ locationsText: 'Boston, United States' }] }, expected: [false, false, 0] },
+    { provider: 'workable', board: 'workable-co', body: { jobs: [{ location: { city: 'Pune', country: 'India' } }] }, expected: [true, true, 1] },
+    { provider: 'teamtailor', board: 'team-co', body: { data: [{ attributes: { location: 'Pune, India' } }] }, expected: [true, true, 1] },
+    { provider: 'recruitee', board: 'recruit-co', body: { offers: [{ location: 'Bengaluru, India' }] }, expected: [false, true, 1] },
+    { provider: 'breezy', slug: 'breezy-co', body: [{ location: { city: 'Pune', country: 'India' } }], expected: [true, true, 1] },
+    { provider: 'bamboohr', slug: 'bamboo-co', body: { result: [{ location: 'Pune, India' }] }, expected: [true, true, 1] },
+    { provider: 'personio', slug: 'personio-co', body: '<workzag-jobs><position><id>1</id><office>Pune, India</office></position></workzag-jobs>', expected: [true, true, 1] },
+    { provider: 'comeet', slug: 'comeet-co', body: { positions: [{ location: 'Pune, India' }] }, expected: [true, true, 1] },
+    { provider: 'pinpoint', slug: 'pinpoint-co', body: { data: [{ location: { city: 'Pune', country: 'India' } }] }, expected: [true, true, 1] },
+    { provider: 'rippling', slug: 'rippling-co', body: { jobs: [{ location: 'Pune, India' }] }, expected: [true, true, 1] },
+    { provider: 'greenhouse', slug: 'unknown-co', body: { jobs: [{ location: { name: 'Remote' } }] }, expected: [false, false, 0] },
+  ];
+  for (const sample of samples) {
+    const board = normalizeRegistryBoard({ ...sample, puneRelevant: true, indiaRelevant: true });
+    let requests = 0;
+    const registry = await probeRegistryBoard({ schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [board] }, board.id, {
+      runAt: '2026-10-08T02:15:00.000Z', transport: async (url, options) => {
+        requests += 1;
+        assert.equal(options.method, 'GET');
+        if (sample.provider === 'lever') assert.equal(url, 'https://api.lever.co/v0/postings/lever-co');
+        if (sample.provider === 'ashby') assert.equal(url, 'https://api.ashbyhq.com/posting-api/job-board/ashby-co?includeCompensation=true');
+        if (sample.provider === 'smartrecruiters') assert.match(url, /api.smartrecruiters.com\/v1\/companies\/sr-co\/postings/);
+        return { status: 200, body: sample.body };
+      },
+    });
+    assert.equal(requests, 1);
+    const probed = findBoard(registry, board.id);
+    assert.deepEqual([probed.puneRelevant, probed.indiaRelevant, probed.probe.indiaJobCount], sample.expected);
+    assert.equal(probed.probe.usOnly, sample.provider === 'workday');
+  }
+});
+
+// A failed response cannot erase known evidence or start a zero-yield streak.
+test('failed or malformed public probes leave registry evidence unchanged', async () => {
+  const board = normalizeRegistryBoard({ provider: 'greenhouse', slug: 'known', puneRelevant: true, indiaRelevant: true });
+  const registry = { schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [board] };
+  for (const response of [{ status: 429, body: {} }, { status: 200, body: { error: 'unavailable' } }]) {
+    await assert.rejects(probeRegistryBoard(registry, board.id, { transport: async () => response }));
+    assert.equal(board.probe, null);
+    assert.equal(board.puneRelevant, true);
+  }
+});
+
+// Daily defaults and both rotation planners must spend the first request on Pune.
+test('Pune boards lead default production projection and rotated request budgets', async () => {
+  const registry = { boards: ['a-global', 'z-pune'].map((slug) => normalizeRegistryBoard({
+    provider: 'ashby', slug, company: slug, puneRelevant: slug === 'z-pune', indiaRelevant: slug === 'z-pune',
+  })) };
+  const projected = withRegistryProjectedBoards({ boardRegistry: registry, sources: { atsWarm: {} } });
+  assert.equal(projected.sources.atsWarm.boards[0].slug, 'z-pune');
+  const rotated = planBoardRotation({ boards: projected.sources.atsWarm.boards, maxBoards: 1, state: { cursor: 1 } });
+  assert.equal(rotated.boards[0].slug, 'z-pune');
+  const bounded = planBoundedSources({
+    boardsByLane: { atsWarm: projected.sources.atsWarm.boards }, maxBoards: 1,
+    state: { boards: { 'ashby:a-global': { cursor: { page: 2 }, status: 'interrupted' } } },
+  });
+  assert.equal(bounded.boardsByLane.atsWarm[0].slug, 'z-pune');
+  const calls = [];
+  const plans = buildSourcePlans({
+    config: { boardRegistry: registry, sources: { atsWarm: { maxBoards: 1, rotation: { enabled: true }, rotationState: { cursor: 1 } } } },
+    transport: async (_url, options) => { calls.push(options.board.slug); return { status: 200, body: { jobs: [] } }; },
+    runAt: '2026-10-08T02:15:00.000Z', schedule: 'morning',
+  });
+  await plans.find((plan) => plan.id === 'ats-warm').fetch({});
+  assert.deepEqual(calls, ['z-pune']);
+});
+
+// The scheduled seam persists probe history and stops spending requests after seven days.
+test('production pauses a proven US-only tenant after seven days of zero India jobs', async () => {
+  const board = normalizeRegistryBoard({ provider: 'workday', tenant: 'us-only', instance: 'wd1', site: 'External' });
+  const registry = { schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [board] };
+  let state = {};
+  const requests = [];
+  for (let day = 1; day <= 8; day += 1) {
+    const runAt = `2026-10-${String(day).padStart(2, '0')}T02:15:00.000Z`;
+    const plans = buildSourcePlans({
+      config: { boardRegistry: registry, sourcePlanner: { enabled: true, maxBoards: 5, state }, sources: { enterprise: { maxPages: 1, enrichDetails: false } } },
+      runAt, schedule: 'morning', onSourcePlanState: (next) => { state = next; },
+      transport: async () => {
+        requests.push(day);
+        return { status: 200, body: { total: 1, jobPostings: [
+          { title: 'Software Engineer', externalPath: '/job/Boston/Software-Engineer_R123', locationsText: 'Boston, United States', postedOn: 'Posted Today' },
+        ] } };
+      },
+    });
+    const result = await plans.find((plan) => plan.id === 'ats-enterprise').fetch({});
+    if (day === 8) assert.ok(result.manifest.boardPlan.decisions.some((decision) => decision.boardId === 'workday:us-only|wd1|external' && decision.reason === 'us-only-zero-india-yield-7-days'));
+  }
+  assert.deepEqual(requests, [1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(state.boards['workday:us-only|wd1|external'].probe.indiaJobCount, 0);
+  assert.equal(state.boards['workday:us-only|wd1|external'].probe.zeroIndiaSince, '2026-10-01T02:15:00.000Z');
+});
+
+// Partial or unknown locations cannot prove US-only coverage, and India breaks the streak.
+test('partial probes stay active and an India job restarts a US-only zero-yield streak', async () => {
+  const board = normalizeRegistryBoard({ provider: 'workday', tenant: 'mixed', instance: 'wd1', site: 'External' });
+  let registry = { schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [board] };
+  const probe = async (runAt, total, locations) => {
+    registry = await probeRegistryBoard(registry, board.id, { runAt,
+      transport: async () => ({ status: 200, body: { total, jobPostings: locations.map((locationsText) => ({ locationsText })) } }),
+    });
+  };
+  await probe('2026-10-01T02:15:00.000Z', 30, ['Boston, United States']);
+  await probe('2026-10-08T02:15:00.000Z', 30, ['Boston, United States']);
+  let plan = planBoundedSources({ boardsByLane: { enterprise: projectLaneBoards(registry, 'enterprise') }, maxBoards: 1, runAt: '2026-10-08T02:15:00.000Z' });
+  assert.equal(plan.boardsByLane.enterprise.length, 1);
+  await probe('2026-10-09T02:15:00.000Z', 1, ['Boston, United States']);
+  await probe('2026-10-10T02:15:00.000Z', 1, ['Pune, India']);
+  assert.equal(findBoard(registry, board.id).probe.zeroIndiaSince, null);
+  await probe('2026-10-11T02:15:00.000Z', 1, ['Boston, United States']);
+  assert.equal(findBoard(registry, board.id).probe.zeroIndiaSince, '2026-10-11T02:15:00.000Z');
+  plan = planBoardRotation({ boards: projectLaneBoards(registry, 'enterprise'), maxBoards: 1, runAt: '2026-10-18T02:15:00.000Z' });
+  assert.equal(plan.boards.length, 0);
+  assert.equal(plan.telemetry.omissions[0].reason, 'us-only-zero-india-yield-7-days');
+});
+
+// The legacy tracked pass must retain Pune priority and honor the same saved pause.
+test('tracked registry projection retains relevance and honors durable pause evidence', () => {
+  const registry = { boards: [
+    normalizeRegistryBoard({ provider: 'ashby', slug: 'a-us', probe: { complete: true, usOnly: true, indiaJobCount: 0, zeroIndiaSince: '2026-10-01T02:15:00.000Z' } }),
+    normalizeRegistryBoard({ provider: 'ashby', slug: 'z-pune', puneRelevant: true, indiaRelevant: true }),
+  ] };
+  const projected = projectTrackedBoards(registry);
+  const plan = planBoardRotation({ boards: projected, maxBoards: 1, runAt: '2026-10-08T02:15:00.000Z' });
+  assert.equal(plan.boards[0].slug, 'z-pune');
+  assert.ok(plan.telemetry.omissions.some((entry) => entry.reason === 'us-only-zero-india-yield-7-days'));
+});
+
+// Reload a file-backed registry each run and prove the default production path keeps history.
+test('production reads registry files and persists US-only pauses without the bounded planner', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launchpad-registry-run-'));
+  const file = path.join(dir, 'boards.json');
+  const configFile = path.join(dir, 'crawler.json');
+  const requests = [];
+  try {
+    saveBoardRegistry(file, { schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [
+      normalizeRegistryBoard({ provider: 'ashby', slug: 'file-only' }),
+    ] });
+    fs.writeFileSync(configFile, JSON.stringify({ schemaVersion: 'LaunchpadCrawlerConfigV1',
+      databasePath: path.join(dir, 'crawler.sqlite'), boardRegistryPath: file,
+      sources: { atsWarm: { boards: [{ provider: 'ashby', slug: 'stale-inline' }] } },
+    }));
+    for (const day of [1, 7, 8]) {
+      const at = `2026-10-${String(day).padStart(2, '0')}T02:15:00.000Z`;
+      const { config } = loadCrawlerConfig(configFile);
+      const result = await runCrawlerOperator({ config, runId: `registry-${day}`, schedule: 'morning',
+        clock: { now: () => at },
+        transport: async (url) => {
+          requests.push(url);
+          return { status: 200, body: { jobs: [{ id: '1', title: 'Software Engineer', jobUrl: 'https://jobs.ashbyhq.com/file-only/1', location: 'Boston, United States', descriptionPlain: 'Software engineering', publishedAt: at }] } };
+        },
+      });
+      assert.match(result.run.status, /^completed/);
+    }
+    assert.deepEqual(requests, [
+      'https://api.ashbyhq.com/posting-api/job-board/file-only?includeCompensation=true',
+      'https://api.ashbyhq.com/posting-api/job-board/file-only?includeCompensation=true',
+    ]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A later tracked pass must not re-fetch a board skipped by the scheduled pass.
+test('daily production keeps a US-only pause across both ATS passes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launchpad-registry-daily-'));
+  const file = path.join(dir, 'boards.json');
+  const calls = [];
+  try {
+    saveBoardRegistry(file, { schemaVersion: BOARD_REGISTRY_SCHEMA, boards: [normalizeRegistryBoard({ provider: 'ashby', slug: 'daily-us' })] });
+    const config = { schemaVersion: 'LaunchpadCrawlerConfigV1', boardRegistryPath: file,
+      databasePath: path.join(dir, 'crawler.sqlite'), opportunityLedgerPath: path.join(dir, 'opportunities.tsv'),
+      dailyShortlistBudgetPath: path.join(dir, 'budget.json'),
+      sources: { atsWarm: { boards: [] } },
+    };
+    for (const day of [1, 7, 8]) {
+      const at = `2026-10-${String(day).padStart(2, '0')}T02:15:00.000Z`;
+      await runDailyNormal({ config, runId: `daily-registry-${day}`, clock: { now: () => at },
+        historicalV4Rows: [], ledgerRows: [], opportunityLedgerRows: [], scores: [],
+        transport: async () => { calls.push(day); return { status: 200, body: { jobs: [{ id: 'us', title: 'Software Engineer', jobUrl: 'https://jobs.ashbyhq.com/daily-us/us', location: 'Boston, United States', descriptionPlain: 'Software engineering', publishedAt: at }] } }; },
+      });
+    }
+    assert.deepEqual(calls, [1, 7]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Production must reuse observed flags on the next run, even before the registry is saved.
+test('production prioritizes Pune evidence retained by the previous run', async () => {
+  const registry = { boards: ['a-global', 'z-local'].map((slug) => normalizeRegistryBoard({ provider: 'ashby', slug })) };
+  let state = {};
+  const requests = [];
+  const run = async (day, maxBoards) => {
+    const plans = buildSourcePlans({ config: { boardRegistry: registry, sourcePlanner: { enabled: true, maxBoards, state }, sources: { atsWarm: {} } },
+      runAt: `2026-10-0${day}T02:15:00.000Z`, schedule: 'morning', onSourcePlanState: (next) => { state = next; },
+      transport: async (_url, options) => { requests.push(options.board.slug); return { status: 200, body: { jobs: [{ location: options.board.slug === 'z-local' ? 'Pune, India' : 'Remote' }] } }; },
+    });
+    await plans.find((plan) => plan.id === 'ats-warm').fetch({});
+  };
+  await run(1, 2);
+  requests.length = 0;
+  await run(2, 1);
+  assert.deepEqual(requests, ['z-local']);
+});
+
+// Registry updates remain authoritative over stale config projections and pause history.
+test('a registry file update takes effect on the next production projection', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launchpad-registry-refresh-'));
+  try {
+    const file = path.join(dir, 'boards.json');
+    saveBoardRegistry(file, { boards: [normalizeRegistryBoard({ provider: 'ashby', slug: 'old' })] });
+    const config = withRegistryProjectedBoards({ boardRegistryPath: file, sources: {} });
+    saveBoardRegistry(file, { boards: [normalizeRegistryBoard({ provider: 'ashby', slug: 'new', puneRelevant: true })] });
+    assert.deepEqual(withRegistryProjectedBoards(config).sources.atsWarm.boards.map((board) => board.slug), ['new']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Put a Pune-relevant provider lane first when all other ATS supply is elsewhere.
+test('Pune-relevant boards are requested before other ATS lanes', async () => {
+  const registry = { boards: [
+    normalizeRegistryBoard({ provider: 'ashby', slug: 'global' }),
+    normalizeRegistryBoard({ provider: 'workday', tenant: 'pune', instance: 'wd1', site: 'External', puneRelevant: true }),
+  ] };
+  const calls = [];
+  const plans = buildSourcePlans({ config: { boardRegistry: registry, sources: {} }, schedule: 'morning', runAt: '2026-10-08T02:15:00.000Z',
+    transport: async (_url, options) => { calls.push(options.provider); return { status: 200, body: options.provider === 'workday' ? { total: 0, jobPostings: [] } : { jobs: [] } }; },
+  });
+  for (const plan of plans) await plan.fetch({});
+  assert.deepEqual(calls, ['workday', 'ashby']);
+});
+
+// A paginated daily crawl retains the first probe rather than overwriting it with another page.
+test('production records one public listing response per board', async () => {
+  const board = normalizeRegistryBoard({ provider: 'workday', tenant: 'paged', instance: 'wd1', site: 'External' });
+  let state;
+  let calls = 0;
+  const plans = buildSourcePlans({ config: { boardRegistry: { boards: [board] }, sources: { enterprise: { maxPages: 2, maxJobsPerBoard: 2, enrichDetails: false } } },
+    runAt: '2026-10-08T02:15:00.000Z', schedule: 'morning', onSourcePlanState: (next) => { state = next; },
+    transport: async () => { calls += 1; return { status: 200, body: { total: 2, jobPostings: [{ title: 'Software Engineer', externalPath: `/job/Engineer_R${calls}`, locationsText: calls === 1 ? 'Pune, India' : 'Boston, United States' }] } }; },
+  });
+  await plans.find((plan) => plan.id === 'ats-enterprise').fetch({});
+  assert.equal(calls, 2);
+  assert.equal(state.boards['workday:paged|wd1|external'].probe.indiaJobCount, 1);
+  assert.equal(state.boards['workday:paged|wd1|external'].puneRelevant, true);
+});
+
+// Provider quotas must not consume a tight budget before the Pune board is reached.
+test('Pune priority survives provider quotas under a one-board cap', () => {
+  const plan = planBoardRotation({ maxBoards: 1, providerQuotas: { ashby: 1, greenhouse: 1 },
+    boards: [{ provider: 'ashby', slug: 'global' }, { provider: 'greenhouse', slug: 'pune', puneRelevant: true }],
+  });
+  assert.equal(plan.boards[0].slug, 'pune');
+});
+
+// Two sites under one tenant must retain evidence against their own registry identity.
+test('production probe records distinguish sites on the same Workday tenant', async () => {
+  let state;
+  const registry = { boards: ['India', 'US'].map((site) => normalizeRegistryBoard({ provider: 'workday', tenant: 'shared', instance: 'wd1', site })) };
+  const plans = buildSourcePlans({ config: { boardRegistry: registry, sources: { enterprise: { maxPages: 1 } } }, schedule: 'morning',
+    runAt: '2026-10-08T02:15:00.000Z', onSourcePlanState: (next) => { state = next; },
+    transport: async (url) => ({ status: 200, body: { total: 1, jobPostings: [{ locationsText: url.includes('/India/') ? 'Pune, India' : 'Boston, United States' }] } }),
+  });
+  await plans.find((plan) => plan.id === 'ats-enterprise').fetch({});
+  assert.equal(state.boards['workday:shared|wd1|india'].probe.indiaJobCount, 1);
+  assert.equal(state.boards['workday:shared|wd1|us'].probe.indiaJobCount, 0);
+});
+
+// A location mentioning US together with another country or global scope is not US-only.
+test('mixed-country and global locations never start a US-only pause', async () => {
+  for (const location of ['United States or Canada', 'Global remote, United States', 'United States and Germany']) {
+    const board = normalizeRegistryBoard({ provider: 'ashby', slug: 'mixed-scope' });
+    const registry = await probeRegistryBoard({ boards: [board] }, board.id, {
+      runAt: '2026-10-01T02:15:00.000Z', transport: async () => ({ status: 200, body: { jobs: [{ location }] } }),
+    });
+    assert.equal(findBoard(registry, board.id).probe.usOnly, false);
+    assert.equal(planBoardRotation({ boards: projectLaneBoards(registry, 'atsWarm'), maxBoards: 1, runAt: '2026-10-08T02:15:00.000Z' }).boards.length, 1);
+  }
 });

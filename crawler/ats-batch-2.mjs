@@ -135,6 +135,16 @@ function dateEvidence(provider, row) {
   };
 }
 
+// Reuse provider parsing for one-request registry probes before candidate filtering.
+export function batch2ProbeFeed(board, body) {
+  const rows = parseRows(board.provider, body);
+  return {
+    url: endpointFor(board, 1),
+    locations: Array.isArray(rows) ? rows.map((row) => board.provider === 'pinpoint' ? pinpointLocationText(row.location) : (row.location || row.city || row.office)) : null,
+    complete: COMPLETE_ARRAY_PROVIDERS.has(board.provider) || (!body?.nextPage && !body?.next_page && (rows?.length ?? 0) < 25),
+  };
+}
+
 function candidateFrom(board, row, runAt, sourceUrl) {
   const url = providerJobUrl(board, row);
   if (!url || !text(row.title || row.name || row.jobTitle || row.jobOpeningName)) return null;
