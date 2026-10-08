@@ -731,6 +731,19 @@
         "jobs-and-careers"
       ]
     },
+    "hn": {
+      "enabled": true,
+      "trialStartDate": "2026-10-08",
+      "perThreadCommentCap": 100,
+      "maxDurationMs": 60000
+    },
+    "yc": {
+      "enabled": true,
+      "trialStartDate": "2026-10-08",
+      "dailyBudget": 1,
+      "perQueryResultCap": 10,
+      "maxDurationMs": 60000
+    },
     "startup": {
       "fixtures": {},
       "laneInputs": {}
