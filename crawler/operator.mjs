@@ -605,7 +605,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   const careerPagePlan = sourcePlan('structured-career-pages', 'career-pages', 'career-page-discovery', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
     if (!careerPageCompanies.length) {
       return { observations: [], manifest: {
-        status: 'empty',
+        status: projected.boardRegistry ? 'empty' : 'unavailable',
         reason: projected.boardRegistry
           ? 'no-registry-employers-with-unsupported-ats-and-jobposting-jsonld'
           : 'no-board-registry-configured',
