@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSourcePlans, fairPortalResolutionCandidates } from '../../crawler/operator.mjs';
+import { buildSourcePlans, fairPortalResolutionCandidates, runCrawlerOperator } from '../../crawler/operator.mjs';
 import { crawlerLaneFixtures } from '../../crawler/daily-runner.mjs';
 import { crawlRun, openCrawlerStore } from '../../crawler/run.mjs';
 import { createOriginalListingResolver, applyOriginalListingResolution } from '../../crawler/original-listing-resolver.mjs';
@@ -8,6 +8,64 @@ import { normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { loadConfig } from '../../job-pull/config.mjs';
 import { applicationReadiness } from '../../job-pull/normal-readiness.mjs';
+import { crawlWorkflow } from '../../crawler/workflow.mjs';
+
+test('every configured source has an operator end state, including disabled sources and portal lanes', async () => {
+  const store = openCrawlerStore(':memory:');
+  try {
+    const result = await crawlWorkflow({ store, runId: 'source-end-states', config: {
+      sources: { brave: { enabled: false }, careerSites: [] },
+    }, sourcePlans: [{ id: 'portal-discovery', fetch: async () => ({
+      observations: [{ provider: 'linkedin-jobs', company: 'Fixture', title: 'AI Engineer', location: 'Pune',
+        url: 'https://www.linkedin.com/jobs/view/1234567' }],
+      manifest: { telemetry: { lanes: [
+        { sourceId: 'portal-linkedin-jobs', status: 'ok', fetched: 1 },
+        { sourceId: 'portal-instahyre', status: 'empty', fetched: 0 },
+      ] } },
+    }) }] });
+    assert.deepEqual(Object.fromEntries(Object.entries(result.sourceEndStates).map(([id, value]) => [id, value.state])), {
+      'portal-discovery': 'ok', 'portal-linkedin-jobs': 'ok', 'portal-instahyre': 'empty',
+      'brave-search': 'disabled', 'career-sites': 'empty',
+    });
+    assert.equal(result.sourceEndStates['brave-search'].reason, 'disabled-in-config');
+    assert.deepEqual(result.terminalEnvelope.sourceEndStates, result.sourceEndStates);
+    const replay = await crawlWorkflow({ store, runId: 'source-end-states', sourcePlans: [] });
+    assert.deepEqual(replay.sourceEndStates, result.sourceEndStates);
+  } finally { store.close(); }
+});
+
+test('configured portal providers report the explicit disable decision when their parent lane is disabled', async () => {
+  const store = openCrawlerStore(':memory:');
+  try {
+    const result = await runCrawlerOperator({ store, runId: 'disabled-portals', config: {
+      schemaVersion: 'LaunchpadCrawlerConfigV1', databasePath: ':memory:',
+      sources: { portals: { enabled: false, linkedin: { queries: [{ keywords: 'AI', location: 'Pune' }] } } },
+    }, transport: async () => { throw new Error('disabled sources must not fetch'); } });
+    assert.deepEqual(result.sourceEndStates['portal-linkedin-jobs'], { state: 'disabled', reason: 'disabled-in-config' });
+  } finally { store.close(); }
+});
+
+test('empty source outcomes explain failures, zero results, missing configuration and unavailable portal transports', async () => {
+  const store = openCrawlerStore(':memory:');
+  try {
+    const result = await crawlWorkflow({ store, runId: 'source-empty-reasons', config: {
+      sources: { careerSites: [], searxng: { enabled: true } },
+    }, sourcePlans: [
+      { id: 'failed', fetch: async () => { throw new Error('HTTP 503'); } },
+      { id: 'zero', fetch: async () => ({ observations: [] }) },
+      { id: 'portal-discovery', fetch: async () => ({ observations: [], manifest: { telemetry: { lanes: [
+        { sourceId: 'portal-wellfound', status: 'unavailable', reasonCode: 'PORTAL_TRANSPORT_UNAVAILABLE' },
+      ] } } }) },
+    ] });
+    assert.deepEqual(result.sourceEndStates.failed, { state: 'empty', reason: 'HTTP 503' });
+    assert.deepEqual(result.sourceEndStates.zero, { state: 'empty', reason: 'no-records-returned' });
+    assert.equal(result.sourceEndStates['career-sites'].reason, 'no-career-sites-configured');
+    assert.equal(result.sourceEndStates['searxng-search'].reason, 'source-not-planned');
+    assert.equal(result.sourceEndStates['portal-wellfound'].reason, 'PORTAL_TRANSPORT_UNAVAILABLE');
+    assert.ok(Object.values(result.sourceEndStates).every((value) => value.state !== 'empty' || value.reason));
+    assert.equal(result.sourceTelemetry.failed.status, 'failed', 'execution failure remains visible');
+  } finally { store.close(); }
+});
 
 test('24 bounded candidates give every provider a turn without increasing requests or changing observation order', () => {
   const counts = { 'linkedin-jobs': 74, glassdoor: 26, instahyre: 40, wellfound: 107 };
@@ -55,7 +113,7 @@ test('operator rejects transport HTTP 429 and SQLite plus the daily lane bridge 
     linkedin: { queries: [{ keywords: 'AI', location: 'Pune' }] } } } },
     transport: async () => ({ status: 429, body: '' }), schedule: 'midday', runAt: '2026-10-02T00:00:00Z' });
   const portal = plans.find((x) => x.id === 'portal-discovery');
-  const result = await portal.fetch();
+  const result = await portal.fetch({ runId: '429-persist' });
   assert.equal(result.manifest.status, 'failed');
   assert.equal(result.manifest.failed, 1);
   const store = openCrawlerStore(':memory:');

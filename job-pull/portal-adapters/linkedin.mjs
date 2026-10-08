@@ -254,7 +254,10 @@ export async function fetchLinkedIn({
   maxRecords = 400,
   timeWindow = 'day',
   signal = null,
+  guestPass = null,
+  onGuestPass = null,
 } = {}) {
+  if (guestPass) return { ...guestPass, telemetry: { ...guestPass.telemetry, requests: 0, guestPassReused: true } };
   if (typeof fetchText !== 'function') throw new Error('LinkedIn requires an injected fetchText function');
   if (!Array.isArray(queries) || !queries.length) throw new Error('LinkedIn requires at least one configured query');
 
@@ -262,12 +265,17 @@ export async function fetchLinkedIn({
   const pages = [];
   const errors = [];
   let requests = 0;
+  let disabledReason = null;
+  const attemptedPages = new Set();
 
+  queriesLoop:
   for (const query of queries) {
     for (let page = 0; page < maxPagesPerQuery; page += 1) {
       if (records.length >= maxRecords) break;
       if (signal?.aborted) break;
       const url = buildLinkedInQueryUrl({ timeWindow, ...query, start: page * pageSize });
+      if (attemptedPages.has(url)) break;
+      attemptedPages.add(url);
       let parsed = [];
       try {
         requests += 1;
@@ -275,7 +283,13 @@ export async function fetchLinkedIn({
         parsed = parseLinkedInGuestCards(html, { query });
         assertPortalPageHealth(html, { provider: 'linkedin-jobs', records: parsed, allowEmptyFragment: true });
       } catch (error) {
+        if (error?.code === 'LINKEDIN_PAUSED') {
+          requests -= 1;
+          disabledReason = error.message;
+          break queriesLoop;
+        }
         errors.push(`${query.keywords} @ ${query.location} p${page}: ${error?.message || String(error)}`);
+        if (error?.statusCode === 429 || /\bHTTP 429\b/.test(error?.message ?? '')) break queriesLoop;
         break;
       }
       pages.push({ query: `${query.keywords} @ ${query.location}`, page, returned: parsed.length });
@@ -286,8 +300,9 @@ export async function fetchLinkedIn({
   }
 
   const deduped = dedupeByUrl(records).slice(0, maxRecords);
-  return {
+  const result = {
     records: deduped,
+    ...(disabledReason && requests === 0 ? { manifest: { status: 'disabled', reason: disabledReason } } : {}),
     telemetry: {
       provider: 'linkedin-jobs',
       requestPlan: { queries: queries.length, maxPagesPerQuery, pageSize, url: LINKEDIN_GUEST_SEARCH_URL },
@@ -300,6 +315,8 @@ export async function fetchLinkedIn({
       errors,
     },
   };
+  onGuestPass?.(result);
+  return result;
 }
 
 export default fetchLinkedIn;

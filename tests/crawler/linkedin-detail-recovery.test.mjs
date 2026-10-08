@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parseLinkedInJobDetail, fetchLinkedIn } from '../../job-pull/portal-adapters/linkedin.mjs';
 import { createOriginalListingResolver, applyOriginalListingResolution } from '../../crawler/original-listing-resolver.mjs';
 import { buildSourcePlans, createCrawlerRunResolver, screenPortalCandidate, defaultHttpTransport, runCrawlerOperator } from '../../crawler/operator.mjs';
@@ -33,6 +35,103 @@ function plan(transport, extra = {}) {
   const resolver = createCrawlerRunResolver({ config, transport, runAt: now });
   return buildSourcePlans({ config, transport, resolver, runAt: now, schedule: 'midday', portalCandidateScreen: (candidate) => screenPortalCandidate(candidate, loadConfig()), ...extra }).find((item) => item.id === 'portal-discovery');
 }
+
+test('a LinkedIn query matrix gets one guest pass when the source is invoked again in the same run', async () => {
+  const calls = [];
+  const source = plan(async (target) => { calls.push(target); return { status: 200, body: cards }; });
+  const checkpoints = [];
+  const first = await source.fetch({ checkpoint: (payload) => checkpoints.push(payload) });
+  const second = await source.fetch({ cursor: checkpoints.at(-1).cursor });
+  assert.equal(calls.filter((target) => target.includes('jobs-guest')).length, 1);
+  assert.deepEqual(second.observations.map((item) => item.jobId), first.observations.map((item) => item.jobId));
+});
+
+test('a search or detail 429 stops LinkedIn until midnight IST, including after a store reopen', async () => {
+  for (const blockedPage of ['search', 'detail']) {
+    const databasePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'linkedin-pause-')), 'crawler.sqlite');
+    const pausedConfig = { ...config, databasePath, sources: { portals: { ...config.sources.portals,
+      linkedin: { queries: [{ keywords: 'AI', location: 'Pune' }, { keywords: 'Backend', location: 'Pune' }], maxPagesPerQuery: 1 },
+    } } };
+    const calls = [];
+    let current = '2026-10-08T18:25:00.000Z';
+    const transport = async (target) => {
+      calls.push(target);
+      return target.includes('jobs-guest') && blockedPage === 'detail'
+        ? { status: 200, body: cards } : { status: 429, body: '' };
+    };
+    const first = await runCrawlerOperator({ config: pausedConfig, schedule: 'midday', runId: `blocked-${blockedPage}`,
+      clock: { now: () => current }, transport });
+    const expected = blockedPage === 'search' ? 1 : 3; // two queries then one blocked detail
+    assert.equal(calls.length, expected, 'no LinkedIn work after the first 429');
+    assert.match(first.sourceEndStates['portal-linkedin-jobs'].reason ?? first.sourceTelemetry['portal-discovery'].detail.errors.join(' '), /429|rate-limited/);
+    current = '2026-10-08T18:29:59.000Z';
+    const paused = await runCrawlerOperator({ config: pausedConfig, schedule: 'midday', runId: `paused-${blockedPage}`,
+      clock: { now: () => current }, transport });
+    assert.equal(calls.length, expected, 'pause survives reopening the database');
+    assert.equal(paused.sourceEndStates['portal-linkedin-jobs'].state, 'disabled');
+    assert.match(paused.sourceEndStates['portal-linkedin-jobs'].reason, /2026-10-08T18:30:00/);
+    current = '2026-10-08T18:30:00.000Z';
+    await runCrawlerOperator({ config: pausedConfig, schedule: 'midday', runId: `next-day-${blockedPage}`,
+      clock: { now: () => current }, transport: async (target) => { calls.push(target); return { status: 200, body: '' }; } });
+    assert.equal(calls.length, expected + 2, 'a new IST day permits a fresh pass');
+  }
+});
+
+test('duplicate LinkedIn query pages are never retried, even after a transport failure', async () => {
+  for (const fails of [false, true]) {
+    const calls = [];
+    const ai = { keywords: 'AI', location: 'Pune' };
+    const backend = { keywords: 'Backend', location: 'Pune' };
+    const result = await fetchLinkedIn({ queries: [ai, ai, backend, backend], maxPagesPerQuery: 1,
+      fetchText: async (target) => {
+        calls.push(target);
+        if (fails) throw new Error('HTTP 503');
+        return cards;
+      },
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(result.telemetry.requests, 2);
+    assert.equal(new Set(calls).size, calls.length);
+  }
+});
+
+test('resuming a LinkedIn detail failure never retries that public page', async () => {
+  const calls = [];
+  const transport = async (target) => {
+    calls.push(target);
+    if (target.includes('jobs-guest')) return { status: 200, body: cards };
+    throw new Error('connection reset');
+  };
+  const checkpoints = [];
+  const first = await plan(transport).fetch({ runId: 'failed-details', checkpoint: (payload) => checkpoints.push(payload) });
+  const second = await plan(transport).fetch({ runId: 'failed-details', cursor: checkpoints.at(-1).cursor });
+  assert.equal(calls.length, 4, 'one search and each detail once');
+  assert.equal(second.observations.length, first.observations.length);
+  assert.ok(second.observations.every((item) => item.evidence.resolution.reason === 'transport-error'));
+});
+
+test('an interrupted LinkedIn page is not requested again after reopening and resuming the run', async () => {
+  const databasePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'linkedin-interrupted-')), 'crawler.sqlite');
+  const interruptedConfig = { ...config, databasePath, sources: { ...config.sources,
+    searxng: { enabled: true, endpoint: 'http://localhost:8888', queries: ['AI engineer Pune'] },
+  } };
+  const controller = new AbortController();
+  const calls = [];
+  const first = await runCrawlerOperator({ config: interruptedConfig, schedule: 'morning', runId: 'interrupted-page',
+    clock: { now: () => now }, signal: controller.signal, transport: async (target) => {
+      calls.push(target);
+      if (target.includes('jobs-guest')) return { status: 200, body: cards };
+      controller.abort(Object.assign(new Error('crawler deadline exceeded'), { code: 'DAILY_DEADLINE_EXCEEDED' }));
+      throw new Error('connection reset during cancellation');
+    },
+  });
+  assert.equal(first.run.status, 'partial', JSON.stringify(first.failures));
+  await runCrawlerOperator({ config: interruptedConfig, schedule: 'morning', runId: 'interrupted-page',
+    clock: { now: () => now }, transport: async (target) => { calls.push(target); return { status: 200, body: target.includes('linkedin.com') ? fixture(target.match(/(\d+)$/)[1]) : JSON.stringify({ results: [] }) }; },
+  });
+  assert.equal(calls.filter((target) => target === url).length, 1, 'the interrupted page is never retried');
+  assert.equal(calls.filter((target) => target.includes('jobs-guest')).length, 1);
+});
 
 test('public object, array and @graph JobPosting preserve exact portal provenance without inventing salary or experience', () => {
   for (const value of [posting, [posting], { '@graph': [{ '@type': 'BreadcrumbList' }, posting] }, [{ '@graph': [posting] }]]) {
@@ -311,7 +410,7 @@ test('operator checkpoints descriptions, resumes without detail refetch and reje
   const cursor = checkpoints.at(-1).cursor;
   assert.equal(cursor.completedDetails.length, 3);
   const second = await plan(transport).fetch({ cursor });
-  assert.equal(calls.length, 5); // three details once, one search each invocation
+  assert.equal(calls.length, 4); // three details and one guest pass, retained across resume
   assert.equal(second.observations.length, 3);
   assert.ok(second.observations.every((c) => c.description));
 });

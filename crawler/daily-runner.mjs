@@ -15,6 +15,7 @@ import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
 import { boardIdentityKey, projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
 import { runNormalMode } from '../job-pull/normal-mode.mjs';
 import { PORTAL_SOURCE_LANES } from '../job-pull/normal-sources.mjs';
+import { buildSourceEndStates } from './source-yield.mjs';
 import { runStartupMode } from '../job-pull/startup-mode.mjs';
 import { runRemoteMode } from '../job-pull/remote-mode.mjs';
 import { candidateDedupKey } from '../job-pull/candidate.mjs';
@@ -181,6 +182,7 @@ function terminalEnvelope({ crawlerResult = null, result = null, runId, schedule
       ...Object.keys(rejectionCounts),
     ])].sort(),
     sourceCoverage,
+    sourceEndStates: { ...(crawlerEnvelope.sourceEndStates ?? {}), ...buildSourceEndStates(additionalSources) },
     completedSources: sourceCoverage.completed,
     interruptedSources: sourceCoverage.interrupted,
     failedSources: sourceCoverage.failed,
