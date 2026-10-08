@@ -54,7 +54,7 @@ const WATERFALL = Object.freeze([
 export { WATERFALL, waterfallBand };
 
 // Select verified scored roles with the shared daily waterfall and diversity policy.
-export function selectNormalApplications(entries, { minimum = 10, preferred = 12, maximum = 20, maximumPerCompany = 2, maximumFamilyShare = 0.4, previousDailyCandidates = [] } = {}) {
+export function selectNormalApplications(entries, { minimum = 10, preferred = 12, maximum = 20, maximumPerCompany = 2, maximumFamilyShare = 0.4, previousDailyCandidates = [], includeEorContract = false } = {}) {
   const evaluated = entries.map((entry) => {
     const candidate = entry.candidate || entry;
     const eligibility = entry.eligibility || candidate.eligibility || null;
@@ -62,7 +62,7 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
     const readiness = entry.readiness || applicationReadiness(candidate, eligibility);
     return { ...entry, candidate, eligibility, freshness, readiness, waterfallBand: waterfallBand({ ...entry, candidate, eligibility, freshness }) };
   });
-  const ready = evaluated.filter((entry) => entry.readiness.ready && entry.waterfallBand);
+  const ready = evaluated.filter((entry) => (includeEorContract || entry.eligibility?.employment?.lane !== 'eor-contract') && entry.readiness.ready && entry.waterfallBand);
   const { scored, scoringQueue, scoredCount, unscoredCount, scoringFailedCount } = splitScoredEntries(ready);
   const queues = new Map(WATERFALL.map((band) => [band, []]));
   for (const entry of scored) queues.get(entry.waterfallBand).push(entry);

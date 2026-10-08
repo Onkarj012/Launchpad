@@ -73,6 +73,29 @@ test('each mode keeps full results and caps one employer at two without using an
   }
 });
 
+test('EOR and long-term contract roles appear only in their separate daily lane', async () => {
+  const { config } = testConfig();
+  const roles = [
+    rawPortalJob(1831, { company: 'Global EOR Employer', location: 'Remote - India', description: 'Remote in India. Full-time AI Engineer for 0-1 years at a US-based company, hired through an Employer of Record in India.' }),
+    rawPortalJob(1832, { company: 'Direct Contract Employer', location: 'Remote - India', employment: { type: 'contract', evidence: 'Full-time contract, ongoing, fixed salary of INR 18 LPA, hired directly by the company.' }, description: 'Remote in India. AI Engineer for 0-1 years.' }),
+    rawPortalJob(1834, { company: 'Unclear Contract Employer', location: 'Remote - India', employment: { type: 'contract', evidence: 'Contract role. Terms to be discussed.' }, description: 'Remote in India. AI Engineer for 0-1 years.' }),
+    rawPortalJob(1833, { company: 'Ordinary Employer' }),
+  ];
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: roles, manifest: { status: 'ok' } } },
+  }));
+  assert.equal(result.outcome.fatal, false);
+  assert.deepEqual(result.modes.normal.results.map((role) => role.company), ['Ordinary Employer']);
+  assert.deepEqual(result.modes.startup.results, []);
+  assert.deepEqual(result.modes.remote.results, []);
+  assert.deepEqual(result.modes.eorContract.results.map((role) => [role.company, role.labels]), [
+    ['Global EOR Employer', ['EOR']],
+    ['Direct Contract Employer', ['Contract']],
+  ]);
+  assert.ok(result.verificationQueue.some((role) => role.company === 'Unclear Contract Employer'));
+  assert.equal(result.modes.eorContract.results.some((role) => role.company === 'Unclear Contract Employer'), false);
+});
+
 function greenhouseJob(id, companySlug, overrides = {}) {
   return {
     id,

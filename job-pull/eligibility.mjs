@@ -35,6 +35,14 @@ const PUNE_LOCATION_CONTEXT_PATTERN = /\b(?:maharashtra|mh|41[12]\d{3})\b/i;
 const NIGHT_SHIFT_PATTERN = /\b(?:night[ -]?shifts?|rotating[ -]?shifts?|overnight)\b/i;
 const IMMEDIATE_JOINER_PATTERN = /\b(?:immediate[ -]?join(?:ers?|ing)|join\s+immediately)\b/i;
 const SHORT_NOTICE_PATTERN = /\b(?:notice(?:\s+period)?\s*(?:(?:of|is|up\s+to|within|maximum)\s*)?[:=-]?\s*|join\s+within\s+)(\d+)(?:\s*(?:[-–]|to)\s*(\d+))?\s*[- ]?\s*days?\b|\b(\d+)(?:\s*(?:[-–]|to)\s*(\d+))?\s*[- ]?\s*days?\s+notice\b/gi;
+const EOR_PATTERN = /\bemployer\s+of\s+record\b|\beor\b/i;
+const FOREIGN_COMPANY_PATTERN = /\bforeign\s+company\b|\b(?:us|u\.s\.|united states|uk|u\.k\.|united kingdom|canada|europe|eu|australia|new zealand|singapore|japan|germany|france|netherlands|switzerland|ireland|israel)(?:[ -]based)?\s+company\b|\bcompany\s+(?:is\s+)?(?:based|headquartered)\s+in\s+(?:the\s+)?(?:us|u\.s\.|united states|uk|u\.k\.|united kingdom|canada|europe|eu|australia|new zealand|singapore|japan|germany|france|netherlands|switzerland|ireland|israel)\b/i;
+const CONTRACT_FIXED_PAY_PATTERN = /\b(?:fixed|guaranteed)\s+(?:salary|pay|compensation)\b|\b(?:salary|compensation)\s+of\s+(?:inr|₹|usd|\$|\d)[^.!?]{0,40}\b(?:per|\/|a\s+year|annually|monthly|month|annum)\b/i;
+const CONTRACT_UNKNOWN_PAY_PATTERN = /\b(?:pay|salary|compensation)\s+(?:is\s+)?(?:not\s+stated|undisclosed|unspecified|to\s+be\s+discussed|tbd)\b/i;
+const CONTRACT_VARIABLE_PAY_PATTERN = /\b(?:no\s+fixed\s+(?:pay|salary|compensation)|(?:pay|salary|compensation)\s+(?:is\s+)?not\s+fixed|variable\s+(?:pay|compensation)|commission[ -]?only|equity[ -]?only)\b/i;
+const CONTRACT_DURATION_PATTERN = /\b(\d+)\s*[- ]?months?\b/i;
+const CONTRACT_SHORT_DURATION_PATTERN = /\b(?:one|two|three|four|five)\s*[- ]?months?\b|\b(?:3|4|5)\s*[- ]?months?\b/i;
+const CONTRACT_DIRECT_HIRE_PATTERN = /\b(?:hired|engaged|contracted)\s+directly\s+(?:by|with)\s+(?:the\s+)?company\b|\bdirect\s+(?:hire|contract)\s+(?:with|by)\s+(?:the\s+)?company\b|\bcompany\s+itself\s+(?:hires|employs|engages)\b/i;
 
 function textFor(candidate) {
   return [candidate.title, candidate.location, candidate.workMode, candidate.description, candidate.employment?.evidence, candidate.experience?.evidence]
@@ -230,7 +238,7 @@ export function classifyEmployment(candidate, policy) {
   const type = raw.internship && (!suppliedType || suppliedType === 'full-time')
     ? 'internship' : suppliedType || (raw.fullTime ? 'full-time' : null);
   const explicitUnpaid = candidate.employment?.paid === false || raw.unpaid;
-  if (explicitUnpaid && policy.employment.rejectUnpaid) {
+  if (explicitUnpaid && policy.employment.rejectUnpaid && suppliedType !== 'contract') {
     return { pass: false, code: 'EMPLOYMENT_UNPAID', evidence: candidate.employment?.evidence || raw.text };
   }
   if (raw.trainingFeeOrBond) {
@@ -238,6 +246,32 @@ export function classifyEmployment(candidate, policy) {
   }
   if (raw.freelancePerTask) return { pass: false, code: 'EMPLOYMENT_FREELANCE_PER_TASK', evidence: raw.freelancePerTask[0] };
   if (raw.anonymousAgency) return { pass: false, code: 'EMPLOYMENT_AGENCY_CLIENT_NOT_NAMED', evidence: raw.anonymousAgency[0] };
+  const eorEvidence = candidate.eor?.available === true || EOR_PATTERN.test(raw.text);
+  if (eorEvidence) {
+    const indiaHiring = /\b(?:india|indian)\b/i.test(raw.text)
+      || candidate.remoteEligibility?.status === 'India Eligible'
+      || /\b(?:india|indian)\b/i.test(candidate.eor?.evidence || '');
+    const foreignCompany = FOREIGN_COMPANY_PATTERN.test(raw.text) || FOREIGN_COMPANY_PATTERN.test(candidate.eor?.evidence || '');
+    if (!indiaHiring || !foreignCompany) return { pass: false, code: 'EMPLOYMENT_EOR_INDIA_UNVERIFIED', evidence: candidate.eor?.evidence || raw.text, verificationRequired: true };
+    return { pass: true, code: 'EMPLOYMENT_EOR_INDIA', evidence: candidate.eor?.evidence || raw.text, lane: 'eor-contract' };
+  }
+  if (suppliedType === 'contract') {
+    const body = raw.text;
+    const fullTime = /\bfull[ -]?time\b/i.test(body);
+    const ongoing = /\b(?:ongoing|indefinite|permanent)\b/i.test(body);
+    const duration = body.match(CONTRACT_DURATION_PATTERN);
+    const sixMonths = Boolean(duration && Number(duration[1]) >= 6);
+    const directHire = CONTRACT_DIRECT_HIRE_PATTERN.test(body);
+    const explicitNoPay = CONTRACT_VARIABLE_PAY_PATTERN.test(body);
+    const unknownPay = CONTRACT_UNKNOWN_PAY_PATTERN.test(body);
+    const fixedPay = CONTRACT_FIXED_PAY_PATTERN.test(body);
+    if (explicitNoPay) return { pass: false, code: 'EMPLOYMENT_CONTRACT_FIXED_PAY_REQUIRED', evidence: body.match(CONTRACT_VARIABLE_PAY_PATTERN)?.[0] || body };
+    if (CONTRACT_SHORT_DURATION_PATTERN.test(body)) return { pass: false, code: 'EMPLOYMENT_CONTRACT_DURATION_TOO_SHORT', evidence: body.match(CONTRACT_SHORT_DURATION_PATTERN)?.[0] || body };
+    if (!fullTime || (!ongoing && !sixMonths) || !directHire || unknownPay || !fixedPay) {
+      return { pass: false, code: 'EMPLOYMENT_CONTRACT_TERMS_UNVERIFIED', evidence: body || null, verificationRequired: true };
+    }
+    return { pass: true, code: 'EMPLOYMENT_LONG_TERM_CONTRACT', evidence: candidate.employment?.evidence || body, lane: 'eor-contract' };
+  }
   if (raw.disallowedType) return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: raw.disallowedType[0] };
   if (type && !policy.employment.allowedTypes.includes(type)) {
     return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: candidate.employment?.evidence || type };
@@ -395,7 +429,7 @@ function classifyCompany(candidate, policy) {
 }
 
 // Add schedule and notice labels without changing eligibility or reject reasons.
-function candidateLabels(candidate, workMode) {
+function candidateLabels(candidate, workMode, employment) {
   const text = decodeEntities(textFor(candidate)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const labels = workMode === 'remote'
     ? classifyRemoteTimezone(candidate).labels || []
@@ -406,6 +440,7 @@ function candidateLabels(candidate, workMode) {
     return Math.max(minimum, maximum) <= 30;
   });
   if (IMMEDIATE_JOINER_PATTERN.test(text) || shortNotice) labels.push('Notice risk');
+  if (employment.lane === 'eor-contract') labels.push(employment.code === 'EMPLOYMENT_EOR_INDIA' ? 'EOR' : 'Contract');
   return labels;
 }
 
@@ -431,7 +466,7 @@ export function classifyCandidate(candidate, policy) {
   const globalRemoteText = [candidate.title, candidate.location, candidate.workMode, candidate.description]
     .filter((value) => typeof value === 'string')
     .join(' ');
-  const labels = candidateLabels(candidate, geo.mode);
+  const labels = candidateLabels(candidate, geo.mode, employment);
   if (geo.pass && geo.mode === 'remote' && hasUnrestrictedGlobalRemoteClaim(globalRemoteText, policy, candidate.location || '')) {
     labels.push('Remote: worldwide, no country limit');
   }
