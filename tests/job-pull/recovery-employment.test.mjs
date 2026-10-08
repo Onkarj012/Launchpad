@@ -15,7 +15,7 @@ test('benefits and hybrid location language do not reclassify paid employment', 
     'Develop smart contract infrastructure.',
     'Unpaid leave is available after paid leave runs out.',
   ]) assert.equal(classifyEmployment(role(description), policy).pass, true, description);
-  assert.equal(classifyEmployment(role('Paid volunteer days.', { type: 'internship', paid: true }), policy).code, 'EMPLOYMENT_PAID_INTERNSHIP');
+  assert.equal(classifyEmployment(role('Stipend: INR 40,000 per month. PPO based on performance. Paid volunteer days.', { type: 'internship', paid: true }), policy).code, 'EMPLOYMENT_PAID_INTERNSHIP');
 });
 test('actual unpaid and excluded employment cannot borrow paid benefits or structured full-time', () => {
   for (const description of [

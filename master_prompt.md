@@ -45,14 +45,15 @@
 - **Notice:** listings asking for immediate joiners or a notice of 30 days or less are allowed with the label `Notice risk`. A label never rejects a role.
 
 ### Employment type & must-haves
-- Full-time engineering roles or explicitly paid/stipended engineering internships.
+- Full-time engineering roles or explicitly paid/stipended engineering internships (stipend ≥ ₹40k/month with a stated PPO path). This bar also applies to the AICTE and NATS avenue.
 - Real engineering work (AI/ML, backend, full-stack, or an approved adjacent fallback with substance).
-- Unpaid, equity-only, commission-only, volunteer, part-time, and contract roles → drop.
+- Unpaid, equity-only, commission-only, volunteer, part-time, freelance per-task, training-fee, bonded, and agency-resale-without-named-client roles → drop.
+- Contract roles are excluded from the full-time and internship lanes.
 
 ### Hard gates (run first, every pull — fail any → drop, never written to Notion)
 1. **Location authorization** — onsite/hybrid must offer a Pune-wide location option; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
-3. **Employment / paid** — allow full-time or explicitly paid internship; disallowed/unknown-pay internships → drop.
+3. **Employment / paid** — allow full-time or engineering internships with a stated stipend ≥ ₹40k/month and a stated PPO path; missing, unverified, or below-floor stipend and missing PPO path → drop.
 4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
    - **Workday exception:** only a usable DETAIL `startDate` is trusted as Workday freshness evidence. LIST `postedOn`, including bounded labels such as `Posted Today`, is not sufficient and stays undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
 5. **Liveness** — confirmed dead/expired → drop. Inconclusive checks stay `Not Verified`, never invented as Active.
@@ -61,7 +62,7 @@
 Mechanical values and aliases live in `config/job-pull.json`; this section is the human-readable policy. Everything else (stack fit, role flavor, pure-frontend-ness, etc.) is **soft** — it lowers Skill match / Domain relevance in § 3, not a gate.
 
 ### Salary
-- **Minimum compensation filter:** ₹6 LPA. Filter out roles with disclosed compensation below ₹6 LPA; undisclosed compensation remains `Not Verified`.
+- **Minimum compensation filter:** ₹5.5 LPA. Filter out roles with disclosed compensation below ₹5.5 LPA; undisclosed compensation remains `Not Verified`. Internships use the separate stipend and PPO bar above.
 
 ---
 
@@ -83,7 +84,7 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 - Output per job: five integer component scores within their rubric weights, their deterministic sum 0–100 + a one-line rationale + the **single strongest hook** to lead the resume/email with + an `Auto-Suggest` boolean (see rule below).
 - Target **10 minimum, 12 preferred, 20 maximum verified scored roles per IST day across modes and schedules**, with **at least 10 Strict when inventory supports it**. Selection order: Strict Hot → Strict Active → Strict Backfill → Shortage Fallback Hot → Fallback Active → Fallback Backfill.
 - Shortage fallback may relax only adjacent title and hard experience requirement up to 2 years. Display it separately with exact relaxation; never hide a strict shortfall.
-- Verified daily selection requires a retained JD and evidence of full-time employment or a paid internship; summary-only records stay in verification. Unknown numeric experience may still be manual review when the JD passes the hard gates.
+- Verified daily selection requires a retained JD and evidence of full-time employment or an internship meeting the stipend and PPO bar; summary-only records stay in verification. Unknown numeric experience may still be manual review when the JD passes the hard gates.
 - Explicit `--scores-json` inputs remain a labelled manual scoring seam. Legacy totals require whole points and a valid Response Likelihood; missing JD caps them at 45. Source scores never establish model output. Runtime and cached model results require all five components, matching Response Likelihood, total, and JD-availability flag. Rationale and hook must refer to supplied JD and approved resume evidence. Structural validation does not prove semantic truth.
 - Morning and midday share a cumulative 20-role daily ceiling. Completed local plans consume daily capacity; retries reuse their run allocation. A shortage never relaxes eligibility, verification, or scoring gates.
 - Diversity after scoring: maximum 2 roles per company; balance role families within each Strict/freshness band, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist in that band. Exhaust the band before advancing.

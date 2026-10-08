@@ -1,3 +1,4 @@
+import { parseStipend } from './stipend.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { candidateDedupKey, normalizeCandidate } from './candidate.mjs';
 import { classifyEmployment } from './eligibility.mjs';
@@ -26,7 +27,6 @@ const HYBRID = /\bhybrid\b/i;
 const ONSITE = /\b(?:on[ -]?site|in[ -]?office|office[ -]?based|office-based)\b/i;
 const FOREIGN_RESTRICTION = /\b(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|european union|canada|australia)\s+(?:only|work authorization|work authorisation)|(?:must be located|must reside|authorized to work|authorised to work)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)\b/i;
 const INTERNSHIP = /\b(?:intern|internship|trainee)\b/i;
-const INR = /^(?:inr|₹|rs\.?|rupees?)$/i;
 
 export class InternshipLaneError extends Error {
   constructor(message, stage = 'internship-lane') {
@@ -55,97 +55,6 @@ function countReasons(values) {
 function copy(value) {
   if (value == null) return value;
   return structuredClone(value);
-}
-
-function number(value) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value !== 'string') return null;
-  const parsed = Number(value.replace(/,/g, '').trim());
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function currencyFrom(value) {
-  const supplied = text(value);
-  if (!supplied) return { currency: null, currencyRaw: null };
-  return { currency: INR.test(supplied) ? 'INR' : supplied.toUpperCase(), currencyRaw: supplied };
-}
-
-function periodFrom(value) {
-  const raw = text(value);
-  if (!raw) return null;
-  const lower = raw.toLowerCase().replace(/\s+/g, ' ');
-  if (/^(?:month|monthly|per month|\/month|pm)$/.test(lower)) return { period: raw, periodUnit: 'month', multiplier: 1 };
-  if (/^(?:year|yearly|annual|annually|per year|per annum|pa)$/.test(lower)) return { period: raw, periodUnit: 'year', multiplier: 1 / 12 };
-  if (/^(?:week|weekly|per week|\/week)$/.test(lower)) return { period: raw, periodUnit: 'week', multiplier: 52 / 12 };
-  return { period: raw, periodUnit: null, multiplier: null };
-}
-
-function amountFromText(value) {
-  const source = text(value) || '';
-  const range = source.match(/(?:₹|INR|Rs\.?|rupees?\s*)?\s*([\d,]+(?:\.\d+)?)\s*(?:-|–|to)\s*(?:₹|INR|Rs\.?|rupees?\s*)?\s*([\d,]+(?:\.\d+)?)/i);
-  if (range) return { amount: number(range[1]), maximum: number(range[2]), ambiguous: true };
-  const match = source.match(/(?:₹|INR|Rs\.?|rupees?\s*)?\s*([\d,]+(?:\.\d+)?)/i);
-  return { amount: match ? number(match[1]) : null, maximum: null, ambiguous: false };
-}
-
-function parseStipend(raw) {
-  const supplied = raw?.stipend ?? raw?.stipendEvidence ?? raw?.salary ?? null;
-  const structured = supplied && typeof supplied === 'object' && !Array.isArray(supplied) ? supplied : null;
-  const sourceText = typeof supplied === 'string' ? supplied : text(structured?.raw ?? raw?.stipendRaw ?? raw?.stipendText);
-  const textAmount = amountFromText(sourceText);
-  const minimum = number(structured?.minimum ?? structured?.min);
-  const maximum = number(structured?.maximum ?? structured?.max);
-  const explicitAmount = number(structured?.amount ?? structured?.value ?? raw?.stipendAmount);
-  const amount = explicitAmount ?? minimum ?? textAmount.amount;
-  const hasDifferentRange = minimum != null && maximum != null && minimum !== maximum;
-  const ambiguous = textAmount.ambiguous || hasDifferentRange || (explicitAmount == null && minimum == null && maximum != null);
-  const rawPeriod = structured?.period ?? raw?.stipendPeriod ?? (sourceText?.match(/(?:per\s+)?(?:month|monthly|year|yearly|annual|annually|week|weekly)/i)?.[0] ?? null);
-  const period = periodFrom(rawPeriod);
-  const detectedCurrency = sourceText?.match(/₹|INR|Rs\.?|rupees?/i)?.[0] ?? null;
-  const { currency, currencyRaw } = currencyFrom(structured?.currency ?? raw?.stipendCurrency ?? detectedCurrency);
-  const evidence = text(structured?.evidence ?? raw?.stipendEvidence ?? (typeof supplied === 'string' ? supplied : null));
-  const rawValue = structured?.raw ?? raw?.stipendRaw ?? supplied;
-  const explicitlyUnverified = structured?.verified === false || /^(?:unknown|unverified|not verified|ambiguous)$/i.test(text(structured?.status) || '');
-
-  const result = {
-    amount,
-    currency,
-    currencyRaw,
-    period: period?.period ?? null,
-    periodUnit: period?.periodUnit ?? null,
-    monthlyAmount: period?.multiplier != null && amount != null ? Math.round(amount * period.multiplier * 100) / 100 : null,
-    raw: copy(rawValue),
-    evidence,
-    ambiguous,
-    verified: !explicitlyUnverified,
-    tier: 'Needs Verification',
-    status: 'Needs Verification',
-    reason: null,
-    conversion: period?.periodUnit && period.periodUnit !== 'month' ? `safe-${period.periodUnit}-to-month` : null,
-  };
-
-  if (explicitlyUnverified || ambiguous || amount == null || currency == null || !period?.periodUnit) {
-    result.reason = explicitlyUnverified ? 'STIPEND_UNVERIFIED'
-      : ambiguous ? 'STIPEND_AMBIGUOUS'
-        : amount == null ? 'STIPEND_MISSING'
-          : currency == null ? 'STIPEND_CURRENCY_MISSING'
-            : !INR.test(currency) ? 'STIPEND_CURRENCY_NOT_INR'
-              : 'STIPEND_PERIOD_NOT_SAFE_TO_CONVERT';
-    return result;
-  }
-  if (!INR.test(currency)) {
-    result.reason = 'STIPEND_CURRENCY_NOT_INR';
-    return result;
-  }
-  if (result.monthlyAmount < 25000) {
-    result.tier = 'Reject';
-    result.status = 'Rejected';
-    result.reason = 'STIPEND_BELOW_25000_INR_MONTHLY';
-    return result;
-  }
-  result.tier = result.monthlyAmount >= 30000 ? 'Preferred' : 'Lower-Stipend';
-  result.status = 'Verified';
-  return result;
 }
 
 function remoteEligibility(raw, candidate, combined) {
@@ -257,8 +166,9 @@ function classifyRecord(raw, { runAt }) {
   if (enriched.feeBondEvidence) policyReasons.push('FEES_OR_BOND_CONCERN');
   if (freshness.reason) policyReasons.push(freshness.reason);
   const reasons = unique(policyReasons);
-  const rejectReasons = reasons.filter((reason) => [
-    'EMPLOYMENT_CATEGORY_NOT_INTERNSHIP', 'STIPEND_BELOW_25000_INR_MONTHLY', 'ONSITE_HYBRID_NOT_PUNE_METRO',
+  const rejectReasons = reasons.filter((reason) => (!employmentGate.pass && reason === employmentGate.code)
+    || (stipend.status !== 'Verified' && reason === stipend.reason) || [
+    'EMPLOYMENT_CATEGORY_NOT_INTERNSHIP', 'ONSITE_HYBRID_NOT_PUNE_METRO',
     'EMPLOYMENT_UNPAID', 'EMPLOYMENT_TRAINING_FEE_OR_BOND', 'REMOTE_NOT_ELIGIBLE_FOR_INDIA',
     'LIVENESS_EXPIRED', 'FEES_OR_BOND_CONCERN', 'FRESHNESS_EXPIRED',
   ].includes(reason));
