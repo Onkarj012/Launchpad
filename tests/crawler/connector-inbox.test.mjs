@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CONNECTOR_INBOX_SCHEMA_VERSION,
   normalizeConnectorEnvelope,
+  parseHiringPostInbox,
 } from '../../crawler/connector-inbox.mjs';
 
 const baseRecord = (overrides = {}) => ({
@@ -178,4 +179,40 @@ test('null postedAt normalizes without back-filling run timestamp', () => {
   assert.equal(result.observations[0].postedAt, null);
   assert.notEqual(result.observations[0].postedAt, runAt);
   assert.equal(result.observations[0].discoveredAt, runAt);
+});
+
+// Check pasted entries through the connector envelope interface.
+test('parses each pasted hiring post into a connector envelope without inventing evidence', () => {
+  const firstText = 'Company: Acme Labs\nTitle: AI Engineer\nLocation: Pune, India\nWe are hiring. Apply: https://boards.greenhouse.io/acme/jobs/123';
+  const secondText = 'We are hiring engineers. DM the founder for details.';
+  const envelopes = parseHiringPostInbox(`# Hiring posts\n\n---\nhttps://www.linkedin.com/posts/acme-hiring\n\n${firstText}\n\n---\nhttps://x.com/founder/status/456\n\n${secondText}\n`);
+
+  assert.equal(envelopes.length, 2);
+  assert.equal(envelopes[0].schemaVersion, CONNECTOR_INBOX_SCHEMA_VERSION);
+  const first = normalizeConnectorEnvelope(envelopes[0], { runAt: '2026-10-08T02:15:00.000Z' });
+  assert.equal(first.observations.length, 1);
+  assert.equal(first.observations[0].provider, 'hiring-post');
+  assert.equal(first.observations[0].canonicalUrl, 'https://www.linkedin.com/posts/acme-hiring');
+  assert.equal(first.observations[0].company, 'Acme Labs');
+  assert.equal(first.observations[0].title, 'AI Engineer');
+  assert.equal(first.observations[0].description, firstText);
+  assert.equal(first.observations[0].postedAt, null);
+  assert.equal(first.observations[0].classification, 'lead');
+  assert.equal(first.observations[0].originalApplicationUrl, null);
+  const second = normalizeConnectorEnvelope(envelopes[1]);
+  assert.equal(second.observations.length, 1);
+  assert.equal(second.observations[0].company, 'Not Verified');
+  assert.equal(second.observations[0].title, 'Not Verified');
+  assert.equal(second.observations[0].description, secondText);
+  assert.equal(second.observations[0].location, null);
+  assert.equal(second.manifest.networkUsed, false);
+});
+
+// Keep malformed pasted entries out without discarding valid siblings.
+test('quarantines hiring posts with missing URL or pasted text', () => {
+  const envelopes = parseHiringPostInbox(`not a URL\n\nWe are hiring.\n\n---\nhttps://www.linkedin.com/posts/empty\n\n---\nhttps://x.com/founder/status/123\n\nWe are hiring engineers.\n`);
+  const results = envelopes.map((entry) => normalizeConnectorEnvelope(entry));
+  assert.deepEqual(results.map((result) => result.observations.length), [0, 0, 1]);
+  assert.equal(results[0].quarantine.length, 1);
+  assert.match(results[1].quarantine[0].errors.join(' '), /pasted text/);
 });

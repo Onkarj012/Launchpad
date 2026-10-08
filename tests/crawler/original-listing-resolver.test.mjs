@@ -8,6 +8,7 @@ import {
   isShortlistEligibleFromResolution,
   normalizeOriginalListingResolverBudget,
 } from '../../crawler/original-listing-resolver.mjs';
+import { normalizeConnectorEnvelope, parseHiringPostInbox } from '../../crawler/connector-inbox.mjs';
 import { candidateDedupKey, candidateIdentityKeys, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { deduplicateCandidates } from '../../job-pull/dedup.mjs';
 import { createHostSerializedRunner } from '../../crawler/bounded-concurrency.mjs';
@@ -659,4 +660,55 @@ test('LinkedIn destination checks compare old and new Workday requisitions consi
   const result = await resolver(observation(leadUrl, { company: 'Acme', requisitionId: 'AI-Engineer_JR284401' }));
   assert.equal(result.status, 'resolved');
   assert.equal(result.patch.requisitionId, 'JR284401');
+});
+
+// Verify the public-only boundary with pasted posts and injected HTTP responses.
+test('hiring-post resolution never fetches a post or an authenticated application route', async (t) => {
+  const postUrl = 'https://www.linkedin.com/posts/acme-hiring';
+  const publicUrl = 'https://boards.greenhouse.io/acme/jobs/123';
+  for (const { name, target, response, expectedRequests } of [
+    { name: 'post without an employer link', target: '', expectedRequests: [] },
+    { name: 'login target', target: 'https://boards.greenhouse.io/users/sign_in', expectedRequests: [] },
+    { name: 'embedded credentials', target: 'https://user:password@boards.greenhouse.io/acme/jobs/123', expectedRequests: [] },
+    { name: 'login redirect', target: publicUrl, response: { status: 302, headers: { location: 'https://boards.greenhouse.io/users/sign_in' } }, expectedRequests: [publicUrl] },
+    { name: 'authentication failure', target: publicUrl, response: { status: 401, body: 'Sign in to continue' }, expectedRequests: [publicUrl] },
+  ]) {
+    await t.test(name, async () => {
+      const [envelope] = parseHiringPostInbox(`${postUrl}\n\nCompany: Acme Labs\nTitle: AI Engineer\nWe are hiring. Apply: ${target}`);
+      const [lead] = normalizeConnectorEnvelope(envelope).observations;
+      const requests = [];
+      const requestOptions = [];
+      const resolver = createOriginalListingResolver({ transport: async (url, options) => {
+        requests.push(url);
+        requestOptions.push(options);
+        return response ?? jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' }, description: 'Build AI services.' });
+      } });
+      const result = await resolver(lead);
+      assert.equal(result.status, 'verification');
+      assert.equal(result.applicationResolution.status, 'Needs Verification');
+      assert.equal(result.originalApplicationUrl, null);
+      assert.deepEqual(requests, expectedRequests);
+      for (const options of requestOptions) assert.equal(options.credentials, 'omit');
+    });
+  }
+});
+
+// A pasted public apply link can supply fields that the post did not state.
+test('hiring posts need only a URL and pasted text to resolve a verified employer job', async () => {
+  const postUrl = 'https://x.com/founder/status/123';
+  const employerUrl = 'https://boards.greenhouse.io/acme/jobs/123';
+  const [envelope] = parseHiringPostInbox(`${postUrl}\n\nWe're hiring junior engineers. Apply at ${employerUrl}`);
+  const [lead] = normalizeConnectorEnvelope(envelope).observations;
+  const resolver = createOriginalListingResolver({ transport: async (url) => {
+    assert.equal(url, employerUrl);
+    return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI engineering. Build Python services.', employmentType: 'FULL_TIME' });
+  } });
+  const result = applyOriginalListingResolution(lead, await resolver(lead));
+  assert.equal(result.applicationResolution.status, 'Resolved Original');
+  assert.equal(result.originalApplicationUrl, employerUrl);
+  assert.equal(result.company, 'Acme Labs');
+  assert.equal(result.title, 'AI Engineer');
+  assert.equal(result.evidence.fieldSources.company, 'original-employer-detail');
+  assert.equal(result.discoveryUrl, postUrl);
 });
