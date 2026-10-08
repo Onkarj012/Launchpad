@@ -9,6 +9,17 @@ import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 
 const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
 
+// Display timezone-backed timestamps in IST and preserve date-only precision.
+function eventDate(value) {
+  if (value == null) return 'Not Verified';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(value)).map(({ type, value: part }) => [type, part]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} IST`;
+}
+
 /** Render retained operator observations; never score or persist a lifecycle. */
 export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? new Date().toISOString(), policy = null } = {}) {
   const effectivePolicy = policy ?? { ...loadConfig(), salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
@@ -46,6 +57,19 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   table('Shortage fallback ready, unscored', buckets.fallbackReady);
   table('Needs verification', buckets.verification);
   table('Rejected', buckets.rejected);
+  if (result.hiringEvents?.items?.length || result.hiringEvents?.quarantine?.length) {
+    lines.push('## Hiring challenges and off-campus drives', '',
+      'Timestamps use IST. Date-only values have no verified time. These items do not count toward role targets.', '',
+      '| Kind | Item | Company | Public URL | Event date | Deadline |',
+      '| --- | --- | --- | --- | --- | --- |');
+    for (const item of result.hiringEvents.items ?? []) {
+      const kind = item.kind === 'hiring-challenge' ? 'Hiring challenge' : 'Off-campus drive';
+      lines.push(`| ${kind} | ${cell(item.title)} | ${cell(item.company)} | ${cell(item.url)} | ${eventDate(item.date)} | ${eventDate(item.deadline)} |`);
+    }
+    lines.push('');
+    for (const entry of result.hiringEvents.quarantine ?? []) lines.push(`- Held item ${entry.index + 1}: ${cell(entry.errors.join('; '))}.`);
+    lines.push('');
+  }
   const counts = {};
   for (const row of buckets.rejected) for (const reason of row.reasons) counts[reason] = (counts[reason] ?? 0) + 1;
   lines.push('## Rejection counts', '', ...Object.entries(counts).map(([reason, count]) => `- ${reason}: ${count}`));

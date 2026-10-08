@@ -27,6 +27,7 @@ import { computeCanaryVersion } from './canary-evaluator.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { buildDeliveryReconciliation } from '../job-pull/mode-scoring.mjs';
 import { selectNormalApplications } from '../job-pull/normal-selection.mjs';
+import { readHiringEvents } from './hiring-events.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
 export function dailyShortlistBudget(budgetPath, runAt, runId) {
@@ -1179,10 +1180,12 @@ async function runDailyNormalImpl({
 
 export async function runDailyNormal(options = {}) {
   const selectedMode = normalizeDailyMode(options.mode);
+  const hiringEvents = readHiringEvents(options.config?.hiringEventsPath);
   const runAt = runAtFrom(options.clock);
   const execution = createDailyExecution(options.config ?? {}, runAt);
   try {
-    return await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
+    const result = await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
+    return { ...result, hiringEvents };
   } finally {
     execution.cleanup();
   }
