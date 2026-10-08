@@ -21,7 +21,7 @@ const ATS_HOSTS = Object.freeze([
 ]);
 const AGGREGATOR_HOST = /(?:^|\.)(?:linkedin\.com|indeed\.[a-z.]+|glassdoor\.[a-z.]+|wellfound\.com|builtin\.com|ziprecruiter\.com|dice\.com|monster\.[a-z.]+|simplyhired\.[a-z.]+|hirist\.tech|cutshort\.io|instahyre\.com|naukri\.com|internshala\.com|angel\.co|remoteok\.com|weworkremotely\.com|remotive\.com|himalayas\.app|jobicy\.com)$/i;
 const RESERVED_HOST = /(?:^|\.)(?:example|invalid|test|localhost)(?:$|\.)/i;
-const CAREER_PATH = /(?:^|[\/_-])(career|careers|jobs?|join[-_ ]?us|work[-_ ]?with[-_ ]?us|opportunit)(?:$|[\/_-])/i;
+const CAREER_PATH = /(?:^|[\/_-])(career|careers|jobs?|apply|application|join[-_ ]?us|work[-_ ]?with[-_ ]?us|opportunit)(?:$|[\/_-])/i;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const BLOCKED_STATUSES = new Set([401, 403, 407, 429, 451]);
 const APPLY_HINT = /\b(apply|view\s+original|view\s+job|original\s+posting|company\s+site|employer|external\s+apply|continue\s+to\s+application)\b/i;
@@ -558,6 +558,14 @@ function safePortalApplicationTarget(item, boundTarget = null) {
   return url.protocol === 'https:' && !url.username && !url.password && !url.port;
 }
 
+// Keep portal Apply links on public HTTPS pages and out of authentication routes.
+function safeVisiblePortalApplyTarget(item, portalUrl) {
+  if (item.why !== 'apply-link' || hostOf(item.url) === hostOf(portalUrl) || AGGREGATOR_HOST.test(hostOf(item.url))) return false;
+  const url = new URL(item.url);
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port
+    && !/\b(?:login|log-in|signin|sign-in|sign_in|auth|oauth|sso|api|graphql|internal)\b/i.test(`${url.hostname}${url.pathname}`);
+}
+
 // Restrict pasted-post resolution to public employer routes without URL credentials.
 function safeHiringPostTarget(value) {
   const target = classifyOriginalListingUrl(value);
@@ -878,9 +886,13 @@ export function createOriginalListingResolver({
         attempted: boardRequests > 0, boardRequests, verifiedRoutes: 0,
         resolverRequests: telemetry.requests, verifiedRoutesPerRequest: boardRequests ? 0 : null, budgetRaised: false,
       };
-      if (!selected) return fail('original-listing-not-found', [], { crossMatch: telemetry.crossMatch }, telemetry);
-      crossMatchBoard = selected.board;
-      current = canonical(selected.url);
+      if (!selected && !['instahyre', 'wellfound'].includes(String(observation.provider || '').toLowerCase())) {
+        return fail('original-listing-not-found', [], { crossMatch: telemetry.crossMatch }, telemetry);
+      }
+      if (selected) {
+        crossMatchBoard = selected.board;
+        current = canonical(selected.url);
+      }
     }
     for (let hop = 0; hop <= redirectLimit; hop += 1) {
       if (hiringPost && !safeHiringPostTarget(current)) return fail('hiring-post-public-employer-route-required', [...chain, current]);
@@ -999,6 +1011,8 @@ export function createOriginalListingResolver({
       }
       if (!['ats', 'employer-career'].includes(target.kind)) {
         const preferred = preferOutboundTargets(response, current, { exclude: seen })
+          .filter((item) => !['instahyre', 'wellfound'].includes(String(observation.provider || '').toLowerCase())
+            || safeVisiblePortalApplyTarget(item, current))
           .filter((item) => !publicId || (portalPatch
             ? portalPatch.evidence.portalDetail.applicationTargets.includes(item.url)
             : safePortalApplicationTarget(item) && !/<(?:section|ul|li)\b/i.test(htmlBody(response))));
@@ -1006,7 +1020,8 @@ export function createOriginalListingResolver({
         const intermediate = preferred.find((item) => !item.isOriginal);
         const destination = original?.url
           || intermediate?.url
-          || (!publicId && urlsFromBody(response, current).find((url) => ['ats', 'employer-career'].includes(classifyOriginalListingUrl(url).kind)));
+          || (!publicId && !['instahyre', 'wellfound'].includes(String(observation.provider || '').toLowerCase())
+            && urlsFromBody(response, current).find((url) => ['ats', 'employer-career'].includes(classifyOriginalListingUrl(url).kind)));
         if (!destination) {
           const reason = target.kind === 'aggregator' ? 'destination-intermediary' : 'original-listing-not-found';
           return fail(reason, chain, {
