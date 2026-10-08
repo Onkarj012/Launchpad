@@ -11,6 +11,15 @@ import { STARTUP_SOURCE_LANES, runStartupSourcePlan } from '../../job-pull/start
 import { createFakeTransactionalGateway } from '../../job-pull/startup-transaction.mjs';
 import { STARTUP_NOW, startupModeFixtures, startupSourceFunctions } from '../fixtures/startup-mode.mjs';
 
+test('Startup returns all verified results alongside a bounded shortlist', async () => {
+  const result = await runStartupMode({ clock: () => STARTUP_NOW, sourceFixtures: startupModeFixtures(), ledgerRows: [], opportunityLedgerRows: [], shortlistLimit: 1 });
+  assert.equal(result.outcome.fatal, false);
+  assert.equal(result.shortlist.length, 1);
+  assert.ok(result.results.length > result.shortlist.length);
+  assert.ok(result.results.every((role) => role.applicationReady && role.originalApplicationUrl && role.liveness.status === 'Active'));
+  assert.ok(result.results.some((role) => role.canonicalUrl === result.shortlist[0].canonicalUrl));
+});
+
 test('Startup source plan attempts and reports every startup lane with no live access', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('live access must not occur'); };

@@ -168,7 +168,7 @@ function reconcileFunnel(funnel, selection, selectedCount) {
 function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
   return {
     schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode,
-    shortlist: [], verificationQueue: details.verificationQueue || [], funnel: details.funnel || null, sourceManifests, sourceTelemetry: sourceManifests,
+    results: [], shortlist: [], verificationQueue: details.verificationQueue || [], funnel: details.funnel || null, sourceManifests, sourceTelemetry: sourceManifests,
     plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'failed' }), writesPlanned: false, transaction: null, historicalSuppressions: [],
     scoringQueue: details.scoringQueue || [],
     scoring: details.scoring || null,
@@ -187,6 +187,7 @@ export async function runNormalMode({
   opportunityLedgerPath = null,
   historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer, dailyExcludedKeys = [], previousDailyCandidates = [], scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false, partial = false,
   shortlistLimit = null,
+  selectApplications = selectNormalApplications,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -241,7 +242,7 @@ export async function runNormalMode({
       freshness: candidate.freshness,
       readiness: readinessByKey.get(candidateKey(candidate)),
     }));
-    const selection = selectNormalApplications(selectionEntries, { previousDailyCandidates, maximum: effectiveShortlistLimit, maximumPerCompany: normalConfig.run.maximumPerCompany });
+    const selection = selectApplications(selectionEntries, { previousDailyCandidates, maximum: effectiveShortlistLimit, maximumPerCompany: normalConfig.run.maximumPerCompany, config: normalConfig });
     const shortlist = selection.selected.slice(0, effectiveShortlistLimit);
     const eligibleCount = pipeline.scoringCandidates.length;
     const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
@@ -303,7 +304,7 @@ export async function runNormalMode({
         ...Object.entries(pipeline.suppression?.byCode || {}),
       ]);
       return {
-        schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
+        schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), shortlist,
         scoringQueue: selection.scoringQueue, funnel, verificationQueue,
         sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, rejectionCounts, rejectionReasons: [...new Set([...rejectionReasons, ...partialSourceReasons(sourceManifests)])].sort(),
@@ -377,7 +378,7 @@ export async function runNormalMode({
       .map((manifest) => manifest.sourceId);
     const missing = Math.max(0, 10 - shortlist.length);
     return {
-      schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', shortlist,
+      schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), shortlist,
       scoringQueue: selection.scoringQueue, funnel,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
       historicalSuppressions,

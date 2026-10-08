@@ -25,6 +25,7 @@ import { computeDeliveryInventoryIdentity, prepareDeliveryCanary } from './deliv
 import { computeCanaryVersion } from './canary-evaluator.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { buildDeliveryReconciliation } from '../job-pull/mode-scoring.mjs';
+import { selectNormalApplications } from '../job-pull/normal-selection.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
 export function dailyShortlistBudget(budgetPath, runAt, runId) {
@@ -43,7 +44,7 @@ export function dailyShortlistBudget(budgetPath, runAt, runId) {
   const otherKeys = new Set(previous.map((record) => record.key));
   const used = new Set(Object.values(runs).flat().map((record) => record.key)).size;
   if (used > 20) throw new Error('daily shortlist ceiling already exceeded');
-  return { date, state, used, remaining: 20 - otherKeys.size, otherKeys: [...otherKeys], previousCandidates: previous.map((record) => ({ company: record.company, roleFamily: record.family })) };
+  return { date, state, used, remaining: 20 - otherKeys.size, otherKeys: [...otherKeys], previousCandidates: previous.map((record) => ({ company: record.company, roleFamily: record.family, primaryMode: record.primaryMode ?? 'normal' })) };
 }
 
 // Retain completed local plans under a lock; partial and failed runs consume no capacity.
@@ -52,14 +53,14 @@ export function retainDailyShortlist(budgetPath, runAt, runId, shortlist) {
     const budget = dailyShortlistBudget(budgetPath, runAt, runId);
     const existing = budget.state.days[budget.date]?.[runId] || [];
     const byKey = new Map(existing.map((record) => [record.key, record]));
-    for (const candidate of shortlist) byKey.set(candidateDedupKey(candidate), { key: candidateDedupKey(candidate), company: candidate.company || '', family: candidate.roleFamily || 'adjacent-engineering', tier: candidate.selectionTier || candidate.eligibility?.tier || 'Not Verified' });
+    for (const candidate of shortlist) byKey.set(candidateDedupKey(candidate), { key: candidateDedupKey(candidate), company: candidate.company || '', family: candidate.roleFamily || 'adjacent-engineering', tier: candidate.selectionTier || candidate.eligibility?.tier || 'Not Verified', primaryMode: candidate.primaryMode ?? 'normal' });
     const records = [...byKey.values()];
     const keys = records.map((record) => record.key);
     if (new Set([...budget.otherKeys, ...keys]).size > 20 || keys.some((key) => budget.otherKeys.includes(key))) throw new Error('daily shortlist capacity changed before completion');
     const combined = [...Object.values(budget.state.days[budget.date] || {}).flat(), ...records];
     const companyCounts = new Map();
     for (const record of new Map(combined.map((record) => [record.key, record])).values()) {
-      const company = record.company.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+      const company = `${record.primaryMode ?? 'normal'}|${record.company.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()}`;
       companyCounts.set(company, (companyCounts.get(company) || 0) + 1);
     }
     if ([...companyCounts.values()].some((count) => count > 2)) throw new Error('daily company capacity changed before completion');
@@ -604,6 +605,51 @@ export const DAILY_MODE_RUNNERS = Object.freeze({
   remote: runRemoteMode,
 });
 
+// Route a verified pool once, keeping uncapped results beside each mode's shortlist.
+function selectDailyModes(entries, options, selectedMode) {
+  const pools = { normal: [], startup: [], remote: [] };
+  for (const entry of entries) {
+    const candidate = entry.candidate;
+    const fits = [];
+    if (hasStartupEvidence(candidate) || STARTUP_LANE_IDS.has(candidate.startupLaneId)) fits.push('startup');
+    const pune = entry.eligibility?.geo?.code === 'GEO_PUNE_METRO'
+      || (entry.eligibility?.geo?.mode === 'remote' && options.config.geo.puneMetroAliases.some((alias) => String(candidate.location || '').toLowerCase().includes(alias.toLowerCase())));
+    if (pune) fits.push('normal');
+    if (entry.eligibility?.geo?.mode === 'remote') fits.push('remote');
+    if (!fits.length) continue;
+    const [primaryMode, ...otherModes] = fits;
+    pools[primaryMode].push({ ...entry, candidate: { ...candidate, primaryMode, otherModes } });
+  }
+  const selections = Object.fromEntries(Object.entries(pools).map(([mode, pool]) => [mode, selectNormalApplications(pool, {
+    ...options, previousDailyCandidates: options.previousDailyCandidates.filter((candidate) => candidate.primaryMode === mode),
+  })]));
+  const shared = selectNormalApplications(entries, { ...options, maximum: 0 });
+  return {
+    ...selections[selectedMode],
+    readyCount: shared.readyCount, scoredCount: shared.scoredCount,
+    unscoredCount: shared.unscoredCount, scoringFailedCount: shared.scoringFailedCount,
+    scoringQueue: shared.scoringQueue,
+    modes: Object.fromEntries(Object.entries(selections).map(([mode, selection]) => [mode, { results: selection.results, shortlist: selection.selected }])),
+  };
+}
+
+// Merge injected focused lanes into the shared pipeline without fetching them again.
+function sharedModeFixtures(result, callerFixtures) {
+  const fixtures = { ...crawlerLaneFixtures(result), ...callerFixtures };
+  const focused = [];
+  for (const laneId of new Set([...STARTUP_LANE_IDS, ...REMOTE_LANE_IDS])) {
+    const fixture = callerFixtures[laneId];
+    for (const candidate of fixture?.candidates ?? fixture?.records ?? []) {
+      focused.push({ ...candidate, ...(STARTUP_LANE_IDS.has(laneId) ? { startupLaneId: laneId } : {}) });
+    }
+  }
+  if (focused.length) {
+    const web = fixtures['web-discovery'];
+    fixtures['web-discovery'] = { ...web, candidates: [...(web?.candidates ?? web?.records ?? []), ...focused] };
+  }
+  return fixtures;
+}
+
 function candidatesForKeys(shortlist, keys) {
   const wanted = new Set((keys ?? []).map(String));
   return shortlist.filter((candidate) => wanted.has(candidateDedupKey(candidate)));
@@ -816,28 +862,16 @@ async function runDailyNormalImpl({
     };
   })();
   if (!boundedPlannerActive && crawlerResult.run?.status !== 'partial') saveBoardRotationState(rotationStatePath, trackedResult.rotationState, runAt);
-  const sharedCrawlerResult = {
-    ...crawlerResult,
-    observations: [
-      ...crawlerResult.observations,
-      ...trackedResult.observations.map((candidate) => ({ ...candidate, sourceId: 'tracked-ats' })),
-    ],
-    failures: [...crawlerResult.failures, ...trackedResult.failures],
-    sourceTelemetry: { ...crawlerResult.sourceTelemetry, 'tracked-ats': trackedResult.manifest },
-  };
-  const modeRunner = DAILY_MODE_RUNNERS[selectedMode];
-  const sharedFixtures = buildFocusedModeFixtures(sharedCrawlerResult, selectedMode, sourceFixtures);
-  const result = await modeRunner({
+  const sharedFixtures = sharedModeFixtures(crawlerResult, { 'tracked-ats': trackedFixture(trackedResult), ...sourceFixtures });
+  const result = await runNormalMode({
     clock: () => runAt,
     runId: effectiveRunId,
     // Focused modes consume the shared crawler observations as fixtures. This
     // prevents a second native source fetch after the one shared crawl.
     sourceFunctions: selectedMode === 'normal' ? sourceFunctions : {},
-    sourceFixtures: selectedMode === 'normal'
-      ? { ...crawlerLaneFixtures(crawlerResult), 'tracked-ats': trackedFixture(trackedResult), ...sourceFixtures }
-      : sharedFixtures,
+    sourceFixtures: sharedFixtures,
     laneInputs,
-    mode: selectedMode,
+    mode: 'normal',
     historicalV4Rows: effectiveHistoricalV4Rows,
     notionGateway,
     executeGateway: false,
@@ -865,11 +899,13 @@ async function runDailyNormalImpl({
         signal: dailyExecution.signal,
       })
       : (scorer ?? undefined),
-    ...(selectedMode === 'normal' ? { includeCrawlerLanes: true } : {}),
+    includeCrawlerLanes: true,
+    selectApplications: (entries, options) => selectDailyModes(entries, options, selectedMode),
     enrichmentBudget: crawlerResult.run?.status === 'partial'
       ? 0
       : config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
+  result.mode = selectedMode;
   const finalStatus = result.outcome?.status === 'fatal'
     ? 'failed'
     : crawlerResult.run?.status === 'partial' || result.outcome?.status === 'partial'

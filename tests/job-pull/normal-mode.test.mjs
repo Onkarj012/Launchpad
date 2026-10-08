@@ -38,6 +38,18 @@ function allFunctions(recordsByLane = {}) {
   return Object.fromEntries(NORMAL_SOURCE_LANES.map((lane) => [lane.id, sourceFunction(lane, recordsByLane[lane.id] || [])]));
 }
 
+test('Normal returns the full verified results even when the company cap trims its shortlist', async () => {
+  const verified = [1, 2, 3].map((index) => raw(index, { company: 'Same Employer', provider: 'greenhouse', jobId: String(index), originalApplicationUrl: `https://employer.example/jobs/${index}`, originalApplicationEvidence: 'employer careers posting' }));
+  const result = await runNormalMode({
+    clock: () => NOW, ledgerRows: [], opportunityLedgerRows: [],
+    sourceFunctions: allFunctions({ 'portal-naukri': [...verified, raw(4)] }),
+  });
+  assert.equal(result.outcome.fatal, false);
+  assert.deepEqual(result.results.map((candidate) => candidate.originalApplicationUrl), verified.map((candidate) => candidate.originalApplicationUrl));
+  assert.equal(result.shortlist.length, 2);
+  assert.equal(result.verificationQueue.length, 1);
+});
+
 test('Normal attempts every lane independently, records optional/unavailable/failure, and never performs live access', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('live access must not occur'); };
