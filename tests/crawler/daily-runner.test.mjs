@@ -73,6 +73,39 @@ test('each mode keeps full results and caps one employer at two without using an
   }
 });
 
+test('stretch list keeps up to three exactly-three-year AI roles scoring 80+ from startup or remote listings outside mode targets', async () => {
+  const { config } = testConfig();
+  // Build normalized fixture roles with explicit exact-three-year evidence.
+  const threeYears = (id, overrides) => rawPortalJob(id, { ...overrides, experience: { minYears: 3, maxYears: 3, evidence: '3 years required' } });
+  const roles = [
+    threeYears(1831, { company: 'Stretch Startup One', companyStage: 'Startup', startupStageEvidenceRef: 'https://portfolio.example.test/one', description: 'Full-time AI Engineer role requiring exactly 3 years of Python experience.' }),
+    threeYears(1832, { company: 'Stretch Remote Two', location: 'Remote - India', title: 'AI-Native Full Stack Engineer', description: 'Full-time AI-native full stack engineer role requiring exactly 3 years of experience.' }),
+    threeYears(1833, { company: 'Stretch Remote Three', location: 'Remote - India', title: 'Backend Engineer', description: 'Full-time Backend Engineer role requiring exactly 3 years of Python experience.' }),
+    threeYears(1834, { company: 'Stretch Startup Four', companyStage: 'Startup', startupStageEvidenceRef: 'https://portfolio.example.test/four', description: 'Full-time Machine Learning Engineer role requiring exactly 3 years of experience.' }),
+    threeYears(1835, { company: 'Stretch Low Score', location: 'Remote - India', description: 'Full-time AI Engineer role requiring exactly 3 years of experience.' }),
+    rawPortalJob(1836, { company: 'Stretch Wrong Years', location: 'Remote - India', description: 'Full-time AI Engineer role requiring 4 years of experience.', experience: { minYears: 4, maxYears: 4, evidence: '4 years required' } }),
+    threeYears(1837, { company: 'Stretch Wrong Listing', description: 'Full-time AI Engineer role requiring exactly 3 years of experience.' }),
+  ];
+  const sourceFixtures = { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: roles, manifest: { status: 'ok' } } };
+  const scorer = async (rows) => ({ scored: rows.map((row) => ({
+      ...row,
+      matchScore: row.company === 'Stretch Low Score' ? 79 : 85,
+      responseLikelihood: 15,
+      descriptionAvailable: true,
+      rationale: 'Python overlap',
+      strongestHook: 'Python skills',
+      componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 },
+  })) });
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), { sourceFixtures, scorer }));
+  const secondRun = await runDailyNormal(runOptions(config, fakeTransport({}), { runId: 'daily-stretch-second-run', sourceFixtures, scorer }));
+
+  assert.equal(result.outcome.fatal, false);
+  assert.deepEqual(result.stretch.map((role) => role.company), ['Stretch Startup One', 'Stretch Remote Two', 'Stretch Remote Three']);
+  assert.deepEqual(secondRun.stretch, []);
+  assert.equal(result.modes.normal.results.length + result.modes.startup.results.length + result.modes.remote.results.length, 0);
+  assert.equal(result.modes.normal.shortlist.length + result.modes.startup.shortlist.length + result.modes.remote.shortlist.length, 0);
+});
+
 function greenhouseJob(id, companySlug, overrides = {}) {
   return {
     id,

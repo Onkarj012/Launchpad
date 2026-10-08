@@ -262,15 +262,20 @@ export function runPipeline({
     SUPPRESSED_BACKFILL_ALREADY_SEEN: 0,
   };
   const selectionPool = [];
+  const stretchPool = [];
   for (const entry of classified) {
-    if (!entry.eligibility.eligible || !entry.freshness.eligible) continue;
+    const stretchOnlyRejection = entry.eligibility.hardMinimumExactly3Years === true
+      && entry.eligibility.reasons.length === 1
+      && entry.eligibility.reasons[0] === 'EXPERIENCE_HARD_MIN_3_PLUS';
+    if ((!entry.eligibility.eligible && !stretchOnlyRejection) || !entry.freshness.eligible) continue;
     const row = opportunityRowsForRun.find((row) => candidateMatchesLedgerRow(entry.candidate, row));
     const suppression = entry.freshness.backfill && row
       ? { suppressed: true, code: 'SUPPRESSED_BACKFILL_ALREADY_SEEN' }
       : row ? suppressionFor(row, now) : { suppressed: false, code: '' };
     entry.suppression = suppression;
     if (suppression.suppressed) suppressionCounts[suppression.code]++;
-    else selectionPool.push(entry);
+    else if (stretchOnlyRejection) stretchPool.push(entry);
+    else if (entry.eligibility.eligible) selectionPool.push(entry);
   }
   const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
   const selection = deferSelection
@@ -416,6 +421,14 @@ export function runPipeline({
     },
     scoringQueue: selection.scoringQueue,
     postSuppressionCandidates,
+    stretchCandidates: stretchPool.map((entry) => ({
+      ...entry.candidate,
+      eligibility: entry.eligibility,
+      freshness: entry.freshness,
+      selectionTier: entry.selectionTier,
+      freshnessWindow: entry.freshnessWindow,
+      roleFamily: entry.eligibility.roleFamily,
+    })),
     scoringCandidates: scoringCandidates.map((entry) => ({
       ...entry.candidate,
       eligibility: entry.eligibility,
