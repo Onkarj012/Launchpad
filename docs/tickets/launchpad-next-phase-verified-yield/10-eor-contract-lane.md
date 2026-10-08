@@ -4,7 +4,7 @@
 
 **Blocked by:** 07, 08
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Lane has its own shortlist
 - [ ] Zero lane roles appear in a full-time shortlist

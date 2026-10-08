@@ -4,7 +4,7 @@
 
 **Blocked by:** 17
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Matching employer, title and location promotes the lead
 - [ ] No match leaves the lead in verification

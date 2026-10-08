@@ -4,7 +4,7 @@
 
 **Blocked by:** 13
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Drafts exist for shortlisted or watched employers
 - [ ] Email drafts use only published addresses

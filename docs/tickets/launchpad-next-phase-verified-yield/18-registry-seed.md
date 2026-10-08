@@ -4,7 +4,7 @@
 
 **Blocked by:** 17
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Registry holds 250 to 400 employers
 - [ ] All four tiers are present
