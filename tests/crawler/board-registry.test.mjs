@@ -276,6 +276,16 @@ test('registry normalization preserves a seed tier', () => {
   assert.equal(board.registryTier, 'india-ai-devtools');
 });
 
+test('registry normalization retains structured career-page URL and JSON-LD probe evidence', () => {
+  const board = normalizeRegistryBoard({
+    provider: 'custom', company: 'Structured Co', careerPageUrl: 'https://structured.example/careers',
+    probe: { jobPostingJsonLd: true },
+  });
+
+  assert.equal(board.careerPageUrl, 'https://structured.example/careers');
+  assert.equal(board.probe.jobPostingJsonLd, true);
+});
+
 test('locationPreset pune ranks pune-relevant boards ahead of others in a lane', () => {
   const registry = {
     boards: [

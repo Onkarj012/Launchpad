@@ -15,6 +15,7 @@ import {
 } from './original-listing-resolver.mjs';
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
 import { discoverCompanyCareers } from './company-careers.mjs';
+import { discoverCareerPages } from './career-page-discovery.mjs';
 import { discoverTheirStack } from './theirstack.mjs';
 import { discoverYcJobs } from './yc-discovery.mjs';
 import { discoverHnJobs } from './hn-discovery.mjs';
@@ -49,6 +50,7 @@ import {
   planBoundedSources,
   boardIdentityKey,
   boardPauseReason,
+  PROVIDER_LANES,
   recordBoardProbeResponse,
   registryProbeUrl,
   withRegistryProjectedBoards,
@@ -594,6 +596,39 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
   const projected = withRegistryProjectedBoards(config, { locationPreset: profile?.locationPreset, sourcePlan: profile?.sourcePlan });
   const sources = projected.sources;
+  const careerPageCompanies = (projected.boardRegistry?.boards ?? []).filter((board) =>
+    board.enabled !== false
+    && !PROVIDER_LANES[String(board.provider || '').toLowerCase()]
+    && typeof board.careerPageUrl === 'string'
+    && board.probe?.jobPostingJsonLd === true)
+    .map((board) => ({ company: board.company, websiteUrl: board.careerPageUrl }));
+  const careerPagePlan = sourcePlan('structured-career-pages', 'career-pages', 'career-page-discovery', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
+    if (!careerPageCompanies.length) {
+      return { observations: [], manifest: {
+        status: 'empty',
+        reason: projected.boardRegistry
+          ? 'no-registry-employers-with-unsupported-ats-and-jobposting-jsonld'
+          : 'no-board-registry-configured',
+        fetched: 0,
+      }, telemetry: { requests: 0, fetched: 0 } };
+    }
+    const result = await discoverCareerPages({
+      ...(sources.careerPageDiscovery ?? projected.careerPageDiscovery ?? {}),
+      companies: careerPageCompanies,
+      transport: sourceTransport(transport, sourceSignal, sourceDeadline),
+      runAt,
+      clock,
+    });
+    return {
+      ...result,
+      manifest: {
+        ...result.manifest,
+        status: result.observations.length ? 'ok' : 'empty',
+        ...(result.observations.length ? {} : { reason: 'no-jobposting-jsonld-roles-found' }),
+        fetched: result.observations.length,
+      },
+    };
+  });
   const hnPlans = isSourceTrialActive(sources.hn, runAt) && schedule !== 'midday'
     ? [sourcePlan('hn-discovery', 'startup-sources', 'hn-discovery', ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => discoverHnJobs({ ...sources.hn, transport, resolveOriginalListing: resolver, runAt, signal: sourceSignal, deadline: sourceDeadline }), { trustClass: 'aggregator', maxDurationMs: sources.hn.maxDurationMs })]
     : [];
@@ -1116,7 +1151,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     Number(plannedBoards(atsLanes[right.id]).some((board) => board.puneRelevant === true))
     - Number(plannedBoards(atsLanes[left.id]).some((board) => board.puneRelevant === true)));
   let atsIndex = 0;
-  return [...plans.map((plan) => atsLanes[plan.id] ? orderedAts[atsIndex++] : plan), ...hnPlans, ...ycPlans];
+  return [...plans.map((plan) => atsLanes[plan.id] ? orderedAts[atsIndex++] : plan), careerPagePlan, ...hnPlans, ...ycPlans];
 }
 
 /**

@@ -211,7 +211,7 @@ test('builds resolver-capable SearXNG and connector plans without network access
     resolver,
   });
 
-  assert.deepEqual(plans.map((plan) => plan.id), ['indeed-inbox', 'searxng-search']);
+  assert.deepEqual(plans.map((plan) => plan.id), ['indeed-inbox', 'searxng-search', 'structured-career-pages']);
   assert.equal(plans.find((plan) => plan.id === 'indeed-inbox').capabilities.resolver, true);
   assert.equal(plans.find((plan) => plan.id === 'searxng-search').capabilities.discoveryUrl, true);
   assert.equal(calls.length, 0);
@@ -494,6 +494,55 @@ test('operator runs a configured career-site discovery into durable SQLite', asy
   assert.equal(result.sourceYield.totals.fetched, 1);
   assert.equal(result.sourceYield.totals.targetTitle, 1);
   assert.equal(result.plannedDownstreamHandoff.noAutoApply, true);
+});
+
+test('structured career-page source uses only eligible registry employers and discovers JobPosting roles', async () => {
+  const config = {
+    boardRegistry: { schemaVersion: 'BoardRegistryV1', boards: [
+      { provider: 'custom', company: 'Structured Co', careerPageUrl: 'https://structuredco.io/', probe: { jobPostingJsonLd: true } },
+      { provider: 'greenhouse', company: 'ATS Co', careerPageUrl: 'https://ats.example/', probe: { jobPostingJsonLd: true } },
+      { provider: 'custom', company: 'Unverified Co', careerPageUrl: 'https://unverified.example/', probe: { jobPostingJsonLd: false } },
+      { provider: 'custom', company: 'No URL Co', probe: { jobPostingJsonLd: true } },
+    ] },
+    sources: { careerPageDiscovery: { hostLimiterOptions: { minSpacingMs: 0 }, retry: { maxAttempts: 1 } } },
+  };
+  const calls = [];
+  const plans = buildSourcePlans({ config, runAt: '2026-10-08T07:45:00+05:30', schedule: 'morning', transport: async (url) => {
+    calls.push(url);
+    if (url === 'https://structuredco.io/robots.txt') return { status: 200, headers: {}, body: 'User-agent: *\nAllow: /\nSitemap: https://structuredco.io/sitemap-jobs.xml' };
+    if (url === 'https://structuredco.io/') return { status: 200, headers: { 'content-type': 'text/html' }, body: '<a href="/careers">Careers</a>' };
+    if (url === 'https://structuredco.io/careers') return { status: 200, headers: { 'content-type': 'text/html' }, body: '' };
+    if (url === 'https://structuredco.io/sitemap-jobs.xml') return { status: 200, headers: { 'content-type': 'application/xml' }, body: '<urlset><url><loc>https://structuredco.io/jobs/1</loc></url></urlset>' };
+    if (url === 'https://structuredco.io/sitemap.xml') return { status: 200, headers: { 'content-type': 'application/xml' }, body: '<urlset></urlset>' };
+    if (url === 'https://structuredco.io/jobs/1') return { status: 200, headers: { 'content-type': 'text/html' }, body: '<script type="application/ld+json">{"@type":"JobPosting","title":"AI Engineer","url":"https://structuredco.io/jobs/1","datePosted":"2026-10-07","description":"Pune AI Engineer","hiringOrganization":{"name":"Structured Co"},"jobLocation":{"address":{"addressLocality":"Pune","addressCountry":"IN"}}}</script>' };
+    return { status: 200, headers: {}, body: '' };
+  } });
+  const plan = plans.find(({ id }) => id === 'structured-career-pages');
+
+  assert.ok(plan);
+  const result = await plan.fetch();
+  assert.ok(calls.length > 0);
+  assert.ok(calls.every((url) => new URL(url).hostname === 'structuredco.io'));
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].company, 'Structured Co');
+  assert.equal(result.manifest.status, 'ok');
+});
+
+test('structured career-page source ends empty with a reason when registry has no eligible employers', async () => {
+  const plans = buildSourcePlans({
+    config: { boardRegistry: { schemaVersion: 'BoardRegistryV1', boards: [
+      { provider: 'greenhouse', company: 'ATS Co', careerPageUrl: 'https://ats.example/', probe: { jobPostingJsonLd: true } },
+      { provider: 'custom', company: 'Unknown Co', careerPageUrl: 'https://unknown.example/' },
+    ] }, sources: {} },
+    runAt: '2026-10-08T07:45:00+05:30', schedule: 'morning', transport: async () => assert.fail('empty registry lane must not fetch'),
+  });
+  const plan = plans.find(({ id }) => id === 'structured-career-pages');
+
+  assert.ok(plan);
+  const result = await plan.fetch();
+  assert.deepEqual(result.observations, []);
+  assert.equal(result.manifest.status, 'empty');
+  assert.equal(result.manifest.reason, 'no-registry-employers-with-unsupported-ats-and-jobposting-jsonld');
 });
 
 test('operator invokes a configured commercial records feed only after free-lane shortfall', async () => {
