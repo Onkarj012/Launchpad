@@ -8,6 +8,7 @@ import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 
 const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+const html = (value) => String(value ?? 'Not Verified').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
 // Display timezone-backed timestamps in IST and preserve date-only precision.
 function eventDate(value) {
@@ -109,9 +110,56 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   return lines.join('\n');
 }
 
+// Render daily mode results and their shortlists without changing run state.
+export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? result.run?.startedAt ?? new Date().toISOString() } = {}) {
+  const modes = [
+    ['normal', 'Pune'], ['startup', 'Startup'], ['remote', 'Remote'],
+  ];
+  const modeRuns = result.modes ?? {};
+  const uniqueResults = new Map(modes.flatMap(([mode]) => (modeRuns[mode]?.results ?? []).map((role) => [role.canonicalUrl ?? role.url, role])));
+  const allShortlists = modes.flatMap(([mode]) => modeRuns[mode]?.shortlist ?? (result.mode === mode ? result.shortlist ?? [] : []));
+  const uniqueShortlist = [...new Map(allShortlists.map((role) => [role.canonicalUrl ?? role.url, role])).values()];
+  const lifecycle = result.funnel?.lifecycle ?? {};
+  const counts = result.counts ?? {};
+  const readCount = (...values) => values.find((value) => Number.isFinite(value)) ?? 0;
+  const strictCount = uniqueShortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
+  const employers = new Set(uniqueShortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
+  const funnel = [
+    ['Fetched', readCount(counts.fetched, lifecycle.fetched, uniqueResults.size)],
+    ['Eligible', readCount(counts.eligible, lifecycle.eligible)],
+    ['Passed gates', readCount(counts.gatePassing, lifecycle.gatePassing, lifecycle.eligible)],
+    ['Ready', readCount(counts.ready, lifecycle.ready)],
+    ['Scored', readCount(counts.scored, lifecycle.scored)],
+    ['Shortlisted', uniqueShortlist.length],
+    ['Employers represented', employers.size],
+    ['Strict', strictCount],
+  ];
+  const roleCard = (role, isShortlist) => {
+    const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
+    const rawApplyUrl = role.originalApplicationUrl ?? null;
+    const applyUrl = typeof rawApplyUrl === 'string' && /^https?:\/\//i.test(rawApplyUrl) ? rawApplyUrl : null;
+    const extraModes = (role.otherModes ?? []).map((mode) => ({ normal: 'Pune', startup: 'Startup', remote: 'Remote' })[mode] ?? mode);
+    const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
+    return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p>${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
+  };
+  const sections = modes.map(([mode, label]) => {
+    const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
+    return `<section data-mode="${mode}"><h2>${label}</h2><h3>Full results</h3>${(run.results ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}<h3>Shortlist</h3>${(run.shortlist ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
+  }).join('');
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(now)}</p><section><h2>Funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${sections}</body></html>`;
+}
+
+// Write the rendered daily report to the caller-selected local file.
+export function writeLocalDailyHtmlReport(result, output, options = {}) {
+  if (typeof output !== 'string' || !output.trim()) throw new TypeError('daily report output path is required');
+  fs.writeFileSync(output, renderLocalDailyHtmlReport(result, options), 'utf8');
+  return output;
+}
+
 if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   const [input, output] = process.argv.slice(2);
-  if (!input || !output || process.argv.length !== 4) throw new Error('Usage: node crawler/local-lead-report.mjs INPUT.json OUTPUT.md');
+  if (!input || !output || process.argv.length !== 4) throw new Error('Usage: node crawler/local-lead-report.mjs INPUT.json OUTPUT.md|OUTPUT.html');
   const result = JSON.parse(fs.readFileSync(input, 'utf8'));
-  fs.writeFileSync(output, renderLocalLeadReport(result, { now: result.runAt ?? result.run?.startedAt }));
+  if (path.extname(output).toLowerCase() === '.html') writeLocalDailyHtmlReport(result, output);
+  else fs.writeFileSync(output, renderLocalLeadReport(result, { now: result.runAt ?? result.run?.startedAt }));
 }
