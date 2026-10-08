@@ -1,0 +1,24 @@
+{
+  "configPath": "config/crawler-v2-shadow-week.json",
+  "labelPrefix": "com.launchpad.shadow-week",
+  "logDir": ".local/launchpad-crawler/shadow-week/logs",
+  "scheduleConfig": {
+    "timezone": "Asia/Kolkata",
+    "schedules": {
+      "morning": {
+        "cadence": {
+          "kind": "daily",
+          "timezone": "Asia/Kolkata",
+          "at": "07:45"
+        }
+      },
+      "midday": {
+        "cadence": {
+          "kind": "daily",
+          "timezone": "Asia/Kolkata",
+          "at": "13:15"
+        }
+      }
+    }
+  }
+}

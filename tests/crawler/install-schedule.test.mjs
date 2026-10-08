@@ -4,11 +4,14 @@ import fs from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildAgentPlist,
   buildScheduleAgents,
   installSchedules,
 } from '../../crawler/install-schedule.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 function tempDir(prefix) {
   return mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -60,6 +63,35 @@ test('generates morning (04:30) and midday (12:30) plists from the schedules.mjs
 
 test('single-agent build rejects an unsupported schedule id', () => {
   assert.throws(() => buildAgentPlist({ schedule: 'evening' }), /unsupported crawler schedule/);
+});
+
+test('shadow agents use an isolated config and distinct labels at 07:45 and 13:15 IST', () => {
+  const options = fixtureOptions();
+  const definition = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'config/shadow-week-schedule.json'), 'utf8'));
+  const agents = buildScheduleAgents({
+    ...options,
+    ...definition,
+  });
+
+  assert.deepEqual(agents.map(({ hour, minute }) => [hour, minute]), [[7, 45], [13, 15]]);
+  for (const agent of agents) {
+    assert.equal(agent.label, `com.launchpad.shadow-week.${agent.schedule}`);
+    assert.ok(agent.content.includes('<string>--config</string>'));
+    assert.ok(agent.content.includes('<string>config/crawler-v2-shadow-week.json</string>'));
+    assert.ok(!agent.content.includes('<string>--execute-writes</string>'));
+    assert.match(agent.outLog, /shadow-week\/logs/);
+    assert.match(agent.errLog, /shadow-week\/logs/);
+  }
+});
+
+test('shadow config uses its own database and registry, and removal is documented as one command', () => {
+  const shadow = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'config/crawler-v2-shadow-week.json'), 'utf8'));
+  const live = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'config/crawler-v2.json'), 'utf8'));
+  const definition = fs.readFileSync(path.join(REPO_ROOT, 'docs/shadow-week.md'), 'utf8');
+
+  assert.notEqual(shadow.databasePath, live.databasePath);
+  assert.notEqual(shadow.boardRegistryPath, live.boardRegistryPath);
+  assert.match(definition, /scripts\/remove-shadow-week-schedule\.sh/);
 });
 
 test('dry-run never writes a plist file or invokes launchctl', () => {
