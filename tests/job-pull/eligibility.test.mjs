@@ -425,6 +425,74 @@ test('experience separates strict, relaxed, and hard rejection', () => {
   assert.equal(rejected.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
 });
 
+test('classification flags an exactly three-year hard minimum without admitting the role', () => {
+  for (const [description, flagged] of [
+    ['Minimum 3 years of Python experience required.', true],
+    ['Requirements: 3-5 years of backend development.', true],
+    ['You must have 3+ years developing software.', true],
+    ['Minimum 4 years of Python experience required.', false],
+    ['Requirements: 2-3 years of backend development.', false],
+    ['Build Python APIs and maintain backend systems.', false],
+    ['We are seeking a senior backend engineer. Minimum 3 years required.', true],
+  ]) {
+    const result = classifyCandidate(candidate({ experience: {}, description }), config);
+    assert.equal(result.hardMinimumExactly3Years, flagged, description);
+    if (flagged) {
+      assert.equal(result.eligible, false, description);
+      assert.equal(result.tier, null, description);
+    }
+  }
+  const structured = classifyCandidate(candidate({
+    experience: { minYears: 3, maxYears: 5, evidence: '3-5 years' },
+  }), config);
+  assert.equal(structured.hardMinimumExactly3Years, true);
+  assert.equal(structured.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+});
+
+test('preferred three-year experience never imposes a hard minimum', () => {
+  for (const preferred of [
+    '3 years of Python experience preferred.',
+    'Preferred: three years of backend development.',
+    'Requirements: 3 years of experience in Python preferred.',
+  ]) {
+    for (const overrides of [
+      { experience: {}, description: preferred },
+      { experience: preferred, description: 'Build Python APIs.' },
+      { experience: { minYears: 3, maxYears: 3, evidence: preferred }, description: 'Build Python APIs.' },
+      { experience: null, minYears: 3, maxYears: 3, experienceEvidence: preferred, description: 'Build Python APIs.' },
+    ]) {
+      const result = classifyCandidate(candidate(overrides), config);
+      assert.equal(result.eligible, true, preferred);
+      assert.equal(result.experience.minYears, null, preferred);
+      assert.equal(result.experience.manualReview, true, preferred);
+      assert.equal(result.hardMinimumExactly3Years, false, preferred);
+    }
+  }
+  const mixed = classifyCandidate(candidate({
+    experience: 'Minimum 1 year of experience required; 3 years of experience preferred.',
+  }), config);
+  assert.equal(mixed.tier, 'strict');
+  assert.equal(mixed.experience.minYears, 1);
+  assert.equal(mixed.hardMinimumExactly3Years, false);
+});
+
+test('JD experience boundaries preserve Strict and Fallback bands and reject three or more', () => {
+  for (const [description, tier, code, flagged] of [
+    ['Requirements: 0-1 years of Python experience.', 'strict', 'EXPERIENCE_STRICT_0_1', false],
+    ['Minimum 1+ year of Python experience required.', 'strict', 'EXPERIENCE_STRICT_0_1', false],
+    ['Minimum 2 years of Python experience required.', 'relaxed', 'EXPERIENCE_RELAXED_UP_TO_2', false],
+    ['Requirements: 2-5 years of backend development.', 'relaxed', 'EXPERIENCE_RELAXED_UP_TO_2', false],
+    ['Minimum 3 years of Python experience required.', null, 'EXPERIENCE_HARD_MIN_3_PLUS', true],
+    ['Minimum 4 years of Python experience required.', null, 'EXPERIENCE_HARD_MIN_3_PLUS', false],
+  ]) {
+    const result = classifyCandidate(candidate({ experience: {}, description }), config);
+    assert.equal(result.tier, tier, description);
+    assert.equal(result.eligible, tier !== null, description);
+    assert.equal(result.experience.code, code, description);
+    assert.equal(result.hardMinimumExactly3Years, flagged, description);
+  }
+});
+
 test('activity-worded experience requirements cannot bypass the hard minimum gate', () => {
   for (const description of [
     'What You Bring: 5-8 years building backend systems in Java.',

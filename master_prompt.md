@@ -37,6 +37,7 @@
 ### Level
 - **Strict:** Entry-level / Fresher / New-grad with a hard requirement of 0–1 yr (including `1+ year`).
 - **Shortage fallback:** hard requirement up to 2 yrs. A hard minimum of 3+ yrs is never eligible.
+- Preferred years never count as a hard minimum. Classification flags a hard minimum of exactly 3 years for later Stretch selection; this flag does not change Strict, Fallback, or the 3+ rejection.
 
 ### Work mode & location
 - **Onsite / hybrid:** Pune-wide commute is acceptable. Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, Kalyani Nagar, Koregaon Park, Yerwada, Hadapsar, Mundhwa, Aundh, Pashan, Balewadi, Bavdhan, Kothrud, Shivajinagar, Senapati Bapat Road, Wagholi, Kondhwa, Undri, Pimpri, Chinchwad, Pimple Saudagar, Nigdi, Bhosari, Moshi, Sus, Maan, and Marunji count as Pune even without the word "Pune". Match whole names. Sus and Maan require Maharashtra, MH, or a six-digit 411xxx/412xxx pin code in the same location option. Chakan, Talegaon, Ranjangaon, and Shikrapur are excluded even when their address says Pune. Multi-city listings pass with a separate eligible Pune option.
