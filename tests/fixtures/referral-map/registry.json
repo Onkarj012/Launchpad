@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "BoardRegistryV1",
+  "boards": [
+    { "id": "greenhouse:northstar", "company": "Northstar Labs", "provider": "greenhouse", "boardKey": "northstar" }
+  ]
+}
