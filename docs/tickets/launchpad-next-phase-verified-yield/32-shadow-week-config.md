@@ -4,7 +4,7 @@
 
 **Blocked by:** 11, 14, 15
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Config is isolated from the live config
 - [ ] No Notion write path is used

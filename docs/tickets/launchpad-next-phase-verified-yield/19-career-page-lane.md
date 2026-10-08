@@ -4,7 +4,7 @@
 
 **Blocked by:** 17, 18
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Company list comes from the registry
 - [ ] Only employers with no supported ATS and with JSON-LD are included
