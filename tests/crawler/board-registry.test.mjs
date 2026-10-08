@@ -271,6 +271,11 @@ test('provider families carry typed identity, evidence, geography, capabilities,
   assert.ok(samples.workday.url.includes('/wday/cxs/finastra/finc/jobs'));
 });
 
+test('registry normalization preserves a seed tier', () => {
+  const board = normalizeRegistryBoard({ provider: 'ashby', slug: 'seeded', registryTier: 'india-ai-devtools' });
+  assert.equal(board.registryTier, 'india-ai-devtools');
+});
+
 test('locationPreset pune ranks pune-relevant boards ahead of others in a lane', () => {
   const registry = {
     boards: [
@@ -443,6 +448,30 @@ test('failed or malformed public probes leave registry evidence unchanged', asyn
     assert.equal(board.probe, null);
     assert.equal(board.puneRelevant, true);
   }
+});
+
+// Keep the production registry inside the next-phase seed contract.
+test('production registry contains 250 to 400 probed employers', () => {
+  const registry = loadBoardRegistry('config/board-registry.json');
+  const employers = new Set(registry.boards.filter((board) => board.probeStatus === 'verified').map((board) => board.company.toLowerCase()));
+  assert.ok(employers.size >= 250 && employers.size <= 400);
+});
+
+test('production registry includes all four employer tiers', () => {
+  const registry = loadBoardRegistry('config/board-registry.json');
+  const tiers = new Set(registry.boards.map((board) => board.registryTier).filter(Boolean));
+  assert.deepEqual([...tiers].sort(), ['india-ai-devtools', 'pune-gcc-captive', 'pune-product', 'services-major']);
+});
+
+test('production registry does not include Capgemini', () => {
+  const registry = loadBoardRegistry('config/board-registry.json');
+  assert.ok(registry.boards.every((board) => !/capgemini/i.test(board.company)));
+});
+
+test('every production registry board has a retained public probe record', () => {
+  const registry = loadBoardRegistry('config/board-registry.json');
+  assert.ok(registry.boards.every((board) => board.probe?.probedAt));
+  assert.ok(registry.boards.every((board) => board.probe?.sourceUrl || board.probe?.failureReason));
 });
 
 // Daily defaults and both rotation planners must spend the first request on Pune.
