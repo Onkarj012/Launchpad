@@ -26,6 +26,9 @@ const SENIORITY_PATTERN = /\b(senior|sr\.?|staff|lead|principal|architect|direct
 const FRESHER_TITLE_PATTERN = /\b(freshers?|new[- ]grad(?:uate)?|recent graduate|graduate|entry[- ]level|junior|trainee|campus)\b/i;
 const INR_CURRENCY_PATTERN = /^(?:inr|₹)$/i;
 const ANNUAL_PERIOD_PATTERN = /^(?:annual|annually|year|yearly|per year|per annum)$/i;
+const AMBIGUOUS_PUNE_AREAS = ['sus', 'maan'];
+const EXCLUDED_PUNE_AREAS = ['chakan', 'talegaon', 'ranjangaon', 'shikrapur'];
+const PUNE_LOCATION_CONTEXT_PATTERN = /\b(?:maharashtra|mh|41[12]\d{3})\b/i;
 
 function textFor(candidate) {
   return [candidate.title, candidate.location, candidate.workMode, candidate.description, candidate.employment?.evidence, candidate.experience?.evidence]
@@ -74,12 +77,13 @@ export function classifyWorkMode(candidate) {
   return { mode: 'unknown', evidence: null };
 }
 
+// Match complete location names across provider punctuation.
 function hasAlias(text, aliases) {
-  const lower = text.toLowerCase();
+  const lower = ` ${text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
   return aliases.some((alias) => {
-    const normalized = alias.toLowerCase().trim();
+    const normalized = alias.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     if (!normalized) return false;
-    return lower.includes(normalized);
+    return lower.includes(` ${normalized} `);
   });
 }
 
@@ -155,7 +159,15 @@ export function classifyGeo(candidate, policy) {
     .trim();
   if (workMode.mode === 'remote') return { ...remoteScopeStatus(geoText, location, policy, candidate.remoteEligibility), mode: 'remote' };
   if (workMode.mode === 'hybrid' || workMode.mode === 'onsite') {
-    if (hasAlias(location, policy.geo.puneMetroAliases)) {
+    // Explicit separators mark alternate offices; commas also occur inside addresses.
+    const options = location.split(/[;|/\n]|\s+or\s+/i);
+    const hasPuneOption = options.some((option) => {
+      if (hasAlias(option, EXCLUDED_PUNE_AREAS)) return false;
+      const aliases = policy.geo.puneMetroAliases.filter((alias) => !AMBIGUOUS_PUNE_AREAS.includes(alias.toLowerCase().trim())
+        || PUNE_LOCATION_CONTEXT_PATTERN.test(option));
+      return hasAlias(option, aliases);
+    });
+    if (hasPuneOption) {
       return { pass: true, code: 'GEO_PUNE_METRO', evidence: location, mode: workMode.mode };
     }
     return { pass: false, code: workMode.mode === 'hybrid' ? 'GEO_HYBRID_NOT_PUNE' : 'GEO_ONSITE_NOT_PUNE', evidence: location || null, mode: workMode.mode };
