@@ -1,5 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { warmAtsProbeFeed } from './ats-warm.mjs';
+import { createAtsBatch1Adapters } from './ats-batch-1.mjs';
+import { ATS_BATCH_2_PROVIDERS, batch2ProbeFeed } from './ats-batch-2.mjs';
+import { enterpriseProbeFeed } from './ats-enterprise.mjs';
 import { ENTRY_BUILDERS, WARM_ATS } from '../job-pull/warm-set.mjs';
 
 export const BOARD_REGISTRY_SCHEMA = 'BoardRegistryV1';
@@ -117,11 +121,36 @@ function rotateRanked(values, cursor, compare) {
   return groups.flatMap((group) => rotate(group, cursor));
 }
 
+// Prefer newer registry evidence over a saved rotation observation.
+function boardWithProbeState(board, state = {}) {
+  const id = normalizedBoardId(board);
+  const saved = state?.boards?.[id] || state?.boardPlanState?.boards?.[id];
+  if (!saved?.probe || Date.parse(board.probedAt || board.probe?.probedAt) > Date.parse(saved.probe.probedAt)) return board;
+  return { ...board, probe: saved.probe,
+    ...(typeof saved.puneRelevant === 'boolean' ? { puneRelevant: saved.puneRelevant } : {}),
+    ...(typeof saved.indiaRelevant === 'boolean' ? { indiaRelevant: saved.indiaRelevant } : {}),
+  };
+}
+
+// Pause only complete US-only evidence whose zero-India streak spans seven days.
+export function boardPauseReason(board, state = {}, runAt = new Date().toISOString()) {
+  const probe = boardWithProbeState(board, state).probe;
+  if (probe?.usOnly !== true || probe.complete !== true || probe.indiaJobCount !== 0) return null;
+  const elapsed = Date.parse(runAt) - Date.parse(probe.zeroIndiaSince);
+  return elapsed >= 7 * 86_400_000 ? 'us-only-zero-india-yield-7-days' : null;
+}
+
+// Keep verified Pune supply ahead of rotation within each relevance group.
+function puneFirst(left, right) {
+  return Number(right.puneRelevant === true) - Number(left.puneRelevant === true);
+}
+
 export function planBoardRotation({ boards = [], maxBoards = boards.length, providerQuotas = {}, state = {}, runAt = new Date().toISOString(), seenBoardIds = [] } = {}) {
   const configured = [];
   const duplicateConfigured = [];
   const ids = new Set();
-  for (const board of boards) {
+  for (const input of boards) {
+    const board = boardWithProbeState(input, state);
     const id = boardIdentityKey(board);
     if (!id || ids.has(id)) {
       duplicateConfigured.push({ boardId: id, provider: board?.provider ?? null, reason: 'duplicate-configured-board' });
@@ -133,20 +162,24 @@ export function planBoardRotation({ boards = [], maxBoards = boards.length, prov
   configured.sort((left, right) => String(left.rotationBoardId).localeCompare(String(right.rotationBoardId)));
   const cap = Math.max(0, Math.min(configured.length, Number(maxBoards) || 0));
   const seen = new Set(seenBoardIds);
-  const eligible = configured.filter((board) => !seen.has(board.rotationBoardId));
+  const eligible = configured.filter((board) => !seen.has(board.rotationBoardId) && !boardPauseReason(board, state, runAt));
   const selected = [];
   const selectedIds = new Set();
   const providerCursors = { ...(state.providerCursors || {}) };
+  for (const board of rotateRanked(eligible, state.cursor, puneFirst).filter((entry) => entry.puneRelevant === true)) {
+    if (selected.length >= cap) break;
+    selected.push(board); selectedIds.add(board.rotationBoardId);
+  }
   for (const [provider, rawQuota] of Object.entries(providerQuotas)) {
     const quota = Math.max(0, Math.min(cap - selected.length, Number(rawQuota) || 0));
     const family = eligible.filter((board) => String(board.provider).toLowerCase() === String(provider).toLowerCase());
-    for (const board of rotate(family, providerCursors[provider])) {
+    for (const board of rotateRanked(family, providerCursors[provider], puneFirst)) {
       if (selected.length >= cap || selected.filter((item) => item.provider === board.provider).length >= quota) break;
       if (!selectedIds.has(board.rotationBoardId)) { selected.push(board); selectedIds.add(board.rotationBoardId); }
     }
     providerCursors[provider] = family.length ? (Number(providerCursors[provider] || 0) + quota) % family.length : 0;
   }
-  for (const board of rotate(eligible, state.cursor)) {
+  for (const board of rotateRanked(eligible, state.cursor, puneFirst)) {
     if (selected.length >= cap) break;
     if (!selectedIds.has(board.rotationBoardId)) { selected.push(board); selectedIds.add(board.rotationBoardId); }
   }
@@ -155,11 +188,11 @@ export function planBoardRotation({ boards = [], maxBoards = boards.length, prov
     ...configured.filter((board) => !selectedIds.has(board.rotationBoardId)).map((board) => ({
       boardId: board.rotationBoardId,
       provider: board.provider,
-      reason: seen.has(board.rotationBoardId) ? 'already-attempted-this-run' : cap === 0 ? 'board-cap-zero' : 'due-in-later-rotation-window',
+      reason: boardPauseReason(board, state, runAt) || (seen.has(board.rotationBoardId) ? 'already-attempted-this-run' : cap === 0 ? 'board-cap-zero' : 'due-in-later-rotation-window'),
     })),
   ];
   return {
-    boards: selected,
+    boards: selected.sort(puneFirst),
     telemetry: {
       boardsConfigured: configured.length,
       boardsAttempted: selected.length,
@@ -172,6 +205,7 @@ export function planBoardRotation({ boards = [], maxBoards = boards.length, prov
       cursor: eligible.length ? (Number(state.cursor || 0) + Math.max(1, cap)) % eligible.length : 0,
       providerCursors,
       lastAttemptByBoard: Object.fromEntries(selected.map((board) => [board.rotationBoardId, runAt])),
+      ...(state.boardPlanState ? { boardPlanState: state.boardPlanState } : {}),
     },
   };
 }
@@ -259,7 +293,8 @@ export function planBoundedSources({
   const decisions = [];
   const laneOrder = [...SCHEDULE_LANES];
   for (const lane of Object.keys(boardsByLane).sort((left, right) => laneOrder.indexOf(left) - laneOrder.indexOf(right) || left.localeCompare(right))) {
-    for (const raw of boardsByLane[lane] || []) {
+    for (const input of boardsByLane[lane] || []) {
+      const raw = boardWithProbeState(input, state);
       const id = normalizedBoardId(raw);
       if (!id) {
         decisions.push({ action: 'omitted', boardId: null, sourceLane: lane, reason: 'missing-normalized-board-identity' });
@@ -267,6 +302,11 @@ export function planBoundedSources({
       }
       if (raw?.enabled === false || ['disabled', 'proposed', 'rejected'].includes(String(raw?.activationState || '').toLowerCase())) {
         decisions.push({ action: 'omitted', boardId: id, sourceLane: lane, reason: raw?.activationState === 'proposed' ? 'board-proposed-not-active' : 'board-disabled' });
+        continue;
+      }
+      const pauseReason = boardPauseReason(raw, state, runAt);
+      if (pauseReason) {
+        decisions.push({ action: 'omitted', boardId: id, sourceLane: lane, reason: pauseReason });
         continue;
       }
       const ownerLane = boardPlanLane(raw, lane);
@@ -301,7 +341,8 @@ export function planBoundedSources({
   const explorationShare = Math.max(0, Math.min(1, Number(allocation.explorationShare ?? 0.2) || 0.2));
   const priorityBudget = Math.min(cap, Math.ceil(cap * priorityShare));
   const explorationBudget = Math.max(0, Math.min(cap - priorityBudget, Math.floor(cap * explorationShare)));
-  const compareRank = (left, right) => Number(right.hasContinuation) - Number(left.hasContinuation)
+  const compareRank = (left, right) => puneFirst(left.board, right.board)
+    || Number(right.hasContinuation) - Number(left.hasContinuation)
     || (right.geoRank - left.geoRank)
     || (right.titleRank - left.titleRank)
     || (right.healthRank - left.healthRank);
@@ -314,10 +355,13 @@ export function planBoundedSources({
   const orderedExploration = rotateRanked(exploration, explorationCursor, compareRank);
   const selected = [];
   const selectedIds = new Set();
-  // An unfinished board is resumable work, not a new exploration candidate.
-  // Give it first claim on the bounded window before applying the 80/20 split.
-  for (const item of all.filter((candidate) => candidate.hasContinuation).sort(compare)) {
+  // Pune supply gets the first bounded slots even when other boards need continuation.
+  for (const item of all.filter((candidate) => candidate.board.puneRelevant === true).sort(compare)) {
     if (selected.length >= cap) break;
+    selected.push(item); selectedIds.add(item.board.boardId);
+  }
+  for (const item of all.filter((candidate) => candidate.hasContinuation).sort(compare)) {
+    if (selected.length >= cap || selectedIds.has(item.board.boardId)) continue;
     selected.push(item); selectedIds.add(item.board.boardId);
   }
   for (const item of orderedPriority.slice(0, priorityBudget)) {
@@ -397,10 +441,10 @@ export function planBoundedSources({
     },
     explorationCursor: nextExplorationCursor,
     rotation: { trackedAtsCursor: nextTrackedAtsCursor, explorationCursor: nextExplorationCursor },
-    boards: Object.fromEntries(all.map((item) => [item.board.boardId, {
+    boards: { ...(state.boards || {}), ...Object.fromEntries(all.map((item) => [item.board.boardId, {
       ...(item.continuation || {}), lastPlanAction: selectedIds.has(item.board.boardId) ? 'selected' : 'deferred',
       lastPlanTier: item.board.planTier, lastPlannedAt: runAt,
-    }])),
+    }])) },
     lastPlan: boardPlan,
   };
   return { boardsByLane: selectedBoardsByLane, boardPlan, state: nextState, resumeState: state };
@@ -511,6 +555,7 @@ export function normalizeRegistryBoard(raw = {}) {
     activationState,
     probeStatus: clean(raw.probeStatus) || (enabled ? 'verified' : 'proposed'),
     probedAt: clean(raw.probedAt),
+    probe: raw.probe && typeof raw.probe === 'object' ? { ...raw.probe } : null,
     evidenceRef: clean(raw.evidenceRef),
     notes: clean(raw.notes) || clean(raw.reason),
     scheduleLane: clean(raw.scheduleLane) || PROVIDER_LANES[provider] || null,
@@ -524,6 +569,91 @@ export function normalizeRegistryBoard(raw = {}) {
     },
     migratedFrom: Array.isArray(raw.migratedFrom) ? [...raw.migratedFrom] : [],
   };
+}
+
+// Flatten structured ATS locations while keeping country-code evidence readable.
+function probeLocationText(value) {
+  if (Array.isArray(value)) return value.map(probeLocationText).join(', ');
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  return [value.name, value.city, value.addressLocality, value.region, value.country === 'in' ? 'India' : value.country,
+    value.countryCode === 'IN' ? 'India' : value.countryCode, value.addressCountry].filter(Boolean).join(', ');
+}
+
+// Reuse each adapter's public feed and location mapping for probe evidence.
+function boardProbeFeed(board, body) {
+  if (['greenhouse', 'lever', 'ashby'].includes(board.provider)) return warmAtsProbeFeed(board, body);
+  const adapter = createAtsBatch1Adapters()[board.provider];
+  if (adapter) {
+    const rows = adapter.rows(body);
+    return { url: adapter.url(board, { page: 0, pageSize: 50 }),
+      locations: Array.isArray(rows) ? rows.map((row) => adapter.map(row, board).location) : null,
+      complete: Array.isArray(rows) && adapter.next(body, { page: 0, pageSize: 50 }) == null };
+  }
+  if (ATS_BATCH_2_PROVIDERS.includes(board.provider)) return batch2ProbeFeed(board, body);
+  if (board.provider === 'workday') return {
+    url: board.endpoint || `https://${board.tenant}.${board.instance}.myworkdayjobs.com/${board.site}`,
+    ...enterpriseProbeFeed(board, body),
+  };
+  throw new Error(`unsupported registry probe provider: ${board.provider}`);
+}
+
+// Resolve the one-request public probe URL through the existing provider adapter.
+export function registryProbeUrl(board) {
+  return boardProbeFeed(board, null).url;
+}
+
+// Summarize location evidence from a public listing response without another request.
+export function recordRegistryProbe(registry, boardId, { locations, sourceUrl, foundVia, complete = true, runAt = new Date().toISOString() }) {
+  const punePattern = /\b(?:pune|pcmc|hinjawadi|hinjewadi|pimpri|chinchwad)\b/i;
+  const indiaPattern = /\b(?:india|pune|bengaluru|bangalore|hyderabad|chennai|gurugram|gurgaon|noida|delhi|mumbai|maharashtra)\b/i;
+  locations = locations.map(probeLocationText);
+  const indiaJobCount = locations.filter((location) => indiaPattern.test(location) || punePattern.test(location)).length;
+  const puneRelevant = locations.some((location) => punePattern.test(location));
+  const otherScope = /\b(?:canada|mexico|brazil|uk|united kingdom|germany|france|ireland|netherlands|poland|spain|italy|australia|new zealand|singapore|china|japan|europe|eu|apac|latam|worldwide|global|anywhere)\b/i;
+  const usOnly = locations.length > 0 && locations.every((location) =>
+    /\b(?:united states|usa|us)\b/i.test(location) && !indiaPattern.test(location) && !otherScope.test(location));
+  return {
+    ...registry, updatedAt: runAt,
+    boards: registry.boards.map((board) => board.id !== boardId ? board : {
+      ...board, puneRelevant, indiaRelevant: indiaJobCount > 0, probedAt: runAt, probeStatus: 'verified',
+      probe: { probedAt: runAt, foundVia: foundVia || board.probe?.foundVia || board.evidenceRef || 'registry', sourceUrl,
+        jobCount: locations.length, indiaJobCount, usOnly, complete,
+        zeroIndiaSince: usOnly && complete ? board.probe?.zeroIndiaSince || runAt : null },
+    }),
+  };
+}
+
+// Observe an existing adapter response and carry its evidence into durable rotation state.
+export function recordBoardProbeResponse(registry, boardId, response, { sourceUrl, runAt } = {}) {
+  if (Number(response?.status) < 200 || Number(response?.status) >= 300) return registry;
+  const board = findBoard(registry, boardId);
+  if (!board) return registry;
+  try {
+    let body = response.body;
+    if (typeof body === 'string' && /^[\s]*[\[{]/.test(body)) body = JSON.parse(body);
+    const feed = boardProbeFeed(board, body);
+    if (!Array.isArray(feed.locations)) return registry;
+    return recordRegistryProbe(registry, board.id, { locations: feed.locations, complete: feed.complete, sourceUrl, runAt });
+  } catch { return registry; }
+}
+
+// Probe a board once through its public listing feed and retain the observed geography.
+export async function probeRegistryBoard(registry, boardId, { transport, runAt, foundVia } = {}) {
+  const board = findBoard(registry, boardId);
+  if (!board) throw new Error(`unknown registry board: ${boardId}`);
+  if (typeof transport !== 'function') throw new TypeError('probeRegistryBoard requires injected transport');
+  const url = registryProbeUrl(board);
+  if (!url) throw new Error('board probe missing public feed URL');
+  const response = await transport(url, { method: 'GET', provider: board.provider, board });
+  if (Number(response.status) < 200 || Number(response.status) >= 300) throw new Error(`board probe HTTP_${response.status}`);
+  let body = response.body;
+  if (typeof body === 'string' && /^[\s]*[\[{]/.test(body)) body = JSON.parse(body);
+  const feed = boardProbeFeed(board, body);
+  if (!Array.isArray(feed.locations)) throw new Error('board probe missing supported jobs array');
+  return recordRegistryProbe(registry, board.id, {
+    locations: feed.locations, complete: feed.complete, sourceUrl: url, foundVia, runAt,
+  });
 }
 
 export function loadBoardRegistry(file = DEFAULT_BOARD_REGISTRY_PATH) {
@@ -745,8 +875,9 @@ function boardLocationRank(board, locationPreset) {
     return 2;
   }
   if (locationPreset === 'india') {
-    if (india) return 0;
-    return 1;
+    if (pune) return 0;
+    if (india) return 1;
+    return 2;
   }
   return 0;
 }
@@ -764,6 +895,7 @@ export function projectLaneBoards(registry, lane, { enabledOnly = true, location
       sourceTier: entry.sourceTier ?? entry.tier ?? null,
       targetTitles: entry.targetTitles ?? entry.relevantTitles ?? null,
       health: entry.health,
+      probe: entry.probe,
     });
   }
   if (!locationPreset) return boards;
@@ -856,6 +988,8 @@ export function projectTrackedBoards(registry, { enabledOnly = true } = {}) {
       provider: entry.provider,
       slug,
       careersUrl: portal.careers_url,
+      ...withLocationFlags({}, entry),
+      ...(entry.probe ? { probe: entry.probe } : {}),
     });
   }
   return boards;
@@ -963,8 +1097,8 @@ export function recordBoardHealth(registry, boardId, event = {}) {
 
 /** Resolve registry from config (attached object, path, or null). */
 export function resolveBoardRegistry(config) {
-  if (config?.boardRegistry) return config.boardRegistry;
   if (config?.boardRegistryPath) return loadBoardRegistry(config.boardRegistryPath);
+  if (config?.boardRegistry) return config.boardRegistry;
   return null;
 }
 
@@ -973,9 +1107,10 @@ export function resolveBoardRegistry(config) {
  * When no registry is configured, returns config unchanged (test / inline fixtures).
  */
 export function withRegistryProjectedBoards(config, { locationPreset = null, sourcePlan = null } = {}) {
-  const registry = resolveBoardRegistry(config);
-  if (!registry) return config;
-  const preset = locationPreset || sourcePlan?.locationPreset || null;
+  const loadedRegistry = resolveBoardRegistry(config);
+  if (!loadedRegistry) return config;
+  const registry = { ...loadedRegistry, boards: loadedRegistry.boards.map((board) => boardWithProbeState(board, config.sourcePlanner?.state)) };
+  const preset = locationPreset || sourcePlan?.locationPreset || 'pune';
   const sources = { ...(config.sources ?? {}) };
   for (const lane of SCHEDULE_LANES) {
     sources[lane] = {

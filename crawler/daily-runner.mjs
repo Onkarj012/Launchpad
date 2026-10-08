@@ -850,7 +850,11 @@ async function runDailyNormalImpl({
     maxDurationMs: config.sources?.trackedAts?.maxDurationMs ?? Math.max(1, dailyExecution.remainingMs() - dailyExecution.reserveMs),
     boardConcurrency: config.sources?.trackedAts?.boardConcurrency ?? 2,
     rotation: { enabled: true, providerQuotas: config.sources?.trackedAts?.rotationProviderQuotas ?? { ashby: 1, greenhouse: 1, lever: 1 } },
-    rotationState,
+    rotationState: {
+      ...rotationState,
+      // Share the scheduled pass's durable probe history with the tracked pass.
+      boardPlanState: crawlerResult.sourceTelemetry?.['ats-warm']?.sourcePlanState || rotationState.boardPlanState,
+    },
   });
     const boardFetchOwners = Object.fromEntries([
       ...[...ownedBoardIds].map((boardId) => [boardId, 'ats-warm']),

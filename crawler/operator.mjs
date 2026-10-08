@@ -43,6 +43,10 @@ import {
 } from './connector-inbox.mjs';
 import {
   planBoundedSources,
+  boardIdentityKey,
+  boardPauseReason,
+  recordBoardProbeResponse,
+  registryProbeUrl,
   withRegistryProjectedBoards,
 } from './board-registry.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
@@ -562,7 +566,37 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     state: plannerConfig.state ?? {},
     runAt,
   }) : null;
-  const plannedBoards = (lane) => boardPlan?.boardsByLane?.[lane] ?? sources[lane]?.boards ?? [];
+  const probeState = boardPlan?.state || { ...plannerConfig.state, boards: { ...(plannerConfig.state?.boards || {}) } };
+  let probeRegistry = projected.boardRegistry ? {
+    ...projected.boardRegistry,
+    boards: projected.boardRegistry.boards,
+  } : null;
+  const probedBoards = new Set();
+  // Retain listing geography from the adapter's existing request, with no extra fetch.
+  const probeTransport = (lane, sourceSignal, sourceDeadline) => {
+    const bounded = sourceTransport(transport, sourceSignal, sourceDeadline);
+    return async (url, options = {}) => {
+      const response = await bounded(url, options);
+      if (!probeRegistry || options.detail) return response;
+      const identity = options.board ? boardIdentityKey(options.board)?.toLowerCase() : null;
+      const board = probeRegistry.boards.find((entry) => entry.scheduleLane === lane && (identity
+        ? entry.id.toLowerCase() === identity
+        : [entry.url, entry.endpoint, registryProbeUrl(entry)]
+          .filter(Boolean).some((base) => String(url).split('?')[0] === base.split('?')[0])));
+      if (board && !probedBoards.has(board.id)) {
+        const priorRegistry = probeRegistry;
+        probeRegistry = recordBoardProbeResponse(probeRegistry, board.id, response, { sourceUrl: url, runAt });
+        const observed = probeRegistry.boards.find((entry) => entry.id === board.id);
+        if (probeRegistry !== priorRegistry) probedBoards.add(board.id);
+        if (observed.probe) probeState.boards[board.id.toLowerCase()] = {
+          ...probeState.boards[board.id.toLowerCase()], probe: observed.probe,
+          puneRelevant: observed.puneRelevant, indiaRelevant: observed.indiaRelevant,
+        };
+      }
+      return response;
+    };
+  };
+  const plannedBoards = (lane) => boardPlan?.boardsByLane?.[lane] ?? (sources[lane]?.boards ?? []).filter((board) => !boardPauseReason(board, probeState, runAt));
   const planResult = (result, lane) => boardPlan
     ? {
       ...result,
@@ -572,24 +606,24 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         boardPlan: { ...boardPlan.boardPlan, ownerLane: lane },
       },
     }
-    : result;
+    : { ...result, sourcePlanState: plannerConfig.state || {} };
   const rememberPlanState = (result) => {
-    if (boardPlan && typeof onSourcePlanState === 'function') onSourcePlanState(boardPlan.state);
+    if (typeof onSourcePlanState === 'function') onSourcePlanState(probeState);
     return result;
   };
   const plans = [];
   if (plannerEnabled || sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => rememberPlanState(planResult(
-    await fetchWarmAts({ ...sources.atsWarm, boards: plannedBoards('atsWarm'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, signal: sourceSignal, deadline: sourceDeadline }), 'atsWarm')), { maxDurationMs: sources.atsWarm?.maxDurationMs }));
+    await fetchWarmAts({ ...sources.atsWarm, boards: plannedBoards('atsWarm'), transport: probeTransport('atsWarm', sourceSignal, sourceDeadline), runAt, signal: sourceSignal, deadline: sourceDeadline }), 'atsWarm')), { maxDurationMs: sources.atsWarm?.maxDurationMs }));
   if (plannerEnabled || sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
-    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: plannedBoards('atsBatch1'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, signal: sourceSignal, deadline: sourceDeadline });
+    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: plannedBoards('atsBatch1'), transport: probeTransport('atsBatch1', sourceSignal, sourceDeadline), runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, signal: sourceSignal, deadline: sourceDeadline });
     return rememberPlanState(planResult({ ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } }, 'atsBatch1'));
   }, { capabilities: { newestFirst: true, paginated: true }, maxDurationMs: sources.atsBatch1?.maxDurationMs }));
   if (schedule !== 'midday' && (plannerEnabled || sources.atsBatch2?.boards?.length)) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
-    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: plannedBoards('atsBatch2'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, state: cursor ?? {}, signal: sourceSignal, deadline: sourceDeadline });
+    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: plannedBoards('atsBatch2'), transport: probeTransport('atsBatch2', sourceSignal, sourceDeadline), runAt, state: cursor ?? {}, signal: sourceSignal, deadline: sourceDeadline });
     return rememberPlanState(planResult({ ...result, cursor: Object.fromEntries(result.results.map((entry, index) => [plannedBoards('atsBatch2')[index]?.slug || plannedBoards('atsBatch2')[index]?.company, entry.conditionalState])) }, 'atsBatch2'));
   }, { capabilities: { newestFirst: true, completeArray: true }, maxDurationMs: sources.atsBatch2?.maxDurationMs }));
   if (schedule !== 'midday' && (plannerEnabled || sources.enterprise?.boards?.length)) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
-    const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: plannedBoards('enterprise'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, conditionalState: cursor ?? {}, checkpoint, signal: sourceSignal, deadline: sourceDeadline });
+    const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: plannedBoards('enterprise'), transport: probeTransport('enterprise', sourceSignal, sourceDeadline), runAt, conditionalState: cursor ?? {}, checkpoint, signal: sourceSignal, deadline: sourceDeadline });
     return rememberPlanState(planResult({ ...result, cursor: result.conditionalState }, 'enterprise'));
   }, { capabilities: { newestFirst: true, paginated: true }, maxDurationMs: sources.enterprise?.maxDurationMs }));
   if (sources.indeed?.enabled) plans.push(sourcePlan('indeed-inbox', 'connector-imports', 'indeed', async () => importIndeedInbox({
@@ -1013,7 +1047,13 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       deadline: sourceDeadline,
     });
   }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
-  return plans;
+  // Spend ATS request budgets on Pune lanes before lanes with no Pune evidence.
+  const atsLanes = { 'ats-warm': 'atsWarm', 'ats-batch-1': 'atsBatch1', 'ats-batch-2': 'atsBatch2', 'ats-enterprise': 'enterprise' };
+  const orderedAts = plans.filter((plan) => atsLanes[plan.id]).sort((left, right) =>
+    Number(plannedBoards(atsLanes[right.id]).some((board) => board.puneRelevant === true))
+    - Number(plannedBoards(atsLanes[left.id]).some((board) => board.puneRelevant === true)));
+  let atsIndex = 0;
+  return plans.map((plan) => atsLanes[plan.id] ? orderedAts[atsIndex++] : plan);
 }
 
 /**
@@ -1108,11 +1148,11 @@ export async function runCrawlerOperator({
       };
     };
     let durablePlannerState = null;
-    if (config.sourcePlanner?.enabled === true) {
+    if (config.boardRegistry || config.boardRegistryPath || config.sourcePlanner?.enabled === true) {
       const rawPlannerState = store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get('ats-warm')?.cursor_json;
       try { durablePlannerState = rawPlannerState ? JSON.parse(rawPlannerState).sourcePlanState ?? null : null; } catch { durablePlannerState = null; }
     }
-  const plannerConfig = config.sourcePlanner?.enabled === true && durablePlannerState
+    const plannerConfig = durablePlannerState
       ? { ...config.sourcePlanner, state: durablePlannerState }
       : config.sourcePlanner;
     const effectiveCrawlerConfig = plannerConfig ? { ...config, sourcePlanner: plannerConfig } : config;
@@ -1159,7 +1199,7 @@ export async function runCrawlerOperator({
       deadline,
     });
     const completedCrawlerRun = ['completed', 'completed_with_failures'].includes(result.run?.status);
-    if (pendingPlannerState && completedCrawlerRun && config.sourcePlanner?.enabled === true) {
+    if (pendingPlannerState && completedCrawlerRun) {
       persistSourcePlanState(store, 'ats-warm', pendingPlannerState, runAt);
       result = {
         ...result,

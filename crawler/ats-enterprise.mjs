@@ -94,6 +94,15 @@ function rowsFor(provider, payload) {
   return payload.items ?? payload.jobs ?? payload.results ?? payload.data?.items ?? payload.data?.jobs ?? [];
 }
 
+// Read public listing geography without fetching details or following pagination.
+export function enterpriseProbeFeed(board, body) {
+  const payload = payloadOf({ body });
+  const rows = payload?.__html ? jsonLd(payload.__html) : payload?.jobPostings;
+  const locations = Array.isArray(rows) && !rows.some((row) => row.__malformedJsonLd)
+    ? rows.map((row) => locationText(row.locationsText || row.location || row.jobLocation?.address || row.jobLocation)) : null;
+  return { locations, complete: Array.isArray(rows) && (payload?.__html ? rows.length > 0 : Number(payload?.total) === rows.length) };
+}
+
 function nextUrl(provider, payload, current, page) {
   if (!payload || payload.__html) return null;
   const supplied = first(payload.next, payload.nextPage, payload.links?.next, payload.data?.next, payload.d?.__next, payload['@odata.nextLink']);

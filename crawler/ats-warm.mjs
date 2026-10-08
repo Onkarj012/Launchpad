@@ -64,6 +64,12 @@ function sourceLocation(provider, row) {
   if (provider === 'lever') return row?.categories?.location || '';
   return row?.location || '';
 }
+// Expose the public feed URL and unfiltered locations for registry probes.
+export function warmAtsProbeFeed(board, body) {
+  const listings = rows(board.provider, body);
+  return { url: endpoint(board), locations: Array.isArray(listings) ? listings.map((row) => sourceLocation(board.provider, row)) : null, complete: true };
+}
+
 function clearlyForeign(provider, row) {
   const location = String(sourceLocation(provider, row)).trim();
   if (!location) return false;
