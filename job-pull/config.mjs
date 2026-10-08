@@ -74,6 +74,13 @@ export function validateConfig(config) {
     }
   }
 
+  for (const field of ['excluded', 'servicesMajors']) {
+    const companies = config.companies?.[field];
+    if (!Array.isArray(companies) || companies.some((company) => typeof company !== 'string' || !company.trim())) {
+      errors.push(`companies.${field} must be a string array`);
+    }
+  }
+
   const employment = config.employment;
   if (!employment || !sameArray(employment.allowedTypes, ['full-time', 'internship'])) {
     errors.push('employment.allowedTypes must be full-time and internship');

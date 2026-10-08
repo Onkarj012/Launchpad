@@ -50,6 +50,11 @@
 - Unpaid, equity-only, commission-only, volunteer, part-time, freelance per-task, training-fee, bonded, and agency-resale-without-named-client roles → drop.
 - Contract roles are excluded from the full-time and internship lanes.
 
+### Company rules
+
+- Capgemini roles are excluded, including AI and product engineering roles. Reason code: `COMPANY_EXCLUDED`.
+- TCS, Infosys, Wipro, Cognizant, Accenture, HCL, Tech Mahindra and LTIMindtree pass only for AI/ML or product engineering titles. Generic services titles are rejected with `SERVICES_MAJOR_GENERIC_ROLE`, even when the description mentions AI or product work. Other companies are unaffected by this rule. All other gates still apply.
+
 ### Hard gates (run first, every pull — fail any → drop, never written to Notion)
 1. **Location authorization** — onsite/hybrid must offer a Pune-wide location option; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
@@ -58,6 +63,7 @@
    - **Workday exception:** only a usable DETAIL `startDate` is trusted as Workday freshness evidence. LIST `postedOn`, including bounded labels such as `Posted Today`, is not sufficient and stays undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
 5. **Liveness** — confirmed dead/expired → drop. Inconclusive checks stay `Not Verified`, never invented as Active.
 6. **Cross-day suppression** (opportunity ledger, `career-ops/data/opportunity-ledger.tsv`) — applied/contacted/interviewing/rejected requisitions never resurface; surfaced-but-unactioned roles get a 7-day cooldown; a Workday refresh of the same provider+requisition is the same opportunity, not a new one. Distinct requisitions at the same company/title/location stay distinct.
+7. **Company** — apply the Company rules above before scoring.
 
 Mechanical values and aliases live in `config/job-pull.json`; this section is the human-readable policy. Everything else (stack fit, role flavor, pure-frontend-ness, etc.) is **soft** — it lowers Skill match / Domain relevance in § 3, not a gate.
 

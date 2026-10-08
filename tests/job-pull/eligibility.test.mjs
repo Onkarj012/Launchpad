@@ -36,6 +36,59 @@ function candidate(overrides = {}) {
   });
 }
 
+test('Capgemini roles are excluded even for AI and product engineering titles', () => {
+  for (const company of ['Capgemini', 'CAPGEMINI', 'Capgemini India Pvt. Ltd.', 'Capgemini Technology Services India Limited']) {
+    for (const title of ['AI Engineer', 'Product Engineer', 'Software Engineer']) {
+      const result = classifyCandidate(candidate({ company, title }), config);
+      assert.equal(result.eligible, false, `${company}: ${title}`);
+      assert.equal(result.tier, null);
+      assert.deepEqual(result.reasons, ['COMPANY_EXCLUDED']);
+      assert.ok(result.evidenceCodes.includes('COMPANY_EXCLUDED'));
+    }
+  }
+});
+
+test('services majors reject generic titles even when the description mentions AI products', () => {
+  for (const company of [
+    'TCS', 'Tata Consultancy Services Limited', 'Infosys Limited', 'Wipro', 'Cognizant Technology Solutions',
+    'Accenture', 'HCL', 'HCLTech', 'HCL Technologies', 'Tech Mahindra Ltd.', 'LTIMindtree',
+  ]) {
+    for (const title of ['Software Engineer', 'Java Developer', 'Backend Developer', 'Full Stack Engineer', 'Platform Engineer']) {
+      const result = classifyCandidate(candidate({ company, title, description: 'Build an AI product for customers.' }), config);
+      assert.equal(result.eligible, false, `${company}: ${title}`);
+      assert.equal(result.tier, null);
+      assert.deepEqual(result.reasons, ['SERVICES_MAJOR_GENERIC_ROLE']);
+      assert.ok(result.evidenceCodes.includes('SERVICES_MAJOR_GENERIC_ROLE'));
+    }
+  }
+});
+
+test('services majors allow AI and product engineering titles subject to the other gates', () => {
+  for (const company of ['TCS', 'Infosys', 'Wipro', 'Cognizant', 'Accenture', 'HCL', 'Tech Mahindra', 'LTIMindtree']) {
+    for (const title of ['AI Engineer', 'GenAI Developer', 'Machine Learning Engineer', 'AI-Native Full Stack Engineer', 'Product Engineer']) {
+      const result = classifyCandidate(candidate({ company, title }), config);
+      assert.equal(result.eligible, true, `${company}: ${title}`);
+      assert.equal(result.tier, 'strict');
+      assert.deepEqual(result.reasons, []);
+    }
+    const senior = classifyCandidate(candidate({ company, title: 'Senior AI Engineer' }), config);
+    assert.equal(senior.eligible, false);
+    assert.ok(senior.reasons.includes('TITLE_SENIORITY_REJECT'));
+  }
+});
+
+test('companies outside the lists retain generic engineering eligibility', () => {
+  for (const company of ['Example', 'Persistent Systems', 'TCS Software Labs', 'HCL Healthcare', 'Capgemini Partners', 'Accenture Ventures']) {
+    const result = classifyCandidate(candidate({ company, title: 'Software Engineer', description: 'Build Java services.' }), config);
+    assert.equal(result.eligible, true, company);
+    assert.equal(result.tier, 'strict');
+    assert.deepEqual(result.reasons, []);
+  }
+  const offTarget = classifyCandidate(candidate({ company: 'Example', title: 'QA Engineer' }), config);
+  assert.equal(offTarget.eligible, false);
+  assert.deepEqual(offTarget.reasons, ['TITLE_OFF_TARGET']);
+});
+
 test('Pune metro onsite/hybrid passes while other cities fail', () => {
   assert.equal(classifyCandidate(candidate(), config).eligible, true);
   assert.equal(classifyCandidate(candidate({ location: 'Hinjewadi, Pune', workMode: 'hybrid' }), config).geo.code, 'GEO_PUNE_METRO');
