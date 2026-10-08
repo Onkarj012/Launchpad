@@ -242,6 +242,59 @@ test('follows a safe redirect from an aggregator to an ATS detail page', async (
   assert.deepEqual(calls, [discoveryUrl, applicationUrl]);
 });
 
+test('Instahyre visible external application links resolve without private portal requests', async () => {
+  const portalUrl = 'https://www.instahyre.com/job-123456-ai-engineer-at-acme/';
+  const employerUrl = 'https://acme.com/application/123';
+  const requests = [];
+  const resolve = createOriginalListingResolver({
+    transport: async (url, options) => {
+      requests.push({ url, options });
+      if (url === portalUrl.slice(0, -1)) return { status: 200, body: `<a href="${employerUrl}">Apply on company website</a>` };
+      return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme' },
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI tools.' });
+    },
+  });
+  const result = await resolve(observation(portalUrl, { provider: 'instahyre', company: 'Acme', title: 'AI Engineer', location: 'Pune' }));
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.originalApplicationUrl, employerUrl);
+  assert.deepEqual(requests.map(({ url }) => url), [portalUrl.slice(0, -1), employerUrl]);
+  assert.ok(requests.every(({ options }) => options.method === 'GET'));
+});
+
+test('Wellfound visible external application links resolve without private portal requests', async () => {
+  const portalUrl = 'https://wellfound.com/jobs/123-acme-ai-engineer';
+  const employerUrl = 'https://acme.com/application/456';
+  const requests = [];
+  const resolve = createOriginalListingResolver({
+    transport: async (url, options) => {
+      requests.push({ url, options });
+      if (url === portalUrl) return { status: 200, body: `<a href="${employerUrl}">Apply externally</a>` };
+      return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme' },
+        jobLocation: { address: { addressLocality: 'Remote', addressCountry: 'India' } }, description: 'Build AI tools.' });
+    },
+  });
+  const result = await resolve(observation(portalUrl, { provider: 'wellfound', company: 'Acme', title: 'AI Engineer', location: 'Remote India' }));
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.originalApplicationUrl, employerUrl);
+  assert.deepEqual(requests.map(({ url }) => url), [portalUrl, employerUrl]);
+  assert.ok(requests.every(({ options }) => options.method === 'GET'));
+});
+
+test('Instahyre login links stay in verification without fetching the login route', async () => {
+  const portalUrl = 'https://www.instahyre.com/job-123456-ai-engineer-at-acme/';
+  const loginUrl = 'https://acme.com/login/application/123';
+  const requests = [];
+  const resolve = createOriginalListingResolver({
+    transport: async (url) => {
+      requests.push(url);
+      return { status: 200, body: `<a href="${loginUrl}">Apply on company website</a>` };
+    },
+  });
+  const result = await resolve(observation(portalUrl, { provider: 'instahyre', company: 'Acme', title: 'AI Engineer' }));
+  assert.equal(result.status, 'verification');
+  assert.deepEqual(requests, [portalUrl.slice(0, -1)]);
+});
+
 test('resolves intermediary apply-tracking page through outbound Apply link', async () => {
   const discoveryUrl = 'https://www.indeed.com/viewjob?jk=track';
   const trackingUrl = 'https://www.indeed.com/rc/clk?jk=track';
