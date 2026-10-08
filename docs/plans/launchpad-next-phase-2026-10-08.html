@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launchpad next phase: from 4 to 10+ verified roles a day</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --fg: #1c1b19; --muted: #6b6860; --line: #e2dfd8; --card: #ffffff;
+    --accent: #2f5d50; --accent-soft: #e3eee9; --warn: #9a5b13; --warn-soft: #f6ecdc;
+    --bad: #9b2c2c; --bad-soft: #f6e3e3; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --fg: #ecebe7; --muted: #a09d95; --line: #2d2c29; --card: #1d1d1b;
+      --accent: #7fc2ad; --accent-soft: #1f2e29; --warn: #e0a95c; --warn-soft: #30261a;
+      --bad: #e48c8c; --bad-soft: #321e1e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 48px 24px 96px; }
+  header .eyebrow { color: var(--muted); font-size: 13px; letter-spacing: .04em; text-transform: uppercase; }
+  h1 { font-size: clamp(28px, 4.4vw, 40px); line-height: 1.15; margin: 8px 0 12px; letter-spacing: -.02em; }
+  h2 { font-size: 22px; margin: 56px 0 14px; letter-spacing: -.01em; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); max-width: 70ch; }
+  code { font-family: var(--mono); font-size: .88em; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+  nav { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 22px 0 0; font-size: 14px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 28px 0 8px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat .n { font-size: 30px; font-weight: 650; letter-spacing: -.02em; }
+  .stat .l { color: var(--muted); font-size: 13px; }
+  .stat.bad .n { color: var(--bad); } .stat.good .n { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { height: 8px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .bar span { display: block; height: 100%; background: var(--accent); }
+  ol.findings { padding-left: 22px; }
+  ol.findings li { margin-bottom: 10px; }
+  .goal { background: var(--accent-soft); border-radius: 10px; padding: 16px 18px; margin: 10px 0; }
+  .guard { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
+  .ws { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin: 14px 0; }
+  .ws .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: 2px; }
+  .ws .tag.top { background: var(--warn-soft); color: var(--warn); }
+  .ws ol, .ws ul { margin: 6px 0 10px; padding-left: 22px; }
+  .ws li { margin-bottom: 4px; }
+  .done { font-size: 14px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 8px; }
+  .done b { color: var(--fg); }
+  .pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+  .pill.med { background: var(--warn-soft); color: var(--warn); }
+  .pill.high { background: var(--bad-soft); color: var(--bad); }
+  .timeline { list-style: none; padding: 0; margin: 8px 0; }
+  .timeline li { display: grid; grid-template-columns: 120px 1fr; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .timeline .d { font-weight: 600; }
+  .decisions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .decision { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .decision .k { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .decision.open { border-style: dashed; }
+  .foot { color: var(--muted); font-size: 14px; }
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .decisions { grid-template-columns: 1fr; }
+    .timeline li { grid-template-columns: 1fr; gap: 2px; }
+    table { font-size: 14px; }
+    .scroll { overflow-x: auto; }
+  }
+  @media print { body { background: #fff; color: #000; } .ws, .stat, .decision { break-inside: avoid; } nav { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Launchpad · plan · 8 October 2026 (IST)</div>
+    <h1>Next phase: from 4 to 10+ verified roles a day</h1>
+    <p class="lede">Branch <code>fix/pipeline-yield</code>, 923/923 tests passing. This is a plan. None of its work has started. Decisions from Onkar are recorded at the end.</p>
+    <nav>
+      <a href="#now">Where we are</a><a href="#findings">What the data says</a><a href="#goal">Goal</a>
+      <a href="#workstreams">Workstreams</a><a href="#avenues">New avenues</a><a href="#timeline">Timeline</a>
+      <a href="#agents">Agents</a><a href="#decisions">Decisions</a>
+    </nav>
+  </header>
+
+  <div class="stats" aria-label="Latest run summary">
+    <div class="stat"><div class="n">5,037</div><div class="l">jobs fetched (run 3)</div></div>
+    <div class="stat"><div class="n">8</div><div class="l">ready and scored</div></div>
+    <div class="stat good"><div class="n">4</div><div class="l">shortlisted (from 1)</div></div>
+    <div class="stat bad"><div class="n">0</div><div class="l">Strict matches</div></div>
+  </div>
+
+  <h2 id="now">Where we are</h2>
+  <p>Three bounded runs on 8 October, each on a fresh isolated database. No Notion writes.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Stage</th><th class="num">Run 1</th><th class="num">Run 2</th><th class="num">Run 3</th></tr></thead>
+    <tbody>
+      <tr><td>Fetched</td><td class="num">3,887</td><td class="num">4,990</td><td class="num">5,037</td></tr>
+      <tr><td>Passed location, title, experience, employment, freshness</td><td class="num">25</td><td class="num">36</td><td class="num">35</td></tr>
+      <tr><td>Ready and scored</td><td class="num">1</td><td class="num">8</td><td class="num">8</td></tr>
+      <tr><td>Shortlisted <div class="bar" aria-hidden="true"><span style="width:40%"></span></div></td><td class="num">1</td><td class="num">4</td><td class="num">4 <span class="foot">/ 10 target</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Current shortlist: Barclays Full Stack Engineer, BP Data Engineer (two separate requisitions), Barclays AI Engineer. All in Pune, posted 6 to 7 October, scores 63 to 72, all labelled Backfill.</p>
+
+  <h2 id="findings">What the run data says</h2>
+  <ol class="findings">
+    <li><b>Supply is the bottleneck, not the gates.</b> Of 3,090 stored jobs, 226 mention Pune. Only 82 come from employer ATS boards, from about eight employers: Barclays, BP, 6sense, Autodesk, Capco, Blue Altair, Delta Capita, Bosch. Every ready role came from two of them.</li>
+    <li><b>The board registry is aimed at the wrong place.</b> 255 boards, none marked Pune-relevant. The 123 enterprise Workday tenants are mostly US companies (Boeing, CVS Health, Chevron, Cincinnati Children's). They account for most of the roughly 3,000 "onsite, not Pune" rejects per run.</li>
+    <li><b>The company cap now binds.</b> Eight ready roles from two employers become four under the two-per-company rule. More employers is the fix, not a looser cap.</li>
+    <li><b>Portal leads stall at verification.</b> About 40 LinkedIn, Glassdoor, Instahyre and Wellfound leads per run have no JD and no employer route. Many come from employers with their own ATS: Mastercard, BMC, Atlas Copco, TransUnion, MetLife, BNY, Jefferies, Accenture, Purplle, Avaloq. Nothing matches a portal lead to that employer's own board.</li>
+    <li><b>Several built lanes produce nothing.</b> The career-page crawler has an empty company list. The startup lane is not wired into the daily run. Web discovery returned nothing. Naukri, Foundit, Hirist, Cutshort and Peerlist need live injection or the Apify rescue. Glassdoor returns 403; LinkedIn returned 429 on the third run.</li>
+    <li><b>Some Pune roles may be false title rejects.</b> To audit: Barclays "Recon Developer", "Sterling Developer", "Test Engineer", "Data Analyst"; BP "Junior Business Intelligence Specialist"; 6sense "Software Engineer II"; Blue Altair "Analyst / Consultant - Fullstack Developer". Some will be correct rejects. None has been checked yet.</li>
+  </ol>
+
+  <h2 id="goal">Goal and how we measure it</h2>
+  <div class="goal"><b>Target:</b> on 5 of 7 consecutive IST days, at least 10 shortlisted roles from at least 6 employers, every one verified (JD, employer route, live, full-time or paid internship, fresh, Pune-area or India-eligible remote), with at least 2 Strict matches a day.</div>
+  <div class="guard"><b>Fixed guardrails:</b> fail-closed gates, two-per-company cap, no auto-apply, draft-only outreach, v5-only writes, user-owned checkboxes untouched.</div>
+  <p style="margin-top:12px">Every run reports fetched, Pune or India-eligible, passed gates, ready, scored, shortlisted, employers represented, Strict count, and yield per source per request. Sources that spend requests without producing ready roles get paused.</p>
+
+  <h2 id="workstreams">Workstreams</h2>
+  <p class="lede">Ordered by expected yield. A to D improve the current pipeline. E opens new avenues. F to H make the result usable and trustworthy.</p>
+
+  <div class="ws">
+    <h3>A. Build a real Pune and India employer registry <span class="tag top">biggest lever</span></h3>
+    <ol>
+      <li><b>Seed 250 to 400 employers</b> in four tiers: Pune GCCs and captives (Mastercard, BNY, UBS, Deutsche Bank, Citi, Allstate, John Deere, Siemens, Bosch, Eaton, Cummins, Honeywell, ZS, Amdocs, NVIDIA, Rapid7, Veritas, Qualys, BMC, TransUnion and more); Pune product companies (Icertis, PubMatic, Druva, Mindtickle, Persistent, Synechron, Zensar, KPIT and more); India AI and dev-tool startups from YC, VC portfolios, Inc42 funding news and Pune incubators; and services firms with graduate programs as a separate tier.</li>
+      <li><b>Find each employer's ATS</b> from its careers page: Workday, SuccessFactors, Oracle, iCIMS, Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Darwinbox, Keka, Zoho.</li>
+      <li><b>Verify each board</b> with one public request. Tag Pune and India relevance from real job locations.</li>
+      <li><b>Register</b> verified boards in <code>config/board-registry.json</code>, the file production reads.</li>
+      <li><b>Re-prioritise:</b> Pune boards first every morning; US-only tenants with zero India yield over 7 days rotate out.</li>
+    </ol>
+    <div class="done"><b>Done when:</b> 150+ verified Pune or India boards, each with a probe record, and a bounded run shows Pune roles from 25+ employers.</div>
+  </div>
+
+  <div class="ws">
+    <h3>B. Turn portal leads into employer routes</h3>
+    <ol>
+      <li>When a portal lead's company is in the registry, search that employer's own board for the same title. Promote only on employer, title and location match, plus requisition when present.</li>
+      <li>Use visible external apply links on Instahyre and Wellfound. No login, no private endpoints.</li>
+      <li>Raise the resolver budget only after measuring verified routes per request.</li>
+      <li>One LinkedIn pass per run; back off for the day on 429.</li>
+    </ol>
+    <div class="done"><b>Done when:</b> a bounded run converts 10+ portal leads to verified employer routes, with zero wrong matches in a manual check.</div>
+  </div>
+
+  <div class="ws">
+    <h3>C. Turn on the lanes that are built but empty</h3>
+    <ol>
+      <li><b>Structured career pages (LP-009):</b> feed the existing sitemap and JSON-LD crawler with employers that use no supported ATS.</li>
+      <li><b>Startup company careers:</b> wire the existing lane into the daily run.</li>
+      <li><b>Web discovery:</b> find why Brave and SearXNG returned nothing and fix the cause.</li>
+      <li><b>Apify rescue</b> for Naukri, Foundit and Hirist: Onkar-invoked, capped cost per run, leads go through workstream B.</li>
+      <li><b>TheirStack:</b> deferred until free-source yield is measured.</li>
+    </ol>
+    <div class="done"><b>Done when:</b> every source ends each run as ok, empty with a reason, or disabled by decision. None stays unavailable by accident.</div>
+  </div>
+
+  <div class="ws">
+    <h3>D. Audit the gates for false rejects, without loosening them</h3>
+    <ol>
+      <li>Hand-label 100 random rejects per code (title off-target, seniority, remote scope unclear, location not verified, 3+ years).</li>
+      <li>Check multi-city listings, Pune suburbs, "Maharashtra" only, and titles like Analyst, Consultant, Associate, Engineer I/II.</li>
+      <li>Fix only proven false rejects, each with a regression test from the real example.</li>
+      <li>Explain why every selected role is Backfill and none is Strict, even when posted the day before.</li>
+    </ol>
+    <div class="done"><b>Done when:</b> false-reject rate per code is measured, fixes are tested, and Strict selection is explained or fixed.</div>
+  </div>
+
+  <div class="ws" id="avenues">
+    <h3>E. New avenues beyond job boards <span class="tag">one-week trials</span></h3>
+    <p>Each avenue gets a bounded trial, a yield number, and a keep or drop decision. Everything stays draft-only and Onkar-confirmed.</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Avenue</th><th>What it gives</th><th>How</th><th>Effort</th></tr></thead>
+      <tbody>
+        <tr><td>Hiring posts (LinkedIn, X)</td><td>Roles from engineers and founders before they reach boards</td><td>Onkar saves posts; read-only import; employer route resolved by B</td><td><span class="pill">Low · Onkar</span></td></tr>
+        <tr><td>Hacker News "Who is hiring"</td><td>Remote-friendly startups, some India-eligible</td><td>Monthly thread via the public Algolia API, filtered for India and early-career</td><td><span class="pill">Low</span></td></tr>
+        <tr><td>YC Work at a Startup</td><td>Startup roles with India filters</td><td>Add the India-remote filter; check country limits</td><td><span class="pill">Low</span></td></tr>
+        <tr><td>Funded-startup watch</td><td>Companies about to hire</td><td>Inc42 and VC news from the last 90 days seed A and founder outreach</td><td><span class="pill med">Medium</span></td></tr>
+        <tr><td>Founder and hiring-manager outreach</td><td>Roles never posted</td><td>Draft notes naming the role and a matching project; Onkar sends manually</td><td><span class="pill med">Medium</span></td></tr>
+        <tr><td>Referral map</td><td>Warm intros</td><td>Onkar lists alumni and Capgemini batchmates; Launchpad matches them to the registry</td><td><span class="pill med">Medium · Onkar</span></td></tr>
+        <tr><td>Hiring challenges and off-campus drives</td><td>Fresher pipelines</td><td>Unstop, HackerEarth, HackerRank, GCC graduate drives, tracked by deadline</td><td><span class="pill med">Medium</span></td></tr>
+        <tr><td>AICTE internships, NATS apprenticeships</td><td>Paid internships, graduate apprenticeships</td><td>Separate lane, counted apart from full-time, stipend evidence required</td><td><span class="pill med">Medium</span></td></tr>
+        <tr><td>Open-source contribution path</td><td>Hiring signal at OSS-first companies</td><td>3 to 5 registry companies that hire contributors; track good-first-issues</td><td><span class="pill high">High · long</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="foot">Out of this phase by decision: Pune community events and Capgemini internal moves.</p>
+  </div>
+
+  <div class="ws">
+    <h3>F. Make the shortlist usable each morning</h3>
+    <ol>
+      <li>Each role gets a one-line "why it fits", shift or location caveats, and the apply link.</li>
+      <li>A checked row builds a tailored one-page resume PDF on this Mac.</li>
+      <li>Outreach drafts to the hiring manager or recruiter where one is identifiable. Draft-only.</li>
+    </ol>
+    <div class="done"><b>Done when:</b> going from shortlist to application takes Onkar under 15 minutes per role.</div>
+  </div>
+
+  <div class="ws">
+    <h3>G. Run it every day, unattended, in shadow</h3>
+    <ol>
+      <li>Morning and midday runs on the isolated config for 7 days. No Notion writes.</li>
+      <li>One daily funnel report with source health and per-source yield.</li>
+      <li>Watch LinkedIn 429, Glassdoor 403, board failures, and scorer variance (the same role scored 72 one run and 67 the next).</li>
+    </ol>
+    <div class="done"><b>Done when:</b> 7 consecutive days of complete reports, with the target met on 5 of them.</div>
+  </div>
+
+  <div class="ws">
+    <h3>H. Close the live gates <span class="tag">after G</span></h3>
+    <p>From <code>docs/STATUS.md</code>: rotated Notion credential, live v5 smoke, one guarded live write, real resume build, seven-date canary on one clean version, schedule install, promotion and rollback drill.</p>
+  </div>
+
+  <h2 id="timeline">Order and timing</h2>
+  <ul class="timeline">
+    <li><span class="d">Day 1</span><span>Employer research in parallel (two agents); gate reject sampling; web-discovery diagnosis</span></li>
+    <li><span class="d">Day 2</span><span>Probe and register the first 100 boards; fix proven false rejects; wire the startup lane</span></li>
+    <li><span class="d">Day 3</span><span>Bounded run; build the portal-to-employer cross-match; start HN, hiring-post and YC trials</span></li>
+    <li><span class="d">Day 4</span><span>Second registry batch to 150+; visible apply links; structured career pages</span></li>
+    <li><span class="d">Day 5</span><span>Bounded run and review; morning shortlist format; outreach drafts</span></li>
+    <li><span class="d">Days 6–12</span><span>Shadow week; keep or drop each new avenue at the end</span></li>
+    <li><span class="d">After G</span><span>Live gates</span></li>
+  </ul>
+  <p class="foot">At most one or two bounded runs a day, to respect LinkedIn and Glassdoor limits.</p>
+
+  <h2 id="agents">Agents and review</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Work</th><th>Who</th></tr></thead>
+    <tbody>
+      <tr><td>Research and employer discovery</td><td>Codex <code>gpt-6-luna</code> and Claude <code>claude-haiku-5-5</code> in parallel, each on a different slice</td></tr>
+      <tr><td>Identity, resolver and gate code</td><td>Codex <code>gpt-6.1-sol</code>, own worktree, written fence and test budget</td></tr>
+      <tr><td>Config and registry work</td><td>Codex <code>gpt-6-luna</code>, own worktree</td></tr>
+      <tr><td>Review</td><td>Read-only Codex review of each merged slice; Claude checks diffs and runs the full suite before merge</td></tr>
+      <tr><td>Live runs</td><td>Claude only, isolated config, compared run over run</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2 id="decisions">Decisions (Onkar, 8 October 2026)</h2>
+  <div class="decisions">
+    <div class="decision"><div class="k">Company cap</div>Keep two per company.</div>
+    <div class="decision"><div class="k">Paid sources</div>Apify rescue for Naukri, Foundit, Hirist: Onkar-invoked, capped per run. TheirStack later.</div>
+    <div class="decision"><div class="k">Onkar in the loop</div>Hiring-post capture and referral map, about 20 minutes a day.</div>
+    <div class="decision"><div class="k">Scope</div>Pune-area plus India-eligible remote. New paid-internship and apprenticeship lane, counted separately.</div>
+    <div class="decision open"><div class="k">Open: branch and PR</div>Default: continue on <code>fix/pipeline-yield</code>, PR after workstream D.</div>
+  </div>
+
+  <h2>Evidence</h2>
+  <p class="foot">Run outputs are machine-local under <code>.local/pipeline-yield-2026-10-08/</code>. Research notes: <code>docs/research/2026-10-08-source-supply-and-employer-routes.md</code> and <code>docs/research/2026-10-08-pipeline-verification-techniques.md</code>. Canonical plan: <code>docs/plans/launchpad-next-phase-2026-10-08.md</code>.</p>
+</div>
+</body>
+</html>
