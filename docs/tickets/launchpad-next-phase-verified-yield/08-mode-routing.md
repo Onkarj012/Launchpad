@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A role that fits two modes appears once, with a primary mode and a tag
 - [ ] Primary mode follows Startup, then Pune, then Remote

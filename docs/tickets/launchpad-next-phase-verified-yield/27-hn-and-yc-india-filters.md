@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] HN filter returns India-eligible, remote-global and early-career roles
 - [ ] YC query uses India and remote filters

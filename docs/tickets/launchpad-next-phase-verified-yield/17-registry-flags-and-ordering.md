@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] One public request sets both flags and the probe record
 - [ ] Pune-relevant boards are fetched first

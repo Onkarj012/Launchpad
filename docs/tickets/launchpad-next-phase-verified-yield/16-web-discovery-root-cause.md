@@ -4,8 +4,8 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Root cause is written in this ticket
+- [x] Root cause is written in this ticket (recorded in `docs/reports/16-web-discovery-root-cause.md`)
 - [ ] Fixture run returns results
 - [ ] An empty result states its reason

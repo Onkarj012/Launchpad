@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Capgemini role is rejected with `COMPANY_EXCLUDED`
 - [ ] Services-major generic role is rejected with `SERVICES_MAJOR_GENERIC_ROLE`

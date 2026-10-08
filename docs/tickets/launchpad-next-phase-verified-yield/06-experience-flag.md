@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Hard minimum of exactly 3 years is flagged
 - [ ] "Preferred" 3 years is not a hard minimum and does not reject

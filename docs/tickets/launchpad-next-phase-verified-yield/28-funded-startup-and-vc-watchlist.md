@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Watchlist includes India-focused funds and portfolio boards
 - [ ] Weekly run adds recently funded startups to the registry

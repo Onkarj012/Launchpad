@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Each challenge or drive is a dated item
 - [ ] Deadlines appear in the report

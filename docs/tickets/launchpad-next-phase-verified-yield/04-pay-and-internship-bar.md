@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Role at 5.4 LPA is dropped; role at 5.5 LPA is kept
 - [ ] Role with undisclosed pay is kept as `Not Verified`

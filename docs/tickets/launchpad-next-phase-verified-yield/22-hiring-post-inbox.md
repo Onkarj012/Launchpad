@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Each entry is parsed into an envelope
 - [ ] Resolver handles the envelope like other leads

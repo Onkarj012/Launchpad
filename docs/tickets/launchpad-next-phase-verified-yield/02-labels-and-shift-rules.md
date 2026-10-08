@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Classification result has a labels list next to reasons
 - [ ] A label alone never rejects a role

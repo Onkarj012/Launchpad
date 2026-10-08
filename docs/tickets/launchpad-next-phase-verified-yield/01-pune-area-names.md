@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Kalyani Nagar listing without "Pune" passes as Pune
 - [ ] Ambiguous short name alone does not pass as Pune
