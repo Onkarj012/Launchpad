@@ -137,6 +137,26 @@ test('portal leads cross-match the registry board by employer, title, location, 
   assert.equal(result.telemetry.budget.maxRequests, 8);
 });
 
+test('LinkedIn detail lookup keeps its normal request when the employer has no supported registry board', async () => {
+  const linkedinUrl = 'https://www.linkedin.com/jobs/view/123456';
+  const requests = [];
+  const resolve = createOriginalListingResolver({
+    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'other', company: 'Other Labs', enabled: true }] } },
+    transport: async (url) => {
+      requests.push(url);
+      const page = jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' },
+        identifier: { value: '123456' }, description: 'Build AI services in Pune.' });
+      return { ...page, body: `<link rel="canonical" href="${linkedinUrl}">${page.body}` };
+    },
+  });
+  const result = await resolve(observation(linkedinUrl, {
+    provider: 'linkedin-jobs', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune',
+  }));
+  assert.deepEqual(requests, [linkedinUrl]);
+  assert.equal(result.portalPatch.description, 'Build AI services in Pune.');
+  assert.equal(result.telemetry.requests, 1);
+});
+
 test('portal cross-match misses and identity mismatches stay in verification', async (t) => {
   const boardUrl = 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true';
   for (const scenario of [

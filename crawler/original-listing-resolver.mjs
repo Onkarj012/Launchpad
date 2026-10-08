@@ -840,10 +840,10 @@ export function createOriginalListingResolver({
     const seen = new Set();
     const portalProviders = new Set(['linkedin', 'linkedin-jobs', 'glassdoor', 'instahyre', 'wellfound']);
     let crossMatchBoard = null;
-    if (portalProviders.has(String(observation.provider || '').toLowerCase()) && text(observation.company) && text(observation.title)) {
-      const boards = (config?.boardRegistry?.boards ?? []).filter((board) => board.enabled === true
-        && ['greenhouse', 'lever', 'ashby', 'workday'].includes(board.provider)
-        && normalizedIdentity(board.company) === normalizedIdentity(observation.company));
+    const boards = (config?.boardRegistry?.boards ?? []).filter((board) => board.enabled === true
+      && ['greenhouse', 'lever', 'ashby', 'workday'].includes(board.provider)
+      && normalizedIdentity(board.company) === normalizedIdentity(observation.company));
+    if (portalProviders.has(String(observation.provider || '').toLowerCase()) && text(observation.company) && text(observation.title) && boards.length) {
       const matchedRoutes = [];
       let boardRequests = 0;
       for (const board of boards) {
