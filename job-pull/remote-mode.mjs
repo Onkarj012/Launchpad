@@ -170,7 +170,7 @@ function fatalResult(runId, runAt, sourceManifests, error) {
     runAt,
     mode: 'remote',
     discoveryMode: 'Remote',
-    shortlist: [],
+    results: [], shortlist: [],
     verificationQueue: [],
     sourceManifests,
     sourceTelemetry: sourceManifests,
@@ -239,7 +239,7 @@ export async function runRemoteMode({
         .filter(Boolean)
         .filter((record, index, records) => records.findIndex((item) => item.dedupKey === record.dedupKey) === index);
       return {
-        schemaVersion: REMOTE_MODE_SCHEMA_VERSION, runId, runAt, mode: 'remote', discoveryMode: 'Remote', shortlist: selection.selected,
+        schemaVersion: REMOTE_MODE_SCHEMA_VERSION, runId, runAt, mode: 'remote', discoveryMode: 'Remote', results: selection.results, shortlist: selection.selected,
         scoredReady, scorePendingReady, backfill: selection.selected.filter((candidate) => candidate.selectionTier === 'Backfill'),
         verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, scoringQueue: selection.scoringQueue, reconciliation,
@@ -287,7 +287,7 @@ export async function runRemoteMode({
       runAt,
       mode: 'remote',
       discoveryMode: 'Remote',
-      shortlist,
+      results: selection.results, shortlist,
       verificationQueue,
       sourceManifests,
       sourceTelemetry: sourceManifests,

@@ -156,7 +156,7 @@ function verificationRecord(candidate, eligibility) {
 function fatalResult(runId, runAt, sourceManifests, companyRecords, error) {
   const details = error.details || {};
   return {
-    schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
+    schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', results: [], shortlist: [], verificationQueue: [], sourceManifests, sourceTelemetry: sourceManifests,
     companyRecords, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'failed' }), writesPlanned: false, transaction: null, historicalSuppressions: [], scoringQueue: details.scoringQueue || [], scoring: details.scoring || null, reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => ['failed', 'unavailable'].includes(item.status)).map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
     outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'pipeline', name: error.name || 'Error', message: error.message || String(error) }] },
@@ -213,7 +213,7 @@ export async function runStartupMode({
         .filter(Boolean)
         .filter((record, index, records) => records.findIndex((item) => item.dedupKey === record.dedupKey) === index);
       return {
-        schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist: selection.selected,
+        schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', results: selection.results, shortlist: selection.selected,
         scoredReady, scorePendingReady, backfill: selection.selected.filter((candidate) => candidate.selectionTier === 'Backfill'),
         verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, scoringQueue: selection.scoringQueue, reconciliation,
@@ -255,7 +255,7 @@ export async function runStartupMode({
     const emptyLanes = sourceManifests.filter((manifest) => manifest.status === 'empty').map((manifest) => manifest.sourceId);
     const missing = Math.max(0, 10 - shortlist.length);
     return {
-      schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', shortlist, verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, companyRecords, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
+      schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', results: selection.results, shortlist, verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, companyRecords, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
       historicalSuppressions,
       scoringQueue: selection.scoringQueue,
       ...(scorerTelemetry ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } } : {}),

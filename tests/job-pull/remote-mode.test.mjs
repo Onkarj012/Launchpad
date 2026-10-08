@@ -15,6 +15,15 @@ import { REMOTE_SOURCE_LANES } from '../../job-pull/remote-sources.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/remote-transaction.mjs';
 import { REMOTE_NOW, remoteJob, remoteModeFixtures, remoteSourceFunctions } from '../fixtures/remote-mode.mjs';
 
+test('Remote returns all verified results alongside a bounded shortlist', async () => {
+  const result = await runRemoteMode({ clock: () => REMOTE_NOW, sourceFixtures: remoteModeFixtures(), ledgerRows: [], opportunityLedgerRows: [], shortlistLimit: 1 });
+  assert.equal(result.outcome.fatal, false);
+  assert.equal(result.shortlist.length, 1);
+  assert.ok(result.results.length > result.shortlist.length);
+  assert.ok(result.results.every((role) => role.remoteReady && role.applicationReady && role.originalApplicationUrl && role.liveness.status === 'Active'));
+  assert.ok(result.results.some((role) => role.canonicalUrl === result.shortlist[0].canonicalUrl));
+});
+
 function candidate(overrides = {}) {
   return enrichRemoteCandidate(scoredFixture(remoteJob(1, { scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 80, ...overrides }), { runAt: REMOTE_NOW, source: 'fixture', provider: overrides.provider || 'fixture', sourceKind: 'niche-public', sourceCategory: 'broad-remote' }));
 }

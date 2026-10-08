@@ -84,7 +84,8 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 - Verified daily selection requires a retained JD and evidence of full-time employment or a paid internship; summary-only records stay in verification. Unknown numeric experience may still be manual review when the JD passes the hard gates.
 - Explicit `--scores-json` inputs remain a labelled manual scoring seam. Legacy totals require whole points and a valid Response Likelihood; missing JD caps them at 45. Source scores never establish model output. Runtime and cached model results require all five components, matching Response Likelihood, total, and JD-availability flag. Rationale and hook must refer to supplied JD and approved resume evidence. Structural validation does not prove semantic truth.
 - Morning and midday share a cumulative 20-role daily ceiling. Completed local plans consume daily capacity; retries reuse their run allocation. A shortage never relaxes eligibility, verification, or scoring gates.
-- Diversity after scoring: maximum 2 roles per company; balance role families within each Strict/freshness band, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist in that band. Exhaust the band before advancing.
+- One shared daily crawl and scoring pass feeds Pune (`normal`), Startup and Remote. Each mode returns its full verified results list and a shortlist. Assign each role once, with primary-mode order Startup, then Pune, then Remote; `otherModes` tags name any other modes it fits. The requested mode remains the delivery focus.
+- Diversity after scoring: maximum 2 roles per company within each mode's shortlist, including earlier allocations in that mode on the same IST day; balance role families within each Strict/freshness band, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist in that band. Exhaust the band before advancing.
 - **No auto-apply.** Present ranked list; Onkar reviews the daily shortlist. `Make Resume` (build-selection) and `Applied?` (progress tally) checkboxes are manual — never auto-checked.
 
 **Score bands (guidance, not gates):**
@@ -238,7 +239,7 @@ Onkar
 
 | Say | Claude does |
 |---|---|
-| "morning" / `/morning` | Unified daily path, Normal by default; explicit Startup or Remote source emphasis. One shared crawl → shared gates/scoring/suppression → requested mode selector → final-shortlist handoff. Never applies or sends |
+| "morning" / `/morning` | Unified daily path, Normal by default; explicit Startup or Remote source emphasis. One shared crawl → shared gates/scoring/suppression → all three mode results and shortlists → requested mode's final-shortlist handoff. Never applies or sends |
 | "pull today's jobs" / `/daily-job-pull` | Tracked + warm reverse ATS + public sources + optional Indeed → normalize → gate → freshness/dedup → Match and Conversion Score → a diagnostic local lead pool plus the shared 10–20 verified scored daily shortlist when inventory supports it |
 | "follow-ups?" / `/followups` | Read v5 Outreach/Activity cadence evidence → draft only on request, never send |
 | "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each user-checked `Make Resume` row; never check `Make Resume` or `Applied?` |
@@ -251,7 +252,7 @@ Onkar
 | "draft cold email for <company/contact>" | Draft one evidence-backed human message only when requested; never send, claim delivery, or claim contact without evidence |
 
 - **Pull sources:** tracked `vendor/career-ops/scan.mjs`; full reverse `vendor/career-ops/scan-ats-full.mjs` across Greenhouse/Lever/Ashby/Workday; YC/a16z and dated public feeds; WebSearch across ATS domains, LinkedIn, Naukri, Wellfound, Instahyre, and company careers; every `companies.json` slug; Indeed MCP when connected. Unavailable sources are reported, never assumed.
-- **Canonical local daily commands:** `node crawler/cli.mjs daily morning|midday --mode normal|startup|remote --location-preset india|pune`. The implementation performs one shared crawl and then the requested mode selector; Midday Remote skips native remote feeds. `/morning` delegates to this surface.
+- **Canonical local daily commands:** `node crawler/cli.mjs daily morning|midday --mode normal|startup|remote --location-preset india|pune`. The implementation performs one shared crawl and returns all three mode results and shortlists, with delivery focused on the requested mode; Midday Remote skips native remote feeds. `/morning` delegates to this surface.
 - **Scheduling:** local launchd generation/install support exists for morning and midday. Do not claim it is installed, enabled, healthy, or production-verified without retained machine evidence. Cloud scheduling is not the active contract.
 - **Discovery restrictions:** no email ingestion, logged-in/computer-use portal browsing, application submission, outreach send, or user-owned checkbox change.
 - **Dedup:** canonical URL → provider+Job ID → normalized company/title/location → local write ledger → JD fingerprint where description exists. `vendor/career-ops/fingerprint-core.mjs` supplies SimHash. A separate repost-pattern report exists as `career-ops/detect-reposts.mjs`, which is ignored runtime state rather than release code; run it ad hoc, never as a pipeline dependency.

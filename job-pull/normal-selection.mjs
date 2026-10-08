@@ -70,7 +70,8 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
   const target = Math.min(maximum, scored.length);
   const ordered = WATERFALL.flatMap((band) => queues.get(band));
   const picked = pickDailyEntries(ordered, target, { maximumPerCompany, maximumFamilyShare, previousDailyCandidates });
-  const selected = picked.map((entry) => {
+  // Attach the same readiness and ranking evidence to results and shortlist rows.
+  function resultFor(entry) {
     const candidate = entry.candidate;
     const strict = entry.waterfallBand.startsWith('strict-');
     const selectionTier = strict ? 'Strict' : 'Backfill';
@@ -89,10 +90,13 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
       relaxations: strict ? [] : [...new Set([...(entry.eligibility?.relaxations || []), `waterfall:${entry.waterfallBand}`])],
       readinessEvidence: entry.readiness.evidence,
     };
-  });
+  }
+  const results = ordered.map(resultFor);
+  const selected = picked.map(resultFor);
   const selectedCount = selected.length;
   return {
     selected,
+    results,
     diversity: { availableFamilies: new Set(scored.map((entry) => entry.candidate.roleFamily || entry.eligibility?.roleFamily || 'adjacent-engineering')).size,
       selectedFamilies: new Set(selected.map((candidate) => candidate.roleFamily)).size,
       maximumFamilyShare, observedMaximumFamilyShare: selected.length ? Math.max(...Object.values(selected.reduce((counts, candidate) => ({ ...counts, [candidate.roleFamily]: (counts[candidate.roleFamily] || 0) + 1 }), {}))) / selected.length : 0 },

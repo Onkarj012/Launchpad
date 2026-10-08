@@ -19,6 +19,59 @@ import { createFakeTransactionalGateway } from '../../job-pull/normal-transactio
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
+test('one daily crawl routes a Pune startup once and tags its other mode', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'routing-startup', company: 'Routing Startup' }] });
+  Object.assign(config.sources.atsWarm.boards[0], { startupTagged: true, evidenceRef: 'https://portfolio.example.test/routing-startup' });
+  const calls = [];
+  const result = await runDailyNormalActual(runOptions(config, fakeTransport({ 'routing-startup': [greenhouseJob(1801, 'routing-startup')] }, calls), {
+    scorer: async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) }),
+  }));
+  assert.equal(result.outcome.fatal, false);
+  const roles = Object.values(result.modes).flatMap((mode) => mode.results);
+  assert.equal(roles.length, 1);
+  assert.equal(roles[0].primaryMode, 'startup');
+  assert.deepEqual(roles[0].otherModes, ['normal']);
+  assert.equal(result.modes.normal.results.length, 0);
+  assert.equal(result.modes.startup.shortlist.length, 1);
+  assert.equal(calls.length, 1);
+});
+
+test('primary mode follows Startup then Pune then Remote regardless of requested mode', async () => {
+  for (const mode of ['normal', 'startup', 'remote']) {
+    const { config } = testConfig();
+    const roles = [
+      rawPortalJob(1811, { company: 'Pune Remote Startup', workMode: 'remote', companyStage: 'Startup', startupStageEvidenceRef: 'https://portfolio.example.test/startup', description: 'Remote in India. Full-time AI Engineer for 0-1 years.' }),
+      rawPortalJob(1812, { company: 'Pune Remote Enterprise', workMode: 'remote', description: 'Remote in India. Full-time AI Engineer for 0-1 years.' }),
+      rawPortalJob(1813, { company: 'Remote Enterprise', location: 'Remote - India', description: 'Remote in India. Full-time AI Engineer for 0-1 years.' }),
+      rawPortalJob(1814, { company: 'Unverified Startup Tag', companyStage: 'Startup' }),
+    ];
+    const result = await runDailyNormal(runOptions(config, fakeTransport({}), { mode, sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: roles, manifest: { status: 'ok' } } } }));
+    assert.equal(result.outcome.fatal, false);
+    assert.deepEqual(result.modes.startup.results.map((role) => [role.company, role.primaryMode, role.otherModes]), [['Pune Remote Startup', 'startup', ['normal', 'remote']]]);
+    assert.deepEqual(result.modes.normal.results.map((role) => [role.company, role.primaryMode, role.otherModes]), [['Pune Remote Enterprise', 'normal', ['remote']], ['Unverified Startup Tag', 'normal', []]]);
+    assert.deepEqual(result.modes.remote.results.map((role) => [role.company, role.primaryMode, role.otherModes]), [['Remote Enterprise', 'remote', []]]);
+    assert.deepEqual(result.shortlist, result.modes[mode].shortlist);
+    assert.deepEqual(result.results, result.modes[mode].results);
+  }
+});
+
+test('each mode keeps full results and caps one employer at two without using another modes company capacity', async () => {
+  const { config } = testConfig();
+  const roles = ['normal', 'startup', 'remote'].flatMap((mode, modeIndex) => [0, 1, 2].map((index) => rawPortalJob(1820 + modeIndex * 3 + index, {
+    company: 'Shared Employer', provider: 'greenhouse', jobId: String(1820 + modeIndex * 3 + index),
+    ...(mode === 'startup' ? { companyStage: 'Startup', startupStageEvidenceRef: 'https://portfolio.example.test/shared-employer' } : {}),
+    ...(mode === 'remote' ? { location: 'Remote - India', description: 'Remote in India. Full-time AI Engineer for 0-1 years.' } : {}),
+  })));
+  const sourceFixtures = { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: roles, manifest: { status: 'ok' } } };
+  for (const mode of ['normal', 'startup', 'remote']) {
+    const result = await runDailyNormal(runOptions(config, fakeTransport({}), { mode, runId: `mode-cap-${mode}`, sourceFixtures }));
+    assert.equal(result.outcome.fatal, false);
+    assert.equal(result.modes[mode].results.length, 3);
+    assert.equal(result.modes[mode].shortlist.length, 2);
+    assert.equal(result.shortlist.length, 2);
+  }
+});
+
 function greenhouseJob(id, companySlug, overrides = {}) {
   return {
     id,
