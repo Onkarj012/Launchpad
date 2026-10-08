@@ -130,7 +130,7 @@ function normalizeLaneCandidate(raw, lane, { runAt, runId }) {
     companyStageEvidence: raw?.companyStageEvidence ?? null,
     startupStageEvidenceRef: raw?.startupStageEvidenceRef ?? null,
     companyRecord: raw?.companyRecord ?? null,
-    startupLaneId: raw?.startupLaneId ?? null,
+    startupLaneId: raw?.startupLaneId ?? (lane.id === 'startup-company-careers' ? lane.id : null),
     normalLaneId: resolvedPortalLead ? 'web-discovery' : lane.id,
     runId,
     dedupKey: candidateDedupKey(base),
@@ -197,6 +197,7 @@ function normalizeLaneOutput(lane, result, { runAt, runId }) {
       fetched: candidates.length,
       failed: Math.max(Number(supplied.failed || 0), new Set([...(Array.isArray(supplied.errors) ? supplied.errors : []), ...adapterErrors]).size) + errors.length,
       errors: allErrors,
+      ...(lane.id === 'startup-company-careers' && status === 'empty' ? { reason: supplied.reason || 'company-careers-search-returned-no-roles' } : {}),
       ...(result?.telemetry ? { telemetry: result.telemetry } : {}),
     }),
   };

@@ -467,6 +467,7 @@
       ]
     },
     "startup": {
+      "companyCareers": [],
       "fixtures": {},
       "laneInputs": {}
     },

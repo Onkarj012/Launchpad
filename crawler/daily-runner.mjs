@@ -328,6 +328,7 @@ export const CRAWLER_SOURCE_TO_NORMAL_LANE = Object.freeze({
   'ats-enterprise': 'expanded-ats',
   'career-sites': 'structured-career-pages',
   'remote-mode': 'native-remote-feeds',
+  'startup-company-careers': 'startup-company-careers',
   'indeed-inbox': 'indeed',
   'connector-inbox': 'connector-inbox',
   theirstack: 'connector-inbox',
@@ -413,7 +414,7 @@ export function crawlerLaneFixtures(result) {
     const unresponsiveEngineEvents = searchTelemetry.flatMap((value) => Array.isArray(value.unresponsiveEngineEvents) ? value.unresponsiveEngineEvents : []);
     const engineHealth = [...new Set(searchTelemetry.map((value) => value.engineHealth).filter(Boolean))];
     const emptyReasons = lane.sourceIds.flatMap((sourceId) => {
-      const reason = telemetry[sourceId]?.detail?.telemetry?.emptyReason;
+      const reason = telemetry[sourceId]?.reason ?? telemetry[sourceId]?.detail?.reason ?? telemetry[sourceId]?.detail?.telemetry?.emptyReason;
       return reason ? [{ sourceId, reason }] : [];
     });
     const mergedTelemetry = {
@@ -459,7 +460,7 @@ function trackedFixture(result) {
 
 const DAILY_MODES = new Set(['normal', 'startup', 'remote']);
 const STARTUP_LANE_IDS = new Set([
-  'startup-employer-boards', 'vc-portfolio-boards', 'yc', 'wellfound',
+  'startup-company-careers', 'startup-employer-boards', 'vc-portfolio-boards', 'yc', 'wellfound',
   'india-startup-directories', 'startup-watchlist', 'funding-hiring-signals',
 ]);
 const REMOTE_LANE_IDS = new Set([
