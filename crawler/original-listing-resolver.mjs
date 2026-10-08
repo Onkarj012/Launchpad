@@ -200,6 +200,88 @@ function firstField(root, paths) {
   return first(...paths.map((path) => readPath(root, path)));
 }
 
+// Normalize identity text so portal and registry fields compare without punctuation differences.
+function normalizedIdentity(value) {
+  return stripHtmlToText(text(value) || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Match location labels when both identify the same place at different detail levels.
+function locationsMatch(left, right) {
+  const a = normalizedIdentity(left);
+  const b = normalizedIdentity(right);
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
+// Build a public listing feed request for a supported registry board.
+function registrySearchRequest(board, title) {
+  const slug = encodeURIComponent(String(board.slug || board.board || board.boardKey || '').trim());
+  if (['greenhouse', 'lever', 'ashby'].includes(board.provider) && slug) {
+    const url = board.endpoint || (board.provider === 'greenhouse'
+      ? `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`
+      : board.provider === 'lever' ? `https://api.lever.co/v0/postings/${slug}`
+        : `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`);
+    return { url, options: { method: 'GET', redirect: 'manual' } };
+  }
+  if (board.provider === 'workday') {
+    const url = board.endpoint || (board.tenant && board.instance && board.site
+      ? `https://${board.tenant}.${board.instance}.myworkdayjobs.com/wday/cxs/${board.tenant}/${board.site}/jobs`
+      : board.url);
+    if (!url) return null;
+    return { url, options: { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appliedFacets: {}, limit: 50, offset: 0, searchText: title }) } };
+  }
+  return null;
+}
+
+// Keep a feed match on the exact employer board that supplied it.
+function registryOwnsRoute(board, value) {
+  const target = classifyOriginalListingUrl(value);
+  if (target.kind !== 'ats' || target.provider !== board.provider) return false;
+  const parts = pathSegments(target.url);
+  const boardName = String(board.slug || board.board || board.boardKey || '').toLowerCase();
+  if (['greenhouse', 'lever', 'ashby'].includes(board.provider)) return parts[0]?.toLowerCase() === boardName;
+  if (board.provider === 'workday') {
+    const expectedHost = `${board.tenant}.${board.instance}.myworkdayjobs.com`.toLowerCase();
+    return target.host === expectedHost && parts[0]?.toLowerCase() === String(board.site).toLowerCase();
+  }
+  return false;
+}
+
+// Return a single listing only when the registry employer, title, location, and optional requisition agree.
+function registryListingMatch(response, board, observation) {
+  const rows = board.provider === 'lever' ? bodyOf(response)
+    : bodyOf(response)?.jobs ?? bodyOf(response)?.jobPostings ?? bodyOf(response)?.postings;
+  if (!Array.isArray(rows)) return null;
+  const expectedCompany = normalizedIdentity(observation.company);
+  const expectedTitle = normalizedIdentity(observation.title);
+  const expectedLocation = normalizedIdentity(observation.location);
+  const normalizeRow = (row) => {
+    if (board.provider === 'greenhouse') return { title: row.title, location: typeof row.location === 'string' ? row.location : row.location?.name, id: row.id, url: row.absolute_url };
+    if (board.provider === 'lever') return { title: row.text, location: row.categories?.location, id: row.id, url: row.hostedUrl };
+    if (board.provider === 'ashby') return { title: row.title, location: row.location, id: row.id, url: row.jobUrl || row.applyUrl };
+    const workdayBase = board.tenant && board.instance && board.site
+      ? `https://${board.tenant}.${board.instance}.myworkdayjobs.com/${board.site}` : board.url;
+    const workdayPath = row.externalPath ?? row.jobPostingInfo?.externalPath;
+    const workdayUrl = workdayBase && workdayPath
+      ? `${workdayBase.replace(/\/$/, '')}/${String(workdayPath).replace(/^\/+/, '')}` : null;
+    const url = row.url ?? row.externalUrl ?? row.applicationUrl ?? workdayUrl;
+    return { title: row.title ?? row.jobPostingInfo?.title,
+      location: row.location?.descriptor ?? row.location?.name ?? row.location ?? row.locationsText ?? row.jobPostingInfo?.jobRequisitionLocation?.descriptor,
+      id: row.jobReqId ?? row.jobPostingInfo?.jobReqId ?? extractProviderFingerprint(url).requisitionId, url };
+  };
+  const matches = rows.map(normalizeRow).filter((row) => {
+    const actualTitle = normalizedIdentity(row.title);
+    const actualLocation = normalizedIdentity(row.location);
+    const titleMatches = actualTitle === expectedTitle;
+    const locationMatches = locationsMatch(actualLocation, expectedLocation);
+    const expectedReq = normalizeRequisitionId(board.provider, observation.requisitionId);
+    const actualReq = normalizeRequisitionId(board.provider, row.id);
+    return normalizedIdentity(board.company) === expectedCompany && titleMatches && locationMatches
+      && (!expectedReq || (actualReq && actualReq === expectedReq)) && registryOwnsRoute(board, row.url);
+  });
+  return matches.length === 1 ? matches[0].url : null;
+}
+
 // Match known lead identity and require a named employer on the destination.
 function terminalLinkedInIdentityFailure(response, observation, provider, { allowMissingLeadIdentity = false } = {}) {
   const { posting, root } = detailRoot(response);
@@ -756,6 +838,50 @@ export function createOriginalListingResolver({
     }
     const chain = [];
     const seen = new Set();
+    const portalProviders = new Set(['linkedin', 'linkedin-jobs', 'glassdoor', 'instahyre', 'wellfound']);
+    let crossMatchBoard = null;
+    if (portalProviders.has(String(observation.provider || '').toLowerCase()) && text(observation.company) && text(observation.title)) {
+      const boards = (config?.boardRegistry?.boards ?? []).filter((board) => board.enabled === true
+        && ['greenhouse', 'lever', 'ashby', 'workday'].includes(board.provider)
+        && normalizedIdentity(board.company) === normalizedIdentity(observation.company));
+      const matchedRoutes = [];
+      let boardRequests = 0;
+      for (const board of boards) {
+        const request = registrySearchRequest(board, observation.title);
+        if (!request || telemetry.requests >= requestLimit) break;
+        const host = hostOf(request.url);
+        if (host && !hosts.has(host)) {
+          if (hosts.size >= hostLimit) break;
+          hosts.add(host);
+          telemetry.hostsFollowed = hosts.size;
+        }
+        if (activeRequestBudget?.claim && !activeRequestBudget.claim()) break;
+        telemetry.requests += 1;
+        boardRequests += 1;
+        try {
+          const response = await boundedTransport(transport, request.url, {
+            ...request.options, maxBytes: byteLimit, signal: activeSignal, deadline: activeDeadline,
+            remainingMs: remainingDeadlineMs(activeDeadline), purpose: 'portal-registry-cross-match', runAt, budget: limits,
+          }, { signal: activeSignal, remainingMs: remainingDeadlineMs(activeDeadline), deadline: activeDeadline, hostLimiter: activeHostLimiter });
+          telemetry.bytesObserved += responseBytes(response);
+          if (Number(response?.status ?? 200) >= 200 && Number(response?.status ?? 200) < 300
+            && responseBytes(response) <= byteLimit) {
+            const url = registryListingMatch(response, board, observation);
+            if (url) matchedRoutes.push({ board, url });
+          }
+        } catch {
+          // A failed public board search leaves the portal lead in verification.
+        }
+      }
+      const selected = matchedRoutes.length === 1 ? matchedRoutes[0] : null;
+      telemetry.crossMatch = {
+        attempted: boardRequests > 0, boardRequests, verifiedRoutes: 0,
+        resolverRequests: telemetry.requests, verifiedRoutesPerRequest: boardRequests ? 0 : null, budgetRaised: false,
+      };
+      if (!selected) return fail('original-listing-not-found', [], { crossMatch: telemetry.crossMatch }, telemetry);
+      crossMatchBoard = selected.board;
+      current = canonical(selected.url);
+    }
     for (let hop = 0; hop <= redirectLimit; hop += 1) {
       if (hiringPost && !safeHiringPostTarget(current)) return fail('hiring-post-public-employer-route-required', [...chain, current]);
       if (activeSignal?.aborted) return fail('aborted', chain, {}, telemetry);
@@ -908,15 +1034,24 @@ export function createOriginalListingResolver({
           : details.reason;
         return fail(reason, chain, { provider, fingerprint }, telemetry);
       }
-      if (publicId || hiringPost) {
-        const identityFailure = terminalLinkedInIdentityFailure(response, observation, provider, { allowMissingLeadIdentity: hiringPost });
+      if (publicId || hiringPost || crossMatchBoard) {
+        const identityObservation = crossMatchBoard ? { ...observation, company: crossMatchBoard.company } : observation;
+        const identityFailure = terminalLinkedInIdentityFailure(response, identityObservation, provider, { allowMissingLeadIdentity: hiringPost });
         if (identityFailure) return fail(identityFailure, chain, { provider, fingerprint }, telemetry);
+      }
+      if (crossMatchBoard && !locationsMatch(details.location, observation.location)) {
+        return fail('destination-role-identity-mismatch', chain, { provider, fingerprint }, telemetry);
       }
       const patched = mergePatch({ ...observation, ...(portalPatch || {}), evidence: { ...observation.evidence, ...portalPatch?.evidence } }, details, current, provider, runAt, fingerprint);
       if (hiringPost) {
         const { posting, root } = detailRoot(response);
         patched.company = stripHtmlToText(firstField(posting || root, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer']));
         patched.evidence.fieldSources.company = FIELD_SOURCE_ORIGINAL;
+      }
+      if (crossMatchBoard && telemetry.crossMatch) {
+        telemetry.crossMatch.verifiedRoutes = 1;
+        telemetry.crossMatch.resolverRequests = telemetry.requests;
+        telemetry.crossMatch.verifiedRoutesPerRequest = telemetry.requests ? 1 / telemetry.requests : null;
       }
       return {
         status: 'resolved',

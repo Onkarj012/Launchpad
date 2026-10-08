@@ -251,6 +251,30 @@ test('run resolver forwards configured maxHosts and maxRequests', async () => {
   assert.equal(requests.length, 1);
 });
 
+test('run resolver uses the configured registry for portal cross-matches', async () => {
+  const detailUrl = 'https://boards.greenhouse.io/acme/jobs/123';
+  const requests = [];
+  const resolve = createCrawlerRunResolver({
+    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true }] } },
+    runAt: '2026-10-08T00:00:00.000Z',
+    transport: async (url) => {
+      requests.push(url);
+      if (url.includes('boards-api.greenhouse.io')) return { status: 200, body: { jobs: [
+        { id: 123, title: 'AI Engineer', absolute_url: detailUrl, location: { name: 'Pune, India' } },
+      ] } };
+      return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+        '@type': 'JobPosting', title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' },
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI services.',
+      })}</script>` };
+    },
+  });
+  const result = await resolve({ canonicalUrl: 'https://www.glassdoor.com/job-listing/ai-engineer',
+    provider: 'glassdoor', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune' });
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.originalApplicationUrl, detailUrl);
+  assert.equal(requests.length, 2);
+});
+
 test('operator resolver receives a deadline-aware signal and absolute deadline', async () => {
   const controller = new AbortController();
   const deadline = { deadlineMs: Date.now() + 10_000, remainingMs: 10_000 };
