@@ -16,7 +16,7 @@ import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
-import { renderLocalLeadReport } from '../../crawler/local-lead-report.mjs';
+import { renderLocalLeadReport, writeLocalDailyHtmlReport } from '../../crawler/local-lead-report.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -1585,4 +1585,50 @@ test('local report shows each hiring event date and deadline in IST without inve
   assert.match(report, /Date-only values have no verified time/);
   assert.match(report, /Held item 4: date must be a valid/);
   assert.doesNotMatch(report, /Undated Drive/);
+});
+
+test('daily HTML report writes locally with three mode lists, scorer evidence, labels, employer links, deduped mode tags, and funnel counts', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'daily-html-report-'));
+  const output = path.join(root, 'daily.html');
+  const shared = {
+    title: 'AI Engineer', company: 'Pune Startup', canonicalUrl: 'https://jobs.example.test/1',
+    originalApplicationUrl: 'https://company.example.test/careers/1', primaryMode: 'startup', otherModes: ['normal', 'remote'],
+    rationale: 'Python and LLM work match the role requirements.', labels: ['Night hours (IST)'],
+    eligibility: { labels: ['Notice risk'] }, matchScore: 84, selectionTier: 'Strict',
+  };
+  const result = {
+    runAt: NOW,
+    modes: {
+      normal: { results: [], shortlist: [] },
+      startup: { results: [shared], shortlist: [shared] },
+      remote: { results: [], shortlist: [] },
+    },
+    counts: { fetched: 9, eligible: 6, gatePassing: 5, ready: 4, scored: 3, selected: 1, strictSelected: 1 },
+    funnel: { lifecycle: { fetched: 9, eligible: 6, ready: 4, scored: 3 } },
+  };
+
+  const written = writeLocalDailyHtmlReport(result, output);
+  const html = readFileSync(output, 'utf8');
+  assert.equal(written, output);
+  assert.match(html, /<section[^>]*data-mode="normal"/);
+  assert.match(html, /<section[^>]*data-mode="startup"/);
+  assert.match(html, /<section[^>]*data-mode="remote"/);
+  assert.match(html, /Full results/);
+  assert.match(html, /Shortlist/);
+  assert.match(html, /Python and LLM work match the role requirements\./);
+  assert.match(html, /Night hours \(IST\)/);
+  assert.match(html, /Notice risk/);
+  assert.match(html, /https:\/\/company\.example\.test\/careers\/1/);
+  assert.match(html, /Other modes: Pune, Remote/);
+  assert.equal((html.match(/Pune Startup/g) ?? []).length, 2, 'the role is listed once in full results and once in its shortlist');
+  for (const count of ['Fetched: 9', 'Eligible: 6', 'Passed gates: 5', 'Ready: 4', 'Scored: 3', 'Shortlisted: 1', 'Employers represented: 1', 'Strict: 1']) assert.ok(html.includes(count), count);
+});
+
+test('local report CLI writes HTML when given a local .html output path', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'daily-html-cli-'));
+  const input = path.join(root, 'run.json');
+  const output = path.join(root, 'daily.html');
+  writeFileSync(input, JSON.stringify({ runAt: NOW, modes: { normal: { results: [], shortlist: [] }, startup: { results: [], shortlist: [] }, remote: { results: [], shortlist: [] } } }));
+  execFileSync(process.execPath, ['crawler/local-lead-report.mjs', input, output], { cwd: process.cwd() });
+  assert.match(readFileSync(output, 'utf8'), /<!doctype html>/i);
 });
