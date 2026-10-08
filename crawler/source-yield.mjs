@@ -1,4 +1,42 @@
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const SOURCE_IDS = {
+  atsWarm: 'ats-warm', atsBatch1: 'ats-batch-1', atsBatch2: 'ats-batch-2', enterprise: 'ats-enterprise',
+  indeed: 'indeed-inbox', connectorInbox: 'connector-inbox', theirstack: 'theirstack', startup: 'startup-mode',
+  remote: 'remote-mode', portals: 'portal-discovery', indiaStartup: 'india-startup', searxng: 'searxng-search',
+  brave: 'brave-search', careerSites: 'career-sites', commercialRescue: 'commercial-rescue', trackedAts: 'tracked-ats',
+};
+
+// Report source outcomes separately from the execution states used by recovery.
+export function buildSourceEndStates(sourceTelemetry = {}, sources = {}) {
+  const states = {};
+  // Include each provider's result from grouped source manifests.
+  const add = (id, value) => {
+    const detail = value.detail ?? value;
+    const reason = detail.reason ?? detail.reasonCode ?? value.error ?? detail.errors?.[0]
+      ?? (['succeeded', 'ok', 'empty', 'degraded'].includes(value.status) ? 'no-records-returned'
+        : value.status ? `source-${value.status}` : 'no-records-returned');
+    states[id] = detail.status === 'disabled'
+      ? { state: 'disabled', reason: detail.reason ?? 'disabled-by-decision' }
+      : number(value.fetched ?? detail.fetched ?? value.observations) > 0
+        ? { state: 'ok' } : { state: 'empty', reason };
+    for (const lane of detail.telemetry?.lanes ?? []) add(lane.sourceId, lane);
+  };
+  for (const [id, value] of Object.entries(sourceTelemetry)) add(id, value);
+  for (const [key, id] of Object.entries(SOURCE_IDS)) {
+    if (!Object.hasOwn(sources, key)) continue;
+    if (sources[key]?.enabled === false) states[id] = { state: 'disabled', reason: 'disabled-in-config' };
+    else states[id] ??= { state: 'empty', reason: key === 'careerSites' && !sources[key]?.length
+      ? 'no-career-sites-configured' : 'source-not-planned' };
+  }
+  for (const [key, provider] of Object.entries({ linkedin: 'linkedin-jobs', glassdoor: 'glassdoor', instahyre: 'instahyre', wellfound: 'wellfound' })) {
+    const portal = sources.portals?.[key];
+    if (!portal) continue;
+    const id = `portal-${provider}`;
+    if (sources.portals.enabled === false || portal.enabled === false) states[id] = { state: 'disabled', reason: 'disabled-in-config' };
+    else states[id] ??= { state: 'empty', reason: 'portal-not-run' };
+  }
+  return states;
+}
 const INDIA_LOCATION = /\b(india|ind|pune|bengaluru|bangalore|hyderabad|chennai|gurugram|gurgaon|noida|new delhi|delhi|ncr|mumbai|maharashtra|karnataka|telangana|tamil nadu)\b/i;
 const keyFor = (candidate, fallback) => {
   const provider = candidate?.provider || fallback || 'unknown';

@@ -24,6 +24,7 @@ import { buildSchedulePlans } from './schedules.mjs';
 import { crawlWorkflow } from './workflow.mjs';
 import { classifyCandidate } from '../job-pull/eligibility.mjs';
 import { linkedInPublicJobId } from '../job-pull/portal-adapters/linkedin.mjs';
+import { createLinkedInGuestPolicy } from './linkedin-guest-policy.mjs';
 import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { loadConfig as loadJobPullPolicy } from '../job-pull/config.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
@@ -541,7 +542,8 @@ export function screenPortalCandidate(candidate, policy) {
   return { eligible: reasons.length === 0, reasons };
 }
 
-export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null }) {
+export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null, linkedInPolicy = null }) {
+  transport = (linkedInPolicy ?? createLinkedInGuestPolicy({ transport, runAt, clock })).transport;
   // Project boards from the unified registry when configured; tests that inject
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
   const projected = withRegistryProjectedBoards(config, { locationPreset: profile?.locationPreset, sourcePlan: profile?.sourcePlan });
@@ -732,7 +734,8 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   // Portal discovery. LinkedIn runs on the shared HTTP transport; the browser
   // portals share one Chromium context for the whole run and it is always torn
   // down, including on failure, so a crashed lane cannot leak a browser.
-  if (sources.portals?.enabled) plans.push(sourcePlan('portal-discovery', 'portal-sources', 'portals', async ({ cursor = null, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
+  let linkedInGuestPass = null;
+  if (sources.portals?.enabled) plans.push(sourcePlan('portal-discovery', 'portal-sources', 'portals', async ({ runId: sourceRunId = runAt, cursor = null, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
     const portalConfig = sources.portals ?? {};
     const portalLimits = portalResolverSettings({ sources: { portals: portalConfig } });
     const browserEnabled = portalConfig.browser?.enabled === true;
@@ -743,7 +746,11 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       throwIfNetworkWorkDisallowed(sourceSignal, sourceDeadline);
       const response = await requestWithDeadline(transport, url, options, { signal: sourceSignal, deadline: sourceDeadline });
       const status = Number(response.status ?? 200);
-      if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+      if (status < 200 || status >= 300) {
+        const error = new Error(`HTTP ${status}`);
+        error.statusCode = status;
+        throw error;
+      }
       return response.body;
     };
 
@@ -752,6 +759,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const laneInputs = {};
     for (const lane of PORTAL_SOURCE_LANES) {
       const provider = lane.provider;
+      if (portalConfig[provider === 'linkedin-jobs' ? 'linkedin' : provider]?.enabled === false) continue;
       const queries = portalConfig[provider === 'linkedin-jobs' ? 'linkedin' : provider]?.queries;
       if (!queries?.length) continue;
       if (httpProviders.has(provider)) {
@@ -761,6 +769,11 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
           timeWindow: portalConfig.linkedin?.timeWindow ?? 'day',
           maxPagesPerQuery: portalConfig.linkedin?.maxPagesPerQuery ?? 2,
           pageSize: portalConfig.linkedin?.pageSize ?? 25,
+          ...(provider === 'linkedin-jobs' ? {
+            guestPass: (cursor?.linkedInGuestPass ?? linkedInGuestPass)?.runId === sourceRunId
+              ? JSON.parse((cursor?.linkedInGuestPass ?? linkedInGuestPass).result) : null,
+            onGuestPass: (result) => { linkedInGuestPass = { runId: sourceRunId, result: JSON.stringify(result) }; },
+          } : {}),
         };
       } else if (browserProviders.has(provider)) {
         browser ??= createRenderedFetcher({
@@ -786,12 +799,14 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     } finally {
       if (browser) await browser.close().catch(() => {});
     }
+    linkedInGuestPass = cursor?.linkedInGuestPass?.runId === sourceRunId ? cursor.linkedInGuestPass : linkedInGuestPass;
 
     const retained = new Map((cursor?.completedDetails || []).map((candidate) => [linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl), candidate]).filter(([id]) => id));
     const candidates = outputs.flatMap((item) => item.candidates || []).map(withPortalIdentity)
       .map((candidate) => retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl)) ?? candidate);
     const completedDetails = new Map(retained);
     const resolutionCursor = (nextIndex) => ({ phase: 'portal-resolution', nextIndex, maxCandidates: portalLimits.maxCandidates,
+      linkedInGuestPass,
       completedDetails: [...completedDetails.values()].slice(0, portalLimits.maxCandidates) });
     const screened = candidates.map((candidate) => {
       let result = { eligible: true };
@@ -845,9 +860,9 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const verificationQueue = [];
     let checkpointCursor = 0;
     const completedIndexes = new Set();
-    const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true } = {}) => {
+    const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true, requested = false } = {}) => {
       const id = linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl);
-      if (id && resolved.evidence?.portalDetail?.status === 'extracted') completedDetails.set(id, resolved);
+      if (id && (requested || resolved.evidence?.portalDetail?.status === 'extracted')) completedDetails.set(id, resolved);
       if (typeof checkpoint !== 'function') return;
       if (advance) {
         completedIndexes.add(candidateIndex);
@@ -867,8 +882,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       const unresolved = (reason) => applyOriginalListingResolution(candidate, verificationResolution(candidate, null, reason));
       let resolution;
       if (isAlreadyResolved(candidate)) return candidate;
-      if (retained.has(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl))
-        && !['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'transport-error'].includes(candidate.evidence?.resolution?.reason)) return candidate;
+      if (retained.has(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl))) return candidate;
       if (sourceSignal?.aborted) {
         resolution = verificationResolution(candidate, null, 'aborted');
       } else if (resolverDeadline.remainingMs() <= 0) {
@@ -902,6 +916,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         initialTelemetry.detailErrors.push({ jobId: candidate.jobId ?? null, url: candidate.discoveryUrl ?? candidate.canonicalUrl, reason, error: resolved.evidence?.error ?? null });
       }
       await checkpointResolution(candidate, resolved, candidateIndex, {
+        requested: resolution.telemetry?.requests > 0,
         advance: !['aborted', 'deadline-exceeded', 'request-budget-exhausted'].includes(reason),
       });
       return resolved;
@@ -1069,11 +1084,12 @@ export async function runCrawlerOperator({
   const profile = buildDiscoveryProfile({ mode, locationPreset, schedule });
   const nowValue = typeof clock.now === 'function' ? clock.now() : new Date().toISOString();
   const runAt = nowValue instanceof Date ? nowValue.toISOString() : String(nowValue);
-  const resolver = createCrawlerRunResolver({ config, transport, runAt, signal, deadline });
   const databasePath = path.resolve(config.databasePath);
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   const store = suppliedStore ?? openCrawlerStore(databasePath);
   try {
+    const linkedInPolicy = createLinkedInGuestPolicy({ transport, store, runAt, clock });
+    const resolver = createCrawlerRunResolver({ config, transport: linkedInPolicy.transport, runAt, signal, deadline });
     const policy = loadJobPullPolicy();
     const lifecycleRows = readOpportunityLedger(config.opportunityLedgerPath).rows;
     const v4Snapshot = readV4HistorySnapshot(config.v4HistorySnapshotPath, {
@@ -1111,6 +1127,7 @@ export async function runCrawlerOperator({
       historicalRows,
       v4Snapshot,
       sourcePlans: buildSourcePlans({
+        linkedInPolicy,
         config: effectiveCrawlerConfig,
         transport,
         runAt,

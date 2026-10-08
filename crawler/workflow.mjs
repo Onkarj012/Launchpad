@@ -9,7 +9,7 @@ import {
   resolveJobIdentity,
 } from './identity.mjs';
 import { selectDailyReserve } from './reserve.mjs';
-import { buildSourceYieldReport } from './source-yield.mjs';
+import { buildSourceYieldReport, buildSourceEndStates } from './source-yield.mjs';
 import { buildFunnelReport } from '../job-pull/funnel-report.mjs';
 import {
   crawlRun,
@@ -469,12 +469,14 @@ export async function crawlWorkflow({
     reserveQueue: selection.reserveQueue.map((item) => ({ jobKey: item.identity?.identity?.jobKey ?? item.candidate?.canonicalUrl, candidate: item.candidate })),
   };
 
-  const persistedSourceTelemetry = durable.telemetry?.workflow?.sourceTelemetry;
+  const persistedSourceTelemetry = durable.idempotent ? durable.telemetry?.workflow?.sourceTelemetry : null;
   const sourceTelemetry = persistedSourceTelemetry ?? Object.fromEntries(Object.entries(durable.telemetry?.sources ?? {}).map(([sourceId, telemetry]) => [
     sourceId,
     { ...telemetry, detail: sourceTelemetryDetails[sourceId] ?? null },
   ]));
   const sourceYield = buildSourceYieldReport(records, sourceTelemetry, config.sourceYield);
+  const sourceEndStates = (durable.idempotent ? durable.telemetry?.workflow?.terminalEnvelope?.sourceEndStates : null)
+    ?? buildSourceEndStates(sourceTelemetry, config.sources);
   // Reserve/verification counts are durable so schedule-health can report them
   // for a completed run without recomputing selection from raw observations.
   const rejectedTotal = Object.values(selection.excluded || {}).reduce((sum, value) => sum + number(value), 0);
@@ -575,6 +577,7 @@ export async function crawlWorkflow({
     runId,
     writesPlanned: false,
     sourceCoverage: coverage,
+    sourceEndStates,
     rejectionCounts: { ...(selection.excluded || {}) },
     rejectionReasons: Object.keys(selection.excluded || {}).sort(),
     backfill: selection.reserve.filter((candidate) => candidate.selectionTier === 'Backfill'),
@@ -616,6 +619,7 @@ export async function crawlWorkflow({
 
   return {
     schemaVersion: 'LaunchpadV5CrawlerWorkflowV1',
+    sourceEndStates,
     idempotent: durable.idempotent,
     run: durable.run,
     stages: durable.stages,
