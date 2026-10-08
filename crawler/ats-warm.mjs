@@ -158,6 +158,8 @@ export async function fetchWarmAts({
   registry = null,
   boardConcurrency = 1,
   requestTimeoutMs = 10_000,
+  // Large Greenhouse/Ashby boards with content=true exceed the 2 MB transport default.
+  maxResponseBytes = 12_000_000,
   maxDurationMs = Infinity,
   deadline = null,
   signal = null,
@@ -231,7 +233,7 @@ export async function fetchWarmAts({
     }
     try {
       const timeoutMs = Math.max(1, Math.min(Number(requestTimeoutMs) || 10_000, availableMs));
-      const response = await boundedTransport(transport, url, { method: 'GET', provider, board, warm: true }, timeoutMs, signal);
+      const response = await boundedTransport(transport, url, { method: 'GET', provider, board, warm: true, maxBytes: maxResponseBytes }, timeoutMs, signal);
       const status = Number(response?.status ?? 200);
       if (status < 200 || status >= 300) {
         return { board, failure: { provider, board: board.slug, code: `HTTP_${status}` } };

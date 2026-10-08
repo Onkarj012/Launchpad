@@ -77,6 +77,7 @@ test('invalid individual records and excessive collection count/bytes fail befor
   }
   assert.throws(() => cloneJsonCollection(Array(10_001).fill(null)), /record count limit/);
   assert.throws(() => cloneJsonCollection(Array(11).fill('x'.repeat(1_900_000))), /total byte limit/);
+  assert.equal(cloneJsonCollection(Array(11).fill('x'.repeat(1_900_000)), 'big source', { maxBytes: 80_000_000 }).length, 11);
   assert.throws(() => cloneJsonCollection([,]), /sparse array/);
 });
 

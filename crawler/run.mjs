@@ -282,9 +282,11 @@ function jsonStringifySafe(value, label) {
 const MAX_JSON_RECORDS = 10_000;
 const MAX_JSON_RECORD_BYTES = 2_000_000;
 const MAX_JSON_ENVELOPE_BYTES = 20_000_000;
+// One source can return thousands of hydrated JDs (Workday, enterprise ATS), so its observation batch gets more room.
+const MAX_SOURCE_OBSERVATION_BYTES = 80_000_000;
 
 /** Collections have count/byte bounds; each record keeps the ordinary node/depth guard. */
-export function cloneJsonCollection(value, label = 'collection') {
+export function cloneJsonCollection(value, label = 'collection', { maxBytes = MAX_JSON_ENVELOPE_BYTES } = {}) {
   if (!Array.isArray(value)) throw new TypeError(`${label} must be an array`);
   if (value.length > MAX_JSON_RECORDS) throw new TypeError(`${label} exceeds record count limit`);
   if (Object.getOwnPropertySymbols(value).length) throw new TypeError(`${label} contains symbol keys`);
@@ -295,7 +297,7 @@ export function cloneJsonCollection(value, label = 'collection') {
     const size = Buffer.byteLength(JSON.stringify(record));
     if (size > MAX_JSON_RECORD_BYTES) throw new TypeError(`${label}[${index}] exceeds record byte limit`);
     bytes += size + (index ? 1 : 0);
-    if (bytes > MAX_JSON_ENVELOPE_BYTES) throw new TypeError(`${label} exceeds total byte limit`);
+    if (bytes > maxBytes) throw new TypeError(`${label} exceeds total byte limit`);
     return record;
   });
 }
@@ -1019,7 +1021,7 @@ async function fetchSource(store, source, runId, priorState, config, clock, {
       validatingOutput = true;
       if (result?.observations !== undefined && !Array.isArray(result.observations)) throw new TypeError('source result observations must be an array');
       if (result?.manifest !== undefined && result.manifest == null) throw new TypeError('source result manifest must be a plain object');
-      const observations = cloneJsonCollection(result?.observations ?? [], 'source result observations');
+      const observations = cloneJsonCollection(result?.observations ?? [], 'source result observations', { maxBytes: MAX_SOURCE_OBSERVATION_BYTES });
       const resultCursor = result?.cursor === undefined ? undefined : cloneJsonSafe(result.cursor, 'source result cursor');
       const manifest = cloneJsonSafe(result?.manifest ?? {}, 'source result manifest');
       if (!isRecord(manifest)) throw new TypeError('source result manifest must be a plain object');

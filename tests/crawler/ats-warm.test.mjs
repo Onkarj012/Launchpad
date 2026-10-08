@@ -209,3 +209,13 @@ test('warm ATS sorts trusted provider dates before the per-board row cap', async
   assert.equal(result.observations.length, 100);
   assert.equal(result.observations[0].jobId, '8255708');
 });
+
+test('warm board requests allow large boards past the 2 MB transport default', async () => {
+  const seen = [];
+  await fetchWarmAts({
+    boards: [{ provider: 'greenhouse', slug: 'big', company: 'Big' }],
+    runAt: '2026-07-23T10:00:00.000Z',
+    transport: async (url, options) => { seen.push(options.maxBytes); return { status: 200, body: { jobs: [] } }; },
+  });
+  assert.deepEqual(seen, [12_000_000]);
+});
