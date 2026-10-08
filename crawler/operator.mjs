@@ -590,6 +590,7 @@ export function screenPortalCandidate(candidate, policy) {
   return { eligible: reasons.length === 0, reasons };
 }
 
+// Build the scheduled source fetchers with their run-scoped policies.
 export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null, linkedInPolicy = null }) {
   transport = (linkedInPolicy ?? createLinkedInGuestPolicy({ transport, runAt, clock })).transport;
   // Project boards from the unified registry when configured; tests that inject
@@ -992,6 +993,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const verificationQueue = [];
     let checkpointCursor = 0;
     const completedIndexes = new Set();
+    // Retain each completed portal resolution and advance its durable cursor.
     const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true, requested = false } = {}) => {
       const id = linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl);
       if (id && (requested || resolved.evidence?.portalDetail?.status === 'extracted')) completedDetails.set(id, resolved);

@@ -24,6 +24,7 @@ import { createJsonCanaryStore, loadDeliveryCanaryEvidence } from './delivery-ca
 import { acquireCrawlerRunLock } from './run-lock.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { buildAvenueTrialReport } from './source-yield.mjs';
+import { writeLocalDailyHtmlReport } from './local-lead-report.mjs';
 import {
   DEFAULT_NOTIFICATION_LOG,
   notifyDesktop,
@@ -342,6 +343,11 @@ export async function main(argv = process.argv.slice(2), {
           })
           : null,
       });
+      const reportRunId = result.runId ?? value(argv, '--run-id') ?? dailyRunIdentity({ schedule, mode, locationPreset });
+      const reportPath = explicitOption(argv, '--report')
+        ?? path.join(path.dirname(path.resolve(config.databasePath)), 'reports', `${String(reportRunId).replace(/[^a-zA-Z0-9._-]/g, '_')}.html`);
+      fs.mkdirSync(path.dirname(path.resolve(reportPath)), { recursive: true });
+      writeLocalDailyHtmlReport(result, reportPath);
       const terminalStatus = result.terminalEnvelope?.status ?? (result.outcome?.status === 'fatal' ? 'failed' : 'completed');
       const exitCode = terminalStatus === 'failed' ? 1 : 0;
       if (terminalStatus === 'partial' || result.deliveryReconciliation?.status === 'no-write') {

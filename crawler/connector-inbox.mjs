@@ -54,6 +54,7 @@ function validateEnvelope(envelope) {
   return errors;
 }
 
+// Validate one provider record before normalization.
 function validateRecord(record, provider) {
   const errors = [];
   if (!isObject(record)) return ['record must be an object'];

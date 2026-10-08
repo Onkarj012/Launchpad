@@ -8,7 +8,14 @@ import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 
 const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+// Escape text before placing it in the HTML report.
 const html = (value) => String(value ?? 'Not Verified').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+
+const MODE_LABELS = Object.freeze({
+  normal: Object.freeze({ label: 'Pune', roleTarget: 10, employerTarget: 6 }),
+  startup: Object.freeze({ label: 'Startup', roleTarget: 5, employerTarget: 4 }),
+  remote: Object.freeze({ label: 'Remote', roleTarget: 5, employerTarget: 4 }),
+});
 
 // Read request counts from source telemetry without inferring missing requests.
 function sourceRequests(source) {
@@ -145,9 +152,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
 
 // Render daily mode results and their shortlists without changing run state.
 export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? result.run?.startedAt ?? new Date().toISOString() } = {}) {
-  const targetModes = [
-    ['normal', 'Pune'], ['startup', 'Startup'], ['remote', 'Remote'],
-  ];
+  const targetModes = Object.entries(MODE_LABELS).map(([mode, config]) => [mode, config.label]);
   const modes = [...targetModes, ['eorContract', 'EOR / Contract']];
   const modeRuns = result.modes ?? {};
   const telemetry = result.sourceTelemetry ?? {};
@@ -156,6 +161,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const uniqueShortlist = [...new Map(allShortlists.map((role) => [role.canonicalUrl ?? role.url, role])).values()];
   const lifecycle = result.funnel?.lifecycle ?? {};
   const counts = result.counts ?? {};
+  // Choose the first available count without inferring missing values.
   const readCount = (...values) => values.find((value) => Number.isFinite(value)) ?? 0;
   const strictCount = uniqueShortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
   const employers = new Set(uniqueShortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
@@ -169,14 +175,13 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     ['Employers represented', employers.size],
     ['Strict', strictCount],
   ];
-  const htmlTargetModes = [
-    ['normal', 'Pune', 10, 6], ['startup', 'Startup', 5, 4], ['remote', 'Remote', 5, 4],
-  ];
+  const htmlTargetModes = Object.entries(MODE_LABELS).map(([mode, config]) => [mode, config.label, config.roleTarget, config.employerTarget]);
+  // Render one role card with its evidence, labels, and employer apply link.
   const roleCard = (role, isShortlist) => {
     const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
     const rawApplyUrl = role.originalApplicationUrl ?? null;
     const applyUrl = typeof rawApplyUrl === 'string' && /^https?:\/\//i.test(rawApplyUrl) ? rawApplyUrl : null;
-    const extraModes = (role.otherModes ?? []).map((mode) => ({ normal: 'Pune', startup: 'Startup', remote: 'Remote' })[mode] ?? mode);
+    const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
     return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p>${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
   };
