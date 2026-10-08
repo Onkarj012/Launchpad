@@ -16,7 +16,7 @@ import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
-import { renderLocalLeadReport, writeLocalDailyHtmlReport } from '../../crawler/local-lead-report.mjs';
+import { renderLocalDailyHtmlReport, renderLocalLeadReport, writeLocalDailyHtmlReport } from '../../crawler/local-lead-report.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -92,6 +92,19 @@ test('EOR and long-term contract roles appear only in their separate daily lane'
     ['Global EOR Employer', ['EOR']],
     ['Direct Contract Employer', ['Contract']],
   ]);
+  assert.deepEqual(result.modes.eorContract.shortlist.map((role) => role.company), [
+    'Global EOR Employer',
+    'Direct Contract Employer',
+  ]);
+  const fullTimeShortlists = ['normal', 'startup', 'remote'].flatMap((mode) => result.modes[mode].shortlist);
+  assert.equal(fullTimeShortlists.some((role) => ['Global EOR Employer', 'Direct Contract Employer'].includes(role.company)), false);
+  const report = renderLocalDailyHtmlReport(result);
+  assert.match(report, /<section data-mode="eorContract"><h2>EOR \/ Contract<\/h2>/);
+  assert.match(report, /Global EOR Employer/);
+  assert.match(report, /Direct Contract Employer/);
+  assert.match(report, new RegExp(`<li>Shortlisted: ${fullTimeShortlists.length}<\\/li>`));
+  const targetReport = renderLocalLeadReport(result, { now: NOW });
+  assert.match(targetReport, new RegExp(`\\| Pune \\(normal\\) \\| ${result.modes.normal.shortlist.length}\\/10 \\|`));
   assert.ok(result.verificationQueue.some((role) => role.company === 'Unclear Contract Employer'));
   assert.equal(result.modes.eorContract.results.some((role) => role.company === 'Unclear Contract Employer'), false);
 });
