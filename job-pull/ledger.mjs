@@ -2,12 +2,12 @@ import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, re
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { candidateDedupKey, canonicalizeUrl } from './candidate.mjs';
+import { candidateDedupKey, candidateIdentityKeys, candidateMatchesLedgerRow, canonicalizeUrl } from './candidate.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_LEDGER_PATH = path.resolve(MODULE_DIR, '../career-ops/data/notion-written.tsv');
 export const LEGACY_COLUMNS = ['dedup_key', 'job_id', 'company', 'role', 'notion_page_url', 'date_pulled'];
-export const LEDGER_COLUMNS = [...LEGACY_COLUMNS, 'state', 'run_id', 'created_at', 'updated_at', 'error', 'canonical_url', 'provider'];
+export const LEDGER_COLUMNS = [...LEGACY_COLUMNS, 'state', 'run_id', 'created_at', 'updated_at', 'error', 'canonical_url', 'provider', 'identity_aliases'];
 
 export class LedgerError extends Error {
   constructor(message) {
@@ -44,7 +44,7 @@ export function readLedger(ledgerPath = DEFAULT_LEDGER_PATH) {
   if (!lines.length || !lines[0].trim()) return { path: ledgerPath, columns: LEDGER_COLUMNS, rows: [], legacy: false, missing: false };
   const columns = splitLine(lines[0]);
   const legacy = columns.length === LEGACY_COLUMNS.length && LEGACY_COLUMNS.every((column, index) => columns[index] === column);
-  const recognized = legacy || LEDGER_COLUMNS.every((column, index) => columns[index] === column);
+  const recognized = legacy || (columns.length === LEDGER_COLUMNS.length || columns.length === LEDGER_COLUMNS.length - 1) && columns.every((column, index) => LEDGER_COLUMNS[index] === column);
   if (!recognized) throw new LedgerError(`Unsupported ledger header in ${ledgerPath}`);
   const rows = lines.slice(1).filter((line) => line.trim()).map((line) => rowFromValues(columns, splitLine(line)));
   return { path: ledgerPath, columns, rows, legacy, missing: false };
@@ -65,6 +65,7 @@ export function migrateRows(rows) {
     error: row.error || null,
     canonical_url: row.canonical_url || null,
     provider: row.provider || null,
+    identity_aliases: row.identity_aliases || null,
   }));
 }
 
@@ -178,7 +179,7 @@ export function reserveCandidates(candidates, { path: ledgerPath = DEFAULT_LEDGE
     const reservations = [];
     for (const candidate of candidates) {
       const dedupKey = candidateDedupKey(candidate);
-      const duplicate = rows.find((row) => row.state !== 'aborted' && (row.dedup_key === dedupKey || (candidate.jobId && String(row.job_id) === String(candidate.jobId)) || (candidate.canonicalUrl && row.canonical_url === candidate.canonicalUrl)));
+      const duplicate = rows.find((row) => row.state !== 'aborted' && (candidateMatchesLedgerRow(candidate, row) || (candidate.jobId && String(row.job_id) === String(candidate.jobId)) || (candidate.canonicalUrl && row.canonical_url === candidate.canonicalUrl)));
       if (duplicate) throw new LedgerError(`cannot reserve existing ledger candidate: ${dedupKey}`);
       const row = {
         dedup_key: dedupKey,
@@ -194,6 +195,7 @@ export function reserveCandidates(candidates, { path: ledgerPath = DEFAULT_LEDGE
         error: null,
         canonical_url: candidate.canonicalUrl || null,
         provider: candidate.provider || null,
+        identity_aliases: JSON.stringify(candidateIdentityKeys(candidate)),
       };
       rows.push(row);
       reservations.push(row);

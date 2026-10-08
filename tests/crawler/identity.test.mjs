@@ -226,3 +226,15 @@ test('idempotent re-resolution of the same newly-actionable transition does not 
   assert.equal(first.identity.jobKey, second.identity.jobKey);
   assert.equal(first.identity.jobKey, 'job-existing');
 });
+
+test('legacy Workday slugs and portal aliases match existing actioned jobs', () => {
+  for (const [observation, stored] of [
+    [{ ...base, provider: 'workday', providerJobId: 'R-12345' }, prior({ provider: 'workday', providerJobId: 'Engineer_R-12345', lifecycle: 'applied' })],
+    [{ ...base, identityAliases: ['naukri|portal 9'] }, prior({ provider: 'naukri', providerJobId: 'portal-9', lifecycle: 'applied' })],
+    [{ ...base, provider: 'naukri', providerJobId: 'portal-9' }, prior({ identityAliases: ['naukri|portal 9'], lifecycle: 'applied' })],
+  ]) {
+    const result = resolveJobIdentity({ ...observation, canonicalUrl: 'https://new.example.test/role' }, { existingJobs: [stored] });
+    assert.equal(result.code, 'SUPPRESSED_APPLIED');
+    assert.equal(result.identity.jobKey, 'job-existing');
+  }
+});

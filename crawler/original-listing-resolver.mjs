@@ -1,7 +1,7 @@
 export const ORIGINAL_LISTING_RESOLVER_VERSION = 'OriginalListingResolverV1';
 import { linkedInPublicJobId, parseLinkedInJobDetail } from '../job-pull/portal-adapters/linkedin.mjs';
 import { remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
-import { extractExperienceYears, hiringEmployerConflict } from '../job-pull/candidate.mjs';
+import { candidateRequisitionKey, extractExperienceYears, hiringEmployerConflict, normalizeRequisitionId } from '../job-pull/candidate.mjs';
 
 export const DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET = Object.freeze({
   maxRedirects: 5,
@@ -26,7 +26,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const BLOCKED_STATUSES = new Set([401, 403, 407, 429, 451]);
 const APPLY_HINT = /\b(apply|view\s+original|view\s+job|original\s+posting|company\s+site|employer|external\s+apply|continue\s+to\s+application)\b/i;
 const CANONICAL_REL = /\brel\s*=\s*["'][^"']*canonical[^"']*["']/i;
-const CAPTCHA_HINT = /\b(captcha|recaptcha|hcaptcha|cf-challenge|attention\s+required|access\s+denied|paywall|subscribe\s+to\s+continue|verify\s+you\s+are\s+human)\b/i;
+const CAPTCHA_HINT = /\b(captcha|recaptcha|hcaptcha|cf-challenge|just\s+a\s+moment|paywall|subscribe\s+to\s+continue|verify\s+you\s+are\s+human)\b/i;
 const FIELD_SOURCE_ORIGINAL = 'original-employer-detail';
 const FIELD_SOURCE_LEAD = 'lead-only';
 
@@ -80,8 +80,8 @@ function headersOf(response) {
   const headers = response?.headers || {};
   const get = (name) => typeof headers.get === 'function'
     ? headers.get(name)
-    : headers[name] ?? headers[name.toLowerCase()] ?? null;
-  return { location: get('location'), contentType: get('content-type') };
+    : Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? null;
+  return { location: get('location'), contentType: get('content-type'), cfMitigated: get('cf-mitigated') };
 }
 
 function bodyOf(response) {
@@ -200,7 +200,7 @@ function firstField(root, paths) {
   return first(...paths.map((path) => readPath(root, path)));
 }
 
-function terminalLinkedInIdentityFailure(response, observation) {
+function terminalLinkedInIdentityFailure(response, observation, provider) {
   const { posting, root } = detailRoot(response);
   const identity = posting || root;
   const normalize = (value) => stripHtmlToText(text(value) || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -211,8 +211,8 @@ function terminalLinkedInIdentityFailure(response, observation) {
   const title = normalize(firstField(identity, ['title', 'name', 'text']));
   const expectedTitle = normalize(observation.title);
   // LinkedIn job IDs and an action target URL do not prove an ATS requisition.
-  const requisition = firstField(identity, ['requisitionId', 'jobReqId', 'identifier.value', 'identifier']);
-  const expectedRequisition = text(observation.requisitionId);
+  const requisition = text(normalizeRequisitionId(provider, firstField(identity, ['requisitionId', 'jobReqId', 'identifier.value', 'identifier'])));
+  const expectedRequisition = text(normalizeRequisitionId(provider, observation.requisitionId));
   if (expectedRequisition && requisition && requisition !== expectedRequisition) return 'destination-role-identity-mismatch';
   if (title && expectedTitle && title === expectedTitle) return null;
   if (expectedRequisition && requisition === expectedRequisition) return null;
@@ -321,10 +321,10 @@ export function extractProviderFingerprint(value) {
     const jobsIdx = segments.findIndex((part) => part.toLowerCase() === 'jobs');
     if (jobsIdx >= 0 && segments[jobsIdx + 1] && /^\d+$/.test(segments[jobsIdx + 1])) requisitionId = segments[jobsIdx + 1];
   } else if (classified.provider === 'lever') {
-    const last = segments[segments.length - 1];
+    const last = /^(apply|application)$/i.test(segments.at(-1) || '') ? segments.at(-2) : segments.at(-1);
     if (last && /^[0-9a-f-]{8,}$/i.test(last)) requisitionId = last;
   } else if (classified.provider === 'ashby') {
-    const last = segments[segments.length - 1];
+    const last = /^(apply|application)$/i.test(segments.at(-1) || '') ? segments.at(-2) : segments.at(-1);
     if (last && /^[0-9a-f-]{8,}$/i.test(last)) requisitionId = last;
   } else if (classified.provider === 'smartrecruiters') {
     const last = segments[segments.length - 1];
@@ -337,10 +337,20 @@ export function extractProviderFingerprint(value) {
     if (oIdx >= 0 && segments[oIdx + 1]) requisitionId = segments[oIdx + 1];
   } else if (classified.provider === 'workday') {
     const last = segments[segments.length - 1];
-    if (last && !/^(en-us|careers|job|jobs)$/i.test(last)) requisitionId = decodeURIComponent(last);
+    if (last && !/^(en-us|careers|job|jobs)$/i.test(last)) {
+      const slug = decodeURIComponent(last);
+      requisitionId = slug.match(/_([A-Za-z]{0,4}-?\d+)(?:-\d+)?$/)?.[1] ?? slug;
+    }
   } else if (classified.provider === 'employer-career') {
     const last = segments[segments.length - 1];
-    if (last && last.length >= 3) requisitionId = decodeURIComponent(last);
+    const query = new URL(classified.url).searchParams;
+    const keys = ['jobid', 'job_id', 'reqid', 'req', 'requisitionid', 'career_job_req_id', 'jobreqid', 'gh_jid', 'id', 'job'];
+    for (const key of keys) {
+      const entry = [...query].find(([name, value]) => name.toLowerCase() === key && value.trim());
+      if (entry) { requisitionId = entry[1].trim(); break; }
+    }
+    const segment = last ? decodeURIComponent(last) : '';
+    if (!requisitionId && /\d/.test(segment) && !/^(jobdetails|job-details|details|job|jobs|careers|apply|search|view|index|en|en-us)$/i.test(segment)) requisitionId = segment;
   }
   return {
     provider: classified.provider,
@@ -494,10 +504,12 @@ async function boundedTransport(transport, url, options, { signal, remainingMs, 
 }
 
 function looksBlocked(response, status) {
-  if (BLOCKED_STATUSES.has(status)) return true;
+  if (BLOCKED_STATUSES.has(status) || headersOf(response).cfMitigated === 'challenge') return true;
   const body = htmlBody(response);
   if (!body) return false;
-  return CAPTCHA_HINT.test(body) && body.length < 50_000;
+  if (CAPTCHA_HINT.test(body) && body.length < 50_000) return true;
+  const jobContent = /JobPosting|jobPostingInfo|job[-_]?(?:title|description)|\b(?:responsibilities|qualifications|requirements|years? of experience)\b/i.test(body);
+  return /\b(?:access\s+denied|attention\s+required)\b/i.test(body) && stripHtmlToText(body).length < 2_000 && !jobContent;
 }
 
 function looksMalformed(response, status) {
@@ -541,12 +553,13 @@ function resolutionFailure(observation, reason, chain = [], extra = {}, telemetr
 
 function mergePatch(observation, details, finalUrl, provider, runAt, fingerprint) {
   const patch = {
+    identityAliases: [...new Set([...(observation.identityAliases || []), candidateRequisitionKey(observation)].filter(Boolean))],
     originalApplicationUrl: finalUrl,
     originalApplicationEvidence: `original-listing:${provider}-detail`,
     applicationResolution: { status: 'Resolved Original', evidence: `original-listing:${provider}-detail` },
     sourceKind: 'ats-direct',
     provider: provider === 'employer-career' ? observation.provider : provider,
-    ...(fingerprint?.requisitionId ? { jobId: fingerprint.requisitionId, requisitionId: fingerprint.requisitionId } : {}),
+    ...(fingerprint?.requisitionId ? { jobId: fingerprint.requisitionId, providerJobId: fingerprint.requisitionId, requisitionId: fingerprint.requisitionId } : {}),
     ...(details.title ? { title: details.title } : {}),
     ...(details.description ? { description: details.description } : {}),
     ...(details.location ? { location: details.location } : {}),
@@ -874,7 +887,7 @@ export function createOriginalListingResolver({
         return fail(reason, chain, { provider, fingerprint }, telemetry);
       }
       if (publicId) {
-        const identityFailure = terminalLinkedInIdentityFailure(response, observation);
+        const identityFailure = terminalLinkedInIdentityFailure(response, observation, provider);
         if (identityFailure) return fail(identityFailure, chain, { provider, fingerprint }, telemetry);
       }
       const patched = mergePatch({ ...observation, ...(portalPatch || {}), evidence: { ...observation.evidence, ...portalPatch?.evidence } }, details, current, provider, runAt, fingerprint);

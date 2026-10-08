@@ -41,3 +41,12 @@ test('durable identity prefers provider and requisition over company title locat
   assert.equal(candidateRequisitionKey(first), 'workday|r1');
   assert.notEqual(candidateDedupKey(first), candidateDedupKey(second));
 });
+
+
+test('candidate normalization retains stored first-seen separately from posting dates', () => {
+  const raw = { url: 'https://jobs.example.test/1', company: 'Acme', title: 'AI Engineer', postedAt: null, first_seen_at: '2026-09-01T12:00:00.000Z' };
+  const candidate = normalizeCandidate(raw);
+  assert.equal(candidate.firstSeenAt, raw.first_seen_at);
+  assert.equal(candidate.postedAt, null);
+  assert.throws(() => normalizeCandidate({ ...raw, firstSeenAt: 'yesterday' }), /firstSeenAt/);
+});

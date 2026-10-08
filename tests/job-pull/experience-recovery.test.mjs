@@ -120,3 +120,32 @@ test('number words and mixed required versus preferred clauses keep the strictes
     assert.equal(extractExperienceYears(description), null, description);
   }
 });
+
+test('word numbers with parenthesized digits retain minimums and hard rejects', () => {
+  for (const [description, minimum] of [
+    ['Minimum two (2) years of experience.', 2],
+    ['one (1) year of experience.', 1],
+    ['three (3)+ years of experience required.', 3],
+    ['Minimum three (3)+ years required.', 3],
+  ]) {
+    assert.equal(extractExperienceYears(description)?.minYears, minimum, description);
+    if (minimum === 3) assert.equal(classifyExperience({ description }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  }
+});
+
+test('degree alternatives do not impose an experience minimum or weaken a separate requirement', () => {
+  for (const description of [
+    "Bachelor's degree or 4 years of experience.",
+    'A degree, or equivalent 4 years experience.',
+    'Required: a degree or 4 years of software development experience.',
+  ]) assert.equal(extractExperienceYears(description), null, description);
+  for (const description of [
+    "Bachelor's degree or 4 years of experience. Minimum 3+ years required.",
+    "Bachelor's degree or 4 years of experience; 3+ years of Python experience required.",
+    "Bachelor's degree required and 3+ years of experience required.",
+    'Requires 3 years of relevant experience, or 2 years of experience with a Masters degree.',
+  ]) {
+    assert.equal(extractExperienceYears(description)?.minYears, 3, description);
+    assert.equal(classifyExperience({ description }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  }
+});

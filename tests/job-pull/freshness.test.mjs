@@ -120,3 +120,22 @@ test('Workday rows with an unbounded postedOn label stay undated in VerifyQueue'
   assert.equal(result.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
   assert.equal(result.verifyQueue, true);
 });
+
+test('stored first-seen only rejects undated rows older than the window', () => {
+  const candidate = { postedAt: null, firstSeenAt: '2026-06-30T11:59:59.999Z' };
+  const result = classifyFreshness(candidate, { now });
+  assert.equal(result.code, 'FRESHNESS_OLDER_THAN_14D');
+  assert.equal(result.window, 'Rejected');
+  assert.equal(result.ageSource, 'first-seen');
+  assert.equal(result.verifyQueue, undefined);
+  assert.equal(candidate.postedAt, null);
+  for (const firstSeenAt of ['2026-06-30T12:00:00.000Z', now, '2026-07-15T12:00:00.000Z', 'invalid', null]) {
+    const recent = classifyFreshness({ postedAt: null, firstSeenAt }, { now });
+    assert.equal(recent.window, 'VerifyQueue', firstSeenAt);
+    assert.equal(recent.eligible, false);
+  }
+  assert.equal(classifyFreshness({ postedAt: now, firstSeenAt: candidate.firstSeenAt }, { now }).window, 'Hot');
+  assert.equal(classifyFreshness({ provider: 'workday', postedAt: now, firstSeenAt: candidate.firstSeenAt }, { now }).code, 'FRESHNESS_OLDER_THAN_14D');
+  assert.equal(classifyFreshness(candidate, { now, backfillMaximumDays: 15 }).window, 'VerifyQueue');
+  assert.throws(() => classifyFreshness(candidate, { now: 'invalid' }), /run clock/);
+});

@@ -54,8 +54,6 @@ function startupPayload(candidate, runId) {
     crawledAt: candidate.crawledAt,
     freshnessTier: candidate.waterfallBand || candidate.freshnessWindow,
     status: 'Ready',
-    makeResume: false,
-    applied: false,
     resumeState: 'Not Started',
     employmentCategory: candidate.employment?.type === 'internship' ? 'Internship' : candidate.employment?.type === 'contract' ? 'Contractor/EOR' : 'Full-time',
     selectionTier: candidate.selectionTier,

@@ -109,3 +109,17 @@ test('filterHistoricalCandidates routes ambiguous matches to verification, not s
   assert.equal(result.ambiguous[0].code, 'AMBIGUOUS_COLLISION');
   assert.equal(result.ambiguous[0].candidate, candidate);
 });
+
+test('historical suppression matches legacy Workday requisitions and portal aliases without mutating history', () => {
+  for (const [candidate, row] of [
+    [{ provider: 'workday', jobId: 'R-12345' }, { provider: 'workday', jobId: 'Engineer_R-12345', state: 'applied' }],
+    [{ provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'] }, { provider: 'naukri', jobId: 'portal-9', state: 'applied' }],
+    [{ provider: 'naukri', jobId: 'portal-9' }, { provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'], state: 'applied' }],
+  ]) {
+    const before = structuredClone(row);
+    const result = filterHistoricalCandidates([candidate], [row]);
+    assert.equal(result.suppressed.length, 1);
+    assert.equal(result.kept.length, 0);
+    assert.deepEqual(row, before);
+  }
+});

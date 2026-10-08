@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { normalizeIdentityKey } from '../job-pull/candidate.mjs';
 
 /** Terminal user/action outcomes — permanently suppress resurfacing. */
 export const ACTIONED_STATES = new Set(['applied', 'contacted', 'interviewing', 'rejected']);
@@ -118,7 +119,11 @@ function matchingRows(observation, candidates) {
     const matches = candidates.filter((candidate) => {
       const candidateKeys = keysFor(candidate);
       const candidateKey = candidateKeys[type === 'provider_job_id' ? 'providerJobId' : type === 'canonical_url' ? 'canonicalUrl' : 'companyTitleLocation'];
-      if (candidateKey !== key) return false;
+      if (type === 'provider_job_id') {
+        const observationIds = [key, ...(observation.identityAliases || [])].map(normalizeIdentityKey);
+        const candidateIds = [candidateKey, ...(candidate.identityAliases || [])].filter(Boolean).map(normalizeIdentityKey);
+        if (!candidateIds.some((id) => observationIds.includes(id))) return false;
+      } else if (candidateKey !== key) return false;
       // Same-provider distinct requisition IDs must never collapse via company-
       // title-location fallback (e.g. two Workday REQs sharing title+location).
       // Cross-source URL matches remain valid when provider IDs differ.

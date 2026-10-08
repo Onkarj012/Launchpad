@@ -125,6 +125,9 @@ test('shortlist limit applies after canonical selection and operations match sel
 
   assert.equal(result.shortlist.length, 3);
   assert.equal(result.plannedNotionOperations.length, 3);
+  for (const { payload } of result.plannedNotionOperations) {
+    for (const field of ['makeResume', 'applied', 'Make Resume', 'Applied?']) assert.equal(field in payload, false, field);
+  }
   assert.deepEqual(
     result.plannedNotionOperations.map((operation) => operation.dedupKey),
     result.shortlist.map((candidate) => candidateDedupKey(candidate)),

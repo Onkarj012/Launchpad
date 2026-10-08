@@ -47,3 +47,23 @@ test('company/title/location is last-resort only; distinct requisitions stay dis
   assert.equal(result.duplicates.some((item) => item.code === 'DEDUP_EXISTING_LEDGER'), true);
   assert.equal(result.duplicates.some((item) => item.code === 'DEDUP_SIMHASH'), true);
 });
+
+test('old Workday slug keys suppress new requisition IDs without merging distinct IDs', () => {
+  for (const [slug, id] of [['Software-Engineer_JR284401', 'JR284401'], ['Software-Engineer_R-12345', 'R-12345'], ['Software-Engineer_REQ1234-1', 'REQ1234']]) {
+    const current = candidate({ provider: 'workday', jobId: id });
+    for (const row of [
+      { dedup_key: `workday|${slug.toLowerCase().replace(/[^a-z0-9]+/g, ' ')}`, state: 'committed' },
+      { dedup_key: `workday|${slug}`, provider: 'workday', job_id: slug, state: 'pending' },
+    ]) assert.equal(deduplicateCandidates([current], { ledgerRows: [row] }).kept.length, 0, slug);
+    assert.equal(deduplicateCandidates([current, candidate({ provider: 'workday', jobId: slug })]).kept.length, 1, slug);
+  }
+});
+
+test('portal and ATS aliases deduplicate in either order and from persisted ledgers', () => {
+  const resolved = candidate({ provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'] });
+  const portal = candidate({ provider: 'naukri', jobId: 'portal-9' });
+  const direct = candidate({ provider: 'greenhouse', jobId: '123' });
+  for (const pair of [[resolved, portal], [portal, resolved], [resolved, direct], [direct, resolved, portal]]) assert.equal(deduplicateCandidates(pair).kept.length, 1);
+  assert.equal(deduplicateCandidates([portal], { ledgerRows: [{ dedup_key: 'greenhouse|123', identity_aliases: JSON.stringify(resolved.identityAliases), state: 'committed' }] }).kept.length, 0);
+  assert.equal(deduplicateCandidates([portal], { ledgerRows: [{ dedup_key: 'greenhouse|123', identity_aliases: JSON.stringify(resolved.identityAliases), state: 'aborted' }] }).kept.length, 1);
+});

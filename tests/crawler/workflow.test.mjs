@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openCrawlerStore, readCrawlerState } from '../../crawler/run.mjs';
+import { openCrawlerStore, readCrawlerState, updateJobLifecycle } from '../../crawler/run.mjs';
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
 
-function fixedClock() {
-  let current = Date.parse('2026-07-23T10:00:00.000Z');
+function fixedClock(start = '2026-07-23T10:00:00.000Z') {
+  let current = Date.parse(start);
   return {
     now: () => new Date(current).toISOString(),
     async sleep(milliseconds) { current += milliseconds; },
@@ -514,4 +514,32 @@ test('partial workflow reconstructs durable funnel state and labels source cover
   assert.equal(result.terminalEnvelope.scorePendingReady.length, 1);
   assert.equal(result.observations.length, 1);
   store.close();
+});
+
+test('stored aliases preserve crawler history and first-seen across later portal observations', async () => {
+  const store = database();
+  try {
+    const first = await crawlWorkflow({
+      store, runId: 'stored-alias-first', clock: fixedClock('2026-07-01T10:00:00.000Z'),
+      sourcePlans: [{ id: 'alias-fixture', lane: 'ats-direct', trustClass: 'direct', fetch: async () => ({ observations: [fixtureObservation({
+        provider: 'greenhouse', providerJobId: '123', identityAliases: ['naukri|portal 9'], postedAt: null,
+      })] }) }],
+    });
+    const jobKey = first.jobs[0].jobKey;
+    updateJobLifecycle(store, jobKey, 'applied', { at: '2026-07-02T10:00:00.000Z' });
+    const second = await crawlWorkflow({
+      store, runId: 'stored-alias-second', clock: fixedClock(),
+      sourcePlans: [{ id: 'alias-fixture', lane: 'ats-direct', trustClass: 'direct', fetch: async () => ({ observations: [fixtureObservation({
+        provider: 'naukri', providerJobId: 'portal-9', canonicalUrl: 'https://portal.example.test/9', postedAt: null,
+      })] }) }],
+    });
+    assert.equal(second.observations[0]._crawlerIdentity.code, 'SUPPRESSED_APPLIED');
+    assert.equal(second.jobs.length, 1);
+    assert.equal(second.jobs[0].jobKey, jobKey);
+    assert.equal(second.observations[0].firstSeenAt, '2026-07-01T10:00:00.000Z');
+    assert.equal(second.observations[0].postedAt, null);
+    assert.deepEqual(second.jobs[0].identityAliases, ['naukri|portal 9']);
+  } finally {
+    store.close();
+  }
 });

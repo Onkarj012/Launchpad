@@ -1,3 +1,4 @@
+import { normalizeIdentityKey } from '../job-pull/candidate.mjs';
 import {
   canonicalizeApplicationUrl,
   normalizeText,
@@ -35,7 +36,7 @@ function keysFor(row) {
   const location = identityText(firstValue(row, ['location', 'jobLocation', 'job_location']));
 
   return {
-    providerJobId: provider && providerJobId ? `${provider}|${providerJobId}` : null,
+    providerJobId: provider && providerJobId ? normalizeIdentityKey(`${provider}|${providerJobId}`) : null,
     canonicalUrl,
     companyTitleLocation: company && title && location ? `${company}|${title}|${location}` : null,
   };
@@ -101,7 +102,8 @@ export function buildHistoricalSuppressionIndex(input) {
       provider: identity.providerJobId?.split('|')[0] ?? null,
       state: identityText(firstValue(row, ['state', 'status', 'lifecycle', 'actionState', 'action_state'])),
     };
-    addBucket(buckets.provider_job_id, identity.providerJobId, entry);
+    const ids = [identity.providerJobId, ...(row.identityAliases || [])].filter(Boolean).map(normalizeIdentityKey);
+    for (const key of new Set(ids)) addBucket(buckets.provider_job_id, key, entry);
     addBucket(buckets.canonical_url, identity.canonicalUrl, entry);
     addBucket(buckets.company_title_location, identity.companyTitleLocation, entry);
   });
@@ -132,10 +134,12 @@ export function suppressHistoricalCandidate(candidate, index) {
 
   for (const type of MATCH_TYPES) {
     const key = identity[type === 'provider_job_id' ? 'providerJobId' : type === 'canonical_url' ? 'canonicalUrl' : 'companyTitleLocation'];
-    if (!key) continue;
-    const entries = index?.keys?.[type]?.[key] ?? [];
-    if (entries.length > 1) ambiguous.push({ matchType: type, matchKey: key, rowIndexes: entries.map((entry) => entry.rowIndex) });
-    else if (entries.length === 1) matches.push({ type, key, entry: entries[0] });
+    const keys = type === 'provider_job_id' ? [key, ...(candidate.identityAliases || [])].filter(Boolean).map(normalizeIdentityKey) : [key].filter(Boolean);
+    for (const matchKey of new Set(keys)) {
+      const entries = index?.keys?.[type]?.[matchKey] ?? [];
+      if (entries.length > 1) ambiguous.push({ matchType: type, matchKey, rowIndexes: entries.map((entry) => entry.rowIndex) });
+      else if (entries.length === 1) matches.push({ type, key: matchKey, entry: entries[0] });
+    }
   }
 
   const distinctRows = [...new Set(matches.map(({ entry }) => entry.rowIndex))];

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig, loadConversionPlan, DEFAULT_CONFIG_PATH } from './config.mjs';
-import { assertCandidate, buildPayloadRecord, candidateDedupKey, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
+import { assertCandidate, buildPayloadRecord, candidateDedupKey, candidateMatchesLedgerRow, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
 import { classifyCandidate } from './eligibility.mjs';
 import { annotateFreshness } from './freshness.mjs';
 import { deduplicateCandidates } from './dedup.mjs';
@@ -214,7 +214,12 @@ export function runPipeline({
     if (manifest) manifest.duplicate++;
   }
 
-  const classified = deduped.kept.map((candidate) => {
+  const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
+  const classified = deduped.kept.map((input) => {
+    const prior = opportunityRowsForRun.find((row) => candidateMatchesLedgerRow(input, row));
+    const priorAt = prior?.first_surfaced_at;
+    const usePrior = priorAt && Number.isFinite(Date.parse(priorAt)) && (!input.firstSeenAt || Date.parse(priorAt) < Date.parse(input.firstSeenAt));
+    const candidate = usePrior ? { ...input, firstSeenAt: priorAt } : input;
     const freshness = annotateFreshness(candidate, {
       now,
       hotMaximumHours: config.freshness.hotMaximumHours,
@@ -250,7 +255,6 @@ export function runPipeline({
     return entry;
   });
   const scoringCandidates = classified.filter((entry) => entry.eligibility.eligible && entry.freshness.eligible);
-  const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
   const suppressionCounts = {
     SUPPRESSED_ACTIONED: 0,
     SUPPRESSED_REJECTED: 0,
@@ -260,8 +264,7 @@ export function runPipeline({
   const selectionPool = [];
   for (const entry of classified) {
     if (!entry.eligibility.eligible || !entry.freshness.eligible) continue;
-    const key = candidateDedupKey(entry.candidate);
-    const row = opportunityRowsForRun.find((candidate) => candidate.dedup_key === key);
+    const row = opportunityRowsForRun.find((row) => candidateMatchesLedgerRow(entry.candidate, row));
     const suppression = entry.freshness.backfill && row
       ? { suppressed: true, code: 'SUPPRESSED_BACKFILL_ALREADY_SEEN' }
       : row ? suppressionFor(row, now) : { suppressed: false, code: '' };

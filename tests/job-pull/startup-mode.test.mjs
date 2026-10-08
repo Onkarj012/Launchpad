@@ -80,6 +80,9 @@ test('Startup mode prioritizes startup signals but preserves original-applicatio
   assert.ok(result.shortlist.every((candidate) => ['Startup', 'Scale-up', 'Mid-size', 'Enterprise'].includes(candidate.companyStage)));
   assert.ok(result.plannedNotionOperations.every((operation) => operation.resource === 'application' && operation.operation === 'create'));
   assert.ok(result.plannedNotionOperations.every((operation) => operation.payload.discoveryMode === 'Startup'));
+  for (const { payload } of result.plannedNotionOperations) {
+    for (const field of ['makeResume', 'applied', 'Make Resume', 'Applied?']) assert.equal(field in payload, false, field);
+  }
   assert.ok(result.plannedNotionOperations.some((operation) => operation.payload.fundingSignal?.under6Months === true));
   assert.ok(result.plannedNotionOperations.every((operation) => operation.provenance.startup.company));
   assert.equal(result.outcome.fatal, false);

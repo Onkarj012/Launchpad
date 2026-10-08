@@ -355,8 +355,10 @@ export async function crawlWorkflow({
   const durable = await crawlRun({ store, sourcePlans: composedPlans, priorState, config, clock, runId, schedule, signal, deadline });
   const data = readCrawlerRunData(store, runId);
   const persistedWorkflow = durable.telemetry?.workflow;
+  const jobsByKey = new Map(data.jobs.map((job) => [job.jobKey, job]));
   const records = data.observations.map((record) => ({
     ...record.raw,
+    firstSeenAt: jobsByKey.get(record.jobKey)?.firstSeenAt ?? null,
     observationKey: record.observationKey,
     jobKey: record.jobKey,
     sourceId: record.sourceId,

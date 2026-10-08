@@ -51,3 +51,19 @@ test('ledger pending, commit, abort, lock, and recovery states are durable', () 
   unlinkSync(lockPath);
   assert.equal(existsSync(lockPath), false);
 });
+
+test('reservation ledger persists aliases and rejects equivalent portal or legacy Workday identities', () => {
+  const ledgerPath = tempLedger();
+  reserveCandidates([candidate('https://ats.example.test/123', { jobId: '123', identityAliases: ['naukri|portal 9'] })], { path: ledgerPath });
+  assert.throws(() => reserveCandidates([candidate('https://portal.example.test/9', { provider: 'naukri', jobId: 'portal-9' })], { path: ledgerPath }), /existing ledger candidate/);
+  const oldPath = tempLedger();
+  reserveCandidates([candidate('https://ats.example.test/legacy', { provider: 'workday', jobId: 'Engineer_R-12345' })], { path: oldPath });
+  assert.throws(() => reserveCandidates([candidate('https://ats.example.test/new', { provider: 'workday', jobId: 'R-12345' })], { path: oldPath }), /existing ledger candidate/);
+});
+
+test('old reservation headers still suppress normalized Workday requisitions', () => {
+  const ledgerPath = tempLedger();
+  writeFileSync(ledgerPath, 'dedup_key\tjob_id\tcompany\trole\tnotion_page_url\tdate_pulled\tstate\trun_id\tcreated_at\tupdated_at\terror\tcanonical_url\tprovider\nworkday|engineer jr284401\tEngineer_JR284401\tExample\tAI Engineer\thttps://notion.test/1\t2026-07-14\tcommitted\told\t\t\t\thttps://old.example.test/1\tworkday\n');
+  assert.equal(validateLedger(ledgerPath).valid, true);
+  assert.throws(() => reserveCandidates([candidate('https://new.example.test/1', { provider: 'workday', jobId: 'JR284401' })], { path: ledgerPath }), /existing ledger candidate/);
+});

@@ -216,6 +216,9 @@ test('Remote mode records mode identity, readiness evidence, dedup, original app
 test('Remote payloads preserve provenance and explicitly report the additive schema integration gap', async () => {
   const run = await runRemoteMode({ clock: () => REMOTE_NOW, runId: 'remote-payload', sourceFunctions: { himalayas: () => ({ records: [remoteJob(1, { provider: 'himalayas', providerDateField: 'pubDate', providerDateEvidence: 'himalayas.pubDate' })], telemetry: { dateField: 'pubDate', pages: [{ page: 1, requested: 50, returned: 1 }] } }) } });
   const operation = run.plannedNotionOperations[0];
+  for (const { payload } of run.plannedNotionOperations) {
+    for (const field of ['makeResume', 'applied', 'Make Resume', 'Applied?']) assert.equal(field in payload, false, field);
+  }
   assert.equal(operation.payload.discoveryMode, 'Remote');
   assert.equal(operation.payload.schemaIntegrationRequired, true);
   assert.ok(operation.payload.missingFields.includes('employmentStructure'));

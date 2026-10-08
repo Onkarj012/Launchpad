@@ -32,6 +32,12 @@ export function classifyFreshness(candidateOrPostedAt, options = {}) {
   const activeMaximumDays = options.activeMaximumDays ?? 7;
   const backfillMaximumDays = options.backfillMaximumDays ?? 14;
   if (postedMs == null) {
+    const firstSeenMs = parseTimestamp(candidate?.firstSeenAt);
+    if (firstSeenMs != null) {
+      if (nowMs == null) throw new Error('freshness run clock must be a valid timestamp');
+      const ageHours = (nowMs - firstSeenMs) / 3_600_000;
+      if (ageHours > backfillMaximumDays * 24) return { eligible: false, window: FRESHNESS_WINDOWS.REJECTED, ageHours, code: 'FRESHNESS_OLDER_THAN_14D', evidence: candidate.firstSeenAt, ageSource: 'first-seen' };
+    }
     return {
       eligible: false,
       window: FRESHNESS_WINDOWS.VERIFY_QUEUE,

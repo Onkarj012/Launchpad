@@ -8,6 +8,8 @@ import {
   isShortlistEligibleFromResolution,
   normalizeOriginalListingResolverBudget,
 } from '../../crawler/original-listing-resolver.mjs';
+import { candidateDedupKey, candidateIdentityKeys, normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { deduplicateCandidates } from '../../job-pull/dedup.mjs';
 import { createHostSerializedRunner } from '../../crawler/bounded-concurrency.mjs';
 
 const jsonLdPage = (posting) => ({
@@ -577,4 +579,82 @@ test('resolver deadline aborts transport before releasing a same-host lock', asy
   assert.equal(aborted, 1);
   assert.equal(maximum, 1);
   assert.ok(results.every((result) => result.evidence.resolution.reason === 'deadline-exceeded'));
+});
+
+test('employer fingerprints prefer case-insensitive query IDs and reject generic paths', () => {
+  for (const key of ['jobId', 'job_id', 'jobid', 'reqId', 'req', 'requisitionId', 'career_job_req_id', 'jobReqId', 'gh_jid', 'id', 'job']) {
+    assert.equal(extractProviderFingerprint(`https://careers.acme-corp.com/jobdetails?${key.toUpperCase()}=R-1001`).requisitionId, 'R-1001', key);
+  }
+  for (const segment of ['jobdetails', 'job-details', 'details', 'job', 'jobs', 'careers', 'apply', 'search', 'view', 'index', 'en', 'en-us', 'software-engineer']) {
+    assert.equal(extractProviderFingerprint(`https://careers.acme-corp.com/${segment}`).requisitionId, null, segment);
+  }
+  assert.equal(extractProviderFingerprint('https://careers.acme-corp.com/job-details/R-1002').requisitionId, 'R-1002');
+  assert.equal(extractProviderFingerprint('https://careers.acme-corp.com/job/123?jobId=R-1001&id=999').requisitionId, 'R-1001');
+});
+
+test('Workday fingerprints extract suffix requisitions and retain unrecognized slugs', () => {
+  for (const [slug, id] of [['Engineer_JR284401', 'JR284401'], ['Engineer_R-12345', 'R-12345'], ['Engineer_REQ1234-1', 'REQ1234'], ['Engineer_12345-2', '12345'], ['Engineer_Pune', 'Engineer_Pune'], ['Engineer%202026', 'Engineer 2026']]) {
+    assert.equal(extractProviderFingerprint(`https://acme.myworkdayjobs.com/en-US/External/job/Pune/${slug}`).requisitionId, id);
+  }
+});
+
+test('Lever and Ashby application URLs retain the posting UUID', () => {
+  const id = '5ac21346-8e0c-4494-8e7a-3eb92ff77902';
+  for (const host of ['jobs.lever.co', 'jobs.ashbyhq.com']) {
+    for (const suffix of ['', '/apply', '/application', '/APPLICATION']) assert.equal(extractProviderFingerprint(`https://${host}/acme/${id}${suffix}`).requisitionId, id);
+  }
+});
+
+test('challenge headers and markers block while real job text with generic phrases resolves', async () => {
+  const url = 'https://boards.greenhouse.io/acme/jobs/123';
+  for (const response of [
+    { status: 200, headers: { 'cf-mitigated': 'challenge' }, body: '<html>Continue</html>' },
+    { status: 503, headers: new Map([['cf-mitigated', 'challenge']]), body: '<html>Continue</html>' },
+    { status: 200, headers: { 'CF-Mitigated': 'challenge' }, body: '<html>Continue</html>' },
+    { status: 200, body: '<html>Just a moment</html>' },
+    { status: 200, body: '<html>Access denied</html>' },
+    { status: 200, body: '<html><h1>Attention required</h1></html>' },
+  ]) {
+    const result = await createOriginalListingResolver({ transport: async () => response })(observation(url));
+    assert.equal(result.evidence.resolution.reason, 'blocked');
+  }
+  for (const description of ['Handle access denied errors in our APIs.', 'Attention required when reviewing changes.']) {
+    const response = jsonLdPage({ title: 'AI Engineer', description });
+    response.headers = { 'cf-mitigated': 'other' };
+    const result = await createOriginalListingResolver({ transport: async () => response })(observation(url));
+    assert.equal(result.status, 'resolved', description);
+  }
+});
+
+test('resolved portal leads retain their identity alias without collapsing employer requisitions', async () => {
+  const resolved = [];
+  for (const id of ['R-1001', 'R-1002']) {
+    const url = `https://careers.acme-corp.com/jobdetails?jobId=${id}`;
+    const lead = observation(`https://www.naukri.com/job-listings-${id}`, { provider: 'naukri', jobId: `portal-${id}`, providerJobId: `portal-${id}`, company: 'Acme Corp' });
+    const resolver = createOriginalListingResolver({ transport: async (target) => target === lead.canonicalUrl
+      ? { status: 302, headers: { location: url } }
+      : jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Corp' }, description: 'Build APIs.' }) });
+    const resolution = await resolver(lead);
+    assert.equal(resolution.status, 'resolved');
+    const candidate = normalizeCandidate(applyOriginalListingResolution(lead, resolution));
+    assert.equal(candidate.jobId, id);
+    assert.equal(resolution.patch.providerJobId, id);
+    assert.ok(candidateIdentityKeys(candidate).includes(candidateDedupKey(lead)));
+    const dedup = deduplicateCandidates([candidate], { ledgerRows: [{ dedup_key: candidateDedupKey(lead), state: 'committed' }] });
+    assert.equal(dedup.kept.length, 0);
+    resolved.push(candidate);
+  }
+  assert.notEqual(candidateDedupKey(resolved[0]), candidateDedupKey(resolved[1]));
+  assert.equal(deduplicateCandidates(resolved).kept.length, 2);
+});
+
+test('LinkedIn destination checks compare old and new Workday requisitions consistently', async () => {
+  const leadUrl = 'https://www.linkedin.com/jobs/view/1234567890';
+  const target = 'https://acme.myworkdayjobs.com/External/job/Pune/AI-Engineer_JR284401';
+  const resolver = createOriginalListingResolver({ transport: async (url) => url === leadUrl
+    ? { status: 302, headers: { location: target } }
+    : jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme' }, identifier: { value: 'JR284401' }, description: 'Build APIs.' }) });
+  const result = await resolver(observation(leadUrl, { company: 'Acme', requisitionId: 'AI-Engineer_JR284401' }));
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.patch.requisitionId, 'JR284401');
 });

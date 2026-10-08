@@ -217,3 +217,50 @@ test('recordSurfaced starts the seven-day cooldown only after shortlist inclusio
   assert.deepEqual(suppressionFor(row, '2026-07-25T12:00:00.000Z'), { suppressed: true, code: 'SUPPRESSED_COOLDOWN_7D' });
   assert.deepEqual(suppressionFor(row, '2026-07-25T12:00:01.000Z'), { suppressed: false, code: '' });
 });
+
+test('legacy Workday rows and portal aliases retain suppression and surface counts', () => {
+  for (const overrides of [
+    { provider: 'workday', jobId: 'JR284401' },
+    { provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'] },
+  ]) {
+    const ledgerPath = tempLedger();
+    const item = candidate('https://ats.example.test/new', { ...overrides, evidence: { freshness: { kind: 'workday-startDate' } } });
+    const old = candidate('https://portal.example.test/old', overrides.provider === 'workday'
+      ? { provider: 'workday', jobId: 'Engineer_JR284401' }
+      : { provider: 'naukri', jobId: 'portal-9' });
+    recordSurfaced([old], { path: ledgerPath, now: NOW });
+    markAction({ key: candidateDedupKey(old), state: 'applied', path: ledgerPath, now: NOW });
+    const pipeline = runPipeline({ config: loadConfig(), now: NOW, runId: 'alias-check', opportunityLedgerPath: ledgerPath, sources: [{ candidates: [item], manifest: { sourceId: item.source } }] });
+    assert.equal(pipeline.suppression.byCode.SUPPRESSED_ACTIONED, 1);
+    recordSurfaced([item], { path: ledgerPath, now: NOW });
+    const rows = readOpportunityLedger(ledgerPath).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].times_surfaced, '2');
+    const replay = repairMissingSurfaced([item], { path: ledgerPath, committedAtForKey: () => { throw new Error('must not create another row'); } });
+    assert.equal(replay.rows.length, 0);
+  }
+});
+
+test('persisted aliases suppress portal reruns and old first-surfaced dates reject undated jobs', () => {
+  const ledgerPath = tempLedger();
+  recordSurfaced([candidate('https://ats.example.test/123', { provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'] })], { path: ledgerPath, now: '2026-06-01T12:00:00.000Z' });
+  const item = candidate('https://portal.example.test/9', { provider: 'naukri', jobId: 'portal-9', postedAt: null });
+  const result = runPipeline({ config: loadConfig(), now: NOW, runId: 'first-seen-check', opportunityLedgerPath: ledgerPath, sources: [{ candidates: [item], manifest: { sourceId: item.source } }] });
+  assert.equal(result.exclusionAudit.gate[0].code, 'FRESHNESS_OLDER_THAN_14D');
+  assert.equal(result.exclusionAudit.gate[0].evidence, '2026-06-01T12:00:00.000Z');
+  assert.equal(result.verifyQueue.length, 0);
+  assert.equal(item.postedAt, null);
+});
+
+test('old opportunity headers remain readable and aliases can receive explicit actions', () => {
+  const ledgerPath = tempLedger();
+  writeFileSync(ledgerPath, 'dedup_key\tcompany\trole\tcanonical_url\tprovider\tfirst_surfaced_at\tlast_surfaced_at\ttimes_surfaced\taction_state\taction_at\nworkday|engineer r 12345\tExample\tAI Engineer\thttps://old.example.test/1\tworkday\t2026-07-01T12:00:00.000Z\t2026-07-01T12:00:00.000Z\t1\tnone\t\n');
+  const item = candidate('https://new.example.test/1', { provider: 'workday', jobId: 'R-12345', identityAliases: ['naukri|portal 9'] });
+  recordSurfaced([item], { path: ledgerPath, now: NOW });
+  markAction({ key: 'naukri|portal 9', state: 'applied', path: ledgerPath, now: NOW });
+  const rows = readOpportunityLedger(ledgerPath).rows;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].dedup_key, 'workday|engineer r 12345');
+  assert.equal(rows[0].first_surfaced_at, '2026-07-01T12:00:00.000Z');
+  assert.equal(rows[0].action_state, 'applied');
+});
