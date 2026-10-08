@@ -1,7 +1,7 @@
 import { scoredFixture } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../../job-pull/config.mjs';
@@ -241,10 +241,10 @@ test('legacy Workday rows and portal aliases retain suppression and surface coun
   }
 });
 
-test('persisted aliases suppress portal reruns and old first-surfaced dates reject undated jobs', () => {
+test('candidate aliases match old ledger first-surfaced dates and reject undated jobs', () => {
   const ledgerPath = tempLedger();
-  recordSurfaced([candidate('https://ats.example.test/123', { provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'] })], { path: ledgerPath, now: '2026-06-01T12:00:00.000Z' });
-  const item = candidate('https://portal.example.test/9', { provider: 'naukri', jobId: 'portal-9', postedAt: null });
+  recordSurfaced([candidate('https://portal.example.test/9', { provider: 'naukri', jobId: 'portal-9' })], { path: ledgerPath, now: '2026-06-01T12:00:00.000Z' });
+  const item = candidate('https://ats.example.test/123', { provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'], postedAt: null });
   const result = runPipeline({ config: loadConfig(), now: NOW, runId: 'first-seen-check', opportunityLedgerPath: ledgerPath, sources: [{ candidates: [item], manifest: { sourceId: item.source } }] });
   assert.equal(result.exclusionAudit.gate[0].code, 'FRESHNESS_OLDER_THAN_14D');
   assert.equal(result.exclusionAudit.gate[0].evidence, '2026-06-01T12:00:00.000Z');
@@ -252,15 +252,47 @@ test('persisted aliases suppress portal reruns and old first-surfaced dates reje
   assert.equal(item.postedAt, null);
 });
 
-test('old opportunity headers remain readable and aliases can receive explicit actions', () => {
+test('old opportunity headers remain readable and normalized keys can receive explicit actions', () => {
   const ledgerPath = tempLedger();
   writeFileSync(ledgerPath, 'dedup_key\tcompany\trole\tcanonical_url\tprovider\tfirst_surfaced_at\tlast_surfaced_at\ttimes_surfaced\taction_state\taction_at\nworkday|engineer r 12345\tExample\tAI Engineer\thttps://old.example.test/1\tworkday\t2026-07-01T12:00:00.000Z\t2026-07-01T12:00:00.000Z\t1\tnone\t\n');
   const item = candidate('https://new.example.test/1', { provider: 'workday', jobId: 'R-12345', identityAliases: ['naukri|portal 9'] });
   recordSurfaced([item], { path: ledgerPath, now: NOW });
-  markAction({ key: 'naukri|portal 9', state: 'applied', path: ledgerPath, now: NOW });
+  markAction({ key: 'workday|r 12345', state: 'applied', path: ledgerPath, now: NOW });
   const rows = readOpportunityLedger(ledgerPath).rows;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dedup_key, 'workday|engineer r 12345');
   assert.equal(rows[0].first_surfaced_at, '2026-07-01T12:00:00.000Z');
   assert.equal(rows[0].action_state, 'applied');
+});
+
+test('surfacing writes the exact pre-alias opportunity header', () => {
+  const ledgerPath = tempLedger();
+  const item = candidate('https://ats.example.test/123', { identityAliases: ['naukri|portal 9'] });
+  recordSurfaced([item], { path: ledgerPath, now: NOW });
+  recordSurfaced([item], { path: ledgerPath, now: NOW });
+  const content = readFileSync(ledgerPath, 'utf8');
+  assert.equal(content.split('\n')[0], 'dedup_key\tcompany\trole\tcanonical_url\tprovider\tfirst_surfaced_at\tlast_surfaced_at\ttimes_surfaced\taction_state\taction_at');
+  assert.equal(content.includes('identity_aliases'), false);
+  assert.equal(content.includes('naukri|portal 9'), false);
+});
+
+test('fresh undated roles do not inherit old dates from another company ID or alias', () => {
+  for (const dedupKey of ['greenhouse|123', 'naukri|portal 9']) {
+    const item = candidate('https://ats.example.test/fresh', {
+      company: 'Acme', provider: 'greenhouse', jobId: '123', postedAt: null,
+      firstSeenAt: NOW, identityAliases: ['naukri|portal 9'],
+    });
+    const result = runPipeline({
+      config: loadConfig(), now: NOW, runId: 'company-first-seen-check',
+      opportunityLedgerRows: [{
+        dedup_key: dedupKey, company: 'Globex', first_surfaced_at: '2026-06-01T12:00:00.000Z',
+        last_surfaced_at: '2026-06-01T12:00:00.000Z', action_state: 'none',
+      }],
+      sources: [{ candidates: [item], manifest: { sourceId: item.source } }],
+    });
+    assert.equal(result.exclusionAudit.gate.some((entry) => entry.code === 'FRESHNESS_OLDER_THAN_14D'), false);
+    assert.equal(result.verifyQueue.length, 1);
+    assert.equal(result.verifyQueue[0].company, 'Acme');
+    assert.equal(result.counts.suppressed, 0);
+  }
 });

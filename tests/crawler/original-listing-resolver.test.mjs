@@ -593,7 +593,7 @@ test('employer fingerprints prefer case-insensitive query IDs and reject generic
 });
 
 test('Workday fingerprints extract suffix requisitions and retain unrecognized slugs', () => {
-  for (const [slug, id] of [['Engineer_JR284401', 'JR284401'], ['Engineer_R-12345', 'R-12345'], ['Engineer_REQ1234-1', 'REQ1234'], ['Engineer_12345-2', '12345'], ['Engineer_Pune', 'Engineer_Pune'], ['Engineer%202026', 'Engineer 2026']]) {
+  for (const [slug, id] of [['Software-Engineer_JR284401', 'JR284401'], ['Engineer_R-12345', 'R-12345'], ['Analyst_R-12345-1', 'R-12345'], ['Engineer_REQ1234-1', 'REQ1234'], ['Engineer_12345-2', '12345'], ['Engineer_Pune', 'Engineer_Pune'], ['Engineer%202026', 'Engineer 2026'], ['Senior%20Engineer%202', 'Senior Engineer 2'], ['Engineer_2026', 'Engineer_2026']]) {
     assert.equal(extractProviderFingerprint(`https://acme.myworkdayjobs.com/en-US/External/job/Pune/${slug}`).requisitionId, id);
   }
 });
@@ -614,11 +614,13 @@ test('challenge headers and markers block while real job text with generic phras
     { status: 200, body: '<html>Just a moment</html>' },
     { status: 200, body: '<html>Access denied</html>' },
     { status: 200, body: '<html><h1>Attention required</h1></html>' },
+    { status: 200, body: `<html><h1>Attention Required</h1>${'x'.repeat(5_000)}</html>` },
+    { status: 200, body: `<html><h1>Access denied</h1>${'x'.repeat(5_000)}</html>` },
   ]) {
     const result = await createOriginalListingResolver({ transport: async () => response })(observation(url));
     assert.equal(result.evidence.resolution.reason, 'blocked');
   }
-  for (const description of ['Handle access denied errors in our APIs.', 'Attention required when reviewing changes.']) {
+  for (const description of ['Responsibilities: handle access denied errors in our APIs. Qualifications: Python experience.', 'Attention required when reviewing changes.']) {
     const response = jsonLdPage({ title: 'AI Engineer', description });
     response.headers = { 'cf-mitigated': 'other' };
     const result = await createOriginalListingResolver({ transport: async () => response })(observation(url));

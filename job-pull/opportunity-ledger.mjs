@@ -2,13 +2,13 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, u
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { candidateDedupKey, candidateIdentityKeys, candidateMatchesLedgerRow, candidateRequisitionKey, canonicalizeUrl, normalizedKey } from './candidate.mjs';
+import { candidateDedupKey, candidateMatchesLedgerRow, candidateRequisitionKey, canonicalizeUrl, normalizedKey } from './candidate.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_OPPORTUNITY_LEDGER_PATH = path.resolve(MODULE_DIR, '../career-ops/data/opportunity-ledger.tsv');
 export const OPPORTUNITY_COLUMNS = [
   'dedup_key', 'company', 'role', 'canonical_url', 'provider',
-  'first_surfaced_at', 'last_surfaced_at', 'times_surfaced', 'action_state', 'action_at', 'identity_aliases',
+  'first_surfaced_at', 'last_surfaced_at', 'times_surfaced', 'action_state', 'action_at',
 ];
 export const ACTION_STATES = ['none', 'applied', 'contacted', 'interviewing', 'rejected'];
 const ACTIONED_STATES = new Set(['applied', 'contacted', 'interviewing']);
@@ -75,8 +75,8 @@ export function readOpportunityLedger(ledgerPath = DEFAULT_OPPORTUNITY_LEDGER_PA
   const lines = content.split('\n').filter((line, index, array) => line.length || index < array.length - 1);
   if (!lines.length || !lines[0].trim()) return { path: ledgerPath, columns: OPPORTUNITY_COLUMNS, rows: [], missing: false };
   const columns = splitLine(lines[0]);
-  const recognized = (columns.length === OPPORTUNITY_COLUMNS.length || columns.length === OPPORTUNITY_COLUMNS.length - 1)
-    && columns.every((column, index) => OPPORTUNITY_COLUMNS[index] === column);
+  const recognized = columns.length === OPPORTUNITY_COLUMNS.length
+    && OPPORTUNITY_COLUMNS.every((column, index) => columns[index] === column);
   if (!recognized) throw new OpportunityLedgerError(`Unsupported opportunity ledger header in ${ledgerPath}`);
   const rows = lines.slice(1).filter((line) => line.trim()).map((line) => rowFromValues(splitLine(line)));
   return { path: ledgerPath, columns, rows, missing: false };
@@ -129,7 +129,6 @@ function newSurfacedRow(candidate, key, now) {
     times_surfaced: 1,
     action_state: 'none',
     action_at: null,
-    identity_aliases: JSON.stringify(candidateIdentityKeys(candidate)),
   };
 }
 
@@ -162,7 +161,6 @@ export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUN
         if (!row.canonical_url && candidate.canonicalUrl) row.canonical_url = candidate.canonicalUrl;
         if (!row.provider && candidate.provider) row.provider = candidate.provider;
       }
-      row.identity_aliases = JSON.stringify([...new Set([...JSON.parse(row.identity_aliases || '[]'), ...candidateIdentityKeys(candidate)])]);
       recorded.push(row);
     }
     atomicWrite(ledgerPath, rows);
