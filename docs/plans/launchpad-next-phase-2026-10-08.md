@@ -1,4 +1,4 @@
-# Launchpad next phase: from 4 to 10+ verified roles a day
+# Launchpad next phase: more verified roles across Pune, startups and remote
 
 Prepared 8 October 2026, IST, on branch `fix/pipeline-yield` (HEAD `a40bbe3`, 923/923 tests). This is a plan. Nothing in it has been started.
 
@@ -26,11 +26,54 @@ What the run data says, in order of weight:
 
 ## Goal and how we measure it
 
-**Target for this phase:** on 5 of 7 consecutive IST days, at least 10 shortlisted roles from at least 6 employers, every one verified (JD, employer route, live, full-time or paid internship, fresh, Pune-area or India-eligible remote), with at least 2 Strict matches a day.
+**Three modes, each with its own results and shortlist.** One shared crawl each morning feeds three selectors. Each produces a full results list (every verified, scored role) and a shortlist. Onkar does the final shortlisting by hand.
 
-**Guardrails that do not move:** fail-closed gates, two-per-company cap (unless Onkar changes it), no auto-apply, draft-only outreach, v5-only writes, user-owned checkboxes untouched.
+| Mode | Covers | Daily shortlist target |
+|---|---|---|
+| Pune | Pune city and PCMC, onsite or hybrid, any company size | 10+ from 6+ employers |
+| Startup | Startups in Pune or remote from India, seeded from YC, VC portfolios and funding news | 5+ from 4+ employers |
+| Remote | Remote roles open to India, from Indian or foreign companies | 5+ from 4+ employers |
+
+**Target for this phase:** each mode meets its target on 5 of 7 consecutive IST days, every role verified (JD, employer route, live, allowed employment, fresh, location rule met), with at least 2 Strict matches a day across modes. The two-per-company cap applies within each mode's shortlist.
+
+**Guardrails that do not move:** fail-closed gates, two-per-company cap per shortlist, no auto-apply, draft-only outreach, v5-only writes, user-owned checkboxes untouched.
 
 **Every run reports:** fetched, Pune or India-eligible, passed gates, ready, scored, shortlisted, employers represented, Strict count, and yield per source per request. A source that adds requests without adding ready roles gets paused by the existing `sourceYield` rules.
+
+## Scope rules for this phase
+
+### Pune area
+
+A listing counts as Pune when its location names Pune or any of these areas, even without the word "Pune":
+
+- **Already accepted:** Pune metro, Pimpri-Chinchwad, PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Viman Nagar, Magarpatta, Talawade.
+- **To add:** Kalyani Nagar, Koregaon Park, Yerwada, Hadapsar, Mundhwa, Aundh, Pashan, Balewadi, Bavdhan, Kothrud, Shivajinagar, Senapati Bapat Road, Wagholi, Kondhwa, Undri, Pimpri, Chinchwad, Pimple Saudagar, Nigdi, Bhosari, Moshi, Sus, Maan, Marunji.
+- **Out:** the outer industrial belt (Chakan, Talegaon, Ranjangaon, Shikrapur).
+
+Tested on 8 October: "Kalyani Nagar, Maharashtra", "Hadapsar", "Yerwada", "Balewadi High Street", "Pimpri" and "Chinchwad" are rejected today. Each new area gets a regression test. Short names that collide with other places are matched only alongside "Maharashtra", "MH" or a Pune pin code (411xxx, 412xxx).
+
+### Remote from India and abroad
+
+- Pass when the listing or JD names India or APAC (current rule).
+- **New:** also pass "worldwide", "anywhere" or "global" when the JD has no country limit, no work-authorization requirement and no US-hours-only or overnight-only requirement. These roles carry the label `Remote: worldwide, no country limit` so Onkar can see the basis.
+- Still rejected: US, Canada, EU, UK or LATAM only; foreign work authorization required; US-hours-only overlap.
+- Run 8 October baseline: 766 remote roles rejected as region-restricted (mostly correct), 198 as unclear, including "anywhere in the world" (24), "home based - worldwide" (18) and bare "Remote" (40).
+
+### Global remote employment lane (EOR and contract)
+
+Foreign companies often hire in India through an employer of record (Deel, Remote.com, Oyster and others) or as long-term contractors. These go in a **separate lane with its own label, list and shortlist**. They never count toward the Pune, Startup or Remote full-time targets.
+
+| | Admitted | Label |
+|---|---|---|
+| EOR employment | Role states India hiring through an employer of record, with salary | `EOR` |
+| Long-term contract | Full-time hours, ongoing or 6+ months, stated fixed pay (monthly or hourly), hired by the company itself | `Contract` |
+| Still rejected | Part-time, freelance gigs, per-task or commission-only pay, unpaid trials, equity-only, training fees, bonds, staffing-agency resale with no named end client | — |
+
+This needs a change to `master_prompt.md` "Employment type & must-haves", which today drops all contract roles. The exact wording goes to Onkar for approval before any code changes.
+
+### Timezone
+
+Unchanged: IST-compatible or unspecified hours pass; US-hours-only and overnight-only roles are dropped.
 
 ## Workstreams
 
@@ -80,6 +123,7 @@ Done when: every configured source ends each run as `ok`, `empty` with a reason,
 
 ### D. Audit the gates for false rejects, without loosening them
 
+0. Add the Pune areas listed under scope rules, with tests.
 1. Pull 100 random rejects per code (`TITLE_OFF_TARGET`, `TITLE_SENIORITY_REJECT`, `GEO_REMOTE_SCOPE_UNCLEAR`, `GEO_NOT_VERIFIED`, `EXPERIENCE_HARD_MIN_3_PLUS`) and label each as right or wrong by hand.
 2. Check multi-city listings ("Bengaluru, Pune, Hyderabad"), Pune suburbs, "Maharashtra" only, and titles like Analyst, Consultant, Associate, Engineer I/II, Developer with a tech prefix.
 3. Fix only proven false rejects, each with a regression test built from the real example.
@@ -107,9 +151,27 @@ Out of this phase by decision: Pune community events and Capgemini internal move
 
 Done when: each trialled avenue has a one-week yield number and a keep or drop decision.
 
-### F. Make the shortlist usable each morning
+### S. Startups as a first-class mode
 
-1. Each shortlisted role gets a one-line "why it fits" from the scorer evidence, the shift or location caveats, and the apply link.
+1. Run `daily --mode startup` every day alongside Pune and Remote, from the same crawl.
+2. Wire the startup company-careers lane into the daily run (also C2).
+3. Grow the VC watchlist: Antler and a16z are listed with no companies; add YC India, Z47 (Matrix), Nexus, Kalaari, 100X.VC, Speciale Invest and Together Fund, then discover each portfolio company's board through workstream A.
+4. Funded-startup watch (from E) feeds new startups into the registry weekly.
+
+Done when: the Startup shortlist meets its target on 3 consecutive days with roles from at least 4 startups.
+
+### R. Remote as a first-class mode
+
+1. Run `daily --mode remote` every day.
+2. Apply the new worldwide rule and its label, with tests built from real rejected listings.
+3. Add remote-first companies known to hire in India to the registry (seeded from Himalayas, We Work Remotely and Remotive company pages and the research doc), verified like any other board.
+4. Build the separate EOR and contract lane after Onkar approves the `master_prompt.md` wording.
+
+Done when: the Remote shortlist meets its target on 3 consecutive days, and the EOR/contract lane shows its roles separately with zero leakage into full-time shortlists.
+
+### F. Make the shortlists usable each morning
+
+1. Each morning Onkar gets, per mode, the full verified results list and the shortlist, so he can do the final shortlisting by hand. Each shortlisted role gets a one-line "why it fits" from the scorer evidence, the shift or location caveats, and the apply link.
 2. Resume path: a checked row builds a tailored one-page PDF on this Mac (`resumes/sources/<date>/`, `resumes/output/<date>/`).
 3. Outreach drafts for the hiring manager or recruiter where one is identifiable, draft-only.
 
@@ -131,9 +193,9 @@ The release gates in `docs/STATUS.md` remain: rotated Notion credential, live fo
 
 | Day (IST) | Work |
 |---|---|
-| Day 1 | A1 to A2 research in parallel (two agents); D1 sampling; C3 web-discovery diagnosis |
+| Day 1 | A1 to A2 research in parallel (two agents, now including startups and remote-first companies); D0 Pune areas; D1 sampling; C3 web-discovery diagnosis; draft the EOR/contract wording for Onkar |
 | Day 2 | A3 probing and A4 registration (first 100 boards); D2 to D3 fixes; C2 wiring |
-| Day 3 | Bounded run; B1 cross-match build; E trials start (HN, hiring posts, YC) |
+| Day 3 | First bounded run in all three modes; B1 cross-match build; R2 worldwide rule; E trials start (HN, hiring posts, YC) |
 | Day 4 | A second batch (to 150+); B2 to B4; C1 structured career pages |
 | Day 5 | Bounded run and review; F1 morning format; E outreach drafts |
 | Days 6 to 12 | G shadow week; E keep or drop decisions at the end |
@@ -150,12 +212,15 @@ Bounded runs stay at one or two a day to respect LinkedIn and Glassdoor limits.
 
 ## Decisions (Onkar, 8 October 2026)
 
-1. **Company cap:** keep two per company.
+1. **Company cap:** keep two per company, applied within each mode's shortlist.
 2. **Paid sources:** Apify rescue for Naukri, Foundit and Hirist, Onkar-invoked, with a per-run cost cap. TheirStack waits until free-source yield is measured.
 3. **Onkar in the loop:** hiring-post capture and the referral map, about 20 minutes a day. Pune communities and Capgemini internal moves are out of this phase.
-4. **Internships and apprenticeships:** add a separate paid-internship and apprenticeship lane, counted apart from full-time.
-5. **Geography:** Pune-area onsite or hybrid, plus India-eligible remote. No Mumbai or Navi Mumbai.
-6. **Branch and PR:** open. Default is to continue on `fix/pipeline-yield` and open a PR after workstream D.
+4. **Internships and apprenticeships:** a separate paid-internship and apprenticeship lane, counted apart from full-time.
+5. **Pune area:** city and PCMC areas listed under scope rules; outer industrial belt excluded.
+6. **Remote:** India or APAC as today, plus worldwide roles whose JD shows no country limit, labelled.
+7. **EOR and contract:** allowed in a separate, clearly labelled lane with the boundary above; never mixed with full-time shortlists. Needs `master_prompt.md` approval.
+8. **Output:** results and a shortlist for each of Pune, Startup and Remote; Onkar does the final shortlisting by hand.
+9. **Branch and PR:** open. Default is to continue on `fix/pipeline-yield` and open a PR after workstream D.
 
 ## Evidence
 
