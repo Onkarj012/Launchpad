@@ -70,6 +70,13 @@
       "latin america only"
     ]
   },
+  "companies": {
+    "excluded": ["Capgemini", "Capgemini Technology Services"],
+    "servicesMajors": [
+      "TCS", "Tata Consultancy Services", "Infosys", "Wipro", "Cognizant", "Cognizant Technology Solutions",
+      "Accenture", "HCL", "HCLTech", "Tech Mahindra", "LTIMindtree", "LTI Mindtree"
+    ]
+  },
   "employment": {
     "allowedTypes": ["full-time", "internship"],
     "internshipRequiresExplicitPaid": true,

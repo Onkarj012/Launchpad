@@ -3,7 +3,7 @@
   "$id": "https://job-search.local/schema/job-pull-policy-v2.json",
   "title": "Job Pull Policy V2",
   "type": "object",
-  "required": ["schemaVersion", "timezone", "run", "applicationShortlist", "freshness", "geo", "employment", "experience", "roles", "sources", "dedup"],
+  "required": ["schemaVersion", "timezone", "run", "applicationShortlist", "freshness", "geo", "companies", "employment", "experience", "roles", "sources", "dedup"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "JobPullPolicyV2" },
@@ -79,6 +79,15 @@
           }
         },
         "remoteDeniedScopes": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "companies": {
+      "type": "object",
+      "required": ["excluded", "servicesMajors"],
+      "properties": {
+        "excluded": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "servicesMajors": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false
     },

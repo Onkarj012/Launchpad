@@ -336,18 +336,37 @@ export function classifyLiveness(candidate) {
   return { pass: true, code: 'LIVENESS_NOT_VERIFIED', evidence: value.evidence || 'Not Verified' };
 }
 
+// Match configured employers without treating unrelated names as substrings.
+function employerRuleKey(company) {
+  return normalizedKey(company).replace(/\b(?:inc|ltd|limited|pvt|private|llc|corp|corporation|technologies|technology|solutions|india|co)\b/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Apply employer exclusions before a role can enter either eligibility tier.
+function classifyCompany(candidate, policy) {
+  const key = employerRuleKey(candidate.company);
+  if (key && policy.companies.excluded.some((company) => employerRuleKey(company) === key)) {
+    return { pass: false, code: 'COMPANY_EXCLUDED', evidence: candidate.company };
+  }
+  const aiOrProductTitle = /\b(ai|artificial intelligence|llm|genai|gen ai|generative ai|agentic|machine learning|ml|deep learning|computer vision|nlp|data scientist|product engineer|product engineering)\b/i.test(candidate.title || '');
+  if (key && policy.companies.servicesMajors.some((company) => employerRuleKey(company) === key) && !aiOrProductTitle) {
+    return { pass: false, code: 'SERVICES_MAJOR_GENERIC_ROLE', evidence: candidate.title || null };
+  }
+  return { pass: true, code: 'COMPANY_ALLOWED', evidence: candidate.company || null };
+}
+
 export function classifyCandidate(candidate, policy) {
+  const company = classifyCompany(candidate, policy);
   const geo = classifyGeo(candidate, policy);
   const employment = classifyEmployment(candidate, policy);
   const salary = classifySalary(candidate, policy);
   const experience = classifyExperience(candidate, policy);
   const title = classifyTitle(candidate);
   const liveness = classifyLiveness(candidate);
-  const hardPass = geo.pass && employment.pass && salary.pass && experience.pass && title.pass && liveness.pass;
+  const hardPass = company.pass && geo.pass && employment.pass && salary.pass && experience.pass && title.pass && liveness.pass;
   const strict = hardPass && geo.strict !== false && title.strict && experience.strict;
   const relaxed = hardPass && !strict && (geo.strict === false || title.relaxed || experience.relaxed);
-  const reasons = [geo, employment, salary, experience, title, liveness].filter((result) => !result.pass).map((result) => result.code);
-  const evidenceCodes = [geo.code, employment.code, salary.code, experience.code, title.code, liveness.code];
+  const reasons = [company, geo, employment, salary, experience, title, liveness].filter((result) => !result.pass).map((result) => result.code);
+  const evidenceCodes = [company.code, geo.code, employment.code, salary.code, experience.code, title.code, liveness.code];
   const relaxations = [];
   if (hardPass && !title.strict) relaxations.push('adjacent-title');
   if (hardPass && experience.manualReview) relaxations.push('experience-not-stated');
@@ -360,6 +379,7 @@ export function classifyCandidate(candidate, policy) {
     tier: strict ? 'strict' : relaxed ? 'relaxed' : null,
     roleFamily,
     workMode: geo.mode,
+    company,
     geo,
     employment,
     salary,
