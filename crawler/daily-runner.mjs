@@ -327,6 +327,7 @@ export const CRAWLER_SOURCE_TO_NORMAL_LANE = Object.freeze({
   'ats-batch-2': 'expanded-ats',
   'ats-enterprise': 'expanded-ats',
   'career-sites': 'structured-career-pages',
+  'structured-career-pages': 'structured-career-pages',
   'remote-mode': 'native-remote-feeds',
   'startup-company-careers': 'startup-company-careers',
   'indeed-inbox': 'indeed',
@@ -435,7 +436,9 @@ export function crawlerLaneFixtures(result) {
       manifest: {
         sourceId: laneId,
         sourceIds: lane.sourceIds,
-        status: fixtureStatus(lane.candidates, failures),
+        status: lane.sourceIds.some((sourceId) => result.sourceTelemetry?.[sourceId]?.detail?.status === 'unavailable')
+          ? 'unavailable'
+          : fixtureStatus(lane.candidates, failures),
         attempted: true,
         fetched: lane.candidates.length,
         errors: failureMessages(failures),
