@@ -112,12 +112,13 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
 
 // Render daily mode results and their shortlists without changing run state.
 export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? result.run?.startedAt ?? new Date().toISOString() } = {}) {
-  const modes = [
+  const targetModes = [
     ['normal', 'Pune'], ['startup', 'Startup'], ['remote', 'Remote'],
   ];
+  const modes = [...targetModes, ['eorContract', 'EOR / Contract']];
   const modeRuns = result.modes ?? {};
   const uniqueResults = new Map(modes.flatMap(([mode]) => (modeRuns[mode]?.results ?? []).map((role) => [role.canonicalUrl ?? role.url, role])));
-  const allShortlists = modes.flatMap(([mode]) => modeRuns[mode]?.shortlist ?? (result.mode === mode ? result.shortlist ?? [] : []));
+  const allShortlists = targetModes.flatMap(([mode]) => modeRuns[mode]?.shortlist ?? (result.mode === mode ? result.shortlist ?? [] : []));
   const uniqueShortlist = [...new Map(allShortlists.map((role) => [role.canonicalUrl ?? role.url, role])).values()];
   const lifecycle = result.funnel?.lifecycle ?? {};
   const counts = result.counts ?? {};
