@@ -546,6 +546,7 @@ export function normalizeRegistryBoard(raw = {}) {
     site: site || null,
     company: clean(raw.company) || titleCaseSlug(slug || board || tenant) || id,
     url: url || null,
+    careerPageUrl: clean(raw.careerPageUrl),
     endpoint: clean(raw.endpoint),
     country: clean(raw.country),
     indiaFirst: raw.indiaFirst === true,
