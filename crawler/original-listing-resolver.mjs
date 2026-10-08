@@ -339,7 +339,7 @@ export function extractProviderFingerprint(value) {
     const last = segments[segments.length - 1];
     if (last && !/^(en-us|careers|job|jobs)$/i.test(last)) {
       const slug = decodeURIComponent(last);
-      requisitionId = slug.match(/_([A-Za-z]{0,4}-?\d+)(?:-\d+)?$/)?.[1] ?? slug;
+      requisitionId = normalizeRequisitionId('workday', slug);
     }
   } else if (classified.provider === 'employer-career') {
     const last = segments[segments.length - 1];
@@ -509,7 +509,7 @@ function looksBlocked(response, status) {
   if (!body) return false;
   if (CAPTCHA_HINT.test(body) && body.length < 50_000) return true;
   const jobContent = /JobPosting|jobPostingInfo|job[-_]?(?:title|description)|\b(?:responsibilities|qualifications|requirements|years? of experience)\b/i.test(body);
-  return /\b(?:access\s+denied|attention\s+required)\b/i.test(body) && stripHtmlToText(body).length < 2_000 && !jobContent;
+  return /\b(?:access\s+denied|attention\s+required)\b/i.test(body) && !jobContent;
 }
 
 function looksMalformed(response, status) {

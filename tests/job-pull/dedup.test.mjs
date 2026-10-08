@@ -59,11 +59,40 @@ test('old Workday slug keys suppress new requisition IDs without merging distinc
   }
 });
 
-test('portal and ATS aliases deduplicate in either order and from persisted ledgers', () => {
+test('portal and ATS aliases deduplicate in either order and match old ledger keys', () => {
   const resolved = candidate({ provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|portal 9'] });
   const portal = candidate({ provider: 'naukri', jobId: 'portal-9' });
   const direct = candidate({ provider: 'greenhouse', jobId: '123' });
   for (const pair of [[resolved, portal], [portal, resolved], [resolved, direct], [direct, resolved, portal]]) assert.equal(deduplicateCandidates(pair).kept.length, 1);
-  assert.equal(deduplicateCandidates([portal], { ledgerRows: [{ dedup_key: 'greenhouse|123', identity_aliases: JSON.stringify(resolved.identityAliases), state: 'committed' }] }).kept.length, 0);
-  assert.equal(deduplicateCandidates([portal], { ledgerRows: [{ dedup_key: 'greenhouse|123', identity_aliases: JSON.stringify(resolved.identityAliases), state: 'aborted' }] }).kept.length, 1);
+  assert.equal(deduplicateCandidates([resolved], { ledgerRows: [{ dedup_key: 'naukri|portal 9', state: 'committed' }] }).kept.length, 0);
+  assert.equal(deduplicateCandidates([resolved], { ledgerRows: [{ dedup_key: 'naukri|portal 9', state: 'aborted' }] }).kept.length, 1);
+});
+
+test('provider ID and alias collisions require compatible companies', () => {
+  const acme = candidate({ provider: 'greenhouse', jobId: '123', company: 'Acme', identityAliases: ['naukri|portal 9'] });
+  const globex = candidate({ provider: 'greenhouse', jobId: '123', company: 'Globex', identityAliases: ['naukri|portal 8'] });
+  const portal = candidate({ provider: 'naukri', jobId: 'portal-9', company: 'Globex' });
+  const result = deduplicateCandidates([acme, globex, portal]);
+  assert.equal(result.kept.length, 3);
+  assert.deepEqual(result.kept.find((item) => item.company === 'Acme').identityAliases, acme.identityAliases);
+  for (const row of [
+    { dedup_key: 'greenhouse|123', company: 'Globex', state: 'committed' },
+    { provider: 'greenhouse', job_id: '123', company: 'Globex', state: 'pending' },
+    { dedup_key: 'naukri|portal 9', company: 'Globex', state: 'committed' },
+  ]) assert.equal(deduplicateCandidates([acme], { ledgerRows: [row] }).kept.length, 1);
+  const snowflake = candidate({ provider: 'greenhouse', jobId: '123', company: 'Snowflake' });
+  assert.equal(deduplicateCandidates([snowflake, { ...snowflake, company: 'Snowflake Inc.' }]).kept.length, 1);
+  assert.equal(deduplicateCandidates([snowflake], { ledgerRows: [{ dedup_key: 'greenhouse|123', company: 'Snowflake Inc.', state: 'committed' }] }).kept.length, 0);
+});
+
+test('merged identity aliases retain the first eight entries', () => {
+  const first = candidate({ provider: 'greenhouse', jobId: '123', identityAliases: ['naukri|first'], postedAt: '2026-07-15T08:00:00.000Z' });
+  const duplicates = Array.from({ length: 12 }, (_, index) => candidate({
+    provider: 'greenhouse', jobId: '123', identityAliases: [`naukri|alias ${index}`],
+    postedAt: new Date(Date.parse(first.postedAt) - (index + 1) * 1000).toISOString(),
+  }));
+  const result = deduplicateCandidates([first, ...duplicates]);
+  assert.equal(result.kept.length, 1);
+  assert.equal(result.duplicates.length, 12);
+  assert.deepEqual(result.kept[0].identityAliases, ['greenhouse|123', 'naukri|first', ...Array.from({ length: 6 }, (_, index) => `naukri|alias ${index}`)]);
 });

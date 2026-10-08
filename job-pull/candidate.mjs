@@ -131,13 +131,17 @@ function experienceMatch(match, text) {
   const end = start + match[0].length;
   const numberStart = start + match[0].indexOf(groups.lower);
   if (/\d\s*(?:[-–—]|to)\s*$/i.test(text.slice(0, numberStart))) return null;
-  const clauseStart = Math.max(text.lastIndexOf('. ', start), text.lastIndexOf(';', start));
+  const clauseStart = [...text.slice(0, start).matchAll(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;]/gi)].at(-1)?.index ?? -1;
   const prefix = text.slice(Math.max(clauseStart + 1, numberStart - 180), numberStart);
   const suffix = text.slice(end).replace(/^\.(?=\s)/, '').split(/[.!?;,]/, 1)[0].slice(0, 60);
   const requirementTail = text.slice(numberStart).split(/[.!?;,]/, 1)[0].slice(0, 140);
   if (/\b(?:education(?:al)?|qualification|school(?:ing)?|academic|degree)\b/i.test(match[0].slice(0, match[0].indexOf(groups.lower)))
     || /^\s*(?:of\s+)?(?:(?:full[ -]?time|formal|academic)\s+)*(?:education(?:al)?|schooling|study|studies)\b/i.test(suffix)) return null;
-  if (/\bdegree\b[^.!?;]*\bor\s+(?:equivalent\s+)?$/i.test(prefix)) return null;
+  const bachelorDegree = /\b(?:bachelor(?:['’]s)?|b\.?\s?tech|b\.?\s?e\.?|b\.?\s?s\.?|b\.?\s?sc\.?|undergraduate|graduate\s+degree)\b/i;
+  const advancedDegree = /\b(?:master(?:['’]s|s)?|m\.?\s?tech|m\.?\s?s\.?|mba|ph\.?\s?d\.?|doctorate)\b/i;
+  const degreeClause = text.slice(clauseStart + 1).split(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;]/i, 1)[0];
+  if (/\bdegree\b[^.!?;]*\bor\s+(?:equivalent\s+)?$/i.test(prefix)
+    && bachelorDegree.test(prefix) && !advancedDegree.test(degreeClause)) return null;
   const cue = [...prefix.slice(-80).matchAll(new RegExp(HARD_EXPERIENCE_CUE_RE.source, 'gi'))].at(-1);
   const preference = [...prefix.slice(-80).matchAll(new RegExp(PREFERENCE_RE.source, 'gi'))].at(-1);
   const afterPreference = /^\s*(?:is\s+|are\s+)?(?:preferred|desirable|a\s+bonus|an?\s+advantage|nice\s+to\s+have)\b/i.test(suffix);
@@ -179,6 +183,11 @@ export function extractExperienceYears(text) {
     'gi',
   );
   for (const match of cleaned.matchAll(activityRequirement)) {
+    const parsed = experienceMatch(match, cleaned);
+    if (parsed) matches.push(parsed);
+  }
+  const requiredYears = new RegExp(String.raw`\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+(?:is\s+)?required\b`, 'gi');
+  for (const match of cleaned.matchAll(requiredYears)) {
     const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
   }
@@ -463,10 +472,7 @@ export function companyTitleLocationKey(candidate) {
 export function normalizeRequisitionId(provider, value) {
   const id = String(value ?? '');
   if (normalizedKey(provider) !== 'workday') return id;
-  const raw = id.match(/(?:_|^)([A-Za-z]{0,4}-?\d+)(?:-\d+)?$/);
-  if (raw) return raw[1];
-  return id.match(/(?:^| )([a-z]{1,4} ?\d+)(?: \d+)?$/i)?.[1]
-    ?? id.match(/(?:^| )(\d+)(?: \d+)?$/)?.[1] ?? id;
+  return id.match(/(?:^|[_ ])([A-Za-z]{1,4}[- ]?\d{3,}|\d{5,})(?:[- ]\d+)?$/)?.[1] ?? id;
 }
 
 // Normalize a provider identity without changing keys for other providers.
@@ -481,14 +487,20 @@ export function candidateIdentityKeys(candidate) {
   return [...new Set([candidateDedupKey(candidate), ...(candidate.identityAliases || [])].map(normalizeIdentityKey).filter(Boolean))];
 }
 
+// Compare employer names while allowing missing names and common company suffixes.
+export function companiesCompatible(left, right) {
+  if (!String(left ?? '').trim() || !String(right ?? '').trim()) return true;
+  const suffixes = /\b(?:inc|ltd|limited|pvt|private|llc|corp|corporation|technologies|technology|solutions|india|co)\b/g;
+  const a = normalizedKey(left).replace(suffixes, '').replace(/\s+/g, ' ').trim();
+  const b = normalizedKey(right).replace(suffixes, '').replace(/\s+/g, ' ').trim();
+  return a === b || Boolean(a && b && (a.includes(b) || b.includes(a)));
+}
+
 // Match current or retained identities against either ledger generation.
 export function candidateMatchesLedgerRow(candidate, row) {
+  if (!companiesCompatible(candidate.company, row.company)) return false;
   const keys = candidateIdentityKeys(candidate);
-  let aliases = row.identityAliases || [];
-  if (row.identity_aliases) {
-    try { aliases = JSON.parse(row.identity_aliases); } catch { aliases = []; }
-  }
-  const rowKeys = [row.dedup_key ?? row.dedupKey, candidateRequisitionKey({ provider: row.provider, jobId: row.job_id ?? row.jobId ?? row.provider_job_id }), ...(Array.isArray(aliases) ? aliases : [])];
+  const rowKeys = [row.dedup_key ?? row.dedupKey, candidateRequisitionKey({ provider: row.provider, jobId: row.job_id ?? row.jobId ?? row.provider_job_id })];
   return rowKeys.some((key) => key && keys.includes(normalizeIdentityKey(key)));
 }
 

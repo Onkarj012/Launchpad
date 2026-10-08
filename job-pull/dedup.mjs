@@ -1,5 +1,5 @@
 import { fingerprintText, similarity } from '../vendor/career-ops/fingerprint-core.mjs';
-import { candidateDedupKey, candidateIdentityKeys, candidateMatchesLedgerRow, candidateRequisitionKey, canonicalizeUrl, companyTitleLocationKey, normalizedKey } from './candidate.mjs';
+import { candidateDedupKey, candidateIdentityKeys, candidateMatchesLedgerRow, candidateRequisitionKey, canonicalizeUrl, companiesCompatible, companyTitleLocationKey, normalizedKey } from './candidate.mjs';
 
 const ATS_PROVIDERS = new Set(['greenhouse', 'lever', 'ashby', 'workday']);
 
@@ -37,6 +37,7 @@ function ledgerCollision(candidate, rows) {
   const hasDurableIdentity = Boolean(keys.providerJob);
   for (const row of rows) {
     if (!row || (row.state && !['pending', 'committed'].includes(row.state))) continue;
+    if (!companiesCompatible(candidate.company, row.company)) continue;
     if (candidateMatchesLedgerRow(candidate, row)) return { row, key: 'durable' };
     const rowKey = normalizedKey(row.dedup_key ?? row.dedupKey);
     if (keys.durable && rowKey === normalizedKey(keys.durable)) return { row, key: 'durable' };
@@ -100,7 +101,8 @@ export function deduplicateCandidates(candidates, options = {}) {
     let matchEvidence = null;
     for (const prior of kept) {
       const priorKeys = canonicalCandidateKeys(prior);
-      if (keys.providerJob && priorKeys.providerJob && candidateIdentityKeys(candidate).some((key) => candidateIdentityKeys(prior).includes(key))) {
+      if (keys.providerJob && priorKeys.providerJob && companiesCompatible(candidate.company, prior.company)
+        && candidateIdentityKeys(candidate).some((key) => candidateIdentityKeys(prior).includes(key))) {
         winner = prior;
         code = 'DEDUP_PROVIDER_JOB_ID';
         matchEvidence = keys.providerJob;
@@ -139,7 +141,9 @@ export function deduplicateCandidates(candidates, options = {}) {
       }
     }
     if (winner) {
-      if (code === 'DEDUP_PROVIDER_JOB_ID') winner.identityAliases = [...new Set([...candidateIdentityKeys(winner), ...candidateIdentityKeys(candidate)])];
+      if (code === 'DEDUP_PROVIDER_JOB_ID' && companiesCompatible(candidate.company, winner.company)) {
+        winner.identityAliases = [...new Set([...candidateIdentityKeys(winner), ...candidateIdentityKeys(candidate)])].slice(0, 8);
+      }
       duplicates.push(duplicateResult(candidate, winner, code, matchEvidence));
     }
     else kept.push(candidate);

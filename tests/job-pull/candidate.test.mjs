@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { candidateDedupKey, candidateRequisitionKey, companyTitleLocationKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, candidateMatchesLedgerRow, candidateRequisitionKey, companiesCompatible, companyTitleLocationKey, normalizeCandidate, normalizeRequisitionId } from '../../job-pull/candidate.mjs';
 
 test('candidate normalization retains discovery, application, remote, and work-condition evidence', () => {
   const candidate = normalizeCandidate({
@@ -49,4 +49,38 @@ test('candidate normalization retains stored first-seen separately from posting 
   assert.equal(candidate.firstSeenAt, raw.first_seen_at);
   assert.equal(candidate.postedAt, null);
   assert.throws(() => normalizeCandidate({ ...raw, firstSeenAt: 'yesterday' }), /firstSeenAt/);
+});
+
+test('Workday normalization accepts only requisition-shaped suffixes', () => {
+  for (const [value, expected] of [
+    ['Senior Engineer 2', 'Senior Engineer 2'],
+    ['Software-Engineer_JR284401', 'JR284401'],
+    ['Analyst_R-12345-1', 'R-12345'],
+    ['Engineer_2026', 'Engineer_2026'],
+    ['engineer 2026', 'engineer 2026'],
+    ['software engineer jr284401', 'jr284401'],
+    ['analyst r 12345 1', 'r 12345'],
+    ['JR284401', 'JR284401'], ['R-12345', 'R-12345'],
+    ['REQ1234', 'REQ1234'], ['R0012345', 'R0012345'],
+    ['REQ1234 2', 'REQ1234'], ['12345-1', '12345'], ['12345 1', '12345'],
+    ['Engineer_12345-2', '12345'], ['Engineer_R12', 'Engineer_R12'],
+    ['Engineer_ABCDE12345', 'Engineer_ABCDE12345'],
+  ]) {
+    assert.equal(normalizeRequisitionId('workday', value), expected, value);
+    assert.equal(normalizeRequisitionId('greenhouse', value), value, value);
+  }
+});
+
+test('ledger identity matches require compatible company names', () => {
+  const item = { provider: 'greenhouse', jobId: '123', company: 'Snowflake', identityAliases: ['naukri|portal 9'] };
+  for (const company of ['Snowflake Inc.', 'Snowflake Technologies India Pvt. Ltd.', 'Snowflake Data', '', null]) {
+    assert.equal(companiesCompatible(item.company, company), true, company);
+    for (const row of [{ dedup_key: 'greenhouse|123', company }, { provider: 'greenhouse', job_id: '123', company }, { dedup_key: 'naukri|portal 9', company }]) {
+      assert.equal(candidateMatchesLedgerRow(item, row), true);
+    }
+  }
+  for (const row of [{ dedup_key: 'greenhouse|123', company: 'Globex' }, { provider: 'greenhouse', job_id: '123', company: 'Globex' }, { dedup_key: 'naukri|portal 9', company: 'Globex' }]) {
+    assert.equal(candidateMatchesLedgerRow(item, row), false);
+  }
+  assert.equal(candidateMatchesLedgerRow({ ...item, company: null }, { dedup_key: 'greenhouse|123', company: 'Globex' }), true);
 });

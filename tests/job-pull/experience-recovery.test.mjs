@@ -136,8 +136,8 @@ test('word numbers with parenthesized digits retain minimums and hard rejects', 
 test('degree alternatives do not impose an experience minimum or weaken a separate requirement', () => {
   for (const description of [
     "Bachelor's degree or 4 years of experience.",
-    'A degree, or equivalent 4 years experience.',
-    'Required: a degree or 4 years of software development experience.',
+    'A bachelor degree, or equivalent 4 years experience.',
+    'Required: an undergraduate degree or 4 years of software development experience.',
   ]) assert.equal(extractExperienceYears(description), null, description);
   for (const description of [
     "Bachelor's degree or 4 years of experience. Minimum 3+ years required.",
@@ -148,4 +148,24 @@ test('degree alternatives do not impose an experience minimum or weaken a separa
     assert.equal(extractExperienceYears(description)?.minYears, 3, description);
     assert.equal(classifyExperience({ description }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
   }
+});
+
+test('bachelor-level degree alternatives do not impose a hard minimum', () => {
+  for (const degree of ["Bachelor's", 'bachelor', 'B.Tech', 'B.E.', 'BE', 'B.S.', 'BS', 'B.Sc', 'undergraduate', 'graduate']) {
+    assert.equal(extractExperienceYears(`${degree} degree in CS or 4 years of experience`), null, degree);
+  }
+});
+
+test('advanced and unspecified degree alternatives retain the experience minimum', () => {
+  for (const degree of ["Master's", 'master', 'M.Tech', 'MS', 'M.S.', 'MBA', 'PhD', 'doctorate', 'a']) {
+    assert.equal(extractExperienceYears(`${degree} degree or 5+ years required`)?.minYears, 5, degree);
+  }
+  for (const description of [
+    "Bachelor's or Master's degree or 5+ years of experience required",
+    'B.S. or M.S. degree or 5+ years required',
+    "Bachelor's degree or 5+ years of experience with M.S. required",
+    "Bachelor's degree or 5+ years required, master's preferred",
+    'A degree, or equivalent 4 years experience.',
+    'Required: a degree or 4 years of software development experience.',
+  ]) assert.equal(extractExperienceYears(description)?.minYears, description.includes('5+') ? 5 : 4, description);
 });
