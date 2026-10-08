@@ -26,6 +26,7 @@ export function startupModeFixtures() {
       records: [job(1, { sourceKind: 'ats-direct', provider: 'greenhouse', originalApplicationUrl: null, applicationResolution: null })],
       companyRecords: [{ company: 'Startup Co 1', stage: 'Scale-up', stageEvidence: 'Series A startup profile', employeeCount: 42, careerPageUrl: 'https://startupco1.example/careers', atsProvider: 'greenhouse', atsBoardUrl: 'https://boards.greenhouse.io/startupco1', remotePolicy: 'Pune hybrid', verifiedAt: STARTUP_NOW }],
     },
+    'startup-company-careers': { records: [job(10)] },
     'vc-portfolio-boards': {
       records: [job(2), job(1, { url: 'https://vc.example/jobs/duplicate', sourceKind: 'aggregator', provider: 'vc-portfolio' })],
       companyRecords: [{ company: 'Startup Co 2', stage: 'Startup', stageEvidence: 'VC portfolio company page', sourceUrl: 'https://vc.example/portfolio/startup-2', verifiedAt: STARTUP_NOW }],

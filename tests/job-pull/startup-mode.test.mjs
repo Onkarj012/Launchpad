@@ -26,19 +26,24 @@ test('Startup source plan attempts and reports every startup lane with no live a
   try {
     const result = await runStartupSourcePlan({ clock: () => STARTUP_NOW, runAt: STARTUP_NOW, runId: 'startup-sources', sourceFunctions: {
       'startup-employer-boards': startupSourceFunctions()['startup-employer-boards'],
+      'startup-company-careers': startupSourceFunctions()['startup-company-careers'],
       wellfound: () => { throw new Error('Wellfound fixture unavailable'); },
     } });
     assert.deepEqual(result.map(({ manifest }) => manifest.sourceId), STARTUP_SOURCE_LANES.map((lane) => lane.id));
     assert.equal(result.find(({ manifest }) => manifest.sourceId === 'wellfound').manifest.status, 'failed');
     assert.equal(result.find(({ manifest }) => manifest.sourceId === 'yc').manifest.status, 'unavailable');
     assert.equal(result.find(({ manifest }) => manifest.sourceId === 'funding-hiring-signals').manifest.status, 'unavailable');
-    assert.equal(result.length, 7);
+    const careers = result.find(({ manifest }) => manifest.sourceId === 'startup-company-careers');
+    assert.equal(careers.manifest.status, 'ok');
+    assert.equal(careers.candidates.length, 1);
+    assert.equal(result.length, 8);
   } finally { globalThis.fetch = originalFetch; }
 });
 
 test('Startup enrichment records stage, verified time, careers/ATS, funding windows, and never changes job freshness', async () => {
   const sourceResults = await runStartupSourcePlan({ runAt: STARTUP_NOW, runId: 'startup-enrichment', sourceFunctions: startupSourceFunctions() });
-  const originalPostedAt = sourceResults[1].candidates[0].postedAt;
+  const portfolioSource = sourceResults.find(({ manifest }) => manifest.sourceId === 'vc-portfolio-boards');
+  const originalPostedAt = portfolioSource.candidates[0].postedAt;
   const enriched = enrichStartupSources(sourceResults, { runAt: STARTUP_NOW });
   const candidate = enriched.sources.flatMap((source) => source.candidates).find((item) => item.company === 'Startup Co 2');
   assert.equal(candidate.postedAt, originalPostedAt);
@@ -77,8 +82,9 @@ test('Startup mode prioritizes startup signals but preserves original-applicatio
   });
   assert.equal(result.mode, 'startup');
   assert.equal(result.schemaVersion, 'LaunchpadV5StartupModeV1');
-  assert.equal(result.sourceManifests.length, 7);
+  assert.equal(result.sourceManifests.length, 8);
   assert.ok(result.sourceManifests.every((manifest) => manifest.startupLane === true));
+  assert.ok(result.results.some((candidate) => candidate.company === 'Startup Co 10' && candidate.startupLaneId === 'startup-company-careers'));
   assert.equal(result.counts.minimum, 10);
   assert.equal(result.counts.preferred, 12);
   assert.equal(result.counts.maximum, 20);
