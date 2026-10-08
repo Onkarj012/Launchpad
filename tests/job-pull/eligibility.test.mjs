@@ -302,13 +302,54 @@ test('labelled roles still reject for the same geography, employment, salary, ex
 test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote - India' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - APAC' }), config).geo.pass, true);
-  assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).geo.pass, false);
+  assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).geo.pass, true);
+  assert.deepEqual(classifyCandidate(candidate({ location: 'Worldwide remote' }), config).labels, ['Remote: worldwide, no country limit']);
   assert.equal(classifyCandidate(candidate({ location: 'Worldwide remote', description: 'Worldwide remote including India.' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).geo.code, 'GEO_REMOTE_SCOPE_UNCLEAR');
   assert.equal(classifyCandidate(candidate({ location: 'Remote' }), config).tier, null);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - US only' }), config).geo.pass, false);
   assert.equal(classifyCandidate(candidate({ location: 'Remote worldwide, excluding India' }), config).geo.pass, false);
   assert.equal(classifyCandidate(candidate({ location: 'Remote', remoteEligibility: { status: 'eligible', evidence: 'India permitted' } }), config).geo.pass, true);
+});
+
+test('worldwide, anywhere and global remote roles pass with the worldwide label', () => {
+  for (const overrides of [
+    { location: 'Remote - Worldwide' },
+    { location: 'Remote', description: 'Work remotely from anywhere.' },
+    { location: 'Global remote' },
+  ]) {
+    const result = classifyCandidate(candidate(overrides), config);
+    assert.equal(result.eligible, true, JSON.stringify(overrides));
+    assert.deepEqual(result.labels, ['Remote: worldwide, no country limit']);
+  }
+});
+
+test('worldwide scope does not pass regional-only or foreign work authorization roles', () => {
+  for (const restriction of ['US only', 'Canada only', 'EU only', 'UK only', 'LATAM only']) {
+    const result = classifyCandidate(candidate({ location: `Remote - ${restriction}` }), config);
+    assert.equal(result.eligible, false, restriction);
+    assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED', restriction);
+    assert.deepEqual(result.labels, []);
+  }
+  for (const description of [
+    'Candidates must be authorized to work in the US.',
+    'Candidates need Canada work authorization.',
+    'Candidates must have work authorization in the EU.',
+    'Foreign work authorization is required.',
+  ]) {
+    const result = classifyCandidate(candidate({ location: 'Remote worldwide', description }), config);
+    assert.equal(result.eligible, false, description);
+    assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED', description);
+    assert.deepEqual(result.labels, []);
+  }
+});
+
+test('India and APAC remote roles remain eligible without the worldwide label', () => {
+  for (const location of ['Remote - India', 'Remote - APAC']) {
+    const result = classifyCandidate(candidate({ location }), config);
+    assert.equal(result.eligible, true, location);
+    assert.deepEqual(result.labels, [], location);
+  }
 });
 
 test('explicit foreign remote locations cannot borrow India or global wording from the description', () => {

@@ -19,7 +19,8 @@ const ONSITE_PATTERN = /\b(on[ -]?site|in[ -]?office|office[ -]?based|office-bas
 const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only)\b/i;
 const TRAINING_FEE_OR_BOND_PATTERN = /\b(training[ -]+fees?|registration\s+fees?|joining\s+fees?|security\s+deposits?|(?:non[- ]?refundable|refundable)(?:\s+security)?\s+deposits?(?=[^.!?]{0,80}\bjoining\b)|(?:service|employment)(?:\s+agreement)?\s+bond|bonded\s+(?:employment|role|position)|bond\s+(?:of|for)\s+\d+\s+years?|bond\s+period|genuine\s+payment\s+required\s+before)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
-const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada)|(?:u\.?s\.?|united states|u\.?k\.?|eu|canada|australia)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada))(?=$|[^a-z])/i;
+const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|europe|canada|australia|latam|latin america)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|europe|canada|australia|latam|latin america)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|europe|canada|united kingdom|u\.?k\.?|latam|latin america)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|europe|canada|australia|latam|latin america)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|europe|canada|united kingdom|u\.?k\.?|latam|latin america))(?=$|[^a-z])/i;
+const FOREIGN_WORK_AUTHORIZATION_PATTERN = /\b(?:foreign work authorization|(?:must|need(?:s)?|require(?:s)?)\s+(?:to\s+)?(?:have\s+)?(?:a\s+)?(?:valid\s+)?(?:work authorization|work permit)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|europe|canada|australia|latam|latin america)|work authorization\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|europe|canada|australia|latam|latin america)\s+(?:is\s+)?required)\b/i;
 const EXPLICIT_FOREIGN_REMOTE_LOCATION_PATTERN = /\b(?:north america|u\.?s\.?a?|united states|canada|united kingdom|u\.?k\.?|europe|european union|e\.?u\.?|austria|poland|germany|france|spain|italy|netherlands|australia|new zealand|latin america|latam|united arab emirates|u\.?a\.?e\.?)\b/i;
 const FOREIGN_COUNTRY_CODE_REMOTE_LOCATION_PATTERN = /^(?!IN\b|IND\b|APAC\b)[A-Z]{2,3}(?:[\s,;/_-].*)?\bremote\b/i;
 const GLOBAL_SCOPE_PATTERN = /\b(worldwide|world\s+wide|global|anywhere)\b/gi;
@@ -119,6 +120,13 @@ function hasAllowedGlobalScope(text, policy) {
   return [...text.matchAll(GLOBAL_SCOPE_PATTERN)].some((match) => !isRegionQualifiedGlobalToken(text, match, policy));
 }
 
+// Recognize a remote claim that grants work from any country.
+function hasUnrestrictedGlobalRemoteClaim(text, policy, location = '') {
+  return /^(?:remote\s*(?:[-:]\s*)?)?(?:worldwide|world wide|global|anywhere)$/i.test(location.trim())
+    || (hasAllowedGlobalScope(text, policy)
+      && /\b(?:remote(?:ly)?\s*(?:[-:]\s*)?(?:worldwide|global(?:ly)?|anywhere)|(?:worldwide|global(?:ly)?|anywhere)\s*[-:]?\s*remote|work(?:ing)?\s+(?:remotely\s+)?(?:from\s+)?anywhere|(?:hire|hiring|open|available|eligible)\s+(?:to\s+)?(?:candidates?\s+)?(?:worldwide|globally))\b/i.test(text));
+}
+
 function remoteScopeStatus(text, location, policy, remoteEligibility = null) {
   const lower = text.toLowerCase();
   const locationLower = location.toLowerCase();
@@ -139,16 +147,15 @@ function remoteScopeStatus(text, location, policy, remoteEligibility = null) {
   const hasAllowed = policy.geo.remoteAllowedScopes.some((scope) => {
     if (/^(worldwide|world wide|global|anywhere)$/i.test(scope.trim())) {
       if (locationLower.includes(scope.toLowerCase())) return true;
-      return hasAllowedGlobalScope(text, policy)
-        && /\b(?:remote(?:ly)?\s+(?:worldwide|globally)|(?:worldwide|globally)\s+remote|work(?:ing)?\s+(?:remotely\s+)?(?:from\s+)?anywhere|(?:hire|hiring|open|available|eligible)\s+(?:to\s+)?(?:candidates?\s+)?(?:worldwide|globally))\b/i.test(text);
+      return hasUnrestrictedGlobalRemoteClaim(text, policy);
     }
     return lower.includes(scope.toLowerCase());
-  }) || hasIndia;
-  const foreignMatch = text.match(FOREIGN_REMOTE_REGION_PATTERN);
+  }) || hasIndia || hasUnrestrictedGlobalRemoteClaim(text, policy, location);
+  const foreignMatch = text.match(FOREIGN_REMOTE_REGION_PATTERN) || text.match(FOREIGN_WORK_AUTHORIZATION_PATTERN);
   const excludesIndia = /excluding\s+india|not\s+(?:open|available)\s+to\s+india|india\s+excluded/.test(lower);
   if (foreignMatch) return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: foreignMatch[0].trim() };
   if (excludesIndia) return { pass: false, code: 'GEO_REMOTE_EXCLUDES_INDIA', evidence: text };
-  if (denied.length && !hasIndia && !hasAllowed) {
+  if (denied.length) {
     return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: denied.join(', ') };
   }
   if (remoteEligibility?.status === 'India Eligible') {
@@ -421,6 +428,13 @@ export function classifyCandidate(candidate, policy) {
   if (hardPass && experience.manualReview) relaxations.push('experience-not-stated');
   if (hardPass && !experience.strict && !experience.manualReview) relaxations.push('experience-up-to-2-years');
   const roleFamily = classifyRoleFamily(candidate, title);
+  const globalRemoteText = [candidate.title, candidate.location, candidate.workMode, candidate.description]
+    .filter((value) => typeof value === 'string')
+    .join(' ');
+  const labels = candidateLabels(candidate, geo.mode);
+  if (geo.pass && geo.mode === 'remote' && hasUnrestrictedGlobalRemoteClaim(globalRemoteText, policy, candidate.location || '')) {
+    labels.push('Remote: worldwide, no country limit');
+  }
   return {
     eligible: strict || relaxed,
     strict,
@@ -437,7 +451,7 @@ export function classifyCandidate(candidate, policy) {
     title,
     liveness,
     reasons,
-    labels: candidateLabels(candidate, geo.mode),
+    labels,
     evidenceCodes,
     relaxations,
     companyKey: normalizedKey(candidate.company),
