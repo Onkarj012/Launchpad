@@ -378,6 +378,10 @@ export function crawlerLaneFixtures(result) {
     const queryDiagnostics = searchTelemetry.flatMap((value) => Array.isArray(value.queryDiagnostics) ? value.queryDiagnostics : []);
     const unresponsiveEngineEvents = searchTelemetry.flatMap((value) => Array.isArray(value.unresponsiveEngineEvents) ? value.unresponsiveEngineEvents : []);
     const engineHealth = [...new Set(searchTelemetry.map((value) => value.engineHealth).filter(Boolean))];
+    const emptyReasons = lane.sourceIds.flatMap((sourceId) => {
+      const reason = telemetry[sourceId]?.detail?.telemetry?.emptyReason;
+      return reason ? [{ sourceId, reason }] : [];
+    });
     const mergedTelemetry = {
       sourceIds: lane.sourceIds,
       sources: telemetry,
@@ -389,6 +393,7 @@ export function crawlerLaneFixtures(result) {
       ...(queryDiagnostics.length ? { queryDiagnostics } : {}),
       ...(unresponsiveEngineEvents.length ? { unresponsiveEngineEvents } : {}),
       ...(engineHealth.length ? { engineHealth: engineHealth.length === 1 ? engineHealth[0] : engineHealth } : {}),
+      ...(emptyReasons.length ? { emptyReasons } : {}),
     };
     return [laneId, {
       candidates: lane.candidates,
@@ -399,6 +404,7 @@ export function crawlerLaneFixtures(result) {
         attempted: true,
         fetched: lane.candidates.length,
         errors: failureMessages(failures),
+        ...(!lane.candidates.length && emptyReasons.length ? { reason: [...new Set(emptyReasons.map(({ reason }) => reason))].join(', ') } : {}),
         ...(lane.unmappedSourceIds.length ? { unmappedSourceIds: lane.unmappedSourceIds } : {}),
         telemetry: mergedTelemetry,
       },

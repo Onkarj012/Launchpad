@@ -115,7 +115,7 @@ function configuredEngineNames(options) {
 function fullyDegraded(unresponsive, rows, options) {
   if (!unresponsive.length || !sparseResults(rows, options.perQueryResultCap)) return false;
   const configured = configuredEngineNames(options);
-  if (!configured.length) return true;
+  if (!configured.length) return false; // Engine errors alone cannot prove every engine failed.
   const reported = new Set(unresponsive.map(([engine]) => String(engine).toLocaleLowerCase('en-US')));
   return configured.every((engine) => reported.has(engine.toLocaleLowerCase('en-US')));
 }
@@ -340,6 +340,17 @@ export async function discoverBraveSearch({
     telemetry.engineHealth = telemetry.resultCount === 0 ? 'empty' : 'ok';
   }
   telemetry.consumedCredits = telemetry.budgetUsed;
+  if (!observations.length) {
+    if (!queries.length) telemetry.emptyReason = 'no-queries';
+    else if (budget === 0) telemetry.emptyReason = 'query-budget-zero';
+    else if (signal?.aborted || receipts.some((receipt) => receipt.status === 'interrupted')
+      || (telemetry.queriesSkipped > 0 && !telemetry.skippedReason)) telemetry.emptyReason = 'search-interrupted';
+    else if (telemetry.degradedQueries > 0) telemetry.emptyReason = 'search-engines-degraded';
+    else if (telemetry.malformedResponses > 0) telemetry.emptyReason = 'malformed-search-response';
+    else if (telemetry.terminal > 0 || telemetry.retryable > 0) telemetry.emptyReason = 'search-request-failed';
+    else if (telemetry.resultCount > 0) telemetry.emptyReason = 'no-usable-result-urls';
+    else telemetry.emptyReason = 'no-search-results';
+  }
 
   const promotionDiscoveries = observations
     .filter((observation) => observation.classification === 'direct' || observation.applicationResolution?.status === 'Resolved Original')
@@ -372,6 +383,7 @@ export async function discoverBraveSearch({
   const manifest = {
     schemaVersion: provider === 'searxng' ? 'SearxngSearchManifestV1' : 'BraveSearchManifestV1',
     runAt, queries, telemetry, noAutoApply: true,
+    ...(telemetry.emptyReason ? { reason: telemetry.emptyReason } : {}),
     boardPromotion: boardPromotion.manifest,
   };
   if (degradedRun) manifest.status = 'degraded';
