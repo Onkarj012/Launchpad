@@ -875,7 +875,7 @@ function persistSourceProgress(store, source, runId, {
   manifestDelta = null, observedAt, checkpointed = false,
 } = {}) {
   const progress = durableSourceProgress(store, runId, source.id);
-  const safeObservations = cloneJsonCollection(observations, 'source observations');
+  const safeObservations = cloneJsonCollection(observations, 'source observations', { maxBytes: MAX_SOURCE_OBSERVATION_BYTES });
   const safeCursor = cursor === undefined ? undefined : cloneJsonSafe(cursor, 'source cursor');
   const delta = manifestDelta == null ? null : cloneJsonSafe(manifestDelta, 'source manifest');
   if (delta != null && !isRecord(delta)) throw new TypeError('source manifest must be a plain object');
