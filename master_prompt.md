@@ -49,7 +49,9 @@
 - Full-time engineering roles or explicitly paid/stipended engineering internships (stipend ≥ ₹40k/month with a stated PPO path). This bar also applies to the AICTE and NATS avenue.
 - Real engineering work (AI/ML, backend, full-stack, or an approved adjacent fallback with substance).
 - Unpaid, equity-only, commission-only, volunteer, part-time, freelance per-task, training-fee, bonded, and agency-resale-without-named-client roles → drop.
-- Contract roles are excluded from the full-time and internship lanes.
+- EOR employment for a foreign company that hires in India is labelled `EOR` and shown only in the separate EOR/Contract lane.
+- Long-term contracts are eligible only with full-time hours, ongoing or at least six months, stated fixed pay, and direct hire by the company. Label them `Contract` and show them only in the separate EOR/Contract lane. Explicitly missing fixed pay or terms that fail these conditions are dropped; unknown terms go to verification.
+- EOR and Contract roles never enter the full-time or internship lanes or their targets.
 
 ### Company rules
 
@@ -59,7 +61,7 @@
 ### Hard gates (run first, every pull — fail any → drop, never written to Notion)
 1. **Location authorization** — onsite/hybrid must offer a Pune-wide location option; remote eligibility must explicitly include India or APAC. Worldwide/global without that evidence is not sufficient.
 2. **Seniority** — hard minimum of 3+ yrs → drop. Two-year requirements are shortage fallback only.
-3. **Employment / paid** — allow full-time or engineering internships with a stated stipend ≥ ₹40k/month and a stated PPO path; missing, unverified, or below-floor stipend and missing PPO path → drop.
+3. **Employment / paid** — allow full-time roles and engineering internships with a stated stipend ≥ ₹40k/month and a stated PPO path in the full-time lanes. EOR and qualifying long-term contracts use their separate lane; contract terms that fail are dropped and unknown terms go to verification. Missing, unverified, or below-floor internship stipend and missing PPO path → drop.
 4. **Freshness evidence** — freshness is a ranking class, not a 72h cliff. Classes: `Hot` 0–72h · `Active` >72h–7d · `Backfill` >7d–14d (eligible only if never surfaced before) · `VerifyQueue` undated (excluded from auto-selection, surfaced separately for manual date verification) · `Rejected` >14d → drop.
    - **Workday exception:** only a usable DETAIL `startDate` is trusted as Workday freshness evidence. LIST `postedOn`, including bounded labels such as `Posted Today`, is not sufficient and stays undated → `VerifyQueue`. Ashby/Lever/Greenhouse dates stay trusted as-is.
 5. **Liveness** — confirmed dead/expired → drop. Inconclusive checks stay `Not Verified`, never invented as Active.

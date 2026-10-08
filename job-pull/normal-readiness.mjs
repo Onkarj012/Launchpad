@@ -75,7 +75,7 @@ export function classifyCandidateEvidence(candidate, eligibility = null) {
   if (!text(candidate?.description)) hardFailures.push('JD_MISSING');
   const employmentVerified = candidate?.employment?.type === 'full-time'
     || (candidate?.employment?.type === 'internship' && candidate?.employment?.paid === true)
-    || ['EMPLOYMENT_FULL_TIME', 'EMPLOYMENT_PAID_INTERNSHIP'].includes(eligibility?.employment?.code);
+    || ['EMPLOYMENT_FULL_TIME', 'EMPLOYMENT_PAID_INTERNSHIP', 'EMPLOYMENT_EOR_INDIA', 'EMPLOYMENT_LONG_TERM_CONTRACT'].includes(eligibility?.employment?.code);
   if (!employmentVerified) hardFailures.push('EMPLOYMENT_NOT_VERIFIED');
   if (!resolution.ready) hardFailures.push(...resolution.reasons);
   if (livenessStatus !== 'Active') hardFailures.push(livenessStatus === 'Expired' ? 'LIVENESS_EXPIRED' : 'LIVENESS_NOT_VERIFIED');

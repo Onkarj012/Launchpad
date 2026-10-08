@@ -116,13 +116,14 @@ function provenanceFor(candidate, runId) {
 }
 
 function verificationRecord(candidate, eligibility, evaluatedReadiness = null) {
-  if (eligibility?.eligible === false || (candidate.freshness?.eligible === false && !candidate.freshness.verifyQueue)) return null;
+  const contractReview = eligibility?.employment?.verificationRequired === true;
+  if ((eligibility?.eligible === false && !contractReview) || (candidate.freshness?.eligible === false && !candidate.freshness.verifyQueue)) return null;
   const readiness = evaluatedReadiness || applicationReadiness(candidate, eligibility);
   if (readiness.ready && candidate.postedAt) return null;
   if (!candidate.postedAt) readiness.reasons = [...new Set([...readiness.reasons, 'FRESHNESS_NOT_VERIFIED'])];
   const needsResolution = !readiness.evidence.resolution.ready;
   const needsLiveness = !readiness.evidence.liveness.pass;
-  if (!needsResolution && !needsLiveness && eligibility?.eligible === false && candidate.postedAt) return null;
+  if (!needsResolution && !needsLiveness && eligibility?.eligible === false && !contractReview && candidate.postedAt) return null;
   return {
     company: candidate.company,
     title: candidate.title,

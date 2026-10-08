@@ -282,7 +282,7 @@ test('labelled roles still reject for the same geography, employment, salary, ex
     [{ location: 'Mumbai, India', workMode: 'onsite' }, 'GEO_ONSITE_NOT_PUNE'],
     [{ location: 'Remote - US only' }, 'GEO_REMOTE_REGION_RESTRICTED'],
     [{ employment: { type: 'full-time', paid: false } }, 'EMPLOYMENT_UNPAID'],
-    [{ employment: { type: 'contract', evidence: 'Contract role' } }, 'EMPLOYMENT_TYPE_NOT_ALLOWED'],
+    [{ employment: { type: 'contract', evidence: 'Contract role' } }, 'EMPLOYMENT_CONTRACT_TERMS_UNVERIFIED'],
     [{ salary: { maximum: 500000, currency: 'INR', period: 'annual' } }, 'SALARY_BELOW_FLOOR'],
     [{ experience: { minYears: 3, maxYears: 3, evidence: '3+ years' } }, 'EXPERIENCE_HARD_MIN_3_PLUS'],
     [{ title: 'QA Engineer' }, 'TITLE_OFF_TARGET'],
@@ -297,6 +297,58 @@ test('labelled roles still reject for the same geography, employment, salary, ex
     assert.deepEqual(result.reasons, [reason]);
     assert.deepEqual(result.labels, ['Night hours (IST)', 'Notice risk']);
   }
+});
+
+test('EOR roles are labelled and classified for the separate employment lane', () => {
+  const result = classifyCandidate(candidate({
+    description: 'Remote in India. Full-time AI Engineer hired by a US company through an Employer of Record in India.',
+  }), config);
+  assert.equal(result.eligible, true);
+  assert.equal(result.employment.lane, 'eor-contract');
+  assert.deepEqual(result.labels, ['EOR']);
+});
+
+test('long-term contracts enter the separate lane only with full-time hours, duration, fixed pay and direct hire evidence', () => {
+  const result = classifyCandidate(candidate({
+    employment: { type: 'contract', evidence: 'Full-time contract, ongoing, fixed salary of INR 18 LPA, hired directly by the company.' },
+    description: 'Remote in India. AI Engineer for 0-1 years.',
+  }), config);
+  assert.equal(result.eligible, true);
+  assert.equal(result.employment.lane, 'eor-contract');
+  assert.deepEqual(result.labels, ['Contract']);
+});
+
+test('contracts with explicitly variable or absent pay are rejected', () => {
+  for (const evidence of [
+    'Full-time contract, ongoing, compensation is commission-only, hired directly by the company.',
+    'Full-time contract, ongoing, pay is not fixed, hired directly by the company.',
+  ]) {
+    const result = classifyCandidate(candidate({
+      employment: { type: 'contract', evidence },
+      description: 'Remote in India. AI Engineer for 0-1 years.',
+    }), config);
+    assert.equal(result.eligible, false, evidence);
+    assert.equal(result.employment.code, 'EMPLOYMENT_CONTRACT_FIXED_PAY_REQUIRED');
+  }
+});
+
+test('contracts with unknown terms need verification and do not enter an eligibility lane', () => {
+  const result = classifyCandidate(candidate({
+    employment: { type: 'contract', evidence: 'Contract role.' },
+    description: 'Remote in India. AI Engineer for 0-1 years.',
+  }), config);
+  assert.equal(result.eligible, false);
+  assert.equal(result.employment.verificationRequired, true);
+  assert.equal(result.employment.code, 'EMPLOYMENT_CONTRACT_TERMS_UNVERIFIED');
+});
+
+test('EOR and contract candidates cannot use ordinary full-time eligibility', () => {
+  const eor = classifyCandidate(candidate({ description: 'Remote in India. Full-time AI Engineer at a US-based company hired through an Employer of Record.' }), config);
+  const contract = classifyCandidate(candidate({ employment: { type: 'contract', evidence: 'Full-time contract, ongoing, fixed salary of INR 18 LPA, hired directly by the company.' }, description: 'Remote in India. AI Engineer for 0-1 years.' }), config);
+  assert.equal(eor.employment.lane, 'eor-contract');
+  assert.equal(contract.employment.lane, 'eor-contract');
+  assert.equal(eor.employment.code, 'EMPLOYMENT_EOR_INDIA');
+  assert.equal(contract.employment.code, 'EMPLOYMENT_LONG_TERM_CONTRACT');
 });
 
 test('remote scope must explicitly include India-compatible geography', () => {

@@ -616,9 +616,13 @@ export const DAILY_MODE_RUNNERS = Object.freeze({
 
 // Route a verified pool once, keeping uncapped results beside each mode's shortlist.
 function selectDailyModes(entries, options, selectedMode) {
-  const pools = { normal: [], startup: [], remote: [] };
+  const pools = { normal: [], startup: [], remote: [], eorContract: [] };
   for (const entry of entries) {
     const candidate = entry.candidate;
+    if (entry.eligibility?.employment?.lane === 'eor-contract') {
+      pools.eorContract.push({ ...entry, candidate: { ...candidate, eligibility: entry.eligibility, labels: entry.eligibility.labels, primaryMode: 'eor-contract', otherModes: [] } });
+      continue;
+    }
     const fits = [];
     if (hasStartupEvidence(candidate) || STARTUP_LANE_IDS.has(candidate.startupLaneId)) fits.push('startup');
     const pune = entry.eligibility?.geo?.code === 'GEO_PUNE_METRO'
@@ -630,11 +634,12 @@ function selectDailyModes(entries, options, selectedMode) {
     pools[primaryMode].push({ ...entry, candidate: { ...candidate, primaryMode, otherModes } });
   }
   const selections = Object.fromEntries(Object.entries(pools).map(([mode, pool]) => [mode, selectNormalApplications(pool, {
-    ...options, previousDailyCandidates: options.previousDailyCandidates.filter((candidate) => candidate.primaryMode === mode),
+    ...options, includeEorContract: mode === 'eorContract', previousDailyCandidates: options.previousDailyCandidates.filter((candidate) => candidate.primaryMode === mode),
   })]));
   const shared = selectNormalApplications(entries, { ...options, maximum: 0 });
   return {
     ...selections[selectedMode],
+    eorContract: { results: selections.eorContract.results, shortlist: selections.eorContract.selected },
     readyCount: shared.readyCount, scoredCount: shared.scoredCount,
     unscoredCount: shared.unscoredCount, scoringFailedCount: shared.scoringFailedCount,
     scoringQueue: shared.scoringQueue,
