@@ -99,15 +99,16 @@ function finiteYears(value) {
 const HARD_EXPERIENCE_CUE_RE = /\b(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)/i;
 const PREFERENCE_RE = /\b(?:preferred|nice\s+to\s+have|bonus|desirable|advantage)\b/i;
 const EXPERIENCE_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
-const EXPERIENCE_VALUE = String.raw`(?:\d+(?:\.\d+)?|${EXPERIENCE_WORDS.join('|')})`;
+const EXPERIENCE_VALUE = String.raw`(?:\d+(?:\.\d+)?|(?:${EXPERIENCE_WORDS.join('|')})(?:\s*\(\d+\))?)`;
 const EXPERIENCE_UNIT = String.raw`(?:years?|yrs?)(?:\(s\))?(?![A-Za-z])`;
 // A match must start at the lower bound, never at the tail of a range.
 const EXPERIENCE_NUMBER = String.raw`(?<![\d.])(?<lower>${EXPERIENCE_VALUE})(?:\s*(?<plus>\+)|\s*(?<separator>to|[-–—])\s*(?<upper>${EXPERIENCE_VALUE}))?`;
 
 // Convert an experience quantity without changing the retained JD evidence.
 function experienceNumber(value) {
-  const word = EXPERIENCE_WORDS.indexOf(value.toLowerCase());
-  return word >= 0 ? word : Number(value);
+  const quantity = value.toLowerCase().replace(/\s*\(\d+\)$/, '');
+  const word = EXPERIENCE_WORDS.indexOf(quantity);
+  return word >= 0 ? word : Number(quantity);
 }
 
 /** Convert provider HTML/encoded text into the plain text used by parsers. */
@@ -136,6 +137,7 @@ function experienceMatch(match, text) {
   const requirementTail = text.slice(numberStart).split(/[.!?;,]/, 1)[0].slice(0, 140);
   if (/\b(?:education(?:al)?|qualification|school(?:ing)?|academic|degree)\b/i.test(match[0].slice(0, match[0].indexOf(groups.lower)))
     || /^\s*(?:of\s+)?(?:(?:full[ -]?time|formal|academic)\s+)*(?:education(?:al)?|schooling|study|studies)\b/i.test(suffix)) return null;
+  if (/\bdegree\b[^.!?;]*\bor\s+(?:equivalent\s+)?$/i.test(prefix)) return null;
   const cue = [...prefix.slice(-80).matchAll(new RegExp(HARD_EXPERIENCE_CUE_RE.source, 'gi'))].at(-1);
   const preference = [...prefix.slice(-80).matchAll(new RegExp(PREFERENCE_RE.source, 'gi'))].at(-1);
   const afterPreference = /^\s*(?:is\s+|are\s+)?(?:preferred|desirable|a\s+bonus|an?\s+advantage|nice\s+to\s+have)\b/i.test(suffix);
@@ -349,7 +351,7 @@ export function validateCandidate(candidate) {
   }
   if (candidate.canonicalUrl && !/^https?:\/\//i.test(candidate.canonicalUrl)) errors.push('canonicalUrl must be http(s)');
   if (!isIsoTimestamp(candidate.postedAt)) errors.push('postedAt must be a full ISO-8601 timestamp or null');
-  for (const field of ['discoveredAt', 'crawledAt']) {
+  for (const field of ['discoveredAt', 'crawledAt', 'firstSeenAt']) {
     if (!isIsoTimestamp(candidate[field])) errors.push(`${field} must be a full ISO-8601 timestamp or null`);
   }
   if (candidate.jobId != null && typeof candidate.jobId !== 'string') errors.push('jobId must be a string or null');
@@ -392,6 +394,8 @@ export function normalizeCandidate(raw, options = {}) {
     source,
     provider,
     jobId: raw.jobId == null && raw.id == null ? null : String(raw.jobId ?? raw.id),
+    identityAliases: Array.isArray(raw.identityAliases) ? raw.identityAliases.filter((alias) => typeof alias === 'string' && alias.trim()) : [],
+    firstSeenAt: normalizeOptionalTimestamp(raw.firstSeenAt ?? raw.first_seen_at, 'firstSeenAt'),
     company: nonEmptyString(raw.company ?? raw.companyName),
     title: nonEmptyString(raw.title ?? raw.role),
     location: preserveText(raw.location),
@@ -455,9 +459,42 @@ export function companyTitleLocationKey(candidate) {
   return [candidate.company, candidate.title, candidate.location].map(normalizedKey).join('|');
 }
 
+// Normalize Workday URL slugs and previously normalized ledger IDs alike.
+export function normalizeRequisitionId(provider, value) {
+  const id = String(value ?? '');
+  if (normalizedKey(provider) !== 'workday') return id;
+  const raw = id.match(/(?:_|^)([A-Za-z]{0,4}-?\d+)(?:-\d+)?$/);
+  if (raw) return raw[1];
+  return id.match(/(?:^| )([a-z]{1,4} ?\d+)(?: \d+)?$/i)?.[1]
+    ?? id.match(/(?:^| )(\d+)(?: \d+)?$/)?.[1] ?? id;
+}
+
+// Normalize a provider identity without changing keys for other providers.
+export function normalizeIdentityKey(value) {
+  const parts = String(value ?? '').split('|');
+  if (parts.length !== 2) return String(value ?? '');
+  return `${normalizedKey(parts[0])}|${normalizedKey(normalizeRequisitionId(parts[0], parts[1]))}`;
+}
+
+// Return the current identity and every proven pre-resolution identity.
+export function candidateIdentityKeys(candidate) {
+  return [...new Set([candidateDedupKey(candidate), ...(candidate.identityAliases || [])].map(normalizeIdentityKey).filter(Boolean))];
+}
+
+// Match current or retained identities against either ledger generation.
+export function candidateMatchesLedgerRow(candidate, row) {
+  const keys = candidateIdentityKeys(candidate);
+  let aliases = row.identityAliases || [];
+  if (row.identity_aliases) {
+    try { aliases = JSON.parse(row.identity_aliases); } catch { aliases = []; }
+  }
+  const rowKeys = [row.dedup_key ?? row.dedupKey, candidateRequisitionKey({ provider: row.provider, jobId: row.job_id ?? row.jobId ?? row.provider_job_id }), ...(Array.isArray(aliases) ? aliases : [])];
+  return rowKeys.some((key) => key && keys.includes(normalizeIdentityKey(key)));
+}
+
 export function candidateRequisitionKey(candidate) {
   const provider = normalizedKey(candidate.provider);
-  const jobId = normalizedKey(candidate.jobId ?? candidate.providerJobId ?? candidate.requisitionId);
+  const jobId = normalizedKey(normalizeRequisitionId(provider, candidate.jobId ?? candidate.providerJobId ?? candidate.requisitionId));
   if (provider && jobId) return `${provider}|${jobId}`;
   return null;
 }

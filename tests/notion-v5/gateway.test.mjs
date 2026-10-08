@@ -309,6 +309,9 @@ test('company find-or-create and application write use data-source page parents 
   assert.equal(result.status, 'committed');
   const create = requests.find((request) => request.url.endsWith('/pages'));
   assert.equal(JSON.parse(create.options.body).parent.data_source_id, ids.dataSources[0]);
+  const properties = JSON.parse(create.options.body).properties;
+  assert.equal('Make Resume' in properties, false);
+  assert.equal('Applied?' in properties, false);
   assert.match(requests.at(-1).url, new RegExp(`pages/${ids.pages[1]}$`));
 });
 

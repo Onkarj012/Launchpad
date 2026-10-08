@@ -54,8 +54,6 @@ function remotePayload(candidate, runId) {
     crawledAt: candidate.crawledAt,
     freshnessTier: candidate.waterfallBand || candidate.freshnessWindow,
     status: 'Ready',
-    makeResume: false,
-    applied: false,
     resumeState: 'Not Started',
     employmentCategory: employment.category || 'Full-time Employee',
     employmentStructure: employment.category || null,

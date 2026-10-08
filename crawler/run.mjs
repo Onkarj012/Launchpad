@@ -705,6 +705,8 @@ function fingerprint(observation) {
 }
 
 function findJob(db, source, observation) {
+  const matchedKey = observation._crawlerIdentity?.identity?.jobKey;
+  if (matchedKey && db.prepare('SELECT job_key FROM jobs WHERE job_key = ?').get(matchedKey)) return matchedKey;
   const provider = observation.provider ?? source.provider ?? source.id;
   const providerJobId = observation.providerJobId ?? observation.jobId;
   if (providerJobId) {
@@ -789,6 +791,7 @@ function persistObservation(store, source, runId, observation, observedAt, { rep
   const nextLifecycle = mergeLifecycleState(priorLifecycle.state, observationLifecycle) || observationLifecycle;
   const lifecycleJson = {
     ...priorLifecycle.json,
+    identityAliases: [...new Set([...(priorLifecycle.json.identityAliases || []), ...(observation.identityAliases || [])])],
     state: nextLifecycle,
     lastObservedAt: observedAt,
     applicationReady: observation.applicationReady === true
@@ -1448,6 +1451,7 @@ function mapJobRow(row) {
     company: row.company,
     title: row.title,
     location: row.location,
+    identityAliases: lifecycleJson.identityAliases || [],
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     fingerprint: row.latest_fingerprint,
