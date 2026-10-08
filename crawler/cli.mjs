@@ -16,7 +16,7 @@ import {
   assessProductionReadiness,
   buildLocalReadinessEvidence,
 } from './readiness.mjs';
-import { installSchedules } from './install-schedule.mjs';
+import { buildScheduleAgents, installSchedules } from './install-schedule.mjs';
 import { computeCanaryVersion } from './canary-evaluator.mjs';
 import { promoteSchedule, rollbackSchedule } from './release-manager.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
@@ -464,7 +464,15 @@ export async function main(argv = process.argv.slice(2), {
   }
   if (command === 'install-schedule') {
     const dryRun = argv.includes('--dry-run');
-    const result = installSchedules({ dryRun });
+    const definitionPath = explicitOption(argv, '--schedule-definition');
+    const definition = definitionPath ? JSON.parse(fs.readFileSync(definitionPath, 'utf8')) : null;
+    const agents = definition ? buildScheduleAgents({
+      configPath: definition.configPath,
+      logDir: definition.logDir,
+      labelPrefix: definition.labelPrefix,
+      scheduleConfig: definition.scheduleConfig,
+    }) : undefined;
+    const result = installSchedules({ dryRun, agents });
     emit(result);
     return result.agents.every((agent) => agent.dryRun || agent.installed) ? 0 : 1;
   }

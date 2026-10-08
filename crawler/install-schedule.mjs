@@ -42,7 +42,7 @@ function plistString(value) {
  */
 export function buildAgentPlist({
   schedule,
-  label = `${LABEL_PREFIX}.${schedule}`,
+  label = null,
   repoRoot = REPO_ROOT,
   cliPath = CLI_PATH,
   nodePath = process.execPath,
@@ -50,15 +50,21 @@ export function buildAgentPlist({
   launchAgentsDir = LAUNCH_AGENTS_DIR,
   mode = 'normal',
   locationPreset = 'pune',
+  configPath = null,
+  labelPrefix = LABEL_PREFIX,
   releaseRevision = null,
   releasePath = null,
   scheduleConfig = DEFAULT_SCHEDULE_CONFIG,
 } = {}) {
   if (!SCHEDULE_IDS.includes(schedule)) throw new Error(`unsupported crawler schedule: ${schedule}`);
+  label ??= `${labelPrefix}.${schedule}`;
   const { hour, minute } = scheduleTime(schedule, scheduleConfig);
   const outLog = path.join(logDir, `${schedule}.out.log`);
   const errLog = path.join(logDir, `${schedule}.err.log`);
-  const args = [nodePath, cliPath, 'daily', schedule, '--env', 'production', '--mode', mode, '--location-preset', locationPreset];
+  const args = [nodePath, cliPath, 'daily', schedule];
+  if (configPath) args.push('--config', configPath);
+  else args.push('--env', 'production');
+  args.push('--mode', mode, '--location-preset', locationPreset);
   const content = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
