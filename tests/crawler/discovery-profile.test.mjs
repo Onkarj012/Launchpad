@@ -15,7 +15,7 @@ import {
   parseDiscoveryProfileArgs,
   runReadinessTests,
 } from '../../crawler/cli.mjs';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -326,6 +326,27 @@ test('daily command invokes the unified runner and emits its operator result wit
   const persistedReceipt = JSON.parse(readFileSync(emitted.notificationReceipt.persistence.path, 'utf8').trim());
   const { persistence, ...receiptWithoutPersistence } = emitted.notificationReceipt;
   assert.deepEqual(persistedReceipt, receiptWithoutPersistence);
+});
+
+test('daily command writes the local HTML report beside its configured database', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-report-'));
+  const configPath = path.join(root, 'crawler.json');
+  const databasePath = path.join(root, 'state', 'crawler.sqlite');
+  writeFileSync(configPath, JSON.stringify(baseConfig(databasePath)));
+  const runId = 'command-daily-report';
+  const reportPath = path.join(root, 'state', 'reports', `${runId}.html`);
+  const exitCode = await main([
+    'daily', '--config', configPath, '--env', 'dev', '--run-id', runId,
+    '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root),
+  ], {
+    dailyRunner: async () => ({ runId, runAt: '2026-10-08T02:15:00.000Z', modes: {} }),
+    emit: () => {},
+    notify: testNotifier,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(existsSync(reportPath), true);
+  assert.match(readFileSync(reportPath, 'utf8'), /Launchpad daily report/);
 });
 
 test('daily command passes missing canary evidence as nonfatal invalid evidence', async () => {
