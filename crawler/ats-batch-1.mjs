@@ -75,7 +75,7 @@ const ADAPTERS = {
       const rows = body?.content || body?.postings;
       return Array.isArray(rows) && rows.length >= pageSize ? page + 1 : null;
     },
-    map: (row, board) => ({ id: row?.id, title: row?.name, company: row?.company?.name || boardName(board), location: row?.location?.fullLocation || row?.location?.label || row?.location?.name || row?.location, description: row?.jobAd?.sections?.jobDescription?.text || row?.description, employmentType: row?.typeOfEmployment?.label || row?.typeOfEmployment, postedAt: row?.releasedDate || row?.createdOn, url: row?.ref || row?.postingUrl || row?.url }),
+    map: (row, board) => ({ id: row?.id, title: row?.name, company: row?.company?.name || boardName(board), location: row?.location?.fullLocation || row?.location?.label || row?.location?.name || row?.location, description: row?.jobAd?.sections?.jobDescription?.text || row?.description, employmentType: row?.typeOfEmployment?.label || row?.typeOfEmployment, postedAt: row?.releasedDate, url: row?.ref || row?.postingUrl || row?.url }),
   },
   workable: {
     url: workable,
@@ -93,7 +93,7 @@ const ADAPTERS = {
     url: recruitee,
     rows: (body) => body?.offers || body?.jobs || body?.data,
     next: (body, { page, pageSize }) => Array.isArray(body?.offers || body?.jobs || body?.data) && (body.offers || body.jobs || body.data).length >= pageSize ? page + 1 : null,
-    map: (row, board) => ({ id: row?.id || row?.slug, title: row?.title || row?.name, company: row?.company?.name || boardName(board), location: row?.location || row?.department, description: [row?.description || row?.descriptionPlain, row?.requirements].filter((value) => typeof value === 'string' && value.trim()).join('\n'), employmentType: row?.employment_type, postedAt: row?.published_at || row?.created_at, url: row?.careers_url || row?.url || row?.slug }),
+    map: (row, board) => ({ id: row?.id || row?.slug, title: row?.title || row?.name, company: row?.company?.name || boardName(board), location: row?.location || row?.department, description: [row?.description || row?.descriptionPlain, row?.requirements].filter((value) => typeof value === 'string' && value.trim()).join('\n'), employmentType: row?.employment_type, postedAt: row?.published_at, url: row?.careers_url || row?.url || row?.slug }),
   },
 };
 

@@ -187,3 +187,22 @@ test('Recruitee retains requirements alongside the description', async () => {
   assert.match(result.observations[0].description, /Junior QA branch/);
   assert.equal(result.observations[0].experience.minYears, 0);
 });
+
+test('SmartRecruiters and Recruitee do not treat record creation dates as posting dates', async () => {
+  const smartRecruiters = await fetchAtsProvider({
+    provider: 'smartrecruiters',
+    board: { board: 'Acme', company: 'Acme' },
+    transport: async () => ({ status: 200, body: { postings: [{ id: 'sr-old', name: 'AI Engineer', location: 'Pune', createdOn: '2026-10-07' }] } }),
+    maxPages: 1,
+    enrichDetails: false,
+  });
+  const recruitee = await fetchAtsProvider({
+    provider: 'recruitee',
+    board: { board: 'acme', company: 'Acme' },
+    transport: async () => ({ status: 200, body: { offers: [{ id: 'r-old', title: 'Backend Engineer', location: 'Pune', created_at: '2026-10-07', url: 'https://acme.recruitee.com/o/backend-engineer' }] } }),
+    maxPages: 1,
+  });
+
+  assert.equal(smartRecruiters.observations[0].postedAt, null);
+  assert.equal(recruitee.observations[0].postedAt, null);
+});
