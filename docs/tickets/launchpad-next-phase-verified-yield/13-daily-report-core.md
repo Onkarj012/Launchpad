@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 08
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Report is written to a local file only
 - [ ] Three mode sections, each with results and shortlist

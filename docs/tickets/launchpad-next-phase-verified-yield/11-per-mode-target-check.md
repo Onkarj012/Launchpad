@@ -4,7 +4,7 @@
 
 **Blocked by:** 08
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Report shows role and employer counts per mode against target
 - [ ] Report shows Strict count across modes

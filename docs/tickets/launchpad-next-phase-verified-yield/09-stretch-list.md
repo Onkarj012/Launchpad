@@ -4,7 +4,7 @@
 
 **Blocked by:** 06, 08
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] List holds at most 3 roles a day
 - [ ] Role asking for other than exactly 3 years is excluded

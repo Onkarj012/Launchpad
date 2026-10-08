@@ -4,7 +4,7 @@
 
 **Blocked by:** 17
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] CSV export is read (name, company, title, connected date)
 - [ ] People match registry employers and shortlisted roles

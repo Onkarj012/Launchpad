@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] EOR role gets the `EOR` label and is lane-only
 - [ ] Full contract with all terms gets the `Contract` label and is lane-only

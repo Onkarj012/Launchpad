@@ -4,7 +4,7 @@
 
 **Blocked by:** 15
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Rescue does not run on the daily schedule
 - [ ] Run stops at the $1 per-run cap

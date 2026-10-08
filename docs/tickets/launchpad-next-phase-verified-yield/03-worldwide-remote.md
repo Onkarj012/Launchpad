@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Worldwide role with no country limit passes with the label
 - [ ] Anywhere and global wording pass the same way
