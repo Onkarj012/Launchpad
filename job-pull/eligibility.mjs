@@ -1,5 +1,6 @@
 import { extractExperienceYears, normalizedKey } from './candidate.mjs';
 import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
+import { classifyRemoteTimezone } from './remote-enrichment.mjs';
 
 const TITLE_PATTERNS = [
   { family: 'ai-llm-agentic', strict: /\b(ai product engineer|applied ai engineer|ai software engineer|llm application engineer|ai automation engineer|ai integration engineer|junior ai engineer|ai solutions engineer|ai engineer|artificial intelligence engineer|llm engineer|gen(?:erative)?[ -]?ai engineer|agentic ai engineer|ai agent engineer|nlp engineer|prompt engineer|ai developer|genai|gen ai developer|ai\/ml)\b/i },
@@ -29,6 +30,9 @@ const ANNUAL_PERIOD_PATTERN = /^(?:annual|annually|year|yearly|per year|per annu
 const AMBIGUOUS_PUNE_AREAS = ['sus', 'maan'];
 const EXCLUDED_PUNE_AREAS = ['chakan', 'talegaon', 'ranjangaon', 'shikrapur'];
 const PUNE_LOCATION_CONTEXT_PATTERN = /\b(?:maharashtra|mh|41[12]\d{3})\b/i;
+const NIGHT_SHIFT_PATTERN = /\b(?:night[ -]?shifts?|rotating[ -]?shifts?|overnight)\b/i;
+const IMMEDIATE_JOINER_PATTERN = /\b(?:immediate[ -]?join(?:ers?|ing)|join\s+immediately)\b/i;
+const SHORT_NOTICE_PATTERN = /\b(?:notice(?:\s+period)?\s*(?:(?:of|is|up\s+to|within|maximum)\s*)?[:=-]?\s*|join\s+within\s+)(\d+)(?:\s*(?:[-–]|to)\s*(\d+))?\s*[- ]?\s*days?\b|\b(\d+)(?:\s*(?:[-–]|to)\s*(\d+))?\s*[- ]?\s*days?\s+notice\b/gi;
 
 function textFor(candidate) {
   return [candidate.title, candidate.location, candidate.workMode, candidate.description, candidate.employment?.evidence, candidate.experience?.evidence]
@@ -348,6 +352,22 @@ export function classifyLiveness(candidate) {
   return { pass: true, code: 'LIVENESS_NOT_VERIFIED', evidence: value.evidence || 'Not Verified' };
 }
 
+// Add schedule and notice labels without changing eligibility or reject reasons.
+function candidateLabels(candidate, workMode) {
+  const text = decodeEntities(textFor(candidate)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const labels = workMode === 'remote'
+    ? classifyRemoteTimezone(candidate).labels || []
+    : NIGHT_SHIFT_PATTERN.test(text) ? ['Night hours (IST)'] : [];
+  const shortNotice = [...text.matchAll(SHORT_NOTICE_PATTERN)].some((match) => {
+    const minimum = Number(match[1] ?? match[3]);
+    const maximum = Number(match[2] ?? match[4] ?? minimum);
+    return Math.max(minimum, maximum) <= 30;
+  });
+  if (IMMEDIATE_JOINER_PATTERN.test(text) || shortNotice) labels.push('Notice risk');
+  return labels;
+}
+
+// Classify eligibility while keeping review labels separate from reject reasons.
 export function classifyCandidate(candidate, policy) {
   const geo = classifyGeo(candidate, policy);
   const employment = classifyEmployment(candidate, policy);
@@ -379,6 +399,7 @@ export function classifyCandidate(candidate, policy) {
     title,
     liveness,
     reasons,
+    labels: candidateLabels(candidate, geo.mode),
     evidenceCodes,
     relaxations,
     companyKey: normalizedKey(candidate.company),

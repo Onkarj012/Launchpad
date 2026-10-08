@@ -40,7 +40,9 @@
 
 ### Work mode & location
 - **Onsite / hybrid:** Pune-wide commute is acceptable. Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, Kalyani Nagar, Koregaon Park, Yerwada, Hadapsar, Mundhwa, Aundh, Pashan, Balewadi, Bavdhan, Kothrud, Shivajinagar, Senapati Bapat Road, Wagholi, Kondhwa, Undri, Pimpri, Chinchwad, Pimple Saudagar, Nigdi, Bhosari, Moshi, Sus, Maan, and Marunji count as Pune even without the word "Pune". Match whole names. Sus and Maan require Maharashtra, MH, or a six-digit 411xxx/412xxx pin code in the same location option. Chakan, Talegaon, Ranjangaon, and Shikrapur are excluded even when their address says Pune. Multi-city listings pass with a separate eligible Pune option.
-- **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. Timezone must be compatible with IST or left unspecified; US-hours-only and overnight-only overlap → drop.
+- **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. US or EU hours and overnight-only overlap are allowed with the label `Night hours (IST)`.
+- **Shifts:** night and rotating shifts are allowed for Pune onsite/hybrid and remote roles with the label `Night hours (IST)`. A label never rejects a role.
+- **Notice:** listings asking for immediate joiners or a notice of 30 days or less are allowed with the label `Notice risk`. A label never rejects a role.
 
 ### Employment type & must-haves
 - Full-time engineering roles or explicitly paid/stipended engineering internships.

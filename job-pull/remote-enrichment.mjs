@@ -3,7 +3,7 @@ const APAC = /\bapac\b|asia[ -]?pacific/i;
 const REMOTE = /\bremote\b|work[ -]?from[ -]?home|distributed|anywhere/i;
 const IST_TZ = /\b(?:ist|india(?:n)?\s+standard\s+time|asia\/kolkata|asia\/calcutta|(?:utc|gmt)\s*[+-]\s*5(?:[:.]?3(?:0)?)?|(?:utc|gmt)\s+offsets?[^0-9]{0,12}5(?:[.:]5|[:.]30)?)\b/i;
 const FLEXIBLE_TZ = /\b(?:any\s+schedule|flexible\s+(?:hours|schedule)|async(?:hronous)?|no\s+timezone|timezone[ -]?agnostic)\b/i;
-const INCOMPATIBLE_TZ = /\b(?:est|edt|pst|pdt|cst|cdt|eastern(?:\s+time)?|pacific(?:\s+time)?|us\s+(?:hours|business\s+hours)|must\s+overlap\s+(?:est|pst|us)|overnight)\b/i;
+const NIGHT_HOURS_PATTERN = /\b(?:est|edt|pst|pdt|cst|cdt|cet|cest|eastern(?:\s+time)?|pacific(?:\s+time)?|(?:us|u\.s\.|eu|european)[ -]+(?:(?:business|working|office)[ -]+)?hours|overnight|night[ -]?shifts?|rotating[ -]?shifts?)\b/i;
 const EOR = /\bemployer\s+of\s+record\b|\beor\b/i;
 const COUNTRY_RESTRICTION = /(?:authorized\s+to\s+work\s+in|work\s+authorization(?:\s+in)?|work\s+permit\s+(?:for|in)|must\s+(?:be\s+located|reside)|(?:citizenship|citizens?|residency|residents?)\s*(?:required|only|of|from)|(?:payroll|employment)\s+(?:only\s+)?in|(?:payroll|employment)(?:\s+\w+){0,3}\s+in|based\s+in|(?:anywhere|worldwide|global)\s+(?:in|within))\s+(?:the\s+)?(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\b|\b(?:u\.?s\.?|usa|united states|canada|europe|eu|u\.?k\.?|united kingdom|australia|new zealand|latam|latin america)\s+(?:only|citizens?|citizenship|residency|residents?|payroll|work\s+permit)(?:\s+only)?\b/i;
 const INDIA_EXCLUSION = /excluding\s+india|except\s+india|india\s+(?:excluded|not\s+available)|india\s+is\s+not\s+(?:supported|eligible|included)|not\s+(?:open|available)\s+to\s+india/i;
@@ -80,6 +80,7 @@ export function classifyRemoteEmployment(candidate) {
   return { eligible: true, status: 'Eligible', category: 'Full-time Employee', code: 'REMOTE_FULL_TIME', evidence: candidate.employment?.evidence || combined, reasons: [] };
 }
 
+// Accept remote schedules and label hours that may fall at night in IST.
 export function classifyRemoteTimezone(candidate) {
   const combined = combinedText(candidate);
   const evidence = evidenceValue(candidate.timezoneOverlap?.evidence)
@@ -87,6 +88,9 @@ export function classifyRemoteTimezone(candidate) {
     || evidenceValue(candidate.timezoneEvidence)
     || '';
   const hours = Number(candidate.timezoneOverlap?.minimumHours ?? candidate.timezoneOverlap?.hours);
+  if (candidate.timezoneOverlap?.status === 'overnight' || NIGHT_HOURS_PATTERN.test(`${evidence} ${combined}`)) {
+    return { accepted: true, code: 'REMOTE_TZ_NIGHT_HOURS', evidence: evidence || combined || 'overnight', labels: ['Night hours (IST)'] };
+  }
   if (FLEXIBLE_TZ.test(evidence) || FLEXIBLE_TZ.test(combined)) {
     return { accepted: true, code: 'REMOTE_TZ_FLEXIBLE', evidence: evidence || combined };
   }
@@ -95,11 +99,6 @@ export function classifyRemoteTimezone(candidate) {
   }
   if (Number.isFinite(hours) && hours >= 4) {
     return { accepted: true, code: 'REMOTE_TZ_OVERLAP', evidence: evidence || `${hours}h` };
-  }
-  const overnight = candidate.timezoneOverlap?.status === 'overnight'
-    || (Number.isFinite(hours) && hours === 0 && INCOMPATIBLE_TZ.test(evidence));
-  if ((INCOMPATIBLE_TZ.test(evidence) || overnight) && !(Number.isFinite(hours) && hours >= 4)) {
-    return { accepted: false, code: 'REMOTE_TZ_INCOMPATIBLE', evidence: evidence || candidate.timezoneOverlap?.status || combined };
   }
   return { accepted: true, code: 'REMOTE_TZ_UNSPECIFIED', evidence: evidence || null };
 }

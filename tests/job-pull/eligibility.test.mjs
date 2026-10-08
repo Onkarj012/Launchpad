@@ -108,6 +108,133 @@ test('multi-city listings pass with an independent Pune option, including beside
   }
 });
 
+test('classification carries labels beside reasons without changing an ordinary role', () => {
+  const result = classifyCandidate(candidate({ description: 'Build production AI applications. Full-time, 0-1 years.' }), config);
+  assert.deepEqual(result.labels, []);
+  assert.deepEqual(result.reasons, []);
+  assert.equal(result.tier, 'strict');
+});
+
+test('India-eligible remote US, EU and overnight hours pass with a night-hours label', () => {
+  for (const description of [
+    'Full-time AI Engineer, remote from India. Must work US business hours only.',
+    'Full-time AI Engineer, remote from India. Required overlap with EU hours.',
+    'Full-time AI Engineer, remote from India. Working hours: 9am-5pm CET.',
+    'Full-time AI Engineer, remote from India. Overnight shift only.',
+    'Full-time AI Engineer, remote from India. US-hours-only overlap required.',
+    'Full-time AI Engineer, remote from India. EU-hours-only overlap required.',
+  ]) {
+    const result = classifyCandidate(candidate({ location: 'Remote - India', description }), config);
+    assert.equal(result.tier, 'strict', description);
+    assert.deepEqual(result.reasons, [], description);
+    assert.deepEqual(result.labels, ['Night hours (IST)'], description);
+  }
+  const structured = classifyCandidate(candidate({
+    location: 'Remote - APAC',
+    timezoneOverlap: { status: 'overnight', minimumHours: 0, evidence: 'Mandatory EST hours' },
+  }), config);
+  assert.equal(structured.eligible, true);
+  assert.deepEqual(structured.labels, ['Night hours (IST)']);
+});
+
+test('Pune onsite and hybrid night or rotating shifts stay strict and labelled', () => {
+  for (const workMode of ['onsite', 'hybrid']) {
+    for (const description of [
+      'Full-time AI Engineer. Night shift from our Pune office.',
+      'Full-time AI Engineer. Rotating shifts from our Pune office.',
+      'Full-time AI Engineer. Overnight shift from our Pune office.',
+    ]) {
+      const result = classifyCandidate(candidate({ workMode, description }), config);
+      assert.equal(result.tier, 'strict', `${workMode}: ${description}`);
+      assert.deepEqual(result.reasons, []);
+      assert.deepEqual(result.labels, ['Night hours (IST)']);
+    }
+  }
+});
+
+test('immediate joiners stay eligible with a notice-risk label', () => {
+  for (const description of [
+    'Full-time AI Engineer. Immediate joiners only.',
+    'Full-time AI Engineer. Looking for an immediate joiner.',
+    'Full-time AI Engineer. Immediate joining required.',
+    'Full-time AI Engineer. Candidates must join immediately.',
+  ]) {
+    const result = classifyCandidate(candidate({ description }), config);
+    assert.equal(result.tier, 'strict', description);
+    assert.deepEqual(result.reasons, []);
+    assert.deepEqual(result.labels, ['Notice risk'], description);
+  }
+});
+
+test('notice of 30 days or less stays eligible and labelled while longer notice stays unlabelled', () => {
+  for (const description of [
+    'Full-time AI Engineer. Notice period: 30 days.',
+    'Full-time AI Engineer. Notice period of 15 days or less preferred.',
+    'Full-time AI Engineer. Maximum notice: 7 days.',
+    'Full-time AI Engineer. 30-day notice period required.',
+    'Full-time AI Engineer. Must join within 30 days.',
+    'Full-time AI Engineer. Notice period: 0-30 days.',
+    'Full-time AI Engineer. Notice period: 15 to 30 days.',
+    '<p>Full-time AI Engineer.</p><p>Notice period: <strong>30</strong> days.</p>',
+  ]) {
+    const result = classifyCandidate(candidate({ description }), config);
+    assert.equal(result.tier, 'strict', description);
+    assert.deepEqual(result.reasons, [], description);
+    assert.deepEqual(result.labels, ['Notice risk'], description);
+  }
+  for (const description of [
+    'Full-time AI Engineer. Notice period: 31 days.',
+    'Full-time AI Engineer. Notice period: 60-90 days.',
+    'Full-time AI Engineer. 90-day notice period is accepted.',
+    'Full-time AI Engineer. Notice period negotiable. 30 days of annual leave.',
+  ]) {
+    const result = classifyCandidate(candidate({ description }), config);
+    assert.equal(result.eligible, true);
+    assert.deepEqual(result.labels, [], description);
+  }
+});
+
+test('labels alone never reject or demote a role and repeat mentions produce one label each', () => {
+  const result = classifyCandidate(candidate({
+    location: 'Remote - India',
+    description: 'Full-time AI Engineer. US hours, night shift. Immediate joiners only. Notice period: 30 days.',
+    timezoneOverlap: { status: 'overnight', minimumHours: 0, evidence: 'Required EST hours' },
+  }), config);
+  assert.deepEqual(result.labels, ['Night hours (IST)', 'Notice risk']);
+  assert.deepEqual(result.reasons, []);
+  assert.equal(result.eligible, true);
+  assert.equal(result.tier, 'strict');
+  const fallback = classifyCandidate(candidate({
+    description: 'Full-time AI Engineer. Night shift. Immediate joiners only.',
+    experience: { minYears: 2, maxYears: 2, evidence: '2 years' },
+  }), config);
+  assert.deepEqual(fallback.labels, ['Night hours (IST)', 'Notice risk']);
+  assert.deepEqual(fallback.reasons, []);
+  assert.equal(fallback.tier, 'relaxed');
+});
+
+test('labelled roles still reject for the same geography, employment, salary, experience, title and liveness reasons', () => {
+  const cases = [
+    [{ location: 'Mumbai, India', workMode: 'onsite' }, 'GEO_ONSITE_NOT_PUNE'],
+    [{ location: 'Remote - US only' }, 'GEO_REMOTE_REGION_RESTRICTED'],
+    [{ employment: { type: 'full-time', paid: false } }, 'EMPLOYMENT_UNPAID'],
+    [{ employment: { type: 'contract', evidence: 'Contract role' } }, 'EMPLOYMENT_TYPE_NOT_ALLOWED'],
+    [{ salary: { maximum: 500000, currency: 'INR', period: 'annual' } }, 'SALARY_BELOW_FLOOR'],
+    [{ experience: { minYears: 3, maxYears: 3, evidence: '3+ years' } }, 'EXPERIENCE_HARD_MIN_3_PLUS'],
+    [{ title: 'QA Engineer' }, 'TITLE_OFF_TARGET'],
+    [{ liveness: { status: 'Expired' } }, 'LIVENESS_EXPIRED'],
+  ];
+  for (const [overrides, reason] of cases) {
+    const result = classifyCandidate(candidate({
+      ...overrides,
+      description: 'Night shift. Immediate joiners only. Notice period: 30 days.',
+    }), conversionPolicy);
+    assert.equal(result.eligible, false, reason);
+    assert.deepEqual(result.reasons, [reason]);
+    assert.deepEqual(result.labels, ['Night hours (IST)', 'Notice risk']);
+  }
+});
+
 test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote - India' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - APAC' }), config).geo.pass, true);
