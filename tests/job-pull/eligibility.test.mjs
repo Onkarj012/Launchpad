@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { loadConfig, loadConversionPlan } from '../../job-pull/config.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
@@ -7,6 +8,16 @@ import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 const config = loadConfig();
 const conversionPolicy = { ...config, salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
 const explicitFloorPolicy = { ...config, salaryFloorLpa: 8 };
+
+test('configured salary floor drops 5.4 LPA and keeps 5.5 LPA', () => {
+  for (const [amount, eligible] of [[540000, false], [550000, true]]) {
+    const result = classifyCandidate(candidate({
+      salary: { minimum: amount, maximum: amount, currency: 'INR', period: 'annual', evidence: `INR ${amount} per annum` },
+    }), conversionPolicy);
+    assert.equal(result.eligible, eligible, String(amount));
+    assert.equal(result.salary.code, eligible ? 'SALARY_FLOOR_MET' : 'SALARY_BELOW_FLOOR');
+  }
+});
 
 function candidate(overrides = {}) {
   return normalizeCandidate({
@@ -101,10 +112,31 @@ test('country-only India location is strict remote while US-only remains rejecte
   assert.equal(classifyCandidate(candidate({ location: 'Remote - US only' }), config).geo.code, 'GEO_REMOTE_REGION_RESTRICTED');
 });
 
-test('employment and pay gates allow full-time and explicitly paid internships only', () => {
+test('internships require a stated stipend of 40000 INR monthly and a PPO path', () => {
   assert.equal(classifyCandidate(candidate({ employment: { type: 'full-time', paid: null } }), config).employment.pass, true);
-  assert.equal(classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'internship', paid: true } }), config).employment.pass, true);
-  assert.equal(classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'internship', paid: null } }), config).employment.code, 'INTERNSHIP_PAY_NOT_EXPLICIT');
+  for (const description of [
+    'Paid internship with a PPO path.',
+    'Stipend: INR 40,000 per month.',
+    'Stipend: INR 39,999 per month. PPO based on performance.',
+    'Stipend: INR 40,000 per month. No PPO offered.',
+    'Stipend: INR 40,000 per month. PPO is not available.',
+    'Stipend: INR 40,000-50,000 per month. PPO based on performance.',
+  ]) {
+    assert.equal(classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'internship', paid: true }, description }), conversionPolicy).eligible, false, description);
+  }
+  for (const description of [
+    'Stipend: INR 40,000 per month. PPO based on performance.',
+    'Stipend: ₹40k/month. Opportunity for a pre-placement offer.',
+  ]) {
+    const result = classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'internship', paid: null }, description }), conversionPolicy);
+    assert.equal(result.eligible, true, description);
+    assert.equal(result.employment.code, 'EMPLOYMENT_PAID_INTERNSHIP');
+  }
+  const structured = classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'internship', paid: true }, stipend: { amount: 40000, currency: 'INR', period: 'month' }, description: 'Path to a full-time offer after the internship.' }), conversionPolicy);
+  assert.equal(structured.eligible, true);
+  assert.equal(classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'full-time', paid: true }, description: 'Paid internship with a PPO path.' }), conversionPolicy).eligible, false);
+  const annual = classifyCandidate(candidate({ title: 'AI Engineering Intern', employment: { type: 'internship', paid: true }, salary: { minimum: 480000, maximum: 480000, currency: 'INR', period: 'annual' }, description: 'PPO based on performance.' }), conversionPolicy);
+  assert.equal(annual.eligible, true, 'annual stipend uses the internship floor');
   assert.equal(classifyCandidate(candidate({ employment: { type: 'internship', paid: false } }), config).employment.code, 'EMPLOYMENT_UNPAID');
   assert.equal(classifyCandidate(candidate({ employment: { type: 'full-time', paid: false } }), config).employment.code, 'EMPLOYMENT_UNPAID');
   assert.equal(classifyCandidate(candidate({ employment: {} }), config).employment.code, 'EMPLOYMENT_FULL_TIME_NOT_VERIFIED');
@@ -238,7 +270,7 @@ test('explicitly disabled salary floor rejects nothing regardless of compensatio
     assert.equal(result.salary.code, 'SALARY_FLOOR_DISABLED', String(floor));
     assert.equal(result.eligible, true, String(floor));
   }
-  assert.equal(conversionPolicy.salaryFloorLpa, 6);
+  assert.equal(conversionPolicy.salaryFloorLpa, 5.5);
   assert.equal(classifyCandidate(candidate({ salary: lowSalary }), conversionPolicy).salary.pass, true);
 });
 
@@ -251,7 +283,7 @@ test('missing or ambiguous salary data passes through without invented evidence'
   assert.equal(ambiguous.salary.evidence, null);
 });
 
-test('undisclosed compensation remains Not Verified and is not rejected by the configured six-LPA floor', () => {
+test('undisclosed compensation remains Not Verified and is not rejected by the configured floor', () => {
   const result = classifyCandidate(candidate({ salary: {} }), conversionPolicy);
   assert.equal(result.salary.code, 'SALARY_NOT_VERIFIED');
   assert.equal(result.salary.pass, true);
@@ -270,6 +302,39 @@ test('ordinary verification and notice language does not trigger the fee or bond
   const result = classifyCandidate(candidate({ description: 'A background check may be completed during the notice period.' }), config);
   assert.equal(result.employment.pass, true);
   assert.notEqual(result.employment.code, 'EMPLOYMENT_TRAINING_FEE_OR_BOND');
+});
+
+test('drops every prohibited employment type even when the feed says full-time and paid', () => {
+  for (const description of [
+    'Unpaid engineering role.',
+    'Equity-only compensation.',
+    'Commission-only compensation.',
+    'Volunteer developer position.',
+    'Part-time engineer role.',
+    'Freelance developer paid per task.',
+    'Training fee required before joining.',
+    'Bonded employment for two years.',
+    'Staffing agency hiring for an undisclosed client.',
+    'Recruitment agency reselling this role, client not named.',
+    'Staffing agency hiring an AI Engineer for our client.',
+  ]) {
+    const result = classifyCandidate(candidate({ description, employment: { type: 'full-time', paid: true } }), conversionPolicy);
+    assert.equal(result.eligible, false, description);
+    assert.equal(result.employment.pass, false, description);
+  }
+  assert.equal(classifyCandidate(candidate({
+    description: 'Staffing agency hiring for named client Example Product Ltd.',
+  }), conversionPolicy).employment.pass, true);
+  assert.equal(classifyCandidate(candidate({ employment: { type: 'volunteer', paid: true } }), conversionPolicy).eligible, false);
+});
+
+test('master policy states the implemented salary, internship, and drop-list rules', () => {
+  const policy = readFileSync(new URL('../../master_prompt.md', import.meta.url), 'utf8');
+  assert.match(policy, /Minimum compensation filter:\*\* ₹5\.5 LPA/);
+  assert.match(policy, /undisclosed compensation remains `Not Verified`/);
+  assert.match(policy, /stipend ≥ ₹40k\/month with a stated PPO path/);
+  assert.match(policy, /AICTE and NATS/);
+  assert.match(policy, /Unpaid, equity-only, commission-only, volunteer, part-time, freelance per-task, training-fee, bonded, and agency-resale-without-named-client roles → drop/);
 });
 
 test('new AI title families classify as strict AI roles', () => {

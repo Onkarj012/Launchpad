@@ -1,3 +1,4 @@
+import { parseStipend } from './stipend.mjs';
 import { extractExperienceYears, normalizedKey } from './candidate.mjs';
 import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
 
@@ -15,7 +16,7 @@ const REMOTE_PATTERN = /\b(remote|work from home|distributed|anywhere)\b/i;
 const HYBRID_PATTERN = /\bhybrid\b/i;
 const ONSITE_PATTERN = /\b(on[ -]?site|in[ -]?office|office[ -]?based|office-based)\b/i;
 const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only)\b/i;
-const TRAINING_FEE_OR_BOND_PATTERN = /\b(training\s+fees?|registration\s+fees?|joining\s+fees?|security\s+deposits?|(?:non[- ]?refundable|refundable)(?:\s+security)?\s+deposits?(?=[^.!?]{0,80}\bjoining\b)|(?:service|employment)(?:\s+agreement)?\s+bond|bond\s+(?:of|for)\s+\d+\s+years?|bond\s+period|genuine\s+payment\s+required\s+before)\b/i;
+const TRAINING_FEE_OR_BOND_PATTERN = /\b(training[ -]+fees?|registration\s+fees?|joining\s+fees?|security\s+deposits?|(?:non[- ]?refundable|refundable)(?:\s+security)?\s+deposits?(?=[^.!?]{0,80}\bjoining\b)|(?:service|employment)(?:\s+agreement)?\s+bond|bonded\s+(?:employment|role|position)|bond\s+(?:of|for)\s+\d+\s+years?|bond\s+period|genuine\s+payment\s+required\s+before)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
 const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada)|(?:u\.?s\.?|united states|u\.?k\.?|eu|canada|australia)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada))(?=$|[^a-z])/i;
 const EXPLICIT_FOREIGN_REMOTE_LOCATION_PATTERN = /\b(?:north america|u\.?s\.?a?|united states|canada|united kingdom|u\.?k\.?|europe|european union|e\.?u\.?|austria|poland|germany|france|spain|italy|netherlands|australia|new zealand|latin america|latam|united arab emirates|u\.?a\.?e\.?)\b/i;
@@ -38,6 +39,9 @@ function evidence(value) {
 }
 
 export function classifySalary(candidate, policy = {}) {
+  if (candidate.employment?.type === 'internship' || INTERNSHIP_PATTERN.test(candidate.title || '')) {
+    return { pass: true, code: 'SALARY_INTERNSHIP_STIPEND_GATE', evidence: null };
+  }
   const salary = candidate.salary || {};
   const usable = Number.isFinite(salary.maximum) ? salary.maximum : Number.isFinite(salary.minimum) ? salary.minimum : null;
   const currency = evidence(salary.currency);
@@ -189,13 +193,19 @@ function employmentFromText(candidate) {
   const unpaid = UNPAID_PATTERN.test(text) || /\bvolunteer\b/i.test(disallowedType?.[0] || '');
   const paid = PAID_PATTERN.test(text) && !unpaid;
   const trainingFeeOrBond = text.match(TRAINING_FEE_OR_BOND_PATTERN);
-  return { internship, fullTime, unpaid, paid, trainingFeeOrBond, disallowedType, text };
+  const freelancePerTask = text.match(/\bfreelance\b[^.!?]{0,80}\b(?:per[ -]?task|per[ -]?project|task[ -]?based)\b|\b(?:per[ -]?task|per[ -]?project|task[ -]?based)\b[^.!?]{0,80}\bfreelance\b/i);
+  const agencyHire = text.match(/\b(?:staffing|recruitment|recruiting)\s+agency\b[^.!?]{0,100}\b(?:hiring|recruiting|reselling|resale)\b/i);
+  const namedClient = /\b(?:named\s+client|client\s*(?::|=)|client\s+(?:is|named))\s+[a-z][a-z0-9& -]+/i.test(text);
+  const anonymousAgency = text.match(/\b(?:staffing|recruitment|recruiting)\s+agency\b[^.!?]{0,100}\b(?:undisclosed|unnamed|anonymous|confidential)\s+client\b|\b(?:staffing|recruitment|recruiting)\s+agency\b[^.!?]{0,100}\bclient\s+(?:not\s+(?:named|disclosed)|undisclosed)\b/i)
+    || (agencyHire && !namedClient ? agencyHire : null);
+  return { internship, fullTime, unpaid, paid, trainingFeeOrBond, freelancePerTask, anonymousAgency, disallowedType, text };
 }
 
 export function classifyEmployment(candidate, policy) {
   const raw = employmentFromText(candidate);
-  const type = candidate.employment?.type || (raw.internship ? 'internship' : raw.fullTime ? 'full-time' : null);
-  const explicitPaid = candidate.employment?.paid === true || raw.paid;
+  const suppliedType = candidate.employment?.type;
+  const type = raw.internship && (!suppliedType || suppliedType === 'full-time')
+    ? 'internship' : suppliedType || (raw.fullTime ? 'full-time' : null);
   const explicitUnpaid = candidate.employment?.paid === false || raw.unpaid;
   if (explicitUnpaid && policy.employment.rejectUnpaid) {
     return { pass: false, code: 'EMPLOYMENT_UNPAID', evidence: candidate.employment?.evidence || raw.text };
@@ -203,6 +213,8 @@ export function classifyEmployment(candidate, policy) {
   if (raw.trainingFeeOrBond) {
     return { pass: false, code: 'EMPLOYMENT_TRAINING_FEE_OR_BOND', evidence: raw.trainingFeeOrBond[0] };
   }
+  if (raw.freelancePerTask) return { pass: false, code: 'EMPLOYMENT_FREELANCE_PER_TASK', evidence: raw.freelancePerTask[0] };
+  if (raw.anonymousAgency) return { pass: false, code: 'EMPLOYMENT_AGENCY_CLIENT_NOT_NAMED', evidence: raw.anonymousAgency[0] };
   if (raw.disallowedType) return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: raw.disallowedType[0] };
   if (type && !policy.employment.allowedTypes.includes(type)) {
     return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: candidate.employment?.evidence || type };
@@ -214,9 +226,13 @@ export function classifyEmployment(candidate, policy) {
     return { pass: true, code: 'EMPLOYMENT_FULL_TIME_NOT_VERIFIED', evidence: null };
   }
   if (type === 'internship') {
-    if (policy.employment.internshipRequiresExplicitPaid && !explicitPaid) {
-      return { pass: false, code: 'INTERNSHIP_PAY_NOT_EXPLICIT', evidence: candidate.employment?.evidence || null };
+    const stipend = parseStipend(candidate);
+    if (stipend.status !== 'Verified') {
+      return { pass: false, code: stipend.reason === 'STIPEND_MISSING' ? 'INTERNSHIP_PAY_NOT_EXPLICIT' : stipend.reason, evidence: stipend.evidence };
     }
+    const ppo = raw.text.match(/\b(?:ppo|pre[ -]?placement offer|(?:path|opportunity) to (?:a )?full[ -]?time offer)\b/i);
+    const noPpo = /\b(?:no|without)\s+(?:a\s+)?(?:ppo|pre[ -]?placement offer)|\b(?:ppo|pre[ -]?placement offer)\s+(?:is\s+)?(?:not|unavailable)/i.test(raw.text);
+    if (!ppo || noPpo) return { pass: false, code: 'INTERNSHIP_PPO_NOT_STATED', evidence: ppo?.[0] || null };
     return { pass: true, code: 'EMPLOYMENT_PAID_INTERNSHIP', evidence: candidate.employment?.evidence || raw.text };
   }
   return { pass: true, code: 'EMPLOYMENT_FULL_TIME', evidence: candidate.employment?.evidence || type };

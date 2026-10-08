@@ -7,7 +7,7 @@ import { INTERNSHIP_NOW, internshipFixture, remoteInternshipFixture } from '../f
 const noWrite = { planWrites: ({ operations }) => ({ operations }) };
 
 test('classifies exact monthly stipend boundaries without mixing the full-time lane', async () => {
-  const amounts = [24999, 25000, 29999, 30000];
+  const amounts = [25000, 30000, 39999, 40000];
   const result = await runInternshipLane({
     clock: () => INTERNSHIP_NOW,
     records: [
@@ -16,16 +16,16 @@ test('classifies exact monthly stipend boundaries without mixing the full-time l
     ],
     notionGateway: noWrite,
   });
-  assert.deepEqual(result.shortlist.map((record) => record.stipend.tier), ['Preferred', 'Lower-Stipend', 'Lower-Stipend']);
+  assert.deepEqual(result.shortlist.map((record) => record.stipend.tier), ['Preferred']);
   assert.equal(result.counts.preferred, 1);
-  assert.equal(result.counts.lowerStipend, 2);
-  assert.equal(result.counts.rejected, 2);
-  assert.equal(result.buckets.rejection.STIPEND_BELOW_25000_INR_MONTHLY, 1);
+  assert.equal(result.counts.lowerStipend, 0);
+  assert.equal(result.counts.rejected, 4);
+  assert.equal(result.buckets.rejection.STIPEND_BELOW_40000_INR_MONTHLY, 3);
   assert.equal(result.buckets.rejection.EMPLOYMENT_CATEGORY_NOT_INTERNSHIP, 1);
   assert.equal(result.shortlist.every((record) => record.employmentCategory === 'Internship'), true);
 });
 
-test('routes missing, ambiguous, unverified, and unsafe-period stipend evidence to verification', async () => {
+test('drops missing, ambiguous, unverified, and unsafe-period internship stipend evidence', async () => {
   const result = await runInternshipLane({
     clock: () => INTERNSHIP_NOW,
     records: [
@@ -36,12 +36,12 @@ test('routes missing, ambiguous, unverified, and unsafe-period stipend evidence 
     ],
     notionGateway: noWrite,
   });
-  assert.equal(result.counts.needsVerification, 4);
+  assert.equal(result.counts.rejected, 4);
   assert.equal(result.counts.ready, 0);
-  assert.equal(result.buckets.verification.STIPEND_MISSING, 1);
-  assert.equal(result.buckets.verification.STIPEND_AMBIGUOUS, 1);
-  assert.equal(result.buckets.verification.STIPEND_PERIOD_NOT_SAFE_TO_CONVERT, 1);
-  assert.equal(result.buckets.verification.STIPEND_UNVERIFIED, 1);
+  assert.equal(result.buckets.rejection.STIPEND_MISSING, 1);
+  assert.equal(result.buckets.rejection.STIPEND_AMBIGUOUS, 1);
+  assert.equal(result.buckets.rejection.STIPEND_PERIOD_NOT_SAFE_TO_CONVERT, 1);
+  assert.equal(result.buckets.rejection.STIPEND_UNVERIFIED, 1);
 });
 
 test('accepts Pune metro variants and rejects non-Pune onsite or hybrid internships', async () => {
@@ -102,11 +102,11 @@ test('preserves stipend, freshness, provenance, readiness, and maps the integrat
   const operation = result.plannedNotionOperations[0];
   assert.equal(operation.lane, 'internship');
   assert.equal(operation.payload.employmentCategory, 'Internship');
-  assert.equal(operation.payload.stipendAmount, 30000);
+  assert.equal(operation.payload.stipendAmount, 40000);
   assert.equal(operation.payload.stipendCurrency, 'INR');
   assert.equal(operation.payload.stipendPeriod, 'month');
-  assert.equal(operation.payload.stipendRaw, 'INR 30,000/month');
-  assert.equal(operation.payload.stipendEvidence, 'Stipend: INR 30,000/month');
+  assert.equal(operation.payload.stipendRaw, 'INR 40,000/month');
+  assert.equal(operation.payload.stipendEvidence, 'Stipend: INR 40,000/month');
   assert.equal(operation.payload.stipendTier, 'Preferred');
   assert.equal(operation.payload.freshness.tier, 'strict-0-24h');
   assert.equal(operation.payload.readiness.status, 'Ready');
@@ -118,13 +118,13 @@ test('preserves stipend, freshness, provenance, readiness, and maps the integrat
 test('supports annual safe conversion while preserving original amount and period', async () => {
   const result = await runInternshipLane({
     clock: () => INTERNSHIP_NOW,
-    records: [internshipFixture(1, { stipend: { amount: 360000, currency: 'INR', period: 'per annum', raw: 'INR 3,60,000 per annum', evidence: 'annual stipend' } })],
+    records: [internshipFixture(1, { stipend: { amount: 480000, currency: 'INR', period: 'per annum', raw: 'INR 4,80,000 per annum', evidence: 'annual stipend' } })],
     notionGateway: noWrite,
   });
   const stipend = result.shortlist[0].stipend;
-  assert.equal(stipend.amount, 360000);
+  assert.equal(stipend.amount, 480000);
   assert.equal(stipend.period, 'per annum');
-  assert.equal(stipend.monthlyAmount, 30000);
+  assert.equal(stipend.monthlyAmount, 40000);
   assert.equal(stipend.tier, 'Preferred');
 });
 
@@ -139,4 +139,24 @@ test('executes only through the self-contained fake transactional gateway', asyn
   assert.deepEqual(second.newlyCommitted, []);
   assert.deepEqual(second.alreadyCommitted, [result.plannedNotionOperations[0].dedupKey]);
   await assert.rejects(() => runInternshipLane({ clock: () => INTERNSHIP_NOW, records: [internshipFixture(2)], notionGateway: noWrite, executeGateway: true }), /fake gateway/);
+});
+
+// Check the same internship bar on the AICTE and NATS avenue inputs.
+test('AICTE and NATS internships require both the stipend floor and a stated PPO path', async () => {
+  for (const provider of ['aicte', 'nats']) {
+    const result = await runInternshipLane({
+      clock: () => INTERNSHIP_NOW,
+      records: [
+        internshipFixture(1, { provider, stipend: null }),
+        internshipFixture(2, { provider, description: 'Build AI products.' }),
+        internshipFixture(3, { provider }),
+      ],
+      notionGateway: noWrite,
+    });
+    assert.equal(result.counts.rejected, 2, provider);
+    assert.equal(result.counts.ready, 1, provider);
+    assert.equal(result.shortlist[0].candidate.canonicalUrl, 'https://jobs.example.test/internship/3');
+    assert.equal(result.buckets.rejection.STIPEND_MISSING, 1);
+    assert.equal(result.buckets.rejection.INTERNSHIP_PPO_NOT_STATED, 1);
+  }
 });

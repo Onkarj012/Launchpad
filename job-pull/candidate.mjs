@@ -1,3 +1,4 @@
+import { parseStipend } from './stipend.mjs';
 import { integerInRange } from './match-scorer.mjs';
 import { createHash } from 'node:crypto';
 import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
@@ -18,6 +19,7 @@ const EMPLOYMENT_TYPES = new Map([
   ['contract', 'contract'],
   ['contractor', 'contract'],
   ['temporary', 'temporary'],
+  ['volunteer', 'volunteer'],
 ]);
 
 export class CandidateValidationError extends Error {
@@ -424,6 +426,7 @@ export function normalizeCandidate(raw, options = {}) {
     applicationResolution: application.resolution,
     remoteEligibility: normalizeRemoteEligibility(raw.remoteEligibility, raw),
     salary: normalizeSalary(raw.salary, raw),
+    stipend: parseStipend(raw),
     timezoneOverlap: normalizeTimezoneOverlap(raw.timezoneOverlap, raw),
     eor: normalizeBooleanEvidence(raw.eor, raw.eorEvidence),
     equipment: normalizeBooleanEvidence(raw.equipment, raw.equipmentEvidence),
