@@ -82,6 +82,36 @@ export function retainDailyShortlist(budgetPath, runAt, runId, shortlist) {
   });
 }
 
+// Read the remaining Stretch capacity for one IST day.
+function dailyStretchBudget(budgetPath, runAt, runId) {
+  const { date, state } = dailyShortlistBudget(budgetPath, runAt, runId);
+  const days = state.stretchDays ?? {};
+  if (!days || typeof days !== 'object' || Array.isArray(days)) throw new Error('invalid daily stretch allocation');
+  const runs = days[date] ?? {};
+  if (!runs || typeof runs !== 'object' || Array.isArray(runs) || Object.values(runs).some((records) => !Array.isArray(records) || records.some((record) => !record || typeof record.key !== 'string' || !record.key))) throw new Error('invalid daily stretch allocation');
+  const otherKeys = [...new Set(Object.entries(runs).filter(([id]) => id !== runId).flatMap(([, records]) => records.map((record) => record.key)))];
+  return { date, state, remaining: Math.max(0, 3 - otherKeys.length), otherKeys };
+}
+
+// Retain Stretch rows without consuming any mode shortlist capacity.
+function retainDailyStretch(budgetPath, runAt, runId, stretch) {
+  return withOpportunityLedgerLock(budgetPath, () => {
+    const budget = dailyStretchBudget(budgetPath, runAt, runId);
+    const existing = budget.state.stretchDays?.[budget.date]?.[runId] ?? [];
+    const records = [...new Map([...existing, ...stretch.map((candidate) => ({ key: candidateDedupKey(candidate) }))].map((record) => [record.key, record])).values()];
+    if (records.length + budget.otherKeys.length > 3 || records.some((record) => budget.otherKeys.includes(record.key))) throw new Error('daily Stretch capacity changed before completion');
+    budget.state.stretchDays = {
+      ...(budget.state.stretchDays ?? {}),
+      [budget.date]: { ...(budget.state.stretchDays?.[budget.date] ?? {}), [runId]: records },
+    };
+    mkdirSync(path.dirname(budgetPath), { recursive: true });
+    const temporary = `${budgetPath}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(budget.state, null, 2)}\n`);
+    renameSync(temporary, budgetPath);
+    return { date: budget.date, selectedToday: records.length + budget.otherKeys.length, remaining: 3 - records.length - budget.otherKeys.length, path: budgetPath };
+  });
+}
+
 export function createDailyExecution(config, runAt) {
   const deadlineMs = Math.max(1, Number(config?.execution?.wholeRunDeadlineMs ?? 2_520_000) || 2_520_000);
   const reserveMs = Math.max(0, Number(config?.execution?.downstreamReserveMs ?? 300_000) || 300_000);
@@ -615,8 +645,27 @@ export const DAILY_MODE_RUNNERS = Object.freeze({
 });
 
 // Route a verified pool once, keeping uncapped results beside each mode's shortlist.
-function selectDailyModes(entries, options, selectedMode) {
+function selectDailyModes(entries, options, selectedMode, stretchBudget) {
   const pools = { normal: [], startup: [], remote: [], eorContract: [] };
+  const stretch = entries
+    .filter((entry) => {
+      const candidate = entry.candidate;
+      const family = entry.roleFamily || candidate.roleFamily || entry.eligibility?.roleFamily;
+      const score = Number(candidate.matchScore ?? candidate.score);
+      const coreFamily = ['ai-llm-agentic', 'ml', 'full-stack-ai', 'backend-python'].includes(family)
+        || /\bfull[ -]?stack\b/i.test(candidate.title || '')
+        || /\bback[- ]?end\b/i.test(candidate.title || '');
+      const listedAsStartupOrRemote = hasStartupEvidence(candidate) || entry.eligibility?.geo?.mode === 'remote';
+      return entry.eligibility?.hardMinimumExactly3Years === true
+        && coreFamily
+        && Number.isFinite(score) && score >= 80
+        && listedAsStartupOrRemote
+        && !stretchBudget.otherKeys.includes(candidateDedupKey(candidate));
+    })
+    .sort((left, right) => Number(right.candidate.matchScore ?? right.candidate.score) - Number(left.candidate.matchScore ?? left.candidate.score)
+      || String(left.candidate.canonicalUrl || '').localeCompare(String(right.candidate.canonicalUrl || '')))
+    .slice(0, stretchBudget.remaining)
+    .map((entry) => entry.candidate);
   for (const entry of entries) {
     const candidate = entry.candidate;
     if (entry.eligibility?.employment?.lane === 'eor-contract') {
@@ -640,6 +689,7 @@ function selectDailyModes(entries, options, selectedMode) {
   return {
     ...selections[selectedMode],
     eorContract: { results: selections.eorContract.results, shortlist: selections.eorContract.selected },
+    stretch,
     readyCount: shared.readyCount, scoredCount: shared.scoredCount,
     unscoredCount: shared.unscoredCount, scoringFailedCount: shared.scoringFailedCount,
     scoringQueue: shared.scoringQueue,
@@ -760,6 +810,7 @@ async function runDailyNormalImpl({
   if (shortlistLimit != null && (!Number.isInteger(shortlistLimit) || shortlistLimit < 0 || shortlistLimit > 20)) throw new Error('shortlist limit must be an integer between 0 and 20');
   const dailyBudgetPath = `${config.databasePath || '.local/launchpad-crawler/crawler.sqlite'}.daily-shortlist.json`;
   const dailyBudget = dailyShortlistBudget(dailyBudgetPath, runAt, effectiveRunId);
+  const stretchBudget = dailyStretchBudget(dailyBudgetPath, runAt, effectiveRunId);
   const dailyShortlistLimit = Math.min(shortlistLimit ?? 20, dailyBudget.remaining);
   const effectiveClock = crawlerClock(clock, runAt);
   const v4HistorySnapshot = readV4HistorySnapshot(config?.v4HistorySnapshotPath, {
@@ -918,7 +969,7 @@ async function runDailyNormalImpl({
       })
       : (scorer ?? undefined),
     includeCrawlerLanes: true,
-    selectApplications: (entries, options) => selectDailyModes(entries, options, selectedMode),
+    selectApplications: (entries, options) => selectDailyModes(entries, options, selectedMode, stretchBudget),
     enrichmentBudget: crawlerResult.run?.status === 'partial'
       ? 0
       : config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
@@ -968,6 +1019,7 @@ async function runDailyNormalImpl({
     };
   }
   result.dailyShortlistBudget = retainDailyShortlist(dailyBudgetPath, runAt, effectiveRunId, result.shortlist);
+  result.dailyStretchBudget = retainDailyStretch(dailyBudgetPath, runAt, effectiveRunId, result.stretch);
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
   const codeConfigVersion = computeCanaryVersion({ config });
   const discoveryProfile = {

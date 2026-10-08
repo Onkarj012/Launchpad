@@ -235,8 +235,17 @@ export async function runNormalMode({
     const readyCandidates = readinessEntries
       .filter((entry) => entry.readiness.ready)
       .map((entry) => entry.candidate);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(readyCandidates, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
-    const readinessByKey = new Map(readinessEntries.map((entry) => [candidateKey(entry.candidate), entry.readiness]));
+    const stretchReadinessEntries = (pipeline.stretchCandidates ?? [])
+      .filter((candidate) => !dailyExcludedKeys.includes(candidateDedupKey(candidate)))
+      .map((candidate) => {
+        const eligibility = { ...candidate.eligibility, eligible: true, reasons: [] };
+        const readiness = applicationReadiness(candidate, eligibility);
+        return { candidate, eligibility, freshness: candidate.freshness, readiness };
+      }).filter((entry) => entry.readiness.ready);
+    const candidatesToScore = [...new Map([...readyCandidates, ...stretchReadinessEntries.map((entry) => entry.candidate)]
+      .map((candidate) => [candidateKey(candidate), candidate])).values()];
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(candidatesToScore, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
+    const readinessByKey = new Map([...readinessEntries, ...stretchReadinessEntries].map((entry) => [candidateKey(entry.candidate), entry.readiness]));
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate,
       eligibility: candidate.eligibility,
@@ -305,7 +314,7 @@ export async function runNormalMode({
         ...Object.entries(pipeline.suppression?.byCode || {}),
       ]);
       return {
-        schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), shortlist,
+        schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), stretch: selection.stretch ?? [], shortlist,
         scoringQueue: selection.scoringQueue, funnel, verificationQueue,
         sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, rejectionCounts, rejectionReasons: [...new Set([...rejectionReasons, ...partialSourceReasons(sourceManifests)])].sort(),
@@ -379,7 +388,7 @@ export async function runNormalMode({
       .map((manifest) => manifest.sourceId);
     const missing = Math.max(0, 10 - shortlist.length);
     return {
-      schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), shortlist,
+      schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), stretch: selection.stretch ?? [], shortlist,
       scoringQueue: selection.scoringQueue, funnel,
       verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
       historicalSuppressions,
