@@ -141,6 +141,168 @@
           "company": "SigNoz",
           "indiaFirst": true,
           "startupTagged": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "airbnb",
+          "company": "Airbnb",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/airbnb/jobs (HTTP 200; 8 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "cloudflare",
+          "company": "Cloudflare",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs (HTTP 200; 1 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "coinbase",
+          "company": "Coinbase",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/coinbase/jobs (HTTP 200; 9 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "databricks",
+          "company": "Databricks",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/databricks/jobs (HTTP 200; 95 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "datadog",
+          "company": "Datadog",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/datadog/jobs (HTTP 200; 9 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "elastic",
+          "company": "Elastic",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/elastic/jobs (HTTP 200; 16 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "figma",
+          "company": "Figma",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/figma/jobs (HTTP 200; 1 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "mixpanel",
+          "company": "Mixpanel",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/mixpanel/jobs (HTTP 200; 4 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "mongodb",
+          "company": "MongoDB",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs (HTTP 200; 81 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "newrelic",
+          "company": "New Relic",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/newrelic/jobs (HTTP 200; 9 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "okta",
+          "company": "Okta",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/okta/jobs (HTTP 200; 120 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "roblox",
+          "company": "Roblox",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/roblox/jobs (HTTP 200; 10 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "rubrik",
+          "company": "Rubrik",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/rubrik/jobs (HTTP 200; 34 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "salesloft",
+          "company": "Salesloft",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/salesloft/jobs (HTTP 200; 1 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "samsara",
+          "company": "Samsara",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/samsara/jobs (HTTP 200; 6 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "stripe",
+          "company": "Stripe",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/stripe/jobs (HTTP 200; 44 India-located postings)"
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "twilio",
+          "company": "Twilio",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/twilio/jobs (HTTP 200; 14 India-located postings)"
+        },
+        {
+          "provider": "lever",
+          "slug": "fampay",
+          "company": "FamPay",
+          "indiaFirst": true,
+          "probeStatus": "verified",
+          "probedAt": "2026-10-08",
+          "evidenceRef": "https://api.lever.co/v0/postings/fampay?mode=json (HTTP 200; 16 India-located postings)"
         }
       ],
       "maxBoards": 20,
@@ -399,17 +561,26 @@
       "dailyBudget": 20,
       "perQueryResultCap": 10,
       "queries": [
-        "\"AI Engineer\" Pune fresher jobs",
-        "\"Machine Learning Engineer\" India \"0-2 years\" jobs",
-        "\"Backend Engineer\" Python Pune graduate jobs",
-        "\"Software Engineer\" India new grad careers",
-        "\"Generative AI\" engineer India fresher careers",
-        "site:ycombinator.com/jobs India (\"software engineer\" OR \"AI engineer\" OR \"ML engineer\")",
-        "site:wellfound.com/jobs India remote (junior OR fresher OR \"new grad\") engineer",
-        "site:cutshort.io/job India (AI OR Python OR backend OR \"full stack\") (fresher OR junior)",
-        "site:peerlist.io/company/*/careers India (AI OR software OR backend) engineer",
-        "(site:jobs.ashbyhq.com OR site:job-boards.greenhouse.io OR site:jobs.lever.co) India remote startup (AI OR ML OR Python) engineer",
-        "(Accel OR Peak XV OR Blume Ventures OR Lightspeed India OR Elevation Capital) portfolio careers India engineer"
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\") (fresher OR \"new grad\" OR junior OR \"0-2 years\") jobs",
+        "\"Graduate Software Engineer\" (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\") India jobs",
+        "\"New Grad Software Engineer\" India (onsite OR hybrid) jobs",
+        "\"Associate Software Engineer\" (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\") India jobs",
+        "\"Junior Software Engineer\" India (onsite OR hybrid) jobs",
+        "\"Software Engineer I\" Pune India jobs",
+        "\"Trainee Software Engineer\" India jobs",
+        "\"Applied AI Engineer\" India (fresher OR junior OR \"0-2 years\") jobs",
+        "\"AI Engineer\" India (onsite OR hybrid) (fresher OR junior OR graduate) jobs",
+        "\"Python Developer\" India (fresher OR junior OR \"0-2 years\") jobs",
+        "\"Backend Engineer I\" India jobs",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") remote India (\"open to India\" OR \"India only\" OR \"India remote\") jobs",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\") (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com)",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India (onsite OR hybrid) (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com)",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") remote India (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com)",
+        "site:ycombinator.com/jobs (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India",
+        "site:wellfound.com/jobs (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") remote India",
+        "site:cutshort.io/job (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\")",
+        "site:peerlist.io/company (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India careers",
+        "(Accel OR Peak XV OR Blume Ventures OR Lightspeed India OR Elevation Capital) portfolio (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India careers"
       ]
     },
     "chromium": {
@@ -421,19 +592,42 @@
       "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
       "dailyBudget": 20,
       "perQueryResultCap": 10,
-      "queries": [],
+      "queries": [
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\") (fresher OR \"new grad\" OR junior OR graduate OR \"0-2 years\")",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India (onsite OR hybrid) (fresher OR \"new grad\" OR junior OR graduate OR \"0-2 years\")",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") remote India (\"open to India\" OR \"India only\" OR \"India remote\") (fresher OR \"new grad\" OR junior OR \"0-2 years\")",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\") (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com)",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India (onsite OR hybrid) (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com)",
+        "(\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") remote India (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com)",
+        "site:ycombinator.com/jobs (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India",
+        "site:wellfound.com/jobs (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") remote India",
+        "site:cutshort.io/job (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") (\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\")",
+        "site:peerlist.io/company (\"Graduate Software Engineer\" OR \"New Grad Software Engineer\" OR \"Associate Software Engineer\" OR \"Junior Software Engineer\" OR \"Software Engineer I\" OR \"Trainee Software Engineer\" OR \"Applied AI Engineer\" OR \"AI Engineer\" OR \"ML Engineer\" OR \"Machine Learning Engineer\" OR \"Backend Engineer\" OR \"Backend Engineer I\" OR \"Full Stack Engineer\" OR \"Python Developer\" OR \"Software Engineer\") India careers"
+      ],
       "country": "IN",
       "searchLang": "en",
       "maxPages": 1,
       "roles": [
         "AI Engineer",
         "ML Engineer",
+        "Machine Learning Engineer",
         "Backend Engineer",
-        "Software Engineer"
+        "Software Engineer",
+        "Full Stack Engineer",
+        "Graduate Software Engineer",
+        "New Grad Software Engineer",
+        "Associate Software Engineer",
+        "Junior Software Engineer",
+        "Software Engineer I",
+        "Trainee Software Engineer",
+        "Applied AI Engineer",
+        "Python Developer",
+        "Backend Engineer I"
       ],
       "geographies": [
-        "Pune",
-        "India"
+        "(\"Pune\" OR \"Pimpri-Chinchwad\" OR PCMC OR Hinjawadi OR Hinjewadi OR Baner OR Kharadi OR Magarpatta OR \"Viman Nagar\")",
+        "India onsite hybrid",
+        "India remote open to India"
       ],
       "experiences": [
         "fresher",
@@ -442,9 +636,13 @@
       ],
       "ats": [
         "boards.greenhouse.io",
+        "job-boards.greenhouse.io",
         "jobs.lever.co",
-        "myworkdayjobs.com",
-        "jobs.ashbyhq.com"
+        "jobs.ashbyhq.com",
+        "jobs.smartrecruiters.com",
+        "apply.workable.com",
+        "recruitee.com",
+        "myworkdayjobs.com"
       ],
       "career": [
         "careers"
@@ -546,63 +744,63 @@
         },
         {
           "id": "vc",
-          "query": "\"CRED\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"CRED\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Razorpay\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Razorpay\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Zomato\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Zomato\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"BlinkIt\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"BlinkIt\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Pine Labs\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Pine Labs\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"OYO\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"OYO\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Agrostar\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Agrostar\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Bizongo\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Bizongo\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"BlackBuck\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"BlackBuck\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"CleverTap\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"CleverTap\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Cogoport\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Cogoport\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Classplus\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Classplus\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Exotel\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Exotel\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Darwinbox\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Darwinbox\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         },
         {
           "id": "vc",
-          "query": "\"Innovaccer\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+          "query": "\"Innovaccer\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:jobs.smartrecruiters.com OR site:apply.workable.com OR site:recruitee.com) India"
         }
       ],
       "queryBudget": 20,

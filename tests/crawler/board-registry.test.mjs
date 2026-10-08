@@ -57,7 +57,7 @@ test('migration imports every board from both legacy sources with zero coverage 
   const expectedKeys = legacyBoardKeys(crawlerConfig, reverseWarmSet);
   const actualKeys = new Set(registry.boards.map((board) => board.id));
 
-  assert.equal(counts.before.crawler, 29);
+  assert.equal(counts.before.crawler, 47);
   assert.equal(counts.before.reverseWarm, 217);
   assert.equal(registry.boards.length, counts.after);
   assert.equal(actualKeys.size, expectedKeys.size);
