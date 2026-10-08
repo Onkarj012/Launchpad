@@ -457,6 +457,28 @@ test('production registry contains 250 to 400 probed employers', () => {
   assert.ok(employers.size >= 250 && employers.size <= 400);
 });
 
+test('registry seed retains one verified India probe for each added Ashby employer', () => {
+  const registry = loadBoardRegistry('config/board-registry.json');
+  const expected = new Map([
+    ['Avoca', [26, 2]],
+    ['Reo.Dev', [3, 3]],
+    ['Blitzy', [34, 3]],
+    ['Plotline', [15, 12]],
+  ]);
+
+  for (const [company, [jobCount, indiaJobCount]] of expected) {
+    const board = registry.boards.find((item) => item.company === company);
+    assert.ok(board, `${company} must be in the registry`);
+    assert.equal(board.provider, 'ashby');
+    assert.equal(board.probeStatus, 'verified');
+    assert.equal(board.indiaRelevant, true);
+    assert.equal(board.probe.complete, true);
+    assert.equal(board.probe.jobCount, jobCount);
+    assert.equal(board.probe.indiaJobCount, indiaJobCount);
+    assert.equal(board.probe.sourceUrl, `https://api.ashbyhq.com/posting-api/job-board/${board.slug}?includeCompensation=true`);
+  }
+});
+
 test('production registry includes all four employer tiers', () => {
   const registry = loadBoardRegistry('config/board-registry.json');
   const tiers = new Set(registry.boards.map((board) => board.registryTier).filter(Boolean));
