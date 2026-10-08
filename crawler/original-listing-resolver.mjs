@@ -200,20 +200,22 @@ function firstField(root, paths) {
   return first(...paths.map((path) => readPath(root, path)));
 }
 
-function terminalLinkedInIdentityFailure(response, observation, provider) {
+// Match known lead identity and require a named employer on the destination.
+function terminalLinkedInIdentityFailure(response, observation, provider, { allowMissingLeadIdentity = false } = {}) {
   const { posting, root } = detailRoot(response);
   const identity = posting || root;
   const normalize = (value) => stripHtmlToText(text(value) || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const employer = normalize(firstField(identity, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer']));
-  const expectedEmployer = normalize(observation.company);
-  if (!employer || !expectedEmployer) return 'destination-employer-identity-missing';
-  if (employer !== expectedEmployer) return 'destination-employer-identity-mismatch';
+  const expectedEmployer = normalize(allowMissingLeadIdentity && observation.company === 'Not Verified' ? null : observation.company);
+  if (!employer || (!expectedEmployer && !allowMissingLeadIdentity)) return 'destination-employer-identity-missing';
+  if (expectedEmployer && employer !== expectedEmployer) return 'destination-employer-identity-mismatch';
   const title = normalize(firstField(identity, ['title', 'name', 'text']));
-  const expectedTitle = normalize(observation.title);
+  const expectedTitle = normalize(allowMissingLeadIdentity && observation.title === 'Not Verified' ? null : observation.title);
   // LinkedIn job IDs and an action target URL do not prove an ATS requisition.
   const requisition = text(normalizeRequisitionId(provider, firstField(identity, ['requisitionId', 'jobReqId', 'identifier.value', 'identifier'])));
   const expectedRequisition = text(normalizeRequisitionId(provider, observation.requisitionId));
   if (expectedRequisition && requisition && requisition !== expectedRequisition) return 'destination-role-identity-mismatch';
+  if (allowMissingLeadIdentity && !expectedTitle && title) return null;
   if (title && expectedTitle && title === expectedTitle) return null;
   if (expectedRequisition && requisition === expectedRequisition) return null;
   return title && expectedTitle ? 'destination-role-identity-mismatch' : 'destination-role-identity-missing';
@@ -474,6 +476,15 @@ function safePortalApplicationTarget(item, boundTarget = null) {
   return url.protocol === 'https:' && !url.username && !url.password && !url.port;
 }
 
+// Restrict pasted-post resolution to public employer routes without URL credentials.
+function safeHiringPostTarget(value) {
+  const target = classifyOriginalListingUrl(value);
+  if (!['ats', 'employer-career'].includes(target.kind)) return false;
+  const url = new URL(target.url);
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port
+    && !/\b(?:login|log-in|signin|sign-in|sign_in|auth|oauth|sso)\b/i.test(url.pathname);
+}
+
 function emptyTelemetry(budget) {
   return {
     requests: 0,
@@ -723,7 +734,8 @@ export function createOriginalListingResolver({
       }
       return result;
     };
-    const publicId = linkedInPublicJobId(discoveryUrl);
+    const hiringPost = observation.provider === 'hiring-post';
+    const publicId = hiringPost ? null : linkedInPublicJobId(discoveryUrl);
     if (publicId && /^\d+$/.test(String(observation.jobId ?? '')) && String(observation.jobId) !== publicId) return fail('portal-detail-request-identity-mismatch');
     if (activeSignal?.aborted) return fail('aborted');
     if (remainingDeadlineMs(activeDeadline) <= 0) return fail('deadline-exceeded');
@@ -734,9 +746,18 @@ export function createOriginalListingResolver({
     const retainedTargets = portalPatch?.evidence?.portalDetail?.applicationTargets ?? [];
     if (portalPatch && !retainedTargets.length) return fail('destination-intermediary', [discoveryUrl]);
     let current = retainedTargets.find((url) => classifyOriginalListingUrl(url).kind === 'ats') ?? discoveryUrl;
+    if (hiringPost) {
+      const pastedText = observation.evidence?.hiringPost?.pastedText ?? '';
+      const targets = [...pastedText.matchAll(/https:\/\/[^\s<>"'\[\]]+/g)]
+        .map((match) => canonical(match[0].replace(/[.,;!?)]+$/, '')))
+        .filter((url) => url && safeHiringPostTarget(url));
+      if (targets.length !== 1) return fail(targets.length ? 'hiring-post-ambiguous-application-links' : 'original-listing-not-found');
+      current = targets[0];
+    }
     const chain = [];
     const seen = new Set();
     for (let hop = 0; hop <= redirectLimit; hop += 1) {
+      if (hiringPost && !safeHiringPostTarget(current)) return fail('hiring-post-public-employer-route-required', [...chain, current]);
       if (activeSignal?.aborted) return fail('aborted', chain, {}, telemetry);
       const remainingMs = remainingDeadlineMs(activeDeadline);
       if (remainingMs <= 0) return fail('deadline-exceeded', chain, {}, telemetry);
@@ -778,6 +799,7 @@ export function createOriginalListingResolver({
           telemetry.requests += 1;
           const pending = boundedTransport(transport, current, {
             method: 'GET', redirect: 'manual', maxBytes: byteLimit,
+            ...(hiringPost ? { credentials: 'omit' } : {}),
             signal: activeSignal, deadline: activeDeadline, remainingMs,
             purpose: 'original-listing-resolution', runAt, hop, budget: limits,
             telemetry: { ...telemetry },
@@ -886,11 +908,16 @@ export function createOriginalListingResolver({
           : details.reason;
         return fail(reason, chain, { provider, fingerprint }, telemetry);
       }
-      if (publicId) {
-        const identityFailure = terminalLinkedInIdentityFailure(response, observation, provider);
+      if (publicId || hiringPost) {
+        const identityFailure = terminalLinkedInIdentityFailure(response, observation, provider, { allowMissingLeadIdentity: hiringPost });
         if (identityFailure) return fail(identityFailure, chain, { provider, fingerprint }, telemetry);
       }
       const patched = mergePatch({ ...observation, ...(portalPatch || {}), evidence: { ...observation.evidence, ...portalPatch?.evidence } }, details, current, provider, runAt, fingerprint);
+      if (hiringPost) {
+        const { posting, root } = detailRoot(response);
+        patched.company = stripHtmlToText(firstField(posting || root, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer']));
+        patched.evidence.fieldSources.company = FIELD_SOURCE_ORIGINAL;
+      }
       return {
         status: 'resolved',
         discoveryUrl,

@@ -9,6 +9,7 @@ import {
   listBraveQueries,
   buildCrawlerHelp,
   createCrawlerRunResolver,
+  defaultHttpTransport,
   runCrawlerOperator,
   validateCrawlerConfig,
 } from '../../crawler/operator.mjs';
@@ -776,4 +777,59 @@ test('bounded planner state is retained in the crawler source record after a com
   assert.equal(row.schemaVersion, 'BoundedBoardPlanStateV1');
   assert.deepEqual(row.trackedAts.coverage.selectedBoardIds, []);
   assert.equal(row.trackedAts.rotation.cursor, 0);
+});
+
+// Exercise the morning inbox through the source-plan and real resolver interfaces.
+test('morning reads pasted hiring posts and resolves employer links like connector leads', async () => {
+  const inboxDir = mkdtempSync(path.join(os.tmpdir(), 'launchpad-hiring-posts-'));
+  const file = path.join(inboxDir, 'hiring-posts.md');
+  const postUrl = 'https://www.linkedin.com/posts/acme-ai-hiring';
+  const employerUrl = 'https://boards.greenhouse.io/acme/jobs/123';
+  const pastedText = `Company: Acme Labs\nTitle: AI Engineer\nLocation: Pune, India\nWe are hiring early-career engineers. Apply: ${employerUrl}`;
+  writeFileSync(file, `${postUrl}\n\n${pastedText}\n\n---\nhttps://x.com/founder/status/456\n\nWe are hiring. DM for details.\n`);
+  const runAt = '2026-10-08T02:15:00.000Z';
+  const requests = [];
+  const transport = async (url, options) => {
+    requests.push({ url, options });
+    assert.equal(url, employerUrl);
+    return { status: 200, body: { title: 'AI Engineer', company: 'Acme Labs', location: 'Pune, India',
+      description: 'Full-time AI engineering. Build Python services. 0-1 years of experience.',
+      employmentType: 'FULL_TIME', datePosted: '2026-10-07', active: true } };
+  };
+  const config = { sources: { connectorInbox: { enabled: false, inboxDir } } };
+  const resolver = createCrawlerRunResolver({ config, transport, runAt });
+  const plansFor = (schedule) => buildSourcePlans({ config, transport, resolver, runAt, schedule });
+  const plan = plansFor('morning').find((item) => item.id === 'connector-inbox');
+  assert.ok(plan, 'morning includes the local Markdown inbox even when JSON connectors are disabled');
+  const result = await plan.fetch();
+  assert.equal(result.observations.length, 2);
+  const [resolved, held] = result.observations;
+  assert.equal(resolved.originalApplicationUrl, employerUrl);
+  assert.equal(resolved.discoveryUrl, postUrl);
+  assert.equal(resolved.applicationResolution.status, 'Resolved Original');
+  assert.equal(resolved.classification, 'direct');
+  assert.equal(resolved.evidence.hiringPost.pastedText, pastedText);
+  assert.match(resolved.description, /Build Python services/);
+  assert.equal(held.applicationResolution.status, 'Needs Verification');
+  assert.equal(held.shortlistEligible, false);
+  assert.equal(held.originalApplicationUrl, null);
+  assert.deepEqual(requests.map((request) => request.url), [employerUrl]);
+  assert.equal(plansFor('midday').some((item) => item.id === 'connector-inbox'), false);
+  // Unchanged entries are reverified on the next morning, not lost to file receipts.
+  assert.equal((await plan.fetch()).observations.length, 2);
+});
+
+// Preserve the no-login option at the actual HTTP boundary without live network.
+test('HTTP transport omits credentials when resolving pasted hiring posts', async (t) => {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options });
+    return new Response('Public employer detail', { status: 200 });
+  });
+  const result = await defaultHttpTransport('https://boards.greenhouse.io/acme/jobs/123', { credentials: 'omit', redirect: 'manual' });
+  assert.equal(result.status, 200);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.credentials, 'omit');
+  assert.equal(requests[0].options.redirect, 'manual');
+  assert.equal(requests[0].options.headers, undefined);
 });

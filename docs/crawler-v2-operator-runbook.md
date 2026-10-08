@@ -72,3 +72,45 @@ Workday DETAIL `startDate` is trusted when usable. LIST `postedOn` is not truste
 ## Handoff boundary
 
 The crawler returns a local discovery/planning result. Any later Notion transaction requires explicit authorization and the protected v5 transaction path. Applications, outreach delivery, and user-owned checkboxes remain human-controlled.
+
+## Pasted hiring posts
+
+Keep posts in `connector-inbox/hiring-posts.md`. The directory is ignored by git.
+Put the post URL on the first line, then paste its text. Separate entries with a
+line containing `---`. An optional `# Hiring posts` heading can precede the first
+separator.
+
+```markdown
+# Hiring posts
+
+---
+https://www.linkedin.com/posts/example-hiring
+
+We're hiring junior AI engineers in Pune.
+Apply: https://boards.greenhouse.io/example/jobs/123
+
+---
+https://x.com/example/status/456
+
+We're looking for backend engineers. DM for details.
+```
+
+Morning runs read this file even when JSON connector imports are disabled. To
+use another local file, set `sources.connectorInbox.hiringPostsFile` in your
+isolated config. The default follows `sources.connectorInbox.inboxDir` when set.
+Midday runs do not read hiring posts. The run leaves the file unchanged and
+reverifies retained entries each morning through the existing resolver, gates
+and history suppression.
+
+Each entry becomes an unverified connector lead. Optional `Company:`, `Title:`
+and `Location:` lines supply lead evidence. Missing fields stay `Not Verified`
+or blank, and the run date never becomes a posting date. A single public ATS or
+employer-careers link in the pasted text goes through the shared resolver. The
+employer detail must name the employer and role. Any supplied company and title
+must match. Posts without a usable link, ambiguous links, missing employer detail
+or mismatched identity remain in verification. Malformed entries are quarantined
+in the source manifest without discarding valid siblings.
+
+The resolver never fetches the post URL. Employer requests omit credentials;
+login routes, URL credentials and redirects to social or login pages are refused.
+Authentication failures remain in verification. No browser login is used.

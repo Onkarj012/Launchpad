@@ -4,10 +4,37 @@ import {
 } from '../job-pull/candidate.mjs';
 
 export const CONNECTOR_INBOX_SCHEMA_VERSION = 'LaunchpadConnectorInboxV1';
-export const CONNECTOR_PROVIDERS = Object.freeze(['indeed', 'apna', 'whatjobs', 'ziprecruiter', 'dice', 'jobs-and-careers']);
+export const CONNECTOR_PROVIDERS = Object.freeze(['indeed', 'apna', 'whatjobs', 'ziprecruiter', 'dice', 'jobs-and-careers', 'hiring-post']);
 
 const clean = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+// Turn URL-and-text Markdown entries into unverified connector leads.
+export function parseHiringPostInbox(markdown) {
+  if (typeof markdown !== 'string') throw new TypeError('hiring-post inbox must be Markdown text');
+  return markdown.replace(/\r\n/g, '\n').split(/^---\s*$/m)
+    .filter((entry) => entry.trim() && !/^# Hiring posts\s*$/i.test(entry.trim()))
+    .map((entry) => {
+      const lines = entry.trim().split('\n');
+      const url = lines.shift()?.trim().replace(/^<(.+)>$/, '$1');
+      const description = lines.join('\n').trim();
+      const field = (name) => clean(description.match(new RegExp(`^${name}:[ \\t]*(.+)$`, 'im'))?.[1]);
+      return {
+        schemaVersion: CONNECTOR_INBOX_SCHEMA_VERSION,
+        provider: 'hiring-post',
+        provenance: { input: 'pasted-hiring-post', postUrl: url },
+        records: [{
+          url,
+          company: field('Company') ?? 'Not Verified',
+          title: field('Title') ?? 'Not Verified',
+          location: field('Location'),
+          description,
+          postedAt: null,
+          evidence: { hiringPost: { postUrl: url, pastedText: description } },
+        }],
+      };
+    });
+}
 
 function quarantineEntry(index, errors, record = null) {
   return { index, errors, record };
@@ -27,7 +54,7 @@ function validateEnvelope(envelope) {
   return errors;
 }
 
-function validateRecord(record) {
+function validateRecord(record, provider) {
   const errors = [];
   if (!isObject(record)) return ['record must be an object'];
   const providerJobId = clean(record.providerJobId ?? record.provider_job_id ?? record.jobId);
@@ -36,6 +63,7 @@ function validateRecord(record) {
   if (!clean(record.title ?? record.role)) errors.push('title is required');
   if (!clean(record.company ?? record.companyName)) errors.push('company is required');
   if (!url) errors.push('url is required by CandidateV1');
+  if (provider === 'hiring-post' && !clean(record.description)) errors.push('pasted text is required');
   if (!Object.hasOwn(record, 'postedAt')) errors.push('postedAt is required (use null when unknown)');
   if (record.postedAt != null && !clean(String(record.postedAt))) errors.push('postedAt must be an ISO timestamp or null');
   return errors;
@@ -92,7 +120,7 @@ export function normalizeConnectorEnvelope(envelope, { runAt = new Date().toISOS
   let duplicates = 0;
 
   for (const [index, record] of envelope.records.entries()) {
-    const errors = validateRecord(record);
+    const errors = validateRecord(record, provider);
     if (errors.length) {
       quarantine.push(quarantineEntry(index, errors, record));
       continue;

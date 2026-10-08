@@ -40,6 +40,7 @@ import { buildDiscoveryProfile } from './discovery-profile.mjs';
 import {
   CONNECTOR_PROVIDERS,
   normalizeConnectorEnvelope,
+  parseHiringPostInbox,
 } from './connector-inbox.mjs';
 import {
   planBoundedSources,
@@ -221,6 +222,7 @@ export async function defaultHttpTransport(url, options = {}) {
       body: options.body,
       signal: abort.signal,
       redirect: options.redirect ?? 'follow',
+      ...(options.credentials ? { credentials: options.credentials } : {}),
     });
     const maxBytes = options.maxBytes ?? 2_000_000;
     const chunks = [];
@@ -486,14 +488,17 @@ export function createCrawlerRunResolver({ config, transport, runAt, signal = nu
   };
 }
 
-async function readConnectorInbox({ inboxDir, runAt, resolver }) {
+// Import local JSON exports and pasted Markdown leads through the shared resolver.
+async function readConnectorInbox({ inboxDir, readJson = true, hiringPostsFile = null, runAt, resolver }) {
   const root = path.resolve(inboxDir);
-  if (!fs.existsSync(root)) return { observations: [], manifest: { status: 'unavailable', reason: 'inbox-missing', fetched: 0 } };
+  if (!fs.existsSync(root) && !hiringPostsFile) return { observations: [], manifest: { status: 'unavailable', reason: 'inbox-missing', fetched: 0 } };
   const receiptDir = path.join(root, '.receipts');
-  fs.mkdirSync(receiptDir, { recursive: true });
   const observations = [];
   const receipts = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true }).filter((item) => item.isFile() && item.name.endsWith('.json')).sort()) {
+  const entries = readJson && fs.existsSync(root)
+    ? fs.readdirSync(root, { withFileTypes: true }).filter((item) => item.isFile() && item.name.endsWith('.json')).sort() : [];
+  if (entries.length) fs.mkdirSync(receiptDir, { recursive: true });
+  for (const entry of entries) {
     const file = path.join(root, entry.name);
     const raw = fs.readFileSync(file);
     const digest = createHash('sha256').update(raw).digest('hex');
@@ -512,6 +517,17 @@ async function readConnectorInbox({ inboxDir, runAt, resolver }) {
     }
     fs.writeFileSync(receipt, JSON.stringify({ file, digest, imported: imported.observations.length, quarantined: imported.quarantine.length, importedAt: runAt }) + '\n', { flag: 'wx' });
     receipts.push({ file, status: 'imported', imported: imported.observations.length, quarantined: imported.quarantine.length });
+  }
+  if (hiringPostsFile && fs.existsSync(hiringPostsFile)) {
+    for (const envelope of parseHiringPostInbox(fs.readFileSync(hiringPostsFile, 'utf8'))) {
+      const imported = normalizeConnectorEnvelope(envelope, { runAt });
+      for (const observation of imported.observations) {
+        const resolved = typeof resolver === 'function' ? await resolver(observation) : null;
+        observations.push(resolved ? applyOriginalListingResolution(observation, resolved) : observation);
+      }
+      receipts.push({ file: hiringPostsFile, status: 'imported', imported: imported.observations.length, quarantined: imported.quarantine.length,
+        quarantine: imported.quarantine });
+    }
   }
   return { observations, manifest: { status: 'succeeded', fetched: observations.length, receipts, noAutoApply: true } };
 }
@@ -632,7 +648,14 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     clock,
     resolver,
   }), { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
-  if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: [...CONNECTOR_PROVIDERS] } }));
+  const connectorInboxDir = sources.connectorInbox?.inboxDir ?? 'connector-inbox';
+  const hiringPostsFile = schedule === 'morning'
+    ? sources.connectorInbox?.hiringPostsFile ?? path.join(connectorInboxDir, 'hiring-posts.md') : null;
+  if (sources.connectorInbox?.enabled || (hiringPostsFile && fs.existsSync(hiringPostsFile))) {
+    plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({
+      inboxDir: connectorInboxDir, readJson: sources.connectorInbox?.enabled === true, hiringPostsFile, runAt, resolver,
+    }), { capabilities: { resolver: typeof resolver === 'function', providers: [...CONNECTOR_PROVIDERS] } }));
+  }
   if (schedule !== 'midday' && profile?.mode === 'normal' && sources.theirstack?.enabled) {
     plans.push(sourcePlan('theirstack', 'connector-imports', 'theirstack', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
       const theirStackConfig = sources.theirstack;
