@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { application, contact, createFakeGateway, OUTREACH_FIXTURE_NOW, providersFor } from '../fixtures/outreach-v5.mjs';
@@ -9,7 +9,7 @@ import { normalizeContactEvidence } from '../../outreach-v5/evidence.mjs';
 import { buildOutreachDraft, storeOutreachDraft } from '../../outreach-v5/draft.mjs';
 import { OUTREACH_CADENCE, cadencePlan, deriveOutreachState, dueCadenceAction } from '../../outreach-v5/cadence.mjs';
 import { createGmailDraft, observeGmailReplies } from '../../outreach-v5/gmail.mjs';
-import { confirmManualSend, prepareOutreach, persistOutreach, recordObservedReply, recordOutreachOutcome } from '../../outreach-v5/workflow.mjs';
+import { confirmManualSend, prepareEmployerOutreach, prepareOutreach, persistEmployerOutreachDrafts, persistOutreach, recordObservedReply, recordOutreachOutcome } from '../../outreach-v5/workflow.mjs';
 import { outreachActivityKey, outreachDuplicateKey } from '../../outreach-v5/idempotency.mjs';
 import { researchContact } from '../../outreach-v5/research.mjs';
 import { mapProperties } from '../../notion-v5/schema.mjs';
@@ -112,6 +112,49 @@ test('outreach preparation drafts from the explicitly selected candidate', async
   assert.equal(prepared.results[0].status, 'draft-ready');
   assert.equal(prepared.results[0].research.contact.personId, 'chosen');
   assert.match(prepared.results[0].draft.body, /Hi Person chosen/);
+});
+
+test('shortlisted and watched employers get LinkedIn and published-site email drafts saved locally', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'launchpad-employer-outreach-'));
+  try {
+    const prepared = await prepareEmployerOutreach({
+      targets: [
+        { ...application('shortlisted'), shortlisted: true },
+        { ...application('watched'), watched: true },
+        { ...application('ignored'), shortlisted: false, watched: false },
+      ],
+      providers: {
+        companyTeamPages: async ({ application: current }) => [contact(current.id, {
+          email: `founder-${current.id}@example.com`,
+          emailEvidence: 'Published on company team page',
+          recommendedChannel: 'Public Email',
+        })],
+      },
+      selectContact: (candidates) => candidates[0],
+      now: OUTREACH_FIXTURE_NOW,
+    });
+    assert.deepEqual(prepared.results.map(({ targetId }) => targetId), ['shortlisted', 'watched']);
+    assert.deepEqual(prepared.results[0].drafts.map(({ channel }) => channel), ['LinkedIn', 'Public Email']);
+    assert.ok(prepared.results.every(({ drafts }) => drafts.every(({ values }) => values.sent === false)));
+    const saved = await persistEmployerOutreachDrafts({ prepared, directory });
+    assert.equal(saved.status, 'stored');
+    assert.equal(saved.files.length, 4);
+    const email = JSON.parse(await readFile(saved.files.find((file) => file.includes('public-email')), 'utf8'));
+    assert.equal(email.email, 'founder-shortlisted@example.com');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('employer email drafts require evidence from the public company-team-page source', async () => {
+  const prepared = await prepareEmployerOutreach({
+    targets: [{ ...application('email-source'), shortlisted: true }],
+    providers: { publicProfiles: async ({ application: current }) => [contact(current.id, { email: 'guessed@example.com', emailEvidence: 'profile result', source: 'companyTeamPages', recommendedChannel: 'Public Email' })] },
+    selectContact: (candidates) => candidates[0],
+    now: OUTREACH_FIXTURE_NOW,
+  });
+  assert.deepEqual(prepared.results[0].drafts.map(({ channel }) => channel), ['LinkedIn']);
+  assert.equal(prepared.results[0].emailStatus, 'not-published-site-evidence');
 });
 
 test('attachment preparation requires exact Ready resume state and matching role artifact', () => {

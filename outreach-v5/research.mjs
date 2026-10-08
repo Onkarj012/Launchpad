@@ -41,7 +41,7 @@ function relevance(candidate, source, index) {
 }
 
 function candidateWithMetadata(candidate, source) {
-  return { ...candidate, source: candidate?.source ?? source };
+  return { ...candidate, source };
 }
 
 /**

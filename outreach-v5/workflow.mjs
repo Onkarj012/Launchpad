@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { buildOutreachDraft, storeOutreachDraft } from './draft.mjs';
 import { deriveOutreachState } from './cadence.mjs';
 import { evidenceUrls } from './evidence.mjs';
@@ -120,6 +122,59 @@ export async function prepareOutreach({ applications = [], providers = {}, deepL
     needsSelectionCount: results.filter((result) => result.status === 'needs-selection').length,
     results,
   };
+}
+
+/** Prepare local LinkedIn and published-site email drafts for selected employers. */
+export async function prepareEmployerOutreach({ targets = [], providers = {}, now = () => Date.now(), selectContact } = {}) {
+  const eligible = targets.filter((target) => target?.id && (target.shortlisted === true || target.watched === true));
+  const results = [];
+  for (const target of eligible) {
+    const research = await researchContact({ application: target, providers, sourceOrder: ['companyTeamPages', 'hiringAuthors', 'publicProfiles'], selectContact, now });
+    const result = { targetId: target.id, status: research.contact ? 'draft-ready' : research.status, research, drafts: [] };
+    if (research.contact) {
+      const contact = research.contact;
+      if (contact.contactUrl) {
+        try {
+          result.drafts.push(buildOutreachDraft({ application: target, contact, channel: 'LinkedIn' }));
+        } catch (error) {
+          result.linkedinError = { code: error.code ?? 'DRAFT_FAILED', message: error.message };
+        }
+      }
+      if (contact.source === 'companyTeamPages' && contact.email && contact.emailEvidence) {
+        try {
+          result.drafts.push(buildOutreachDraft({ application: target, contact, channel: 'Public Email' }));
+        } catch (error) {
+          result.emailError = { code: error.code ?? 'DRAFT_FAILED', message: error.message };
+        }
+      } else {
+        result.emailStatus = 'not-published-site-evidence';
+      }
+      if (result.drafts.length === 0) result.status = 'no-channel';
+    }
+    results.push(result);
+  }
+  return { status: results.some((result) => result.status === 'draft-ready') ? 'ready' : 'empty', results };
+}
+
+/** Save prepared employer messages as idempotent local JSON drafts. */
+export async function persistEmployerOutreachDrafts({ prepared, directory } = {}) {
+  if (!directory) throw new OutreachWorkflowError('a local draft directory is required', 'DRAFT_DIRECTORY_REQUIRED');
+  const files = [];
+  await mkdir(directory, { recursive: true });
+  for (const result of prepared?.results ?? []) {
+    for (const draft of result.drafts ?? []) {
+      const channel = draft.channel === 'Public Email' ? 'public-email' : 'linkedin';
+      const file = path.join(directory, `${draft.duplicateKey}-${channel}.json`);
+      try {
+        await writeFile(file, `${JSON.stringify(draft, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        files.push(file);
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        files.push(file);
+      }
+    }
+  }
+  return { status: 'stored', files };
 }
 
 export async function persistOutreach({ gateway, prepared } = {}) {
