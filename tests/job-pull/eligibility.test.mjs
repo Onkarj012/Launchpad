@@ -33,6 +33,81 @@ test('Pune metro onsite/hybrid passes while other cities fail', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Hyderabad, India', workMode: 'onsite' }), config).geo.pass, false);
 });
 
+// Real employer listing, with city omitted to replay area-only provider locations.
+const kalyaniListing = {
+  url: 'https://wk.wd3.myworkdayjobs.com/en-US/External/job/Product-Software-engineer_R0054357',
+  company: 'Wolters Kluwer',
+  title: 'Product Software Engineer (C#, .net Core, Angular, SQL, CSS)',
+  location: 'IND - Pune, Kalyani Nagar',
+};
+
+test('Kalyani Nagar employer listing passes when the provider omits Pune', () => {
+  assert.equal(classifyCandidate(normalizeCandidate(kalyaniListing), config).geo.code, 'GEO_PUNE_METRO');
+  const result = classifyCandidate(candidate({ ...kalyaniListing, location: 'IND - Kalyani Nagar', workMode: 'hybrid' }), config);
+  assert.equal(result.geo.code, 'GEO_PUNE_METRO');
+  assert.equal(result.eligible, true);
+});
+
+test('agreed Pune areas pass with the location forms recorded in the phase plan', () => {
+  for (const location of [
+    'Koregaon Park', 'Yerwada', 'Hadapsar', 'Mundhwa', 'Aundh', 'Pashan',
+    'Balewadi High Street', 'Bavdhan', 'Kothrud', 'Shivajinagar', 'Senapati Bapat Road',
+    'Wagholi', 'Kondhwa', 'Undri', 'Pimpri', 'Chinchwad', 'Pimple Saudagar',
+    'Nigdi', 'Bhosari', 'Moshi', 'Marunji',
+  ]) {
+    const result = classifyCandidate(candidate({ ...kalyaniListing, location }), config);
+    assert.equal(result.geo.code, 'GEO_PUNE_METRO', location);
+  }
+});
+
+test('ambiguous Sus and Maan locations require local evidence and whole names', () => {
+  for (const area of ['Sus', 'Maan']) {
+    for (const suffix of ['Maharashtra', 'MH', '411021', '412115']) {
+      const result = classifyCandidate(candidate({ ...kalyaniListing, location: `${area}, ${suffix}` }), config);
+      assert.equal(result.geo.code, 'GEO_PUNE_METRO', `${area}, ${suffix}`);
+    }
+    for (const suffix of ['', ', India', ', 41102', ', 4121150', ', MHX']) {
+      assert.equal(classifyCandidate(candidate({ ...kalyaniListing, location: `${area}${suffix}` }), config).geo.pass, false, `${area}${suffix}`);
+    }
+  }
+  for (const location of ['Sussex, Maharashtra', 'Maanchester, MH', 'Puner, India', 'Hadapsarville, MH']) {
+    assert.equal(classifyCandidate(candidate({ ...kalyaniListing, location }), config).geo.pass, false, location);
+  }
+});
+
+// Employer's careers page records this job at Chakan, Pune, MH.
+const chakanListing = {
+  url: 'https://fourfront.in/career/',
+  company: 'FourFront',
+  title: 'SMT Engineer',
+  location: 'Phase 2 plant, Chakan, Pune, MH',
+};
+
+test('outer industrial belt locations fail even when Pune or a Pune pin is present', () => {
+  const original = classifyCandidate(normalizeCandidate(chakanListing), config);
+  assert.equal(original.geo.pass, false);
+  for (const area of ['Chakan', 'Talegaon', 'Ranjangaon', 'Shikrapur']) {
+    for (const workMode of ['onsite', 'hybrid']) {
+      const result = classifyCandidate(candidate({ ...kalyaniListing, location: `${area}, Pune, Maharashtra, 412115`, workMode }), config);
+      assert.equal(result.eligible, false, `${area} ${workMode}`);
+      assert.equal(result.geo.pass, false, `${area} ${workMode}`);
+    }
+  }
+});
+
+test('multi-city listings pass with an independent Pune option, including beside the outer belt', () => {
+  for (const location of [
+    'Bengaluru, Pune, India', 'Mumbai / Pune', 'Chakan, Pune; Pune, Maharashtra',
+    'Chakan / Pune', 'Chakan, Pune | Hadapsar', 'Chakan, Pune or Kalyani Nagar',
+  ]) {
+    const result = classifyCandidate(candidate({ ...kalyaniListing, location }), config);
+    assert.equal(result.geo.code, 'GEO_PUNE_METRO', location);
+  }
+  for (const location of ['Chakan, Pune / Mumbai', 'Sus / Mumbai, Maharashtra', 'Maan; Bengaluru, 411021']) {
+    assert.equal(classifyCandidate(candidate({ ...kalyaniListing, location }), config).geo.pass, false, location);
+  }
+});
+
 test('remote scope must explicitly include India-compatible geography', () => {
   assert.equal(classifyCandidate(candidate({ location: 'Remote - India' }), config).geo.pass, true);
   assert.equal(classifyCandidate(candidate({ location: 'Remote - APAC' }), config).geo.pass, true);
