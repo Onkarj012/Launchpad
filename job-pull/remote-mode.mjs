@@ -8,7 +8,11 @@ import { runRemoteSourcePlan } from './remote-sources.mjs';
 import { selectRemoteApplications } from './remote-selection.mjs';
 import { filterHistoricalCandidates } from '../crawler/historical-suppression.mjs';
 import { readOpportunityLedger, recordSurfaced } from './opportunity-ledger.mjs';
-import { buildReconciliation, scorePoolInRun, scorerIsBroken, scoringGateError } from './mode-scoring.mjs';
+import {
+  buildDeliveryPlan, buildDeliveryReconciliation, buildReconciliation, emptyDeliveryPlan,
+  hasUsableMatchScore, partialSourceReasons, scorePoolInRun, scorerIsBroken,
+  scoringGateError, selectionRejectionReasons, sourceCoverageFromManifests,
+} from './mode-scoring.mjs';
 
 export const REMOTE_MODE_SCHEMA_VERSION = 'LaunchpadV5RemoteModeV1';
 
@@ -172,7 +176,7 @@ function fatalResult(runId, runAt, sourceManifests, error) {
     verificationQueue: [],
     sourceManifests,
     sourceTelemetry: sourceManifests,
-    plannedNotionOperations: [],
+    plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'failed' }), writesPlanned: false,
     transaction: null,
     historicalSuppressions: [],
     scoringQueue: details.scoringQueue || [],
@@ -190,7 +194,7 @@ export async function runRemoteMode({
   sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {},
   notionGateway = createNoWriteNotionGateway(), executeGateway = false,
   config = null, conversionPlan = null, ledgerRows = [], opportunityLedgerRows = null, historicalV4Rows = [],
-  opportunityLedgerPath = null, scores, scorer, scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false,
+  opportunityLedgerPath = null, scores, scorer, dailyExcludedKeys = [], previousDailyCandidates = [], scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false, partial = false, shortlistLimit = null,
 } = {}) {
   if (String(mode).toLowerCase() !== 'remote') throw new RemoteModeError(`Remote runner only supports remote mode, received ${mode}`, 'mode');
   const runAt = readClock(clock);
@@ -213,24 +217,45 @@ export async function runRemoteMode({
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const { kept: nonHistoricalCandidates, suppressed: historicalSuppressions } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
-    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
+    const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(nonHistoricalCandidates.filter((candidate) => !dailyExcludedKeys.includes(candidateDedupKey(candidate)) && applicationReadiness(candidate, candidate.eligibility).ready), scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
     const selectionEntries = scoredPool
       .filter((candidate) => candidate.remoteReady === true)
       .map((candidate) => ({ candidate, eligibility: candidate.eligibility, freshness: candidate.freshness }));
-    const selection = selectRemoteApplications(selectionEntries, { maximumPerCompany: remoteConfig.run.maximumPerCompany });
-    const eligibleCount = pipeline.postSuppressionCandidates.length;
+    if (shortlistLimit != null && (!Number.isInteger(shortlistLimit) || shortlistLimit < 0 || shortlistLimit > 20)) throw new RemoteModeError('shortlist limit must be an integer between 0 and 20', 'selection');
+    const selection = selectRemoteApplications(selectionEntries, { previousDailyCandidates, maximum: shortlistLimit ?? 20, maximumPerCompany: remoteConfig.run.maximumPerCompany });
+    const eligibleCount = pipeline.scoringCandidates.length;
     const scorerRan = scorerTelemetry !== null;
+    const scoringBudgetEnded = ['SCORER_DEADLINE_EXCEEDED', 'SCORER_ABORTED'].includes(scorerTelemetry?.reasonCode);
     const droppedScoringRows = selection.unscoredCount > 0 || selection.scoringFailedCount > 0;
     const incompleteScoring = scorerRan ? scorerIsBroken(scorerTelemetry) : droppedScoringRows;
     const scoringDropped = scorerRan && droppedScoringRows && !incompleteScoring;
-    const reconciliation = buildReconciliation({ eligible: eligibleCount, historicalSuppressed: historicalSuppressions.length, selection, selected: incompleteScoring ? 0 : selection.selected.length, runFailed: incompleteScoring });
+    const reconciliation = buildReconciliation({ fetched: pipeline.counts.fetched, dated: pipeline.counts.dated, eligible: eligibleCount, historicalSuppressed: historicalSuppressions.length, selection, selected: incompleteScoring ? 0 : selection.selected.length, runFailed: incompleteScoring });
+    const rejectionReasons = selectionRejectionReasons({ pipeline, selection, eligible: eligibleCount, selected: incompleteScoring ? 0 : selection.selected.length });
+    if (partial || scoringBudgetEnded) {
+      const scoredReady = scoredPool.filter((candidate) => hasUsableMatchScore(candidate) && applicationReadiness(candidate, candidate.eligibility).ready);
+      const scorePendingReady = selection.scoringQueue.filter((candidate) => applicationReadiness(candidate, candidate.eligibility).ready);
+      const selectedKeys = new Set(selection.selected.map((candidate) => candidateDedupKey(candidate)));
+      const verificationQueue = sourceResults.flatMap((source) => source.candidates)
+        .filter((candidate) => !selectedKeys.has(candidateDedupKey(candidate)))
+        .map((candidate) => verificationRecord(candidate, pipelineByUrl.get(candidate.canonicalUrl) || candidate))
+        .filter(Boolean)
+        .filter((record, index, records) => records.findIndex((item) => item.dedupKey === record.dedupKey) === index);
+      return {
+        schemaVersion: REMOTE_MODE_SCHEMA_VERSION, runId, runAt, mode: 'remote', discoveryMode: 'Remote', shortlist: selection.selected,
+        scoredReady, scorePendingReady, backfill: selection.selected.filter((candidate) => candidate.selectionTier === 'Backfill'),
+        verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
+        historicalSuppressions, scoringQueue: selection.scoringQueue, reconciliation,
+        outcome: { status: 'partial', fatal: false, degraded: true, errors: [{ stage: 'recovery', name: 'PartialRun', message: 'source coverage or downstream scoring budget ended before completion' }] },
+        counts: { fetched: pipeline.counts.fetched, dated: pipeline.counts.dated, eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, selected: selection.selected.length, verificationQueue: verificationQueue.length, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+      };
+    }
     if (incompleteScoring) {
       const error = scoringGateError(RemoteModeError, selection, scorerRan ? scorerTelemetry : null);
       error.details = {
         scoringQueue: selection.scoringQueue,
         scoring: { required: true, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: 0, ...(scorerTelemetry ? { scorer: scorerTelemetry } : {}) },
         reconciliation,
-        counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, selected: 0, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
+        counts: { fetched: pipeline.counts.fetched, dated: pipeline.counts.dated, eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, selected: 0, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount },
       };
       throw error;
     }
@@ -245,7 +270,8 @@ export async function runRemoteMode({
       if (notionGateway.kind !== 'fake-transactional-v5' || typeof notionGateway.executeWrites !== 'function') throw new RemoteModeError('live or non-transactional gateway execution is disabled; inject the Remote fake gateway', 'notion');
       transaction = await notionGateway.executeWrites({ operations: plannedOperations });
     }
-    if (commitSurfaced) recordSurfaced(shortlist, { path: opportunityLedgerPath || undefined, now: runAt });
+    const deliveryPlan = buildDeliveryPlan({ shortlist, plannedNotionOperations: plannedOperations });
+    const surfaced = commitSurfaced ? recordSurfaced(deliveryPlan.opportunitySurfacing, { path: opportunityLedgerPath || undefined, now: runAt }) : null;
     const selectedKeys = new Set(shortlist.map((candidate) => candidateDedupKey(candidate)));
     const verificationQueue = sourceResults.flatMap((source) => source.candidates)
       .map((candidate) => ({ candidate, pipelineCandidate: pipelineByUrl.get(candidate.canonicalUrl) || null }))
@@ -268,14 +294,17 @@ export async function runRemoteMode({
       sourceManifests,
       sourceTelemetry: sourceManifests,
       plannedNotionOperations: plannedOperations,
+      deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }),
+      writesPlanned: plannedOperations.length > 0,
       transaction,
       historicalSuppressions,
       scoringQueue: selection.scoringQueue,
       ...(scorerTelemetry ? { scoring: { required: selection.unscoredCount > 0 || selection.scoringFailedCount > 0, scoredCount: selection.scoredCount, unscoredCount: selection.unscoredCount, scoringFailedCount: selection.scoringFailedCount, selectedCount: shortlist.length, scorer: scorerTelemetry } } : {}),
       reconciliation,
-      shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing, preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes, reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`)], linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' } },
+      shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing, preferredMissing: Math.max(0, 12 - shortlist.length), failedLanes, emptyLanes, reasons: [...(missing ? ['APPLICATION_READY_MINIMUM_SHORTFALL'] : []), ...failedLanes.map((lane) => `SOURCE_FAILED:${lane}`), ...emptyLanes.map((lane) => `SOURCE_EMPTY:${lane}`), ...(shortlist.length === 0 ? rejectionReasons : [])], linkedinRescueSuggestion: { suggested: missing >= 5, command: 'linkedin-leads', invoked: false, reason: missing >= 5 ? `verified inventory is short by ${missing}` : 'shortfall is below rescue threshold' } },
       outcome: { status: failedLanes.length || scoringDropped || sourceManifests.some((manifest) => manifest.errors.length) ? 'degraded' : 'ok', fatal: false, degraded: Boolean(failedLanes.length || scoringDropped || sourceManifests.some((manifest) => manifest.errors.length)), errors: sourceManifests.map(issueFor).filter(Boolean) },
-      counts: { fetched: sourceResults.reduce((sum, source) => sum + source.candidates.length, 0), dated: sourceResults.reduce((sum, source) => sum + source.candidates.filter((candidate) => candidate.postedAt != null).length, 0), eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, bands: selection.bands, familyCounts: selection.familyCounts, eligibilityClasses: selection.eligibilityClasses, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount, schemaIntegrationRequired: true, missingFields: [...REMOTE_SCHEMA_FIELDS] },
+      rejectionReasons,
+      counts: { fetched: pipeline.counts.fetched, dated: pipeline.counts.dated, eligible: eligibleCount, scored: selection.scoredCount, ready: selection.readyCount, applicationReadyPool: selection.readyPoolCount, selected: shortlist.length, verificationQueue: verificationQueue.length, historicalSuppressed: historicalSuppressions.length, minimum: 10, preferred: 12, maximum: 20, strictSelected: selection.strictSelected, strictShortfall: selection.strictShortfall, bands: selection.bands, familyCounts: selection.familyCounts, eligibilityClasses: selection.eligibilityClasses, unscored: selection.unscoredCount, scoringFailed: selection.scoringFailedCount, schemaIntegrationRequired: true, missingFields: [...REMOTE_SCHEMA_FIELDS] },
     };
   } catch (error) {
     return fatalResult(runId, runAt, sourceResults.map(({ manifest }) => manifest), error);

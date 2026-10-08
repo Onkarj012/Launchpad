@@ -5,8 +5,9 @@
   "run": {
     "cadence": "manual",
     "onceDaily": true,
-    "minimumTotal": 25,
-    "maximumTotal": 35,
+    "minimumTotal": 10,
+    "preferredTotal": 12,
+    "maximumTotal": 20,
     "strictTarget": 10,
     "maximumPerCompany": 2,
     "maximumFamilyShare": 0.4

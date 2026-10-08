@@ -65,6 +65,8 @@ test('dev-env and production-env databases do not share novelty observations', a
   const devStore = openCrawlerStore(path.join(root, 'dev.sqlite'));
   const devFirst = await runOnStore(devStore, 'dev-run-1', job);
   assert.equal(devFirst.observations[0]._crawlerIdentity.code, 'NEW_TO_ME');
+  assert.equal(Object.hasOwn(devFirst.observations[0], 'readiness'), false);
+  assert.equal(devFirst.shortlist.length, 1);
   const devSecond = await runOnStore(devStore, 'dev-run-2', job);
   assert.notEqual(devSecond.observations[0]._crawlerIdentity.code, 'NEW_TO_ME');
   assert.equal(devSecond.observations[0]._crawlerNovelty.newToMe, false);
@@ -155,6 +157,7 @@ test('workflow routes ambiguous historical matches to verification, not shortlis
   assert.equal(result.reserve.length, 0);
   assert.equal(result.counts.historicalAmbiguous, 1);
   assert.ok(result.verificationQueue.some((item) => item.reasons?.includes('AMBIGUOUS_HISTORICAL_COLLISION')));
+  assert.equal(result.verificationQueue[0].source, null);
   assert.equal(result.v4Snapshot.status, 'loaded');
   assert.equal(result.v4Snapshot.rowCount, 2);
 });
@@ -196,7 +199,7 @@ test('novelty breakdown separates production observation, history, and newly-act
   });
   store.close();
 
-  assert.ok(result.novelty.productionObservation >= 1);
+  assert.equal(result.novelty.productionObservation, 1);
   assert.equal(result.novelty.actionedHistory, 1);
   assert.equal(result.counts.novelty.actionedHistory, 1);
   assert.equal(typeof result.novelty.surfacedHistory, 'number');

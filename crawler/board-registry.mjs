@@ -6,6 +6,8 @@ export const BOARD_REGISTRY_SCHEMA = 'BoardRegistryV1';
 export const DEFAULT_BOARD_REGISTRY_PATH = 'config/board-registry.json';
 
 export const SCHEDULE_LANES = Object.freeze(['atsWarm', 'atsBatch1', 'atsBatch2', 'enterprise']);
+export const SOURCE_PLAN_TIERS = Object.freeze(['daily-core', 'targeted-enterprise', 'exploration', 'opportunistic']);
+export const DEFAULT_SOURCE_PLAN_ALLOCATION = Object.freeze({ priorityShare: 0.8, explorationShare: 0.2 });
 
 /** Provider family → scheduled crawler source section that consumes it. */
 export const PROVIDER_LANES = Object.freeze({
@@ -104,6 +106,17 @@ function rotate(values, cursor) {
   return [...values.slice(start), ...values.slice(0, start)];
 }
 
+function rotateRanked(values, cursor, compare) {
+  const ranked = [...values].sort(compare);
+  const groups = [];
+  for (const item of ranked) {
+    const group = groups.at(-1);
+    if (!group || compare(group[0], item) !== 0) groups.push([item]);
+    else group.push(item);
+  }
+  return groups.flatMap((group) => rotate(group, cursor));
+}
+
 export function planBoardRotation({ boards = [], maxBoards = boards.length, providerQuotas = {}, state = {}, runAt = new Date().toISOString(), seenBoardIds = [] } = {}) {
   const configured = [];
   const duplicateConfigured = [];
@@ -161,6 +174,236 @@ export function planBoardRotation({ boards = [], maxBoards = boards.length, prov
       lastAttemptByBoard: Object.fromEntries(selected.map((board) => [board.rotationBoardId, runAt])),
     },
   };
+}
+
+function normalizedBoardId(board) {
+  const id = boardIdentityKey(board);
+  return id ? id.toLowerCase() : null;
+}
+
+function boardPlanLane(board, lane) {
+  const provider = String(board?.provider || '').toLowerCase();
+  return PROVIDER_LANES[provider] || lane || null;
+}
+
+function boardPlanText(board) {
+  return [board?.company, board?.board, board?.slug, board?.boardKey, board?.notes, board?.evidenceRef,
+    ...(Array.isArray(board?.targetTitles) ? board.targetTitles : []),
+    ...(Array.isArray(board?.relevantTitles) ? board.relevantTitles : []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function boardPlanGeoRank(board, locationPreset) {
+  const text = boardPlanText(board);
+  const pune = board?.puneRelevant === true || /\bpune|pcmc|hinjawadi|pimpri|wakad|baner|kharadi\b/i.test(text);
+  const india = board?.indiaRelevant === true || board?.indiaFirst === true || pune || /\bindia|bengaluru|hyderabad|mumbai|chennai\b/i.test(text);
+  if (locationPreset === 'pune') return pune ? 3 : india ? 2 : 0;
+  return india ? 2 : 0;
+}
+
+function boardPlanTitleRank(board, targetTitles = []) {
+  const text = boardPlanText(board);
+  const titles = [...targetTitles, ...(Array.isArray(board?.targetTitles) ? board.targetTitles : []), ...(Array.isArray(board?.relevantTitles) ? board.relevantTitles : [])]
+    .map((value) => String(value).trim().toLowerCase()).filter(Boolean);
+  return titles.filter((title) => text.includes(title)).length;
+}
+
+function boardPlanHealth(board) {
+  const health = board?.health || {};
+  return Math.max(0, Number(health.recentReadyRoleYield) || 0) * 100
+    + Math.max(0, Number(health.recentFreshEligibleYield) || 0) * 10
+    - Math.max(0, Number(health.repeatedFailureCount) || 0) * 25;
+}
+
+function boardPlanState(state, id) {
+  return state?.boards?.[id]
+    || state?.boardStates?.[id]
+    || state?.continuation?.[id]
+    || null;
+}
+
+function boardPlanTier(board, lane) {
+  const explicit = String(board?.sourceTier || board?.tier || '').trim().toLowerCase();
+  if (SOURCE_PLAN_TIERS.includes(explicit)) return explicit;
+  const ownerLane = boardPlanLane(board, lane);
+  if (ownerLane === 'enterprise') return 'targeted-enterprise';
+  if (ownerLane === 'atsWarm') return 'daily-core';
+  if (ownerLane === 'atsBatch1' && (board?.indiaRelevant || board?.puneRelevant)) return 'daily-core';
+  return 'opportunistic';
+}
+
+function planReason(decision, board) {
+  const continuation = decision.continuation ? 'continuation-' : '';
+  if (decision.action === 'selected' || decision.action === 'resumed') return `${continuation}${decision.exploration ? 'exploration-quota' : 'measured-priority'}`;
+  if (decision.action === 'deferred') return decision.exploration ? 'exploration-quota-exhausted' : 'measured-priority-budget-exhausted';
+  if (decision.action === 'omitted') return decision.reason || 'board-omitted';
+  return board?.enabled === false ? 'board-disabled' : 'board-not-selected';
+}
+
+/**
+ * Build the deterministic, no-network board plan shared by all ATS lanes.
+ * `boardsByLane` is intentionally an input map so tests and dev fixtures can
+ * prove alias dedupe without loading the production registry.
+ */
+export function planBoundedSources({
+  boardsByLane = {},
+  locationPreset = 'india',
+  targetTitles = [],
+  maxBoards = 20,
+  allocation = DEFAULT_SOURCE_PLAN_ALLOCATION,
+  state = {},
+  runAt = new Date().toISOString(),
+  sourceBudgetMs = 720_000,
+} = {}) {
+  const owners = new Map();
+  const decisions = [];
+  const laneOrder = [...SCHEDULE_LANES];
+  for (const lane of Object.keys(boardsByLane).sort((left, right) => laneOrder.indexOf(left) - laneOrder.indexOf(right) || left.localeCompare(right))) {
+    for (const raw of boardsByLane[lane] || []) {
+      const id = normalizedBoardId(raw);
+      if (!id) {
+        decisions.push({ action: 'omitted', boardId: null, sourceLane: lane, reason: 'missing-normalized-board-identity' });
+        continue;
+      }
+      if (raw?.enabled === false || ['disabled', 'proposed', 'rejected'].includes(String(raw?.activationState || '').toLowerCase())) {
+        decisions.push({ action: 'omitted', boardId: id, sourceLane: lane, reason: raw?.activationState === 'proposed' ? 'board-proposed-not-active' : 'board-disabled' });
+        continue;
+      }
+      const ownerLane = boardPlanLane(raw, lane);
+      const existing = owners.get(id);
+      if (existing) {
+        existing.aliases.push({ sourceLane: lane, boardId: boardIdentityKey(raw) });
+        decisions.push({ action: 'omitted', boardId: id, sourceLane: lane, ownerSource: existing.sourceLane, reason: 'duplicate-board-alias' });
+        continue;
+      }
+      const board = { ...raw, boardId: id, sourceLane: ownerLane, planTier: boardPlanTier(raw, lane) };
+      const continuation = boardPlanState(state, id);
+      const hasContinuation = Boolean(continuation?.cursor || continuation?.unfinished || continuation?.status === 'interrupted' || continuation?.status === 'truncated');
+      const scored = {
+        board,
+        sourceLane: ownerLane,
+        aliases: [],
+        continuation,
+        hasContinuation,
+        geoRank: boardPlanGeoRank(board, locationPreset),
+        titleRank: boardPlanTitleRank(board, targetTitles),
+        healthRank: boardPlanHealth(board),
+      };
+      owners.set(id, scored);
+    }
+  }
+
+  const all = [...owners.values()];
+  const priority = all.filter((item) => item.board.planTier === 'daily-core' || item.board.planTier === 'targeted-enterprise');
+  const exploration = all.filter((item) => item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic');
+  const cap = Math.max(0, Math.min(all.length, Number(maxBoards) || 0));
+  const priorityShare = Math.max(0, Math.min(1, Number(allocation.priorityShare ?? 0.8) || 0.8));
+  const explorationShare = Math.max(0, Math.min(1, Number(allocation.explorationShare ?? 0.2) || 0.2));
+  const priorityBudget = Math.min(cap, Math.ceil(cap * priorityShare));
+  const explorationBudget = Math.max(0, Math.min(cap - priorityBudget, Math.floor(cap * explorationShare)));
+  const compareRank = (left, right) => Number(right.hasContinuation) - Number(left.hasContinuation)
+    || (right.geoRank - left.geoRank)
+    || (right.titleRank - left.titleRank)
+    || (right.healthRank - left.healthRank);
+  const compare = (left, right) => compareRank(left, right)
+    || left.board.boardId.localeCompare(right.board.boardId);
+  const trackedAtsItems = all.filter((item) => item.sourceLane === 'atsWarm');
+  const trackedAtsCursor = Math.max(0, Number(state?.trackedAts?.rotation?.cursor ?? state?.rotation?.trackedAtsCursor ?? 0) || 0);
+  const explorationCursor = Math.max(0, Number(state?.explorationCursor ?? state?.rotation?.explorationCursor ?? 0) || 0);
+  const orderedPriority = rotateRanked(priority, trackedAtsCursor, compareRank);
+  const orderedExploration = rotateRanked(exploration, explorationCursor, compareRank);
+  const selected = [];
+  const selectedIds = new Set();
+  // An unfinished board is resumable work, not a new exploration candidate.
+  // Give it first claim on the bounded window before applying the 80/20 split.
+  for (const item of all.filter((candidate) => candidate.hasContinuation).sort(compare)) {
+    if (selected.length >= cap) break;
+    selected.push(item); selectedIds.add(item.board.boardId);
+  }
+  for (const item of orderedPriority.slice(0, priorityBudget)) {
+    if (selected.length >= cap || selectedIds.has(item.board.boardId)) continue;
+    selected.push(item); selectedIds.add(item.board.boardId);
+  }
+  for (const item of orderedExploration.slice(0, explorationBudget)) {
+    if (selected.length >= cap || selectedIds.has(item.board.boardId)) continue;
+    selected.push(item); selectedIds.add(item.board.boardId);
+  }
+  // If one side has no eligible boards, unused budget is deterministic fallback
+  // capacity, while the configured 80/20 split remains visible in telemetry.
+  if (selected.length < cap) {
+    for (const item of [...orderedPriority, ...orderedExploration]) {
+      if (selected.length >= cap || selectedIds.has(item.board.boardId)) continue;
+      selected.push(item); selectedIds.add(item.board.boardId);
+    }
+  }
+  const selectedBoardsByLane = Object.fromEntries(SCHEDULE_LANES.map((lane) => [lane, []]));
+  for (const item of selected) {
+    selectedBoardsByLane[item.sourceLane] ??= [];
+    selectedBoardsByLane[item.sourceLane].push(item.board);
+    const action = item.hasContinuation ? 'resumed' : 'selected';
+    decisions.push({
+      action, boardId: item.board.boardId, sourceLane: item.sourceLane, tier: item.board.planTier,
+      continuation: item.hasContinuation, exploration: item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic',
+      reason: planReason({ action, continuation: item.hasContinuation, exploration: item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic' }, item.board),
+      score: { geography: item.geoRank, title: item.titleRank, health: item.healthRank },
+    });
+  }
+  for (const item of all) {
+    if (selectedIds.has(item.board.boardId)) continue;
+    decisions.push({
+      action: 'deferred', boardId: item.board.boardId, sourceLane: item.sourceLane, tier: item.board.planTier,
+      continuation: item.hasContinuation, exploration: item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic',
+      reason: planReason({ action: 'deferred', exploration: item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic' }, item.board),
+      score: { geography: item.geoRank, title: item.titleRank, health: item.healthRank },
+    });
+  }
+  decisions.sort((left, right) => String(left.boardId).localeCompare(String(right.boardId)) || left.action.localeCompare(right.action));
+  const prioritySelectedCount = selected.filter((item) => (item.board.planTier === 'daily-core' || item.board.planTier === 'targeted-enterprise') && !item.hasContinuation).length;
+  const explorationSelectedCount = selected.filter((item) => !item.hasContinuation && (item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic')).length;
+  const trackedAtsSelectedCount = selected.filter((item) => item.sourceLane === 'atsWarm' && !item.hasContinuation).length;
+  const nextTrackedAtsCursor = trackedAtsItems.length ? (trackedAtsCursor + trackedAtsSelectedCount) % trackedAtsItems.length : 0;
+  const nextExplorationCursor = exploration.length ? (explorationCursor + explorationSelectedCount) % exploration.length : 0;
+  const trackedAtsCoverage = {
+    configuredBoardIds: trackedAtsItems.map((item) => item.board.boardId),
+    selectedBoardIds: trackedAtsItems.filter((item) => selectedIds.has(item.board.boardId)).map((item) => item.board.boardId),
+    deferredBoardIds: trackedAtsItems.filter((item) => !selectedIds.has(item.board.boardId)).map((item) => item.board.boardId),
+  };
+  const boardPlan = {
+    schemaVersion: 'BoundedBoardPlanV1', runAt, locationPreset,
+    allocation: { priorityShare, explorationShare, priorityBudget, explorationBudget },
+    rotation: {
+      trackedAtsCursor,
+      nextTrackedAtsCursor,
+      explorationCursor,
+      nextExplorationCursor,
+    },
+    trackedAts: {
+      sourceId: 'ats-warm',
+      rotation: { cursor: trackedAtsCursor, nextCursor: nextTrackedAtsCursor },
+      coverage: trackedAtsCoverage,
+    },
+    boardsConfigured: all.length, boardsSelected: selected.length,
+    noWrite: true,
+    sourcePhaseBudgetMs: Math.max(1, Number(sourceBudgetMs) || 720_000),
+    sourcePhaseWithinBudget: Math.max(1, Number(sourceBudgetMs) || 720_000) <= 720_000,
+    retainedReadyYield: selected.reduce((sum, item) => sum + Math.max(0, Number(item.board.health?.recentReadyRoleYield) || 0), 0),
+    decisions,
+  };
+  const nextState = {
+    schemaVersion: 'BoundedBoardPlanStateV1', updatedAt: runAt,
+    trackedAts: {
+      rotation: { cursor: nextTrackedAtsCursor },
+      coverage: trackedAtsCoverage,
+    },
+    explorationCursor: nextExplorationCursor,
+    rotation: { trackedAtsCursor: nextTrackedAtsCursor, explorationCursor: nextExplorationCursor },
+    boards: Object.fromEntries(all.map((item) => [item.board.boardId, {
+      ...(item.continuation || {}), lastPlanAction: selectedIds.has(item.board.boardId) ? 'selected' : 'deferred',
+      lastPlanTier: item.board.planTier, lastPlannedAt: runAt,
+    }])),
+    lastPlan: boardPlan,
+  };
+  return { boardsByLane: selectedBoardsByLane, boardPlan, state: nextState, resumeState: state };
 }
 
 export function workdayTriple(boardOrSlug) {
@@ -514,7 +757,14 @@ export function projectLaneBoards(registry, lane, { enabledOnly = true, location
     if (entry.scheduleLane !== lane) continue;
     if (enabledOnly && !entry.enabled) continue;
     if (enabledOnly && entry.activationState === 'proposed') continue;
-    boards.push(toAdapterBoard(entry));
+    boards.push({
+      ...toAdapterBoard(entry),
+      id: entry.id,
+      boardKey: entry.boardKey,
+      sourceTier: entry.sourceTier ?? entry.tier ?? null,
+      targetTitles: entry.targetTitles ?? entry.relevantTitles ?? null,
+      health: entry.health,
+    });
   }
   if (!locationPreset) return boards;
   return [...boards].sort((left, right) => {

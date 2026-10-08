@@ -1,9 +1,10 @@
 import { extractExperienceYears, normalizedKey } from './candidate.mjs';
+import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
 
 const TITLE_PATTERNS = [
   { family: 'ai-llm-agentic', strict: /\b(ai product engineer|applied ai engineer|ai software engineer|llm application engineer|ai automation engineer|ai integration engineer|junior ai engineer|ai solutions engineer|ai engineer|artificial intelligence engineer|llm engineer|gen(?:erative)?[ -]?ai engineer|agentic ai engineer|ai agent engineer|nlp engineer|prompt engineer|ai developer|genai|gen ai developer|ai\/ml)\b/i },
   { family: 'ml', strict: /\b(machine learning engineer|ml engineer|applied ml engineer|deep learning engineer|computer vision engineer|data scientist|ml developer|machine learning developer)\b/i },
-  { family: 'backend-python', strict: /\b(backend|back-end|python engineer|python developer|backend developer|back-end developer|api engineer)\b/i },
+  { family: 'backend-python', strict: /\b(backend|back-end|back end (?:engineer|developer)|python engineer|python developer|backend developer|back-end developer|api engineer)\b/i },
   { family: 'full-stack-ai', strict: /\b(ai[- ]native full[ -]?stack engineer|full[ -]?stack|full[ -]?stack engineer|full[ -]?stack developer)\b/i },
   { family: 'general-new-grad-swe', strict: /\b(software engineer i|software engineer|software developer|software development engineer|sde[ -]?i|swe|developer engineer|member of technical staff|junior (?:software (?:developer|engineer)|developer)|associate (?:software (?:engineer|developer)|developer)|graduate engineer|founding engineer|product engineer|java developer|c\+\+ developer|node(?:\.js)? developer)\b/i },
 ];
@@ -13,7 +14,7 @@ const INTERNSHIP_PATTERN = /\b(intern|internship|trainee)\b/i;
 const REMOTE_PATTERN = /\b(remote|work from home|distributed|anywhere)\b/i;
 const HYBRID_PATTERN = /\bhybrid\b/i;
 const ONSITE_PATTERN = /\b(on[ -]?site|in[ -]?office|office[ -]?based|office-based)\b/i;
-const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only|volunteer)\b/i;
+const UNPAID_PATTERN = /\b(unpaid|un-paid|equity[ -]?only|commission[ -]?only)\b/i;
 const TRAINING_FEE_OR_BOND_PATTERN = /\b(training\s+fees?|registration\s+fees?|joining\s+fees?|security\s+deposits?|(?:non[- ]?refundable|refundable)(?:\s+security)?\s+deposits?(?=[^.!?]{0,80}\bjoining\b)|(?:service|employment)(?:\s+agreement)?\s+bond|bond\s+(?:of|for)\s+\d+\s+years?|bond\s+period|genuine\s+payment\s+required\s+before)\b/i;
 const PAID_PATTERN = /\b(paid|stipend|stipended|salary|compensation|per month|per annum|\$|₹|inr)\b/i;
 const FOREIGN_REMOTE_REGION_PATTERN = /\b(?:authorized\s+to\s+work\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada|australia)|(?:u\.?s\.?|united states|u\.?k\.?|united kingdom|eu|canada)\s+work\s+authorization|must\s+(?:be\s+located|reside)\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada)|(?:u\.?s\.?|united states|u\.?k\.?|eu|canada|australia)\s+only|anywhere\s+in\s+(?:the\s+)?(?:u\.?s\.?|united states|u\.?k\.?|eu|canada))(?=$|[^a-z])/i;
@@ -165,13 +166,30 @@ export function classifyGeo(candidate, policy) {
 }
 
 function employmentFromText(candidate) {
-  const text = textFor(candidate);
-  const internship = INTERNSHIP_PATTERN.test(text);
+  // Location, experience and benefits describe other things than employment.
+  // Read title/type evidence directly; inspect description for employment terms
+  // after removing only specific leave/volunteering and hybrid-location phrases.
+  const clean = (value) => decodeEntities(String(value || '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const direct = [clean(candidate.title), clean(candidate.employment?.evidence)].join(' · ');
+  let description = clean(candidate.description)
+    .replace(/\b(?:paid\s+)?volunteer(?:ing)?\s+(?:days?|time(?:\s+off)?|leave)\b/gi, '')
+    .replace(/\b(?:paid\s+)?time\s+off\s+to\s+volunteer\b/gi, '')
+    .replace(/\bunpaid\s+(?:leave|time\s+off)\b/gi, '');
+  if (candidate.workMode === 'hybrid' || /\bhybrid\b/i.test(description)) {
+    description = description.replace(/\b(?:work(?:ing)?[- ]from[- ]home|work(?:ing)?\s+remotely)\s+(?:on\s+a\s+)?part[- ]time(?:\s+basis)?\b/gi, '');
+  }
+  const text = [direct, description].join(' · ');
+  const disallowed = /\b(?:part[ -]?time|contract(?:or)?|temporary|volunteer)\b/i;
+  const roleType = /\b(?:part[ -]?time|contract(?:or)?|temporary|volunteer)\b[^.!?]{0,40}\b(?:role|position|employment|job|internship|engineer|developer|basis|availability)\b|\b(?:employment|job|engagement|contract)\s*(?:type)?\s*[:=-]\s*(?:part[ -]?time|contract(?:or)?|temporary|volunteer)\b|\b(?:work|hired|join|engaged)\s+(?:as\s+)?(?:a\s+)?(?:volunteer|contractor)\b/i;
+  const disallowedType = direct.match(disallowed) || description.match(roleType)
+    || description.match(/\b(?:role|position|employment|job)\s+(?:is|will be|as)\s+(?:a\s+)?(?:part[ -]?time|contract(?:or)?|temporary|volunteer)\b|\bwork(?:ing)?[- ]from[- ]home\s+(?:on\s+a\s+)?part[- ]time\b/i)
+    || (/^(?:part[ -]?time|contract(?:or)?|temporary|volunteer)$/i.test(description) ? [description] : null);
+  const internship = INTERNSHIP_PATTERN.test(direct) || /\b(?:paid\s+)?internship\b/i.test(description);
   const fullTime = /\bfull[ -]?time\b|permanent/i.test(text);
-  const unpaid = UNPAID_PATTERN.test(text);
+  const unpaid = UNPAID_PATTERN.test(text) || /\bvolunteer\b/i.test(disallowedType?.[0] || '');
   const paid = PAID_PATTERN.test(text) && !unpaid;
   const trainingFeeOrBond = text.match(TRAINING_FEE_OR_BOND_PATTERN);
-  return { internship, fullTime, unpaid, paid, trainingFeeOrBond, text };
+  return { internship, fullTime, unpaid, paid, trainingFeeOrBond, disallowedType, text };
 }
 
 export function classifyEmployment(candidate, policy) {
@@ -185,6 +203,7 @@ export function classifyEmployment(candidate, policy) {
   if (raw.trainingFeeOrBond) {
     return { pass: false, code: 'EMPLOYMENT_TRAINING_FEE_OR_BOND', evidence: raw.trainingFeeOrBond[0] };
   }
+  if (raw.disallowedType) return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: raw.disallowedType[0] };
   if (type && !policy.employment.allowedTypes.includes(type)) {
     return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: candidate.employment?.evidence || type };
   }
@@ -192,9 +211,6 @@ export function classifyEmployment(candidate, policy) {
   // Keep them eligible unless the text explicitly says a disallowed type; retain
   // null evidence so downstream output never fabricates "full-time".
   if (!type && !raw.internship) {
-    if (/\b(part[ -]?time|contract(?:or)?|temporary|volunteer)\b/i.test(raw.text)) {
-      return { pass: false, code: 'EMPLOYMENT_TYPE_NOT_ALLOWED', evidence: raw.text };
-    }
     return { pass: true, code: 'EMPLOYMENT_FULL_TIME_NOT_VERIFIED', evidence: null };
   }
   if (type === 'internship') {
@@ -215,7 +231,15 @@ function parsedExperience(candidate) {
   return { min: parsed.minYears, max: parsed.maxYears, evidence: parsed.evidence };
 }
 
+// Reject role-specific senior hiring language while leaving employer boilerplate alone.
+function seniorRoleRequirement(candidate) {
+  const body = decodeEntities(candidate.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  return body.match(/\b(?:we\s+(?:are\s+)?(?:seeking|hiring|looking for)|(?:this|the)\s+(?:position|role)\s+(?:is|requires)|(?:seeking|hiring|looking for))\s+(?:an?\s+)?(?:(?:experienced|highly skilled|skilled|talented)\s+)?((?:senior|sr\.?|staff|principal|lead)\s+(?:(?:java|python|software|backend|full[ -]?stack|ai|ml|data|machine learning)\s+){0,3}(?:engineer|developer|scientist))\b/i)?.[0] || null;
+}
+
 export function classifyExperience(candidate, policy) {
+  const seniorRequirement = seniorRoleRequirement(candidate);
+  if (seniorRequirement) return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_SENIOR_ROLE_REQUIREMENT', evidence: seniorRequirement, minYears: null, maxYears: null };
   const parsed = parsedExperience(candidate);
   if (parsed.min != null && parsed.min >= policy.experience.hardRejectMinimumYears) {
     return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS', evidence: parsed.evidence, minYears: parsed.min, maxYears: parsed.max };

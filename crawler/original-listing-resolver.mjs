@@ -1,4 +1,7 @@
 export const ORIGINAL_LISTING_RESOLVER_VERSION = 'OriginalListingResolverV1';
+import { linkedInPublicJobId, parseLinkedInJobDetail } from '../job-pull/portal-adapters/linkedin.mjs';
+import { remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
+import { extractExperienceYears, hiringEmployerConflict } from '../job-pull/candidate.mjs';
 
 export const DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET = Object.freeze({
   maxRedirects: 5,
@@ -48,30 +51,6 @@ function stripHtmlToText(value) {
     })
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function extractExperienceYears(raw) {
-  const cleaned = stripHtmlToText(raw || '');
-  if (!cleaned) return null;
-  const matches = [];
-  const patterns = [
-    /(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)\D{0,40}?\b(\d+(?:\.\d+)?)(?:\s*(?:\+|to|-)\s*(\d+(?:\.\d+)?))?\s*(?:years?|yrs?)/gi,
-    /\b(\d+(?:\.\d+)?)(?:\s*(?:\+|to|-)\s*(\d+(?:\.\d+)?))?\s*(?:years?|yrs?)\b(?:\s+of)?(?:\s+(?:professional|relevant|industry))?\s+experience\b/gi,
-  ];
-  for (const pattern of patterns) {
-    for (const match of cleaned.matchAll(pattern)) {
-      const minYears = Number(match[1]);
-      const maxYears = match[2] == null ? null : Number(match[2]);
-      if (!Number.isFinite(minYears)) continue;
-      matches.push({
-        minYears,
-        maxYears: Number.isFinite(maxYears) ? maxYears : null,
-        evidence: match[0].trim().replace(/\s+/g, ' '),
-      });
-    }
-  }
-  if (!matches.length) return null;
-  return matches.reduce((best, current) => (current.minYears > best.minYears ? current : best));
 }
 
 function canonical(value, base = null) {
@@ -180,7 +159,7 @@ function locationValue(value) {
 
 function employmentType(value) {
   const raw = Array.isArray(value) ? value[0] : value;
-  const key = text(typeof raw === 'object' ? raw?.name ?? raw?.value : raw)?.toLowerCase().replace(/\s+/g, ' ');
+  const key = text(typeof raw === 'object' ? raw?.name ?? raw?.value : raw)?.toLowerCase().replace(/[_\s]+/g, ' ');
   if (!key) return null;
   const types = new Map([
     ['full time', 'full-time'], ['full-time', 'full-time'], ['fulltime', 'full-time'], ['permanent', 'full-time'],
@@ -221,6 +200,25 @@ function firstField(root, paths) {
   return first(...paths.map((path) => readPath(root, path)));
 }
 
+function terminalLinkedInIdentityFailure(response, observation) {
+  const { posting, root } = detailRoot(response);
+  const identity = posting || root;
+  const normalize = (value) => stripHtmlToText(text(value) || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const employer = normalize(firstField(identity, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer']));
+  const expectedEmployer = normalize(observation.company);
+  if (!employer || !expectedEmployer) return 'destination-employer-identity-missing';
+  if (employer !== expectedEmployer) return 'destination-employer-identity-mismatch';
+  const title = normalize(firstField(identity, ['title', 'name', 'text']));
+  const expectedTitle = normalize(observation.title);
+  // LinkedIn job IDs and an action target URL do not prove an ATS requisition.
+  const requisition = firstField(identity, ['requisitionId', 'jobReqId', 'identifier.value', 'identifier']);
+  const expectedRequisition = text(observation.requisitionId);
+  if (expectedRequisition && requisition && requisition !== expectedRequisition) return 'destination-role-identity-mismatch';
+  if (title && expectedTitle && title === expectedTitle) return null;
+  if (expectedRequisition && requisition === expectedRequisition) return null;
+  return title && expectedTitle ? 'destination-role-identity-mismatch' : 'destination-role-identity-missing';
+}
+
 function extractDetails(response, observation, provider) {
   const { body, posting, root } = detailRoot(response);
   const description = first(
@@ -233,6 +231,8 @@ function extractDetails(response, observation, provider) {
   const employment = employmentType(posting?.employmentType ?? firstField(root, ['employmentType', 'typeOfEmployment', 'employment', 'jobType']));
   const experienceRaw = firstField(root, ['experience', 'experienceRequired', 'qualifications.experience', 'requirements.experience']);
   const plainDescription = stripHtmlToText(description || '');
+  const employerConflict = hiringEmployerConflict(plainDescription);
+  if (employerConflict) return { verified: false, ...employerConflict };
   const experience = typeof experienceRaw === 'object' && experienceRaw
     ? experienceRaw
     : text(experienceRaw)
@@ -457,6 +457,13 @@ export function classifyOriginalListingUrl(value) {
   return { kind: 'unsupported', provider: null, host, url };
 }
 
+function safePortalApplicationTarget(item, boundTarget = null) {
+  if (item.classified.kind !== 'ats') return false;
+  if (boundTarget ? item.url !== canonical(boundTarget) : item.why !== 'apply-link') return false;
+  const url = new URL(item.url);
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port;
+}
+
 function emptyTelemetry(budget) {
   return {
     requests: 0,
@@ -476,33 +483,14 @@ function responseBytes(response) {
   return Number.isFinite(length) ? length : 0;
 }
 
-function remainingDeadlineMs(deadline) {
-  if (deadline == null) return Infinity;
-  if (typeof deadline === 'number') return Math.max(0, deadline - Date.now());
-  if (Number.isFinite(Number(deadline.deadlineMs))) return Math.max(0, Number(deadline.deadlineMs) - Date.now());
-  if (Number.isFinite(Number(deadline.remainingMs))) return Math.max(0, Number(deadline.remainingMs));
-  return Infinity;
-}
-
-async function boundedTransport(transport, url, options, { signal, remainingMs }) {
-  const request = transport(url, options);
-  if (!Number.isFinite(remainingMs)) return request;
-  let timer;
-  let abortHandler;
-  try {
-    return await Promise.race([
-      request,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('original-listing resolver deadline exceeded')), remainingMs);
-        abortHandler = () => reject(new Error('original-listing resolver aborted'));
-        if (signal?.aborted) abortHandler();
-        else signal?.addEventListener?.('abort', abortHandler, { once: true });
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener?.('abort', abortHandler);
-  }
+async function boundedTransport(transport, url, options, { signal, remainingMs, deadline, hostLimiter }) {
+  throwIfNetworkWorkDisallowed(signal, deadline ?? { remainingMs });
+  const request = () => requestWithDeadline(transport, url, options, {
+    signal, deadline: deadline ?? { remainingMs }, abortOnDeadline: true,
+  });
+  if (typeof hostLimiter === 'function') return hostLimiter(hostOf(url), request);
+  if (hostLimiter?.run) return hostLimiter.run(hostOf(url), request);
+  return request();
 }
 
 function looksBlocked(response, status) {
@@ -590,6 +578,7 @@ export function applyOriginalListingResolution(observation, resolution) {
   if (!successful || !canonical(resolution.originalApplicationUrl ?? resolution.url)) {
     return {
       ...observation,
+      ...(resolution.portalPatch || {}),
       discoveryUrl,
       originalApplicationUrl: null,
       applicationResolution: { status: 'Needs Verification', evidence: null },
@@ -598,6 +587,23 @@ export function applyOriginalListingResolution(observation, resolution) {
     };
   }
   const finalUrl = canonical(resolution.originalApplicationUrl ?? resolution.url);
+  const finalKind = classifyOriginalListingUrl(finalUrl).kind;
+  if (!['ats', 'employer-career'].includes(finalKind)) {
+    return {
+      ...observation,
+      discoveryUrl,
+      originalApplicationUrl: null,
+      applicationResolution: { status: 'Needs Verification', evidence: null },
+      shortlistEligible: false,
+      evidence: {
+        ...(observation.evidence || {}),
+        ...(resolution.evidence || {}),
+        resolver: resolution.evidence?.resolver || ORIGINAL_LISTING_RESOLVER_VERSION,
+        leadOnly: true,
+        resolution: { status: 'verification', reason: 'destination-unsupported-host' },
+      },
+    };
+  }
   const merged = { ...observation, ...(resolution.patch || {}), discoveryUrl, originalApplicationUrl: finalUrl };
   merged.applicationResolution = resolution.applicationResolution || { status: 'Resolved Original', evidence: resolution.evidence?.originalApplication || 'injected-resolver' };
   merged.evidence = { ...(observation.evidence || {}), ...(resolution.evidence || {}), ...(resolution.patch?.evidence || {}) };
@@ -613,8 +619,11 @@ export function applyOriginalListingResolution(observation, resolution) {
  */
 export function isShortlistEligibleFromResolution(resolution, observation = {}) {
   if (!resolution || typeof resolution !== 'object') return false;
-  if (resolution.shortlistEligible === true) return true;
-  if (resolution.status === 'resolved' && canonical(resolution.originalApplicationUrl ?? resolution.url)) {
+  const resolvedUrl = canonical(resolution.originalApplicationUrl ?? resolution.url);
+  if (resolution.shortlistEligible === true) {
+    return Boolean(resolvedUrl && ['ats', 'employer-career'].includes(classifyOriginalListingUrl(resolvedUrl).kind));
+  }
+  if (resolution.status === 'resolved' && resolvedUrl && ['ats', 'employer-career'].includes(classifyOriginalListingUrl(resolvedUrl).kind)) {
     const patch = resolution.patch || {};
     return Boolean(patch.description || resolution.evidence?.resolution?.description);
   }
@@ -662,13 +671,15 @@ export function createOriginalListingResolver({
   budget,
   signal = null,
   deadline = null,
+  sharedRequestBudget = null,
+  hostLimiter = null,
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('createOriginalListingResolver requires injected transport');
   const limits = normalizeOriginalListingResolverBudget({
     maxRedirects,
     maxHosts,
     maxBytes,
-    maxRequests: maxRequests ?? requestBudget,
+    maxRequests: maxRequests ?? (typeof requestBudget === 'number' ? requestBudget : undefined),
     budget,
     ...(config || {}),
   });
@@ -676,68 +687,101 @@ export function createOriginalListingResolver({
   const hostLimit = Math.max(0, limits.maxHosts);
   const requestLimit = Math.max(0, limits.maxRequests);
   const byteLimit = Math.max(0, limits.maxBytes);
+  let sharedBudgetFailureReported = false;
+  const publicResponseCache = new Map();
 
-  return async function resolveOriginalListing(observation = {}) {
+  return async function resolveOriginalListing(observation = {}, invocation = {}) {
+    const activeSignal = invocation.signal ?? signal;
+    const activeDeadline = invocation.deadline ?? deadline;
+    const activeRequestBudget = invocation.requestBudget
+      ?? sharedRequestBudget
+      ?? (requestBudget && typeof requestBudget === 'object' ? requestBudget : null);
+    const activeHostLimiter = invocation.hostLimiter ?? hostLimiter;
     const discoveryUrl = canonical(observation.discoveryUrl ?? observation.canonicalUrl ?? observation.url);
     const telemetry = emptyTelemetry(limits);
     const hosts = new Set();
+    let portalPatch = observation.evidence?.portalDetail?.status === 'extracted' ? observation : null;
+    const fail = (reason, chain = [], extra = {}, telemetryValue = telemetry) => {
+      const result = resolutionFailure(observation, reason, chain, extra, telemetryValue);
+      if (portalPatch) {
+        result.portalPatch = portalPatch;
+        result.evidence = { ...result.evidence, ...portalPatch.evidence, resolution: result.evidence.resolution,
+          fieldSources: { ...result.evidence.fieldSources, ...portalPatch.evidence?.fieldSources } };
+      }
+      return result;
+    };
+    const publicId = linkedInPublicJobId(discoveryUrl);
+    if (publicId && /^\d+$/.test(String(observation.jobId ?? '')) && String(observation.jobId) !== publicId) return fail('portal-detail-request-identity-mismatch');
+    if (activeSignal?.aborted) return fail('aborted');
+    if (remainingDeadlineMs(activeDeadline) <= 0) return fail('deadline-exceeded');
+
     if (!discoveryUrl || !/^https:\/\//i.test(discoveryUrl)) {
-      return resolutionFailure(observation, 'invalid-or-insecure-discovery-url', [], {}, telemetry);
+      return fail('invalid-or-insecure-discovery-url', [], {}, telemetry);
     }
-    let current = discoveryUrl;
+    const retainedTargets = portalPatch?.evidence?.portalDetail?.applicationTargets ?? [];
+    if (portalPatch && !retainedTargets.length) return fail('destination-intermediary', [discoveryUrl]);
+    let current = retainedTargets.find((url) => classifyOriginalListingUrl(url).kind === 'ats') ?? discoveryUrl;
     const chain = [];
     const seen = new Set();
     for (let hop = 0; hop <= redirectLimit; hop += 1) {
-      if (signal?.aborted) return resolutionFailure(observation, 'aborted', chain, {}, telemetry);
-      const remainingMs = remainingDeadlineMs(deadline);
-      if (remainingMs <= 0) return resolutionFailure(observation, 'deadline-exceeded', chain, {}, telemetry);
+      if (activeSignal?.aborted) return fail('aborted', chain, {}, telemetry);
+      const remainingMs = remainingDeadlineMs(activeDeadline);
+      if (remainingMs <= 0) return fail('deadline-exceeded', chain, {}, telemetry);
       // A redirect into an unsupported host is a classification failure, not
       // a loop, even when canonicalization makes the destination recur.
       if (hop > 0 && classifyOriginalListingUrl(current).kind === 'unsupported') {
-        return resolutionFailure(observation, 'redirect-to-unsupported-host', [...chain, current], {}, telemetry);
+        return fail('redirect-to-unsupported-host', [...chain, current], {}, telemetry);
       }
-      if (seen.has(current)) return resolutionFailure(observation, 'redirect-loop', chain, {}, telemetry);
+      if (seen.has(current)) return fail('redirect-loop', chain, {}, telemetry);
       seen.add(current);
       chain.push(current);
+
+      if (publicId && classifyOriginalListingUrl(current).kind === 'aggregator'
+        && linkedInPublicJobId(current) !== publicId) return fail('portal-detail-redirect-identity-mismatch', chain);
 
       const host = hostOf(current);
       if (host && !hosts.has(host)) {
         if (hosts.size >= hostLimit) {
-          return resolutionFailure(observation, 'host-budget-exceeded', chain, {}, telemetry);
+          return fail('host-budget-exceeded', chain, {}, telemetry);
         }
         hosts.add(host);
         telemetry.hostsFollowed = hosts.size;
       }
 
-      if (telemetry.requests >= requestLimit) {
-        return resolutionFailure(observation, 'request-budget-exceeded', chain, {}, telemetry);
+      const cacheKey = linkedInPublicJobId(current) ? (hop === 0 ? `linkedin:${publicId}` : canonical(current)) : null;
+      const cached = cacheKey ? publicResponseCache.get(cacheKey) : null;
+      if (!cached && telemetry.requests >= requestLimit) return fail('request-budget-exceeded', chain);
+      if (!cached && activeRequestBudget?.claim && !activeRequestBudget.claim()) {
+        const reason = sharedBudgetFailureReported ? 'resolver-bound-exhausted' : 'request-budget-exhausted';
+        sharedBudgetFailureReported = true;
+        return fail(reason, chain);
       }
-
       let response;
       try {
-        telemetry.requests += 1;
-        response = await boundedTransport(transport, current, {
-          method: 'GET',
-          redirect: 'manual',
-          maxBytes: byteLimit,
-          signal,
-          deadline,
-          remainingMs,
-          purpose: 'original-listing-resolution',
-          runAt,
-          hop,
-          budget: limits,
-          telemetry: { ...telemetry },
-        }, { signal, remainingMs });
+        if (cached) {
+          telemetry.cacheHits = (telemetry.cacheHits || 0) + 1;
+          response = await cached;
+        } else {
+          telemetry.requests += 1;
+          const pending = boundedTransport(transport, current, {
+            method: 'GET', redirect: 'manual', maxBytes: byteLimit,
+            signal: activeSignal, deadline: activeDeadline, remainingMs,
+            purpose: 'original-listing-resolution', runAt, hop, budget: limits,
+            telemetry: { ...telemetry },
+          }, { signal: activeSignal, remainingMs, deadline: activeDeadline, hostLimiter: activeHostLimiter });
+          if (cacheKey) publicResponseCache.set(cacheKey, pending);
+          response = await pending;
+        }
       } catch (error) {
-        const reason = signal?.aborted ? 'aborted' : remainingDeadlineMs(deadline) <= 0 ? 'deadline-exceeded' : 'transport-error';
-        return resolutionFailure(observation, reason, chain, { error: error?.message || reason }, telemetry);
+        const reason = activeSignal?.aborted ? 'aborted' : remainingDeadlineMs(activeDeadline) <= 0 ? 'deadline-exceeded'
+          : error?.message === 'response-too-large' ? 'response-too-large' : 'transport-error';
+        return fail(reason, chain, { error: error?.message || reason });
       }
-
+      if (activeSignal?.aborted) return fail('aborted', chain);
       const status = Number(response?.status ?? 200);
-      telemetry.bytesObserved += responseBytes(response);
+      if (!cached) telemetry.bytesObserved += responseBytes(response);
       if (responseBytes(response) > byteLimit || (Number.isFinite(Number(response?.byteLength)) && Number(response.byteLength) > byteLimit)) {
-        return resolutionFailure(observation, 'response-too-large', chain, {}, telemetry);
+        return fail('response-too-large', chain);
       }
 
       const headers = headersOf(response);
@@ -746,13 +790,15 @@ export function createOriginalListingResolver({
       const next = location || (response?.redirected && responseUrl && responseUrl !== current ? responseUrl : null);
 
       if (REDIRECT_STATUSES.has(status) || next) {
-        if (!next) return resolutionFailure(observation, 'redirect-without-location', chain, {}, telemetry);
+        if (!next) return fail('redirect-without-location', chain, {}, telemetry);
         const target = classifyOriginalListingUrl(next);
-        if (target.kind === 'unsupported' || target.kind === 'invalid') {
-          return resolutionFailure(observation, 'redirect-to-unsupported-host', [...chain, next], {}, telemetry);
+        if (target.kind === 'unsupported' || target.kind === 'invalid'
+          || (publicId && (new URL(next).protocol !== 'https:' || new URL(next).username || new URL(next).password || new URL(next).port
+            || (target.kind !== 'ats' && linkedInPublicJobId(next) !== publicId)))) {
+          return fail('redirect-to-unsupported-host', [...chain, next], {}, telemetry);
         }
         if (hop === redirectLimit) {
-          return resolutionFailure(observation, 'redirect-limit-exceeded', [...chain, next], {}, telemetry);
+          return fail('redirect-limit-exceeded', [...chain, next], {}, telemetry);
         }
         telemetry.redirects += 1;
         current = next;
@@ -760,35 +806,58 @@ export function createOriginalListingResolver({
       }
 
       if (looksBlocked(response, status)) {
-        return resolutionFailure(observation, 'blocked', chain, { httpStatus: status }, telemetry);
+        return fail('blocked', chain, { httpStatus: status }, telemetry);
       }
       if (status < 200 || status >= 300) {
-        return resolutionFailure(observation, `detail-http-${status}`, chain, { httpStatus: status }, telemetry);
+        return fail(`detail-http-${status}`, chain, { httpStatus: status }, telemetry);
       }
       if (looksMalformed(response, status)) {
-        return resolutionFailure(observation, 'malformed-response', chain, {}, telemetry);
+        return fail('malformed-response', chain, {}, telemetry);
       }
 
+      // Replace the initial redirect response with the completed public page.
+      // A later card using its canonical country-host URL must reuse the page,
+      // rather than replaying a redirect to its own URL and reporting a loop.
+      if (publicId && linkedInPublicJobId(current) === publicId) publicResponseCache.set(`linkedin:${publicId}`, Promise.resolve(response));
+
       const target = classifyOriginalListingUrl(current);
+      if (publicId && linkedInPublicJobId(current) === publicId) {
+        const extracted = parseLinkedInJobDetail(htmlBody(response), {
+          requestedUrl: current, jobId: publicId, title: observation.title,
+          company: observation.company, observedAt: runAt,
+        });
+        if (extracted.patch) {
+          extracted.patch.evidence.portalDetail.applicationTargets = preferOutboundTargets(response, current, { exclude: seen })
+            .filter((item) => extracted.patch.evidence.portalDetail.applicationActionTarget
+              && safePortalApplicationTarget(item, extracted.patch.evidence.portalDetail.applicationActionTarget)).slice(0, 1).map((item) => item.url);
+          portalPatch = { ...extracted.patch, evidence: { ...(observation.evidence || {}),
+            ...extracted.patch.evidence, fieldSources: { ...observation.evidence?.fieldSources, ...extracted.patch.evidence.fieldSources } } };
+        } else if (extracted.reason !== 'portal-detail-jobposting-not-found') {
+          return fail(extracted.reason, chain);
+        }
+      }
       if (!['ats', 'employer-career'].includes(target.kind)) {
-        const preferred = preferOutboundTargets(response, current, { exclude: seen });
+        const preferred = preferOutboundTargets(response, current, { exclude: seen })
+          .filter((item) => !publicId || (portalPatch
+            ? portalPatch.evidence.portalDetail.applicationTargets.includes(item.url)
+            : safePortalApplicationTarget(item) && !/<(?:section|ul|li)\b/i.test(htmlBody(response))));
         const original = preferred.find((item) => item.isOriginal);
         const intermediate = preferred.find((item) => !item.isOriginal);
         const destination = original?.url
           || intermediate?.url
-          || urlsFromBody(response, current).find((url) => ['ats', 'employer-career'].includes(classifyOriginalListingUrl(url).kind));
+          || (!publicId && urlsFromBody(response, current).find((url) => ['ats', 'employer-career'].includes(classifyOriginalListingUrl(url).kind)));
         if (!destination) {
           const reason = target.kind === 'aggregator' ? 'destination-intermediary' : 'original-listing-not-found';
-          return resolutionFailure(observation, reason, chain, {
+          return fail(reason, chain, {
             pageKind: target.kind,
             outboundCandidates: preferred.slice(0, 5).map((item) => item.url),
           }, telemetry);
         }
         const destinationClass = classifyOriginalListingUrl(destination);
-        if (seen.has(destination)) return resolutionFailure(observation, 'redirect-loop', [...chain, destination], {}, telemetry);
-        if (hop === redirectLimit) return resolutionFailure(observation, 'redirect-limit-exceeded', [...chain, destination], {}, telemetry);
+        if (seen.has(destination)) return fail('redirect-loop', [...chain, destination], {}, telemetry);
+        if (hop === redirectLimit) return fail('redirect-limit-exceeded', [...chain, destination], {}, telemetry);
         if (destinationClass.kind === 'unsupported') {
-          return resolutionFailure(observation, 'destination-unsupported-host', [...chain, destination], {}, telemetry);
+          return fail('destination-unsupported-host', [...chain, destination], {}, telemetry);
         }
         telemetry.redirects += 1;
         current = destination;
@@ -802,9 +871,13 @@ export function createOriginalListingResolver({
         const reason = details.reason === 'job-detail-not-found' && looksMalformed(response, status)
           ? 'malformed-response'
           : details.reason;
-        return resolutionFailure(observation, reason, chain, { provider, fingerprint }, telemetry);
+        return fail(reason, chain, { provider, fingerprint }, telemetry);
       }
-      const patched = mergePatch(observation, details, current, provider, runAt, fingerprint);
+      if (publicId) {
+        const identityFailure = terminalLinkedInIdentityFailure(response, observation);
+        if (identityFailure) return fail(identityFailure, chain, { provider, fingerprint }, telemetry);
+      }
+      const patched = mergePatch({ ...observation, ...(portalPatch || {}), evidence: { ...observation.evidence, ...portalPatch?.evidence } }, details, current, provider, runAt, fingerprint);
       return {
         status: 'resolved',
         discoveryUrl,
@@ -818,7 +891,7 @@ export function createOriginalListingResolver({
         telemetry,
       };
     }
-    return resolutionFailure(observation, 'resolver-bound-exhausted', chain, {}, telemetry);
+    return fail('resolver-bound-exhausted', chain, {}, telemetry);
   };
 }
 

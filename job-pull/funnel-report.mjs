@@ -193,6 +193,7 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
 
   const lifecycleCounts = {
     fetched: number(lifecycle.fetched ?? normalized),
+    dated: number(lifecycle.dated ?? observations.filter((entry) => entry.candidate?.postedAt != null).length),
     sourceFiltered: number(lifecycle.sourceFiltered ?? lifecycle.fetched ?? normalized),
     normalized,
     eligible: number(lifecycle.eligible ?? eligible),
@@ -214,6 +215,7 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
       lifecycle.workdayUncorroboratedVerifyQueue ?? freshnessClasses.workdayUncorroborated,
     ),
     ready: number(lifecycle.ready ?? ready),
+    scored: number(lifecycle.scored ?? 0),
     selected: number(lifecycle.selected ?? selected),
   };
 
@@ -245,7 +247,7 @@ export function formatFunnelNarrative(report) {
   const lines = [];
 
   lines.push(
-    `Fetched ${number(life.fetched)} records; source-filtered ${number(life.sourceFiltered)}; normalized observations ${number(life.normalized)}.`,
+    `Fetched ${number(life.fetched)} records; dated ${number(life.dated)}; source-filtered ${number(life.sourceFiltered)}; normalized observations ${number(life.normalized)}.`,
   );
   lines.push(
     `Eligible ${number(life.eligible)}; verify-queue ${number(life.verifyQueue)} (Workday uncorroborated ${number(life.workdayUncorroboratedVerifyQueue)}); ready ${number(life.ready)}; selected ${number(life.selected)}.`,

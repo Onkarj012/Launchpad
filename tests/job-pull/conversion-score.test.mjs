@@ -3,18 +3,24 @@ import assert from 'node:assert/strict';
 import { loadConversionPlan, validateConversionPlan } from '../../job-pull/config.mjs';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { conversionTier, scoreConversion } from '../../job-pull/conversion-score.mjs';
+import { mergeScoreRow } from '../../job-pull/match-scorer.mjs';
 
 const conversionPlan = loadConversionPlan();
 
+// Build the conversion input through the explicit manual-score boundary.
 function candidate(overrides = {}) {
-  return normalizeCandidate({
+  const { matchScore = 100, ...source } = overrides;
+  const normalized = normalizeCandidate({
     url: 'https://jobs.example.test/1', sourceKind: 'ats-direct', provider: 'greenhouse',
     company: 'Example', title: 'AI Engineer', location: 'Pune', postedAt: '2026-07-14T08:00:00.000Z',
     employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 },
-    liveness: { status: 'Active' }, matchScore: 100,
+    liveness: { status: 'Active' }, description: 'Build Python AI services.',
     conversionSignals: { humanContact: true, projectConnection: true },
-    ...overrides,
+    ...source,
   });
+  const scored = mergeScoreRow(normalized, { matchScore, responseLikelihood: 20 });
+  assert.equal(scored.failure, null);
+  return scored.candidate;
 }
 
 const strictIndiaEligibility = {

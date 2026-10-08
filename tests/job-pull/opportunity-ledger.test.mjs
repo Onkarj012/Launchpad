@@ -1,3 +1,4 @@
+import { scoredFixture } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -10,6 +11,7 @@ import {
   markAction,
   readOpportunityLedger,
   recordSurfaced,
+  repairMissingSurfaced,
   suppressionFor,
 } from '../../job-pull/opportunity-ledger.mjs';
 import { collectHistory, surfacedCandidates } from '../../job-pull/seed-opportunity-history.mjs';
@@ -22,10 +24,11 @@ function tempLedger() {
 }
 
 function candidate(url = 'https://example.test/1', overrides = {}) {
-  return normalizeCandidate({
+  return scoredFixture({
+    description: 'Build Python AI services.',
     url, source: 'greenhouse-full', sourceKind: 'ats-direct', provider: 'greenhouse', id: 'job-1',
     company: 'Example', title: 'AI Engineer', location: 'Pune', postedAt: NOW,
-    employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 }, matchScore: 80,
+    employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 }, scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 80,
     liveness: { status: 'Active', evidence: 'fixture' }, ...overrides,
   });
 }
@@ -74,6 +77,39 @@ test('recordSurfaced keeps distinct provider requisitions separate despite share
   const rows = readOpportunityLedger(ledgerPath).rows;
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map((row) => row.dedup_key), ['workday|req 1', 'workday|req 2']);
+});
+
+test('repairMissingSurfaced inserts only absent replay keys at original commit time', () => {
+  const ledgerPath = tempLedger();
+  const existing = candidate('https://example.test/existing');
+  const missing = candidate('https://example.test/missing', { id: 'job-2' });
+  recordSurfaced([existing], { path: ledgerPath, now: NOW });
+
+  const commitTime = '2026-07-17T08:00:00.000Z';
+  const repaired = repairMissingSurfaced([existing, missing], {
+    path: ledgerPath,
+    committedAtForKey: (key) => key === candidateDedupKey(missing) ? commitTime : null,
+  });
+
+  assert.deepEqual(repaired.rows.map((row) => row.dedup_key), [candidateDedupKey(missing)]);
+  const rows = readOpportunityLedger(ledgerPath).rows;
+  const existingRow = rows.find((row) => row.dedup_key === candidateDedupKey(existing));
+  const repairedRow = rows.find((row) => row.dedup_key === candidateDedupKey(missing));
+  assert.equal(existingRow.last_surfaced_at, NOW);
+  assert.equal(existingRow.times_surfaced, '1');
+  assert.equal(repairedRow.first_surfaced_at, commitTime);
+  assert.equal(repairedRow.last_surfaced_at, commitTime);
+  assert.equal(repairedRow.times_surfaced, '1');
+});
+
+test('repairMissingSurfaced fails closed when original replay commit time is missing', () => {
+  const ledgerPath = tempLedger();
+  const missing = candidate('https://example.test/missing-time');
+  assert.throws(() => repairMissingSurfaced([missing], {
+    path: ledgerPath,
+    committedAtForKey: () => null,
+  }), /missing original commit time/);
+  assert.deepEqual(readOpportunityLedger(ledgerPath).rows, []);
 });
 
 test('historical run collection extracts only surfaced selections and deduplicates them', () => {

@@ -17,6 +17,7 @@ export function loadBoardRotationState(file = DEFAULT_BOARD_ROTATION_STATE_PATH)
       if (Number.isFinite(raw.cursor)) state.cursor = raw.cursor;
       if (raw.providerCursors && typeof raw.providerCursors === 'object') state.providerCursors = { ...raw.providerCursors };
       if (raw.lastAttemptByBoard && typeof raw.lastAttemptByBoard === 'object') state.lastAttemptByBoard = { ...raw.lastAttemptByBoard };
+      if (raw.boardPlanState && typeof raw.boardPlanState === 'object') state.boardPlanState = { ...raw.boardPlanState };
       state.updatedAt = raw.updatedAt || null;
     }
     return state;
@@ -27,6 +28,7 @@ export function loadBoardRotationState(file = DEFAULT_BOARD_ROTATION_STATE_PATH)
 
 export function saveBoardRotationState(file = DEFAULT_BOARD_ROTATION_STATE_PATH, state, nowIso) {
   const out = { schemaVersion: BOARD_ROTATION_STATE_SCHEMA, updatedAt: nowIso, cursor: state?.cursor ?? 0, providerCursors: state?.providerCursors ?? {}, lastAttemptByBoard: state?.lastAttemptByBoard ?? {} };
+  if (state?.boardPlanState && Object.keys(state.boardPlanState).length) out.boardPlanState = state.boardPlanState;
   mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
   try {

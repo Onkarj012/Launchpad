@@ -2,36 +2,181 @@
   "schemaVersion": "LaunchpadCrawlerConfigV1",
   "databasePath": ".local/launchpad-crawler/dev.sqlite",
   "boardRegistryPath": "config/board-registry.json",
+  "execution": {
+    "wholeRunDeadlineMs": 1200000,
+    "discoveryBudgetMs": 720000,
+    "downstreamReserveMs": 300000,
+    "handoffReserveMs": 180000,
+    "scorerFloorMs": 300000,
+    "perSourceMaxDurationMs": 120000,
+    "minimumSourceStartAllocationMs": 1000
+  },
+  "sourcePlanner": {
+    "enabled": true,
+    "legacyPlannerRollback": false,
+    "maxBoards": 20,
+    "priorityShare": 0.8,
+    "explorationShare": 0.2,
+    "targetTitles": [
+      "AI Engineer",
+      "LLM Engineer",
+      "Machine Learning Engineer",
+      "Backend Engineer",
+      "Python Engineer",
+      "Software Engineer",
+      "Full Stack Engineer",
+      "Developer"
+    ]
+  },
   "sources": {
     "atsWarm": {
+      "maxDurationMs": 120000,
       "boards": [
-        { "provider": "greenhouse", "slug": "phonepe", "company": "PhonePe", "indiaFirst": true },
-        { "provider": "greenhouse", "slug": "commerceiq", "company": "CommerceIQ", "indiaFirst": true, "startupTagged": true },
-        { "provider": "greenhouse", "slug": "devrev", "company": "DevRev", "indiaFirst": true, "startupTagged": true },
-        { "provider": "greenhouse", "slug": "purestorage", "company": "Pure Storage", "indiaFirst": true },
-        { "provider": "greenhouse", "slug": "zscaler", "company": "Zscaler", "indiaFirst": true },
-        { "provider": "greenhouse", "slug": "postman", "company": "Postman", "indiaFirst": true },
-        { "provider": "greenhouse", "slug": "groww", "company": "Groww", "indiaFirst": true, "startupTagged": true },
-        { "provider": "greenhouse", "slug": "druva", "company": "Druva", "indiaFirst": true, "startupTagged": true },
-        { "provider": "greenhouse", "slug": "6sense", "company": "6sense", "indiaFirst": true, "startupTagged": true },
-        { "provider": "greenhouse", "slug": "observeai", "company": "Observe.AI", "indiaFirst": true, "startupTagged": true },
-        { "provider": "lever", "slug": "meesho", "company": "Meesho", "indiaFirst": true, "startupTagged": true },
-        { "provider": "lever", "slug": "zeta", "company": "Zeta", "indiaFirst": true, "startupTagged": true },
-        { "provider": "lever", "slug": "mindtickle", "company": "Mindtickle", "indiaFirst": true },
-        { "provider": "ashby", "slug": "atlan", "company": "Atlan", "indiaFirst": true, "startupTagged": true },
-        { "provider": "ashby", "slug": "uipath", "company": "UiPath", "indiaFirst": true },
-        { "provider": "ashby", "slug": "plane", "company": "Plane", "indiaFirst": true, "startupTagged": true },
-        { "provider": "ashby", "slug": "bjakcareer", "company": "BJAK", "indiaFirst": true, "startupTagged": true },
-        { "provider": "ashby", "slug": "spotdraft", "company": "SpotDraft", "indiaFirst": true, "startupTagged": true },
-        { "provider": "ashby", "slug": "signoz", "company": "SigNoz", "indiaFirst": true, "startupTagged": true }
+        {
+          "provider": "greenhouse",
+          "slug": "phonepe",
+          "company": "PhonePe",
+          "indiaFirst": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "commerceiq",
+          "company": "CommerceIQ",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "devrev",
+          "company": "DevRev",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "purestorage",
+          "company": "Pure Storage",
+          "indiaFirst": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "zscaler",
+          "company": "Zscaler",
+          "indiaFirst": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "postman",
+          "company": "Postman",
+          "indiaFirst": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "groww",
+          "company": "Groww",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "druva",
+          "company": "Druva",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "6sense",
+          "company": "6sense",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "greenhouse",
+          "slug": "observeai",
+          "company": "Observe.AI",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "lever",
+          "slug": "meesho",
+          "company": "Meesho",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "lever",
+          "slug": "zeta",
+          "company": "Zeta",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "lever",
+          "slug": "mindtickle",
+          "company": "Mindtickle",
+          "indiaFirst": true
+        },
+        {
+          "provider": "ashby",
+          "slug": "atlan",
+          "company": "Atlan",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "ashby",
+          "slug": "uipath",
+          "company": "UiPath",
+          "indiaFirst": true
+        },
+        {
+          "provider": "ashby",
+          "slug": "plane",
+          "company": "Plane",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "ashby",
+          "slug": "bjakcareer",
+          "company": "BJAK",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "ashby",
+          "slug": "spotdraft",
+          "company": "SpotDraft",
+          "indiaFirst": true,
+          "startupTagged": true
+        },
+        {
+          "provider": "ashby",
+          "slug": "signoz",
+          "company": "SigNoz",
+          "indiaFirst": true,
+          "startupTagged": true
+        }
       ],
       "maxBoards": 20,
       "maxJobsPerBoard": 100
     },
     "atsBatch1": {
       "boards": [
-        { "provider": "smartrecruiters", "board": "BoschGroup", "company": "Bosch Group", "country": "in" },
-        { "provider": "smartrecruiters", "board": "Visa", "company": "Visa", "country": "in" },
+        {
+          "provider": "smartrecruiters",
+          "board": "BoschGroup",
+          "company": "Bosch Group",
+          "country": "in"
+        },
+        {
+          "provider": "smartrecruiters",
+          "board": "Visa",
+          "company": "Visa",
+          "country": "in"
+        },
         {
           "provider": "workable",
           "board": "blue-altair",
@@ -140,6 +285,10 @@
       "disabledBoards": [],
       "maxPages": 10,
       "maxJobsPerBoard": 200,
+      "enrichDetails": true,
+      "detailConcurrency": 4,
+      "maxDetailRequestsPerRun": 200,
+      "workdayDetailReserveMs": 15000,
       "notes": "ats-enterprise.mjs previously issued a plain GET with no body for every provider. Workday's public CXS jobs endpoint returns HTTP 400 on GET and requires a POST with a JSON search body ({ appliedFacets, limit, offset, searchText }); ats-enterprise.mjs and operator.mjs's defaultHttpTransport were fixed to send that for provider workday only (see requestOptions() in crawler/ats-enterprise.mjs). All four boards above were confirmed end-to-end through the real fetch transport, not just via a manual curl probe. maxPages/maxJobsPerBoard mirrors config/crawler-v2.json (see that file's note for why)."
     },
     "careerSites": [],
@@ -169,8 +318,13 @@
     ],
     "careerOptions": {
       "maxPagesPerCompany": 25,
-      "hostLimiterOptions": { "minSpacingMs": 1000, "maxConcurrency": 1 },
-      "retry": { "maxAttempts": 3 }
+      "hostLimiterOptions": {
+        "minSpacingMs": 1000,
+        "maxConcurrency": 1
+      },
+      "retry": {
+        "maxAttempts": 3
+      }
     },
     "searxng": {
       "enabled": true,
@@ -204,13 +358,40 @@
       "country": "IN",
       "searchLang": "en",
       "maxPages": 1,
-      "roles": ["AI Engineer", "ML Engineer", "Backend Engineer", "Software Engineer"],
-      "geographies": ["Pune", "India"],
-      "experiences": ["fresher", "0-2 years", "new grad"],
-      "ats": ["boards.greenhouse.io", "jobs.lever.co", "myworkdayjobs.com", "jobs.ashbyhq.com"],
-      "career": ["careers"],
-      "startup": ["startup"],
-      "vc": ["Peak XV portfolio", "Accel portfolio", "Lightspeed portfolio", "Antler portfolio", "a16z portfolio"]
+      "roles": [
+        "AI Engineer",
+        "ML Engineer",
+        "Backend Engineer",
+        "Software Engineer"
+      ],
+      "geographies": [
+        "Pune",
+        "India"
+      ],
+      "experiences": [
+        "fresher",
+        "0-2 years",
+        "new grad"
+      ],
+      "ats": [
+        "boards.greenhouse.io",
+        "jobs.lever.co",
+        "myworkdayjobs.com",
+        "jobs.ashbyhq.com"
+      ],
+      "career": [
+        "careers"
+      ],
+      "startup": [
+        "startup"
+      ],
+      "vc": [
+        "Peak XV portfolio",
+        "Accel portfolio",
+        "Lightspeed portfolio",
+        "Antler portfolio",
+        "a16z portfolio"
+      ]
     },
     "theirstack": {
       "enabled": false,
@@ -225,22 +406,46 @@
           "id": "india-ai-ml",
           "filters": {
             "posted_at_max_age_days": 14,
-            "job_country_code_or": ["IN"],
-            "job_title_pattern_or": ["\\bAI Engineer\\b", "\\bMachine Learning Engineer\\b", "\\bLLM Engineer\\b", "\\bGenerative AI Engineer\\b"],
-            "employment_statuses_or": ["full_time", "internship"],
+            "job_country_code_or": [
+              "IN"
+            ],
+            "job_title_pattern_or": [
+              "\\bAI Engineer\\b",
+              "\\bMachine Learning Engineer\\b",
+              "\\bLLM Engineer\\b",
+              "\\bGenerative AI Engineer\\b"
+            ],
+            "employment_statuses_or": [
+              "full_time",
+              "internship"
+            ],
             "is_closed": false,
-            "property_exists_and": ["final_url"]
+            "property_exists_and": [
+              "final_url"
+            ]
           }
         },
         {
           "id": "india-backend-swe",
           "filters": {
             "posted_at_max_age_days": 14,
-            "job_country_code_or": ["IN"],
-            "job_title_pattern_or": ["\\bBackend Engineer\\b", "\\bPython Engineer\\b", "\\bSoftware Engineer\\b", "\\bFull Stack Engineer\\b"],
-            "employment_statuses_or": ["full_time", "internship"],
+            "job_country_code_or": [
+              "IN"
+            ],
+            "job_title_pattern_or": [
+              "\\bBackend Engineer\\b",
+              "\\bPython Engineer\\b",
+              "\\bSoftware Engineer\\b",
+              "\\bFull Stack Engineer\\b"
+            ],
+            "employment_statuses_or": [
+              "full_time",
+              "internship"
+            ],
             "is_closed": false,
-            "property_exists_and": ["final_url"]
+            "property_exists_and": [
+              "final_url"
+            ]
           }
         }
       ]
@@ -252,7 +457,14 @@
     "connectorInbox": {
       "enabled": false,
       "inboxDir": "connector-inbox",
-      "providers": ["indeed", "apna", "whatjobs", "ziprecruiter", "dice", "jobs-and-careers"]
+      "providers": [
+        "indeed",
+        "apna",
+        "whatjobs",
+        "ziprecruiter",
+        "dice",
+        "jobs-and-careers"
+      ]
     },
     "startup": {
       "fixtures": {},
@@ -261,22 +473,70 @@
     "indiaStartup": {
       "enabled": true,
       "requests": [
-        { "id": "yc", "query": "site:ycombinator.com/jobs India (\"software engineer\" OR \"AI engineer\" OR \"ML engineer\")" },
-        { "id": "vc", "query": "\"CRED\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Razorpay\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Zomato\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"BlinkIt\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Pine Labs\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"OYO\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Agrostar\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Bizongo\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"BlackBuck\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"CleverTap\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Cogoport\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Classplus\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Exotel\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Darwinbox\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" },
-        { "id": "vc", "query": "\"Innovaccer\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India" }
+        {
+          "id": "yc",
+          "query": "site:ycombinator.com/jobs India (\"software engineer\" OR \"AI engineer\" OR \"ML engineer\")"
+        },
+        {
+          "id": "vc",
+          "query": "\"CRED\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Razorpay\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Zomato\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"BlinkIt\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Pine Labs\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"OYO\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Agrostar\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Bizongo\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"BlackBuck\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"CleverTap\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Cogoport\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Classplus\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Exotel\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Darwinbox\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        },
+        {
+          "id": "vc",
+          "query": "\"Innovaccer\" careers (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com) India"
+        }
       ],
       "queryBudget": 20,
       "watchlist": "config/vc-portfolio-watchlist.json",
@@ -290,16 +550,159 @@
     },
     "remote": {
       "enabled": true,
-      "primaryProviders": ["himalayas"],
-      "secondaryProviders": ["jobicy", "weworkremotely", "remotive", "remoteok"],
+      "primaryProviders": [
+        "himalayas"
+      ],
+      "secondaryProviders": [
+        "jobicy",
+        "weworkremotely",
+        "remotive",
+        "remoteok"
+      ],
       "secondaryCadenceDays": 2,
       "maxRecordsPrimary": 40,
       "maxRecordsPerSecondary": 25
+    },
+    "portals": {
+      "enabled": true,
+      "target": 10,
+      "maxCandidates": 24,
+      "maxResolverRequests": 48,
+      "resolverConcurrency": 3,
+      "perHostConcurrency": 1,
+      "resolverMaxDurationMs": 60000,
+      "handoffReserveMs": 5000,
+      "maxRecordsPerProvider": 120,
+      "http": {
+        "providers": [
+          "linkedin-jobs"
+        ]
+      },
+      "browser": {
+        "enabled": true,
+        "providers": [
+          "glassdoor",
+          "instahyre",
+          "wellfound"
+        ],
+        "maxPagesPerRun": 24,
+        "timeoutMs": 45000,
+        "waitMs": 6000
+      },
+      "linkedin": {
+        "timeWindow": "day",
+        "maxPagesPerQuery": 2,
+        "pageSize": 25,
+        "queries": [
+          {
+            "keywords": "software engineer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "software developer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "AI engineer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "machine learning engineer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "full stack developer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "backend engineer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "graduate engineer trainee",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "associate software engineer",
+            "location": "Pune, Maharashtra, India"
+          },
+          {
+            "keywords": "software engineer",
+            "location": "India",
+            "workType": "remote"
+          },
+          {
+            "keywords": "AI engineer",
+            "location": "India",
+            "workType": "remote"
+          },
+          {
+            "keywords": "full stack developer",
+            "location": "India",
+            "workType": "remote"
+          },
+          {
+            "keywords": "machine learning engineer",
+            "location": "India",
+            "workType": "remote"
+          }
+        ]
+      },
+      "glassdoor": {
+        "queries": [
+          {
+            "label": "pune software engineer",
+            "path": "/Job/pune-software-engineer-jobs-SRCH_IL.0,4_IC2856202_KO5,22.htm"
+          },
+          {
+            "label": "pune ai engineer",
+            "path": "/Job/pune-ai-engineer-jobs-SRCH_IL.0,4_IC2856202_KO5,16.htm"
+          },
+          {
+            "label": "india remote software engineer",
+            "path": "/Job/india-remote-software-engineer-jobs-SRCH_IL.0,5_IN115_KO6,30.htm"
+          }
+        ]
+      },
+      "instahyre": {
+        "queries": [
+          {
+            "label": "all active",
+            "url": "https://www.instahyre.com/search-jobs/"
+          },
+          {
+            "label": "pune",
+            "url": "https://www.instahyre.com/jobs-in-pune/"
+          }
+        ]
+      },
+      "wellfound": {
+        "queries": [
+          {
+            "label": "pune swe",
+            "url": "https://wellfound.com/role/l/software-engineer/pune"
+          },
+          {
+            "label": "india swe",
+            "url": "https://wellfound.com/role/l/software-engineer/india"
+          },
+          {
+            "label": "remote swe",
+            "url": "https://wellfound.com/role/r/software-engineer"
+          }
+        ]
+      },
+      "notes": "Portal discovery lanes. linkedin-jobs runs over the public guest endpoint with plain HTTP and supplies exact employer post dates via <time datetime>. glassdoor/instahyre/wellfound require a rendered page (crawler/browser-transport.mjs) and were probed working with headless Chromium on 2026-08-22. Naukri is deliberately absent: its HTML is a JS shell, jobapi/v3/search answers 406 recaptcha required, and a real Chromium context is served 403 with a captcha wall - it belongs to the Apify rescue path. Set browser.enabled false to run LinkedIn only."
     }
   },
   "v4HistorySnapshotMaxAgeDays": 30,
   "sourceYield": {
     "minimumFetchedForReview": 100,
     "minimumRunsForPause": 3
+  },
+  "yieldFloor": {
+    "target": 10,
+    "degradeBelow": 10,
+    "notes": "A run selecting fewer than target rows is reported degraded with YIELD_FLOOR_SHORTFALL and a per-lane breakdown. Zero-yield must never read as success."
   }
 }

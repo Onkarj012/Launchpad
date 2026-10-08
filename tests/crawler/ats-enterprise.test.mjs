@@ -42,19 +42,20 @@ test('Workday LIST labels date candidates and preserve postedOn provenance', asy
   assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-postedOn', label: 'Posted Yesterday' });
 });
 
-test('Workday LIST "Posted Today" stays in VerifyQueue until detail corroboration', async () => {
+test('Workday LIST "Posted Today" remains uncorroborated VerifyQueue evidence', async () => {
   const pastRunAt = '2026-07-20T04:30:00.000Z';
   const result = await discoverEnterpriseAts({
     boards: [{ provider: 'workday', company: 'Acme', url: 'https://acme.wd1.myworkdayjobs.com/jobs' }],
     transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/ai-engineer', postedOn: 'Posted Today' }] }) }),
     runAt: pastRunAt, maxPages: 1,
   });
-  // A list-only date is uncorroborated, so it must not be treated as verified freshness.
   assert.equal(result.observations[0].postedAt, pastRunAt);
   const freshness = classifyFreshness(result.observations[0], { now: pastRunAt });
   assert.equal(freshness.window, 'VerifyQueue');
-  assert.equal(freshness.verifyQueue, true);
+  assert.equal(freshness.eligible, false);
+  assert.equal(freshness.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');
   assert.equal(freshness.workdayUncorroborated, true);
+  assert.equal(freshness.verifyQueue, true);
 });
 
 test('Workday LIST 30+ labels remain undated and unverified', async () => {
@@ -66,6 +67,7 @@ test('Workday LIST 30+ labels remain undated and unverified', async () => {
   const candidate = result.observations[0];
   assert.equal(candidate.postedAt, null);
   assert.deepEqual(candidate.evidence.freshness, { kind: 'workday-unverified' });
+  assert.ok(result.verificationQueue.some((item) => item.reason === 'workday-list-only-undated'));
 });
 
 test('parses Workday postings, follows one bounded page, and preserves direct/lead provenance', async () => {
@@ -727,4 +729,96 @@ test('e2e: Pune Associate Software Engineer LIST preselects, hydrates DETAIL, an
   const identity = resolveJobIdentity(ase);
   assert.equal(identity.identity.providerJobId, 'workday|r15032');
   assert.equal(identity.code, 'NEW_TO_ME');
+});
+
+test('Workday checkpoints LIST before prioritized DETAIL and shares the aggregate budget across pages', async () => {
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  const order = [];
+  const checkpoints = [];
+  const postings = [
+    { jobReqId: 'REMOTE', title: 'Software Engineer', externalPath: '/job/Remote/REMOTE', locationsText: 'India Remote' },
+    { jobReqId: 'UNKNOWN', title: 'Backend Engineer', externalPath: '/job/Unknown/UNKNOWN', locationsText: '' },
+    { jobReqId: 'PUNE-1', title: 'Software Engineer', externalPath: '/job/Pune/PUNE-1', locationsText: 'Pune, India' },
+    { jobReqId: 'PUNE-2', title: 'AI Engineer', externalPath: '/job/Pune/PUNE-2', locationsText: 'Pune, India' },
+  ];
+  const transport = async (url, options) => {
+    if (options?.detail) {
+      order.push(`detail:${url}`);
+      return { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: { jobReqId: url.includes('PUNE-1') ? 'PUNE-1' : 'REMOTE', title: 'Software Engineer', jobDescription: '<p>Build systems.</p>', location: 'Pune, India', canApply: true, posted: true } }) };
+    }
+    const offset = JSON.parse(options.body).offset;
+    order.push(`list:${offset}`);
+    return { status: 200, headers: {}, body: JSON.stringify({ total: postings.length, jobPostings: postings.slice(offset, offset + 3) }) };
+  };
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: listUrl }], transport, runAt,
+    maxPages: 2, enrichDetails: true, detailConcurrency: 1, maxDetailRequestsPerRun: 2,
+    checkpoint: async (payload) => checkpoints.push(payload),
+  });
+
+  assert.equal(order[0], 'list:0');
+  assert.match(order[1], /detail:.*PUNE-1/);
+  assert.ok(order.indexOf('list:3') > order.indexOf('detail:'));
+  assert.equal(order.filter((entry) => entry.startsWith('detail:')).length, 2);
+  assert.equal(result.telemetry.workdayDetail.attempted, 2);
+  assert.equal(result.telemetry.workdayDetail.budgetExhausted, 2);
+  assert.equal(result.telemetry.workdayDetail.configuredReserveMs, 0);
+  assert.equal(checkpoints[0].manifestDelta.checkpoint.phase, 'list');
+  assert.equal(checkpoints[0].replaceObservations, undefined);
+  assert.ok(checkpoints.filter((payload) => payload.manifestDelta.checkpoint.phase === 'detail')
+    .every((payload) => payload.replaceObservations === true));
+  assert.equal(result.observations.find((row) => row.providerJobId === 'PUNE-2').evidence.detailHydration.reason, 'budget-exhausted');
+});
+
+test('Workday LIST allowance stops at the reserved DETAIL time and keeps a replay cursor', async () => {
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  let remaining = 20_000;
+  let listCalls = 0;
+  let detailCalls = 0;
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: listUrl }],
+    workdayDetailReserveMs: 5_000, enrichDetails: true, detailConcurrency: 1, maxDetailRequestsPerRun: 10,
+    deadline: { remainingMs: () => remaining }, runAt, maxPages: 2,
+    transport: async (_url, options) => {
+      if (options.detail) {
+        detailCalls += 1;
+        return { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: { jobReqId: 'PUNE', title: 'AI Engineer', location: 'Pune', jobDescription: '<p>Build.</p>', canApply: true, posted: true } }) };
+      }
+      listCalls += 1;
+      remaining = 4_000;
+      return { status: 200, headers: {}, body: JSON.stringify({ total: 2, jobPostings: [{ jobReqId: 'PUNE', title: 'AI Engineer', externalPath: '/job/Pune/PUNE', locationsText: 'Pune' }] }) };
+    },
+  });
+
+  assert.equal(listCalls, 1);
+  assert.equal(detailCalls, 1);
+  assert.equal(result.manifest.truncated, true);
+  assert.equal(result.manifest.capHit, 'workdayDetailReserve');
+  assert.deepEqual(result.conditionalState.__cursor.Acme, { endpointUrl: listUrl, page: 1, workdayReceived: 1 });
+  assert.equal(result.telemetry.configuredDetailReserveMs, 5_000);
+  assert.equal(result.manifest.sources[0].terminalReason, 'workday-detail-reserve-exhausted');
+});
+
+test('Workday cancellation aborts DETAIL transport and retains the page-start cursor', async () => {
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  const controller = new AbortController();
+  let detailSignal;
+  const checkpoints = [];
+  const result = await discoverEnterpriseAts({
+    boards: [{ provider: 'workday', company: 'Acme', url: listUrl }], transport: async (_url, options) => {
+      if (!options.detail) return { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ jobReqId: 'PUNE', title: 'AI Engineer', externalPath: '/job/Pune/PUNE', locationsText: 'Pune' }] }) };
+      detailSignal = options.signal;
+      controller.abort(new Error('operator abort'));
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    },
+    runAt, maxPages: 2, enrichDetails: true, detailConcurrency: 1, maxDetailRequestsPerRun: 10,
+    signal: controller.signal, checkpoint: async (payload) => checkpoints.push(payload),
+  });
+
+  assert.equal(detailSignal.aborted, true);
+  assert.equal(result.manifest.interrupted, true);
+  assert.deepEqual(result.conditionalState.__cursor.Acme, { endpointUrl: listUrl, page: 0, workdayReceived: 0 });
+  assert.equal(result.observations[0].evidence.detailHydration.reason, 'cancelled');
+  assert.equal(checkpoints.at(-1).replaceObservations, true);
+  assert.deepEqual(checkpoints.at(-1).cursor.__cursor.Acme, { endpointUrl: listUrl, page: 0, workdayReceived: 0 });
 });

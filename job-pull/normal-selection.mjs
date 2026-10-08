@@ -1,3 +1,5 @@
+import { pickDailyEntries } from './select.mjs';
+import { autoSuggestFor } from './match-scorer.mjs';
 import { sourceQuality } from './dedup.mjs';
 import { applicationReadiness } from './normal-readiness.mjs';
 import { scoreState, scoringQueueRecord, splitScoredEntries } from './mode-scoring.mjs';
@@ -28,84 +30,74 @@ function waterfallBand(entry) {
   const candidate = entry.candidate || entry;
   const eligibility = entry.eligibility || candidate.eligibility || {};
   const age = ageHours(entry);
-  if (!Number.isFinite(age)) return null;
-  if (eligibility.strict && age <= 24) return 'strict-0-24h';
-  if (eligibility.strict && age <= 72) return 'strict-24-72h';
-  if (eligibility.strict && age <= 168) return 'strict-3-7d';
-  if (eligibility.eligible && age <= 72 && eligibility.experience?.relaxed) return 'relaxed-fresh-up-to-2-years';
-  if (eligibility.eligible && age <= 72 && eligibility.title?.relaxed) return 'relaxed-fresh-adjacent';
-  if (eligibility.eligible && age <= 168) return 'relaxed-3-7d';
-  if (eligibility.eligible && age <= 336) return 'relaxed-backfill-8-14d';
+  if (!Number.isFinite(age) || age < 0 || entry.freshness?.eligible === false || entry.freshness?.window === 'VerifyQueue') return null;
+  const strict = eligibility.strict === true || String(eligibility.tier || candidate.selectionTier).toLowerCase() === 'strict';
+  if (!eligibility.eligible) return null;
+  if (strict && age <= 72) return 'strict-hot-0-72h';
+  if (strict && age <= 168) return 'strict-3-7d';
+  if (strict && age <= 336) return 'strict-backfill-8-14d';
+  if (age <= 72) return 'relaxed-hot-0-72h';
+  if (age <= 168) return 'relaxed-3-7d';
+  if (age <= 336) return 'relaxed-backfill-8-14d';
   return null;
 }
 
 const WATERFALL = Object.freeze([
-  'strict-0-24h',
-  'strict-24-72h',
+  'strict-hot-0-72h',
   'strict-3-7d',
-  'relaxed-fresh-up-to-2-years',
-  'relaxed-fresh-adjacent',
+  'strict-backfill-8-14d',
+  'relaxed-hot-0-72h',
   'relaxed-3-7d',
   'relaxed-backfill-8-14d',
 ]);
 
 export { WATERFALL, waterfallBand };
 
-/** Select 10 minimum, 12 preferred, and at most 20 without family quotas. */
-export function selectNormalApplications(entries, { minimum = 10, preferred = 12, maximum = 20, maximumPerCompany = 2 } = {}) {
-  const ready = entries
-    .map((entry) => {
-      const candidate = entry.candidate || entry;
-      const eligibility = entry.eligibility || candidate.eligibility || null;
-      const freshness = entry.freshness || candidate.freshness || null;
-      const readiness = applicationReadiness(candidate, eligibility);
-      return { ...entry, candidate, eligibility, freshness, readiness, waterfallBand: waterfallBand({ ...entry, candidate, eligibility, freshness }) };
-    })
-    .filter((entry) => entry.readiness.ready && entry.waterfallBand);
+// Select verified scored roles with the shared daily waterfall and diversity policy.
+export function selectNormalApplications(entries, { minimum = 10, preferred = 12, maximum = 20, maximumPerCompany = 2, maximumFamilyShare = 0.4, previousDailyCandidates = [] } = {}) {
+  const evaluated = entries.map((entry) => {
+    const candidate = entry.candidate || entry;
+    const eligibility = entry.eligibility || candidate.eligibility || null;
+    const freshness = entry.freshness || candidate.freshness || null;
+    const readiness = entry.readiness || applicationReadiness(candidate, eligibility);
+    return { ...entry, candidate, eligibility, freshness, readiness, waterfallBand: waterfallBand({ ...entry, candidate, eligibility, freshness }) };
+  });
+  const ready = evaluated.filter((entry) => entry.readiness.ready && entry.waterfallBand);
   const { scored, scoringQueue, scoredCount, unscoredCount, scoringFailedCount } = splitScoredEntries(ready);
   const queues = new Map(WATERFALL.map((band) => [band, []]));
   for (const entry of scored) queues.get(entry.waterfallBand).push(entry);
   for (const queue of queues.values()) queue.sort(compareFit);
   const target = Math.min(maximum, scored.length);
-  const selected = [];
-  const companyCounts = new Map();
-  const seen = new Set();
-  for (const band of WATERFALL) {
-    for (const entry of queues.get(band)) {
-      if (selected.length >= target) break;
-      const candidate = entry.candidate;
-      const key = candidate.canonicalUrl;
-      const company = String(candidate.company || '').toLocaleLowerCase();
-      if (seen.has(key) || (companyCounts.get(company) || 0) >= maximumPerCompany) continue;
-      seen.add(key);
-      companyCounts.set(company, (companyCounts.get(company) || 0) + 1);
-      const strict = entry.waterfallBand.startsWith('strict-');
-      const relaxations = strict ? [] : [
-        ...(entry.eligibility?.relaxations || []),
-        `waterfall:${entry.waterfallBand}`,
-      ];
-      selected.push({
-        ...candidate,
-        matchScore: scoreState(entry).score,
-        score: scoreState(entry).score,
-        rationale: candidate.rationale ?? null,
-        hook: candidate.hook ?? candidate.strongestHook ?? null,
-        strongestHook: candidate.strongestHook ?? candidate.hook ?? null,
-        responseLikelihood: candidate.responseLikelihood ?? null,
-        applicationReady: true,
-        applicationReadiness: 'Ready',
-        selectionTier: strict ? 'Strict' : 'Backfill',
-        freshnessWindow: entry.freshness?.window || null,
-        waterfallBand: entry.waterfallBand,
-        relaxations: [...new Set(relaxations)],
-        readinessEvidence: entry.readiness.evidence,
-      });
-    }
-    if (selected.length >= target) break;
-  }
+  const ordered = WATERFALL.flatMap((band) => queues.get(band));
+  const picked = pickDailyEntries(ordered, target, { maximumPerCompany, maximumFamilyShare, previousDailyCandidates });
+  const selected = picked.map((entry) => {
+    const candidate = entry.candidate;
+    const strict = entry.waterfallBand.startsWith('strict-');
+    const selectionTier = strict ? 'Strict' : 'Backfill';
+    const matchScore = scoreState(entry).score;
+    return {
+      ...candidate, matchScore, score: matchScore,
+      autoSuggest: autoSuggestFor({ ...candidate, selectionTier, freshnessWindow: entry.freshness?.window }, matchScore, candidate.responseLikelihood),
+      rationale: candidate.rationale ?? null,
+      hook: candidate.hook ?? candidate.strongestHook ?? null,
+      strongestHook: candidate.strongestHook ?? candidate.hook ?? null,
+      responseLikelihood: candidate.responseLikelihood ?? null,
+      applicationReady: true, applicationReadiness: 'Ready', selectionTier,
+      freshnessWindow: entry.freshness?.window || null,
+      waterfallBand: entry.waterfallBand,
+      roleFamily: candidate.roleFamily || entry.eligibility?.roleFamily || 'adjacent-engineering',
+      relaxations: strict ? [] : [...new Set([...(entry.eligibility?.relaxations || []), `waterfall:${entry.waterfallBand}`])],
+      readinessEvidence: entry.readiness.evidence,
+    };
+  });
   const selectedCount = selected.length;
   return {
     selected,
+    diversity: { availableFamilies: new Set(scored.map((entry) => entry.candidate.roleFamily || entry.eligibility?.roleFamily || 'adjacent-engineering')).size,
+      selectedFamilies: new Set(selected.map((candidate) => candidate.roleFamily)).size,
+      maximumFamilyShare, observedMaximumFamilyShare: selected.length ? Math.max(...Object.values(selected.reduce((counts, candidate) => ({ ...counts, [candidate.roleFamily]: (counts[candidate.roleFamily] || 0) + 1 }), {}))) / selected.length : 0 },
+    strictSelected: selected.filter((candidate) => candidate.selectionTier === 'Strict').length,
+    strictShortfall: Math.max(0, 10 - selected.filter((candidate) => candidate.selectionTier === 'Strict').length),
     readyPoolCount: scored.length,
     scoringQueue: scoringQueue.map(scoringQueueRecord),
     scoredCount,

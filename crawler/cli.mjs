@@ -22,12 +22,16 @@ import { promoteSchedule, rollbackSchedule } from './release-manager.mjs';
 import { buildScheduleHealthReport } from './schedule-health.mjs';
 import { createJsonCanaryStore, loadDeliveryCanaryEvidence } from './delivery-canary.mjs';
 import { acquireCrawlerRunLock } from './run-lock.mjs';
+import { dailyRunIdentity } from './scheduler.mjs';
 import {
   DEFAULT_NOTIFICATION_LOG,
   notifyDesktop,
   notifyRunOutcome,
   persistNotificationReceipt,
 } from './notify.mjs';
+import { buildDeliveryReconciliation } from '../job-pull/mode-scoring.mjs';
+import { createNotionV5Gateway, loadExternalCredential } from '../notion-v5/gateway.mjs';
+import { assertExternalAuditReceiptPath, auditV5Journal, createTransactionJournal, writeAuditReceipt } from '../notion-v5/transaction.mjs';
 
 function value(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -135,6 +139,45 @@ export function parseDiscoveryProfileArgs(args, schedule = 'morning') {
   };
 }
 
+export function parseDailyWriteOptions(args, schedule = 'morning') {
+  const executeWrites = args.includes('--execute-writes');
+  const credentialFile = explicitOption(args, '--credential-file');
+  const journalPath = explicitOption(args, '--journal');
+  const shortlistValue = explicitOption(args, '--shortlist-limit');
+  const shortlistLimit = shortlistValue == null ? null : Number(shortlistValue);
+  if (shortlistValue != null && (!Number.isInteger(shortlistLimit) || shortlistLimit < 1 || shortlistLimit > 20)) {
+    throw new Error('--shortlist-limit must be an integer between 1 and 20');
+  }
+  if (!executeWrites && (credentialFile || journalPath)) {
+    throw new Error('--credential-file and --journal require --execute-writes');
+  }
+  if (executeWrites) {
+    const environment = explicitOption(args, '--env');
+    const mode = String(value(args, '--mode', 'normal')).trim().toLowerCase();
+    const locationPreset = String(value(args, '--location-preset', 'india')).trim().toLowerCase();
+    if (String(schedule).trim().toLowerCase() !== 'morning') throw new Error('--execute-writes requires daily morning');
+    if (environment !== 'production') throw new Error('--execute-writes requires --env production');
+    if (explicitOption(args, '--config')) throw new Error('--execute-writes rejects arbitrary --config');
+    if (mode !== 'normal') throw new Error('--execute-writes requires --mode normal');
+    if (locationPreset !== 'pune') throw new Error('--execute-writes requires --location-preset pune');
+    if (!credentialFile || !journalPath) throw new Error('--execute-writes requires --credential-file and --journal');
+    if (!path.isAbsolute(credentialFile)) throw new Error('--credential-file must be an absolute path');
+    if (!path.isAbsolute(journalPath)) throw new Error('--journal must be an absolute path');
+  }
+  return { executeWrites, credentialFile, journalPath, shortlistLimit };
+}
+
+export function parseAuditV5JournalArgs(args) {
+  const credentialFile = explicitOption(args, '--credential-file');
+  const journalPath = explicitOption(args, '--journal');
+  const receiptPath = explicitOption(args, '--receipt');
+  if (!credentialFile || !journalPath || !receiptPath) throw new Error('audit-v5-journal requires --credential-file, --journal, and --receipt');
+  for (const [name, filePath] of [['--credential-file', credentialFile], ['--journal', journalPath], ['--receipt', receiptPath]]) {
+    if (!path.isAbsolute(filePath)) throw new Error(`${name} must be an absolute path`);
+  }
+  return { credentialFile, journalPath, receiptPath };
+}
+
 function output(data) {
   process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 }
@@ -206,6 +249,7 @@ function localReadiness(config, args) {
 
 export async function main(argv = process.argv.slice(2), {
   dailyRunner = runDailyNormal,
+  notionGatewayFactory = createNotionV5Gateway,
   emit = output,
   notify = notifyDesktop,
   releaseApi = { promoteSchedule, rollbackSchedule },
@@ -215,6 +259,21 @@ export async function main(argv = process.argv.slice(2), {
     process.stdout.write(buildCrawlerHelp());
     return 0;
   }
+  if (command === 'audit-v5-journal') {
+    const options = parseAuditV5JournalArgs(argv);
+    assertExternalAuditReceiptPath(options.receiptPath);
+    const credential = loadExternalCredential(options.credentialFile);
+    const journal = createTransactionJournal({ journalPath: options.journalPath, requireExisting: true });
+    const gateway = notionGatewayFactory({ live: true, credentialFile: options.credentialFile, journalPath: options.journalPath });
+    const receipt = await auditV5Journal({ journal, gateway, secrets: [credential] });
+    const writtenReceipt = writeAuditReceipt(options.receiptPath, receipt, undefined, [credential]);
+    emit({ ...receipt, receiptPath: writtenReceipt });
+    return receipt.phase4.blocked ? 1 : 0;
+  }
+  const dailySchedule = command === 'daily' ? positional(argv)[1] ?? 'morning' : null;
+  const dailyWriteOptions = command === 'daily'
+    ? parseDailyWriteOptions(argv, dailySchedule)
+    : null;
   const commandConfigPath = argv[0] === 'promote-schedule' && !explicitOption(argv, '--config') && !explicitOption(argv, '--env')
     ? 'config/crawler-v2.json'
     : resolveCrawlerConfigPath(argv);
@@ -236,9 +295,11 @@ export async function main(argv = process.argv.slice(2), {
     return 0;
   }
   if (command === 'daily') {
-    const schedule = positional(argv)[1] ?? 'morning';
+    const schedule = dailySchedule;
+    const writeOptions = dailyWriteOptions;
     const canaryEvidencePath = explicitOption(argv, '--canary-evidence');
     const canaryEvidence = loadDeliveryCanaryEvidence(canaryEvidencePath);
+    const canaryStore = createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json'));
     const lock = acquireCrawlerRunLock(value(argv, '--lock-path', path.join(config.databasePath ? path.dirname(config.databasePath) : '.local/launchpad-crawler', 'daily.lock')));
     try {
       const mode = value(argv, '--mode', 'normal');
@@ -248,16 +309,33 @@ export async function main(argv = process.argv.slice(2), {
         schedule,
         mode,
         locationPreset,
-        runId: value(argv, '--run-id'),
+        runId: value(argv, '--run-id') ?? dailyRunIdentity({ schedule, mode, locationPreset }),
         scores: value(argv, '--scores-json'),
         // Production default: the in-run codex scorer is ON (docs/spec/match-scoring.md).
         // --no-scorer preserves the offline pre-scorer behaviour for debugging/replay;
         // --scores-json rows still win per-row inside normal-mode regardless.
         scorer: argv.includes('--no-scorer') ? null : 'codex',
         canaryEvidence,
-        canaryStore: createJsonCanaryStore(value(argv, '--canary-log', 'logs/delivery-canary.json')),
+        canaryStore,
+        executeWrites: writeOptions.executeWrites,
+        credentialFile: writeOptions.credentialFile,
+        journalPath: writeOptions.journalPath,
+        shortlistLimit: writeOptions.shortlistLimit,
+        deferCanaryPersistence: writeOptions.executeWrites,
+        notionGatewayFactory: writeOptions.executeWrites
+          ? () => notionGatewayFactory({
+            live: true,
+            credentialFile: writeOptions.credentialFile,
+            journalPath: writeOptions.journalPath,
+          })
+          : null,
       });
-      const exitCode = result.outcome?.status === 'fatal' ? 1 : 0;
+      const terminalStatus = result.terminalEnvelope?.status ?? (result.outcome?.status === 'fatal' ? 'failed' : 'completed');
+      const exitCode = terminalStatus === 'failed' ? 1 : 0;
+      if (terminalStatus === 'partial' || result.deliveryReconciliation?.status === 'no-write') {
+        emit({ ...result, notificationReceipt: null });
+        return exitCode;
+      }
       const freshCount = (result.shortlist ?? []).filter((candidate) => candidate.selectionTier === 'Strict' && ['Hot', 'Active'].includes(candidate.freshnessWindow)).length;
       const receipt = notifyRunOutcome({
         runId: result.runId ?? value(argv, '--run-id'),
@@ -271,7 +349,84 @@ export async function main(argv = process.argv.slice(2), {
         notify,
       });
       const persistence = persistNotificationReceipt(receipt, value(argv, '--notification-log', DEFAULT_NOTIFICATION_LOG));
-      emit({ ...result, notificationReceipt: { ...receipt, persistence } });
+      const notificationReceipt = { ...receipt, persistence };
+      const notificationFailed = notificationReceipt.sent !== true || notificationReceipt.persistence?.persisted !== true;
+      let outcome = result.outcome;
+      let deliveryCanary = result.deliveryCanary;
+      let canaryPersistenceError = result.canaryPersistenceError ?? null;
+      if (notificationFailed) {
+        const error = {
+          stage: 'notification',
+          name: 'NotificationDeliveryError',
+          message: notificationReceipt.reason
+            ?? notificationReceipt.persistence?.reason
+            ?? 'notification receipt was not delivered and persisted',
+        };
+        outcome = {
+          ...(result.outcome ?? {}),
+          status: 'degraded',
+          fatal: false,
+          degraded: true,
+          errors: [...(result.outcome?.errors ?? []), error],
+        };
+        if (deliveryCanary) {
+          deliveryCanary = {
+            ...deliveryCanary,
+            valid: false,
+            preparedValid: deliveryCanary.valid === true,
+            invalidReasons: [...(deliveryCanary.invalidReasons ?? []), `notification failed: ${error.message}`],
+            persisted: false,
+          };
+        }
+      }
+      if (writeOptions.executeWrites && deliveryCanary) {
+        try {
+          canaryStore.append(deliveryCanary);
+          deliveryCanary = { ...deliveryCanary, persisted: true };
+        } catch (error) {
+          canaryPersistenceError = {
+            stage: 'delivery-canary-persistence',
+            name: error.name || 'Error',
+            code: error.code ?? null,
+            message: error.message || String(error),
+          };
+          outcome = {
+            ...(outcome ?? {}),
+            status: 'degraded',
+            fatal: false,
+            degraded: true,
+            errors: [...(outcome?.errors ?? []), canaryPersistenceError],
+          };
+          deliveryCanary = {
+            ...deliveryCanary,
+            valid: false,
+            preparedValid: deliveryCanary.valid === true,
+            invalidReasons: [...(deliveryCanary.invalidReasons ?? []), `canary persistence failed: ${canaryPersistenceError.message}`],
+            persisted: false,
+          };
+        }
+      }
+      const currentDelivery = result.deliveryReconciliation;
+      const deliveryReconciliation = currentDelivery
+        ? buildDeliveryReconciliation({
+          status: outcome?.degraded ? 'degraded' : currentDelivery.status,
+          deliveryPlan: result.deliveryPlan,
+          sourceCoverage: currentDelivery.sourceCoverage,
+          rejectionReasons: currentDelivery.rejectionReasons,
+          transaction: result.transaction,
+          surfacedCount: currentDelivery.counts.opportunityLedgerSurfaced,
+          ledgerRepairedCount: currentDelivery.counts.opportunityLedgerRepaired,
+          canaryCount: deliveryCanary?.counts?.shortlist ?? currentDelivery.counts.canaryShortlist,
+          canaryStatus: deliveryCanary?.valid === true ? 'valid' : 'invalid',
+          notificationCount: 1,
+          notificationStatus: notificationFailed ? 'failed' : 'sent',
+          notificationReceipt,
+        })
+        : null;
+      const terminalEnvelope = result.terminalEnvelope
+        ? { ...result.terminalEnvelope, deliveryReconciliation }
+        : result.terminalEnvelope;
+      emit({ ...result, outcome, deliveryCanary, canaryPersistenceError, terminalEnvelope, deliveryReconciliation, notificationReceipt });
       return exitCode;
     } finally {
       lock.release();

@@ -46,7 +46,11 @@ The daily runner:
 
 Crawler SQLite owns crawl observations, novelty, source health, and schedule state. It does not own the seven-day opportunity cooldown/surfacing policy.
 
-Workday freshness trusts a usable DETAIL `startDate`. LIST `postedOn` is not trusted for selection and remains in `VerifyQueue` until corroborated by detail evidence.
+Workday freshness trusts a usable DETAIL `startDate` and applies the normal age classes. LIST-only `postedOn`, including bounded labels, is not trusted for selection and remains in `VerifyQueue` until detail evidence supplies a usable `startDate`.
+
+Daily readiness requires `eligibility?.eligible === true`; missing eligibility is not ready. Unstated experience manual review is not a rejection after the full eligibility result passes, while all other hard failures remain enforced.
+
+`VerifyQueue` stays outside scoring and selection. The selection result records empty selected-key intersections with both `VerifyQueue` and `scoringQueue`. Backfill rows require a finite known age in the 8–14-day band.
 
 Unresolved roles do not count toward the shortlist. A missing scorer with unscored rows, or a broken scorer infrastructure path, is fatal. Bounded per-row scoring failures from a functioning in-run scorer remain queued and make the run degraded rather than silently treating those rows as scored.
 

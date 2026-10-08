@@ -95,14 +95,36 @@ test('generated local evidence reports dirty worktree and missing operational ve
     testsPassed: true,
     testTotal: 90,
     dirtyPaths: ['crawler/workflow.mjs'],
-    operationalEvidence: null,
+    operationalEvidence: {
+      schemaVersion: 'LaunchpadLocalRecoveryProofV1',
+      proofKind: 'local-recovery-only',
+      productionActivation: false,
+      pass: true,
+      evidence: ['run-1', 'run-2', 'run-3'],
+      workDir: '/tmp/local-recovery-proof',
+    },
     sourceIds: ['career-sites'],
+    evidenceProvenance: {
+      schemaVersion: 'LaunchpadReadinessEvidenceV2',
+      runId: 'local-recovery-fixture-1',
+      runAt: '2026-08-21T00:00:00.000Z',
+      codeConfigVersion: 'git:fixture:dirty:one-path',
+      receiptHash: `sha256:${'b'.repeat(64)}`,
+      recognized: true,
+    },
   });
   const result = assessProductionReadiness(evidence);
 
   assert.equal(result.productionReady, false);
+  assert.equal(result.codeComplete, true);
+  assert.equal(result.operationallyVerified, false);
+  assert.equal(evidence.testSummary.passed, true);
+  assert.equal(evidence.operationalVerification.pass, false);
+  assert.equal(evidence.operationalVerification.scope, 'local-only');
+  assert.equal(evidence.operationalVerification.reason, 'LOCAL_ONLY_EVIDENCE_CANNOT_VERIFY_PRODUCTION');
+  assert.deepEqual(evidence.operationalVerification.evidence, ['run-1', 'run-2', 'run-3']);
+  assert.equal(evidence.operationalVerification.workDir, '/tmp/local-recovery-proof');
   assert.deepEqual(evidence.unresolvedBlockers, []);
   assert.deepEqual(evidence.reproducibility.dirtyPaths, ['crawler/workflow.mjs']);
-  assert.ok(result.reasons.includes('READINESS_EVIDENCE_PROVENANCE_INVALID'));
   assert.ok(result.reasons.includes('OPERATIONAL_VERIFICATION_MISSING'));
 });

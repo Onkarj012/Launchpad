@@ -242,7 +242,11 @@ test('every honestly reported nonzero effective engineering zero-gate invalidate
       historicalSuppressions: [{ dedupKey: 'workday:req-1' }],
     }],
     ['rolesSurfacedBeforeCommit', {
-      transaction: { committed: false },
+      transaction: {
+        status: 'aborted',
+        newlyCommitted: [],
+        alreadyCommitted: [],
+      },
       surfaced: { rows: [{ dedupKey: 'workday:req-1' }] },
     }],
     ['duplicateRequisitionCollisions', {

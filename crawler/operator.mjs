@@ -23,6 +23,7 @@ import { selectDailyReserve } from './reserve.mjs';
 import { buildSchedulePlans } from './schedules.mjs';
 import { crawlWorkflow } from './workflow.mjs';
 import { classifyCandidate } from '../job-pull/eligibility.mjs';
+import { linkedInPublicJobId } from '../job-pull/portal-adapters/linkedin.mjs';
 import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { loadConfig as loadJobPullPolicy } from '../job-pull/config.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
@@ -31,14 +32,26 @@ import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 import { runStartupSourcePlan } from '../job-pull/startup-sources.mjs';
 import { runRemoteSourcePlan, selectRemoteProviders } from '../job-pull/remote-sources.mjs';
+import { PORTAL_SOURCE_LANES, runPortalSourcePlan } from '../job-pull/normal-sources.mjs';
+import { createRenderedFetcher } from './browser-transport.mjs';
+import { createHostSerializedRunner, mapProviderSafe } from './bounded-concurrency.mjs';
 import { buildDiscoveryProfile } from './discovery-profile.mjs';
 import {
   CONNECTOR_PROVIDERS,
   normalizeConnectorEnvelope,
 } from './connector-inbox.mjs';
 import {
+  planBoundedSources,
   withRegistryProjectedBoards,
 } from './board-registry.mjs';
+import { dailyRunIdentity } from './scheduler.mjs';
+import {
+  normalizeExecutionBudget,
+  remainingDeadlineMs,
+  requestWithDeadline,
+  throwIfNetworkWorkDisallowed,
+  validateExecutionBudget,
+} from './deadline.mjs';
 
 export const CRAWLER_CONFIG_VERSION = 'LaunchpadCrawlerConfigV1';
 
@@ -119,7 +132,8 @@ Usage:
   node crawler/cli.mjs validate [--config FILE]
   node crawler/cli.mjs plan [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE]
   node crawler/cli.mjs run [morning|midday] [--mode normal|startup|remote] [--location-preset india|pune] [--config FILE] [--run-id ID]
-  node crawler/cli.mjs daily [morning] [--config FILE] [--env production|live-test|dev] [--run-id ID] [--scores-json FILE] [--no-scorer]
+  node crawler/cli.mjs daily [morning] [--config FILE] [--env production|live-test|dev] [--run-id ID] [--scores-json FILE] [--no-scorer] [--execute-writes --credential-file FILE --journal FILE]
+  node crawler/cli.mjs audit-v5-journal --credential-file ABS_PATH --journal ABS_PATH --receipt ABS_PATH
   node crawler/cli.mjs readiness [--run-tests] [--operational-evidence FILE]
   node crawler/cli.mjs install-schedule [--dry-run]
   node crawler/cli.mjs promote-schedule --revision <40hex> [--canary-log FILE] [--release-root DIR] [--release-state FILE] [--mode normal|startup|remote] [--location-preset india|pune] [--dry-run]
@@ -140,8 +154,21 @@ export function validateCrawlerConfig(config) {
   if (!config || config.schemaVersion !== CRAWLER_CONFIG_VERSION) throw new Error(`schemaVersion must be ${CRAWLER_CONFIG_VERSION}`);
   if (typeof config.databasePath !== 'string' || !config.databasePath.trim()) throw new Error('databasePath is required');
   if (!config.sources || typeof config.sources !== 'object' || Array.isArray(config.sources)) throw new Error('sources configuration is required');
+  if (config.execution != null) {
+    if (typeof config.execution !== 'object' || Array.isArray(config.execution)) throw new Error('execution must be an object');
+    validateExecutionBudget(normalizeExecutionBudget(config.execution));
+  }
   for (const section of ['atsWarm', 'atsBatch1', 'atsBatch2', 'enterprise']) {
     if (config.sources[section] && !Array.isArray(config.sources[section].boards)) throw new Error(`sources.${section}.boards must be an array`);
+  }
+  if (config.sourcePlanner != null) {
+    if (typeof config.sourcePlanner !== 'object' || Array.isArray(config.sourcePlanner)) throw new Error('sourcePlanner must be an object');
+    for (const field of ['enabled', 'legacyPlannerRollback']) {
+      if (config.sourcePlanner[field] != null && typeof config.sourcePlanner[field] !== 'boolean') throw new Error(`sourcePlanner.${field} must be a boolean`);
+    }
+    for (const field of ['maxBoards', 'priorityShare', 'explorationShare']) {
+      if (config.sourcePlanner[field] != null && (!Number.isFinite(Number(config.sourcePlanner[field])) || Number(config.sourcePlanner[field]) < 0)) throw new Error(`sourcePlanner.${field} must be non-negative`);
+    }
   }
   if (config.sources.careerSites && !Array.isArray(config.sources.careerSites)) throw new Error('sources.careerSites must be an array');
   validateTheirStackConfig(config.sources.theirstack);
@@ -178,15 +205,37 @@ function requestAbortSignal(signal, timeoutMs) {
 }
 
 export async function defaultHttpTransport(url, options = {}) {
-  const abort = requestAbortSignal(options.signal, options.timeoutMs ?? 10000);
+  throwIfNetworkWorkDisallowed(options.signal, options.deadline);
+  const remainingMs = remainingDeadlineMs(options.deadline);
+  const timeoutMs = Math.max(1, Math.min(Number(options.timeoutMs ?? 10000), Number.isFinite(remainingMs) ? remainingMs : Number(options.timeoutMs ?? 10000)));
+  const abort = requestAbortSignal(options.signal, timeoutMs);
   try {
     const response = await fetch(url, {
       method: options.method ?? 'GET',
       headers: options.headers,
       body: options.body,
       signal: abort.signal,
+      redirect: options.redirect ?? 'follow',
     });
-    return { status: response.status, headers: response.headers, body: await response.text() };
+    const maxBytes = options.maxBytes ?? 2_000_000;
+    const chunks = [];
+    let bytes = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > maxBytes) {
+            await reader.cancel();
+            throw new Error('response-too-large');
+          }
+          chunks.push(Buffer.from(value));
+        }
+      } finally { reader.releaseLock(); }
+    }
+    return { status: response.status, headers: response.headers, body: Buffer.concat(chunks).toString('utf8'), byteLength: bytes, url: response.url };
   } finally {
     abort.cleanup();
   }
@@ -194,6 +243,29 @@ export async function defaultHttpTransport(url, options = {}) {
 
 function sourcePlan(id, lane, provider, fetcher, metadata = {}) {
   return { id, lane, provider, trustClass: 'direct', ...metadata, fetch: fetcher };
+}
+
+function sourceTransport(transport, signal, deadline) {
+  return (url, options = {}) => requestWithDeadline(transport, url, options, {
+    signal: options.signal ?? signal,
+    deadline: options.deadline ?? deadline,
+    abortOnDeadline: options.abortOnDeadline === true,
+  });
+}
+
+function persistSourcePlanState(store, sourceId, state, at) {
+  const row = store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(sourceId);
+  if (!row) return;
+  let cursorState = {};
+  try {
+    const parsed = row.cursor_json ? JSON.parse(row.cursor_json) : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cursorState = parsed;
+  } catch {
+    cursorState = {};
+  }
+  delete cursorState.pendingSourcePlanState;
+  store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?')
+    .run(JSON.stringify({ ...cursorState, sourcePlanState: state }), at, sourceId);
 }
 
 function resolverSettings(config) {
@@ -210,6 +282,88 @@ function resolverSettings(config) {
   return settings;
 }
 
+function positiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : fallback;
+}
+
+function portalResolverSettings(config) {
+  const portals = config?.sources?.portals ?? {};
+  return {
+    maxCandidates: positiveInteger(portals.maxCandidates, 24),
+    maxRequests: positiveInteger(portals.maxResolverRequests, 48),
+    concurrency: positiveInteger(portals.resolverConcurrency, 3),
+    perHostConcurrency: positiveInteger(portals.perHostConcurrency, 1),
+    maxDurationMs: positiveInteger(portals.resolverMaxDurationMs, 60_000),
+    handoffReserveMs: Number.isInteger(Number(portals.handoffReserveMs)) && Number(portals.handoffReserveMs) >= 0
+      ? Number(portals.handoffReserveMs)
+      : 5_000,
+  };
+}
+
+function hostOfUrl(value) {
+  try { return new URL(value).hostname.toLowerCase(); } catch { return 'unknown'; }
+}
+
+function withPortalIdentity(candidate) {
+  if (!candidate || typeof candidate !== 'object') return candidate;
+  let jobId = candidate.jobId;
+  if (jobId == null) {
+    try { jobId = new URL(candidate.canonicalUrl).pathname.match(/\/jobs\/view\/([^/]+)/i)?.[1] ?? null; }
+    catch { jobId = null; }
+  }
+  const sourceRecordKey = candidate.sourceRecordKey ?? jobId ?? candidate.canonicalUrl;
+  return {
+    ...candidate,
+    ...(jobId != null ? { jobId: String(jobId) } : {}),
+    ...(sourceRecordKey != null ? { sourceRecordKey: String(sourceRecordKey) } : {}),
+  };
+}
+
+function checkpointResolutionObservation(candidate, resolved) {
+  const identity = candidate.sourceRecordKey ?? candidate.providerJobId ?? candidate.jobId ?? candidate.canonicalUrl;
+  return { ...resolved, sourceRecordKey: identity };
+}
+
+function createSharedRequestBudget(maxRequests) {
+  let used = 0;
+  let exhausted = false;
+  return {
+    maxRequests,
+    claim() {
+      if (used >= maxRequests) {
+        exhausted = true;
+        return false;
+      }
+      used += 1;
+      return true;
+    },
+    get used() { return used; },
+    get exhausted() { return exhausted; },
+  };
+}
+
+function monotonicClockNow(clock) {
+  const value = typeof clock?.monotonicNow === 'function'
+    ? Number(clock.monotonicNow())
+    : Number(globalThis.performance?.now?.());
+  return Number.isFinite(value) ? value : Date.now();
+}
+
+function resolverPhaseDeadline({ clock, sourceDeadline, maxDurationMs, handoffReserveMs }) {
+  const startMs = monotonicClockNow(clock);
+  return {
+    remainingMs: () => {
+      const elapsed = Math.max(0, monotonicClockNow(clock) - startMs);
+      const sourceRemaining = remainingDeadlineMs(sourceDeadline);
+      const safeSourceRemaining = Number.isFinite(sourceRemaining)
+        ? Math.max(0, sourceRemaining - handoffReserveMs)
+        : Infinity;
+      return Math.max(0, Math.min(maxDurationMs - elapsed, safeSourceRemaining));
+    },
+  };
+}
+
 /**
  * Shared SearXNG search transport: wraps the base HTTP transport into the
  * `(query) => { status, body: { results, unresponsive_engines? } }` shape every
@@ -218,11 +372,11 @@ function resolverSettings(config) {
  * from a healthy empty market.
  */
 function searxngTransport(endpoint, baseTransport) {
-  return async (query) => {
+  return async (query, options = {}) => {
     const url = new URL('/search', endpoint);
     url.searchParams.set('q', query);
     url.searchParams.set('format', 'json');
-    const response = await baseTransport(url.toString(), { headers: { Accept: 'application/json' } });
+    const response = await requestWithDeadline(baseTransport, url.toString(), { headers: { Accept: 'application/json' }, ...options }, { signal: options.signal ?? null, deadline: options.deadline ?? null });
     const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
     const payload = { results: body?.results ?? [] };
     if (Array.isArray(body?.unresponsive_engines)) payload.unresponsive_engines = body.unresponsive_engines;
@@ -284,7 +438,7 @@ export function buildIndiaStartupLaneRequests(sources = {}) {
   return [...dimensions, ...remainder].slice(0, budget);
 }
 
-function verificationResolution(observation, error) {
+function verificationResolution(observation, error, reason = 'resolver-error') {
   const discoveryUrl = observation?.discoveryUrl ?? observation?.canonicalUrl ?? observation?.url ?? null;
   return {
     status: 'verification',
@@ -293,29 +447,31 @@ function verificationResolution(observation, error) {
     applicationResolution: { status: 'Needs Verification', evidence: null },
     evidence: {
       resolver: ORIGINAL_LISTING_RESOLVER_VERSION,
-      resolution: { status: 'verification', reason: 'resolver-error' },
-      error: error?.message || 'resolver-error',
+      resolution: { status: 'verification', reason },
+      error: error?.message || reason,
     },
   };
 }
 
 /** Build the one resolver shared by all resolver-capable sources in a run. */
-export function createCrawlerRunResolver({ config, transport, runAt, signal = null, deadline = null }) {
+export function createCrawlerRunResolver({ config, transport, runAt, signal = null, deadline = null, requestBudget = null, hostLimiter = null }) {
   const resolver = createOriginalListingResolver({
     transport,
     runAt,
     signal,
     deadline,
+    sharedRequestBudget: requestBudget,
+    hostLimiter,
     ...resolverSettings(config),
   });
 
-  return async (observation = {}) => {
+  return async (observation = {}, invocation = {}) => {
     const discoveryUrl = observation.discoveryUrl ?? observation.canonicalUrl ?? observation.url ?? null;
     try {
       // The connector hook copies the observation after resolving. Keep the
       // discovery URL on that object as well as in the resolver result.
       if (discoveryUrl && !observation.discoveryUrl) observation.discoveryUrl = discoveryUrl;
-      const resolution = await resolver({ ...observation, discoveryUrl });
+      const resolution = await resolver({ ...observation, discoveryUrl }, invocation);
       return resolution && typeof resolution === 'object'
         ? { ...resolution, discoveryUrl: resolution.discoveryUrl ?? discoveryUrl }
         : resolution;
@@ -355,26 +511,85 @@ async function readConnectorInbox({ inboxDir, runAt, resolver }) {
   return { observations, manifest: { status: 'succeeded', fetched: observations.length, receipts, noAutoApply: true } };
 }
 
-export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null }) {
+/** Round-robin provider ownership keeps a capped resolver from spending its
+ * entire budget on the first adapter. Preserve order within each provider.
+ */
+export function fairPortalResolutionCandidates(candidates, maximum) {
+  const queues = new Map();
+  for (const item of candidates) {
+    const provider = item.candidate.discoveryProvider || item.candidate.provider || item.candidate.source;
+    if (!queues.has(provider)) queues.set(provider, []);
+    queues.get(provider).push(item);
+  }
+  const result = [];
+  for (let index = 0; result.length < maximum; index += 1) {
+    let added = false;
+    for (const queue of queues.values()) {
+      if (result.length >= maximum) break;
+      if (queue[index]) { result.push(queue[index]); added = true; }
+    }
+    if (!added) break;
+  }
+  return result;
+}
+
+/** Search cards can disprove fit, but missing detail is not a mismatch. */
+export function screenPortalCandidate(candidate, policy) {
+  const eligibility = classifyCandidate(candidate, policy);
+  const uncertain = new Set(['GEO_NOT_VERIFIED', 'GEO_REMOTE_SCOPE_UNCLEAR', 'INTERNSHIP_PAY_NOT_EXPLICIT']);
+  const reasons = eligibility.reasons.filter((reason) => !uncertain.has(reason));
+  return { eligible: reasons.length === 0, reasons };
+}
+
+export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null }) {
   // Project boards from the unified registry when configured; tests that inject
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
   const projected = withRegistryProjectedBoards(config, { locationPreset: profile?.locationPreset, sourcePlan: profile?.sourcePlan });
   const sources = projected.sources;
+  const plannerConfig = projected.sourcePlanner ?? {};
+  const plannerEnabled = plannerConfig.enabled === true && plannerConfig.legacyPlannerRollback !== true;
+  const boardPlan = plannerEnabled ? planBoundedSources({
+    boardsByLane: Object.fromEntries(['atsWarm', 'atsBatch1', 'atsBatch2', 'enterprise'].map((lane) => [lane, sources[lane]?.boards ?? []])),
+    locationPreset: profile?.locationPreset ?? 'india',
+    targetTitles: plannerConfig.targetTitles ?? profile?.sourcePlan?.queryHints ?? [],
+    maxBoards: plannerConfig.maxBoards,
+    allocation: {
+      priorityShare: plannerConfig.priorityShare ?? 0.8,
+      explorationShare: plannerConfig.explorationShare ?? 0.2,
+    },
+    state: plannerConfig.state ?? {},
+    runAt,
+  }) : null;
+  const plannedBoards = (lane) => boardPlan?.boardsByLane?.[lane] ?? sources[lane]?.boards ?? [];
+  const planResult = (result, lane) => boardPlan
+    ? {
+      ...result,
+      sourcePlanState: boardPlan.resumeState,
+      manifest: {
+        ...(result?.manifest ?? {}),
+        boardPlan: { ...boardPlan.boardPlan, ownerLane: lane },
+      },
+    }
+    : result;
+  const rememberPlanState = (result) => {
+    if (boardPlan && typeof onSourcePlanState === 'function') onSourcePlanState(boardPlan.state);
+    return result;
+  };
   const plans = [];
-  if (sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async () =>
-    fetchWarmAts({ ...sources.atsWarm, boards: sources.atsWarm.boards, transport, runAt, signal, deadline })));
-  if (sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor }) => {
-    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: sources.atsBatch1.boards, transport, runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState });
-    return { ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } };
-  }, { capabilities: { newestFirst: true, paginated: true } }));
-  if (schedule !== 'midday' && sources.atsBatch2?.boards?.length) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor }) => {
-    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: sources.atsBatch2.boards, transport, runAt, state: cursor ?? {} });
-    return { ...result, cursor: Object.fromEntries(result.results.map((entry, index) => [sources.atsBatch2.boards[index]?.slug || sources.atsBatch2.boards[index]?.company, entry.conditionalState])) };
-  }, { capabilities: { newestFirst: true, completeArray: true } }));
-  if (schedule !== 'midday' && sources.enterprise?.boards?.length) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor }) => {
-    const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: sources.enterprise.boards, transport, runAt, conditionalState: cursor ?? {} });
-    return { ...result, cursor: result.conditionalState };
-  }, { capabilities: { newestFirst: true, paginated: true } }));
+  if (plannerEnabled || sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => rememberPlanState(planResult(
+    await fetchWarmAts({ ...sources.atsWarm, boards: plannedBoards('atsWarm'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, signal: sourceSignal, deadline: sourceDeadline }), 'atsWarm')), { maxDurationMs: sources.atsWarm?.maxDurationMs }));
+  if (plannerEnabled || sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
+    const result = await fetchAtsBatch1({ ...sources.atsBatch1, boards: plannedBoards('atsBatch1'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, cursorState: cursor?.cursorState, conditionalState: cursor?.conditionalState, signal: sourceSignal, deadline: sourceDeadline });
+    return rememberPlanState(planResult({ ...result, cursor: { cursorState: result.cursorState, conditionalState: result.conditionalState } }, 'atsBatch1'));
+  }, { capabilities: { newestFirst: true, paginated: true }, maxDurationMs: sources.atsBatch1?.maxDurationMs }));
+  if (schedule !== 'midday' && (plannerEnabled || sources.atsBatch2?.boards?.length)) plans.push(sourcePlan('ats-batch-2', 'ats-expanded', 'ats-batch-2', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
+    const result = await discoverAtsBatch2({ ...sources.atsBatch2, boards: plannedBoards('atsBatch2'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, state: cursor ?? {}, signal: sourceSignal, deadline: sourceDeadline });
+    return rememberPlanState(planResult({ ...result, cursor: Object.fromEntries(result.results.map((entry, index) => [plannedBoards('atsBatch2')[index]?.slug || plannedBoards('atsBatch2')[index]?.company, entry.conditionalState])) }, 'atsBatch2'));
+  }, { capabilities: { newestFirst: true, completeArray: true }, maxDurationMs: sources.atsBatch2?.maxDurationMs }));
+  if (schedule !== 'midday' && (plannerEnabled || sources.enterprise?.boards?.length)) plans.push(sourcePlan('ats-enterprise', 'ats-expanded', 'ats-enterprise', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
+    const result = await discoverEnterpriseAts({ ...sources.enterprise, boards: plannedBoards('enterprise'), transport: sourceTransport(transport, sourceSignal, sourceDeadline), runAt, conditionalState: cursor ?? {}, checkpoint, signal: sourceSignal, deadline: sourceDeadline });
+    return rememberPlanState(planResult({ ...result, cursor: result.conditionalState }, 'enterprise'));
+  }, { capabilities: { newestFirst: true, paginated: true }, maxDurationMs: sources.enterprise?.maxDurationMs }));
   if (sources.indeed?.enabled) plans.push(sourcePlan('indeed-inbox', 'connector-imports', 'indeed', async () => importIndeedInbox({
     ...sources.indeed,
     date: sources.indeed.date ?? runAt.slice(0, 10),
@@ -383,7 +598,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   }), { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   if (sources.connectorInbox?.enabled) plans.push(sourcePlan('connector-inbox', 'connector-imports', 'connector-inbox', async () => readConnectorInbox({ inboxDir: sources.connectorInbox.inboxDir, runAt, resolver }), { capabilities: { resolver: typeof resolver === 'function', providers: [...CONNECTOR_PROVIDERS] } }));
   if (schedule !== 'midday' && profile?.mode === 'normal' && sources.theirstack?.enabled) {
-    plans.push(sourcePlan('theirstack', 'connector-imports', 'theirstack', async ({ cursor } = {}) => {
+    plans.push(sourcePlan('theirstack', 'connector-imports', 'theirstack', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
       const theirStackConfig = sources.theirstack;
       const apiKey = process.env[theirStackConfig.apiKeyEnv ?? 'THEIRSTACK_API_KEY'];
       return discoverTheirStack({
@@ -393,6 +608,8 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         transport,
         runAt,
         cursor,
+        signal: sourceSignal,
+        deadline: sourceDeadline,
       });
     }, {
       trustClass: 'aggregator',
@@ -404,7 +621,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       },
     }));
   }
-  if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async () => {
+  if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
     const sourceFunctions = {};
     // yc and vc-portfolio-boards both need a search transport and an original-listing
     // resolver; without both, honestly leave them unavailable rather than fabricate.
@@ -412,18 +629,20 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       const searxTransport = searxngTransport(sources.searxng.endpoint, transport);
       const ycQueries = (sources.searxng.queries ?? []).filter((query) => /ycombinator\.com\/jobs/i.test(query));
       if (ycQueries.length) {
-        sourceFunctions.yc = async () => {
+        sourceFunctions.yc = async ({ signal: sourceSignal, deadline: sourceDeadline } = {}) => {
           const result = await discoverYcJobs({
             transport: searxTransport,
             queries: ycQueries,
             resolveOriginalListing: resolver,
             runAt,
             perQueryResultCap: sources.searxng.perQueryResultCap,
+            signal: sourceSignal,
+            deadline: sourceDeadline,
           });
           return { candidates: result.observations, manifest: { status: 'ok', ...result.manifest } };
         };
       }
-      sourceFunctions['vc-portfolio-boards'] = async () => {
+      sourceFunctions['vc-portfolio-boards'] = async ({ signal: sourceSignal, deadline: sourceDeadline } = {}) => {
         const watchlist = loadVcPortfolioWatchlist(sources.startup?.vcPortfolioWatchlistPath ?? 'config/vc-portfolio-watchlist.json');
         const requests = buildVcWatchlistRequests(watchlist, { limit: sources.startup?.vcPortfolioLimit ?? 20 });
         if (!requests.length) return { candidates: [], manifest: { status: 'empty', fetched: 0 } };
@@ -435,11 +654,13 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
           perQueryResultCap: sources.searxng.perQueryResultCap,
           resolveOriginalListing: resolver,
           runAt,
+          signal: sourceSignal,
+          deadline: sourceDeadline,
         });
         return { candidates: result.observations, manifest: { status: 'ok', ...result.manifest } };
       };
     }
-    const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode });
+    const outputs = await runStartupSourcePlan({ sourceFixtures: sources.startup?.fixtures ?? {}, sourceFunctions, laneInputs: sources.startup?.laneInputs ?? {}, runAt, runId: profile.mode, signal: sourceSignal, deadline: sourceDeadline });
     return { observations: outputs.flatMap((item) => item.candidates || []), manifest: { fetched: outputs.reduce((n, item) => n + (item.candidates?.length || 0), 0), changed: outputs.length, telemetry: { mode: 'startup', lanes: outputs.map((item) => item.manifest) } } };
   }));
   // Morning Remote can run configured native feeds. Midday Remote is a cheap
@@ -450,17 +671,17 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   const scheduledRemoteEnabled = sources.remote?.enabled === true
     && profile?.mode === 'normal'
     && schedule !== 'midday';
-  if (explicitRemoteMode || scheduledRemoteEnabled) plans.push(sourcePlan('remote-mode', 'remote-sources', 'remote', async () => {
+  if (explicitRemoteMode || scheduledRemoteEnabled) plans.push(sourcePlan('remote-mode', 'remote-sources', 'remote', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
     const remoteConfig = sources.remote ?? {};
     const forceAll = explicitRemoteMode;
     const activeProviders = selectRemoteProviders({ remoteConfig, runAt, forceAll });
-    const fetchJson = async (url, options) => { const response = await transport(url, options); const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; return body; };
-    const fetchText = async (url, options) => { const response = await transport(url, options); return response.body; };
+    const fetchJson = async (url, options = {}) => { throwIfNetworkWorkDisallowed(sourceSignal, sourceDeadline); const response = await requestWithDeadline(transport, url, options, { signal: sourceSignal, deadline: sourceDeadline }); const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; return body; };
+    const fetchText = async (url, options = {}) => { throwIfNetworkWorkDisallowed(sourceSignal, sourceDeadline); const response = await requestWithDeadline(transport, url, options, { signal: sourceSignal, deadline: sourceDeadline }); return response.body; };
     const providerFetchers = {};
     for (const provider of activeProviders) {
       providerFetchers[provider] = provider === 'weworkremotely' ? { fetchText } : { fetchJson };
     }
-    const outputs = await runRemoteSourcePlan({ providerFetchers, runAt, runId: profile?.mode || 'normal' });
+    const outputs = await runRemoteSourcePlan({ providerFetchers, runAt, runId: profile?.mode || 'normal', signal: sourceSignal, deadline: sourceDeadline });
     const primarySet = new Set(remoteConfig.primaryProviders ?? ['himalayas']);
     const maxPrimary = Math.max(1, Number(remoteConfig.maxRecordsPrimary ?? 40));
     const maxSecondary = Math.max(1, Number(remoteConfig.maxRecordsPerSecondary ?? remoteConfig.maxRecordsPerProvider ?? 25));
@@ -475,7 +696,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
           && candidate.originalApplicationUrl;
         if (typeof resolver === 'function' && !alreadyResolved) {
           let resolution;
-          try { resolution = await resolver(candidate); }
+          try { throwIfNetworkWorkDisallowed(sourceSignal, sourceDeadline); resolution = await resolver(candidate, { signal: sourceSignal, deadline: sourceDeadline }); }
           catch (error) { resolution = verificationResolution(candidate, error); }
           const resolved = applyOriginalListingResolution(candidate, resolution);
           if (resolved.classification !== 'direct' || !resolved.originalApplicationUrl) {
@@ -508,7 +729,243 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       },
     };
   }));
-  if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async () => {
+  // Portal discovery. LinkedIn runs on the shared HTTP transport; the browser
+  // portals share one Chromium context for the whole run and it is always torn
+  // down, including on failure, so a crashed lane cannot leak a browser.
+  if (sources.portals?.enabled) plans.push(sourcePlan('portal-discovery', 'portal-sources', 'portals', async ({ cursor = null, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
+    const portalConfig = sources.portals ?? {};
+    const portalLimits = portalResolverSettings({ sources: { portals: portalConfig } });
+    const browserEnabled = portalConfig.browser?.enabled === true;
+    const browserProviders = new Set(browserEnabled ? (portalConfig.browser?.providers ?? []) : []);
+    const httpProviders = new Set(portalConfig.http?.providers ?? ['linkedin-jobs']);
+
+    const fetchText = async (url, options = {}) => {
+      throwIfNetworkWorkDisallowed(sourceSignal, sourceDeadline);
+      const response = await requestWithDeadline(transport, url, options, { signal: sourceSignal, deadline: sourceDeadline });
+      const status = Number(response.status ?? 200);
+      if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+      return response.body;
+    };
+
+    let browser = null;
+    const providerFetchers = {};
+    const laneInputs = {};
+    for (const lane of PORTAL_SOURCE_LANES) {
+      const provider = lane.provider;
+      const queries = portalConfig[provider === 'linkedin-jobs' ? 'linkedin' : provider]?.queries;
+      if (!queries?.length) continue;
+      if (httpProviders.has(provider)) {
+        providerFetchers[provider] = { fetchText };
+        laneInputs[provider] = {
+          queries,
+          timeWindow: portalConfig.linkedin?.timeWindow ?? 'day',
+          maxPagesPerQuery: portalConfig.linkedin?.maxPagesPerQuery ?? 2,
+          pageSize: portalConfig.linkedin?.pageSize ?? 25,
+        };
+      } else if (browserProviders.has(provider)) {
+        browser ??= createRenderedFetcher({
+          maxPages: portalConfig.browser?.maxPagesPerRun ?? 24,
+          timeoutMs: portalConfig.browser?.timeoutMs ?? 45_000,
+          defaultWaitMs: portalConfig.browser?.waitMs ?? 6_000,
+        });
+        providerFetchers[provider] = { fetchRendered: browser.fetchRendered };
+        laneInputs[provider] = { queries };
+      }
+    }
+
+    let outputs;
+    try {
+      outputs = await runPortalSourcePlan({
+        providerFetchers,
+        laneInputs,
+        runAt,
+        runId: profile?.mode || 'normal',
+        signal: sourceSignal,
+        maxRecordsPerProvider: portalConfig.maxRecordsPerProvider ?? null,
+      });
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
+
+    const retained = new Map((cursor?.completedDetails || []).map((candidate) => [linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl), candidate]).filter(([id]) => id));
+    const candidates = outputs.flatMap((item) => item.candidates || []).map(withPortalIdentity)
+      .map((candidate) => retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl)) ?? candidate);
+    const completedDetails = new Map(retained);
+    const resolutionCursor = (nextIndex) => ({ phase: 'portal-resolution', nextIndex, maxCandidates: portalLimits.maxCandidates,
+      completedDetails: [...completedDetails.values()].slice(0, portalLimits.maxCandidates) });
+    const screened = candidates.map((candidate) => {
+      let result = { eligible: true };
+      if (typeof portalCandidateScreen === 'function') {
+        try { result = portalCandidateScreen(candidate) ?? { eligible: false }; }
+        catch { result = { eligible: false }; }
+      }
+      return { candidate, eligible: result === true || result?.eligible === true };
+    });
+    const isAlreadyResolved = (candidate) => ['Direct ATS', 'Resolved Original'].includes(candidate.applicationResolution?.status)
+      && candidate.originalApplicationUrl;
+    const targetCandidates = screened.filter((item) => item.eligible);
+    const unresolvedTargetCandidates = targetCandidates.filter(({ candidate }) => !isAlreadyResolved(candidate));
+    const resolutionCandidates = fairPortalResolutionCandidates(unresolvedTargetCandidates, portalLimits.maxCandidates);
+    const sharedRequestBudget = createSharedRequestBudget(portalLimits.maxRequests);
+    const hostLimiter = createHostSerializedRunner();
+    const resolverDeadline = resolverPhaseDeadline({
+      clock, sourceDeadline, maxDurationMs: portalLimits.maxDurationMs, handoffReserveMs: portalLimits.handoffReserveMs,
+    });
+    const initialTelemetry = {
+      candidatesFetched: candidates.length,
+      targetScreened: targetCandidates.length,
+      resolutionCandidates: resolutionCandidates.length,
+      resolutionAllocation: Object.fromEntries([...new Set(resolutionCandidates.map(({ candidate }) => candidate.provider))]
+        .map((provider) => [provider, resolutionCandidates.filter(({ candidate }) => candidate.provider === provider).length])),
+      resolutionRequests: 0,
+      detailErrors: [],
+      resolved: targetCandidates.filter(({ candidate }) => isAlreadyResolved(candidate)).length,
+      unresolved: candidates.length,
+      skippedByTargetScreen: candidates.length - targetCandidates.length,
+      skippedByCandidateCap: Math.max(0, unresolvedTargetCandidates.length - portalLimits.maxCandidates),
+      requestBudgetExhausted: false,
+      deadlineExhausted: false,
+      concurrency: portalLimits.concurrency,
+      perHostConcurrency: portalLimits.perHostConcurrency,
+      maxCandidates: portalLimits.maxCandidates,
+      maxRequests: portalLimits.maxRequests,
+      maxDurationMs: portalLimits.maxDurationMs,
+      handoffReserveMs: portalLimits.handoffReserveMs,
+      checkpointed: false,
+    };
+    if (typeof checkpoint === 'function') {
+      await checkpoint({
+        observations: candidates,
+        cursor: resolutionCursor(0),
+        manifestDelta: { fetched: candidates.length, changed: candidates.length, telemetry: initialTelemetry },
+      });
+      initialTelemetry.checkpointed = true;
+    }
+
+    const verificationQueue = [];
+    let checkpointCursor = 0;
+    const completedIndexes = new Set();
+    const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true } = {}) => {
+      const id = linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl);
+      if (id && resolved.evidence?.portalDetail?.status === 'extracted') completedDetails.set(id, resolved);
+      if (typeof checkpoint !== 'function') return;
+      if (advance) {
+        completedIndexes.add(candidateIndex);
+        while (completedIndexes.has(checkpointCursor)) checkpointCursor += 1;
+      }
+      await checkpoint({
+        observations: [checkpointResolutionObservation(candidate, resolved)],
+        cursor: resolutionCursor(checkpointCursor),
+        replaceObservations: true,
+        manifestDelta: { telemetry: { ...initialTelemetry, checkpointed: true } },
+      });
+    };
+    const resolutionResults = await mapProviderSafe(resolutionCandidates, {
+      concurrency: portalLimits.concurrency,
+      providerKey: ({ candidate }) => hostOfUrl(candidate.discoveryUrl ?? candidate.canonicalUrl),
+    }, async ({ candidate }, candidateIndex) => {
+      const unresolved = (reason) => applyOriginalListingResolution(candidate, verificationResolution(candidate, null, reason));
+      let resolution;
+      if (isAlreadyResolved(candidate)) return candidate;
+      if (retained.has(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl))
+        && !['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'transport-error'].includes(candidate.evidence?.resolution?.reason)) return candidate;
+      if (sourceSignal?.aborted) {
+        resolution = verificationResolution(candidate, null, 'aborted');
+      } else if (resolverDeadline.remainingMs() <= 0) {
+        initialTelemetry.deadlineExhausted = true;
+        resolution = verificationResolution(candidate, null, 'deadline-exceeded');
+      } else if (sharedRequestBudget.used >= portalLimits.maxRequests) {
+        initialTelemetry.requestBudgetExhausted = true;
+        resolution = verificationResolution(candidate, null, 'request-budget-exhausted');
+      } else {
+        try {
+          throwIfNetworkWorkDisallowed(sourceSignal, resolverDeadline);
+          resolution = typeof resolver === 'function'
+            ? await resolver(candidate, { signal: sourceSignal, deadline: resolverDeadline, requestBudget: sharedRequestBudget, hostLimiter })
+            : verificationResolution(candidate, null, 'resolver-unavailable');
+        } catch (error) {
+          resolution = verificationResolution(candidate, error, sourceSignal?.aborted
+            ? 'aborted'
+            : resolverDeadline.remainingMs() <= 0 ? 'deadline-exceeded' : 'resolver-error');
+        }
+      }
+      const resolved = applyOriginalListingResolution(candidate, resolution);
+      const eligibility = classifyCandidate(resolved, loadJobPullPolicy());
+      resolved.eligibility = eligibility;
+      if (!eligibility.eligible) resolved.shortlistEligible = false;
+      if (resolved.evidence?.resolution?.reason === 'deadline-exceeded') initialTelemetry.deadlineExhausted = true;
+      if (resolved.evidence?.resolution?.reason === 'request-budget-exhausted') initialTelemetry.requestBudgetExhausted = true;
+      initialTelemetry.resolutionRequests = sharedRequestBudget.used;
+      if (resolved.classification === 'direct' && resolved.originalApplicationUrl) initialTelemetry.resolved += 1;
+      const reason = resolved.evidence?.resolution?.reason;
+      if (reason && !['destination-intermediary', 'original-listing-not-found'].includes(reason)) {
+        initialTelemetry.detailErrors.push({ jobId: candidate.jobId ?? null, url: candidate.discoveryUrl ?? candidate.canonicalUrl, reason, error: resolved.evidence?.error ?? null });
+      }
+      await checkpointResolution(candidate, resolved, candidateIndex, {
+        advance: !['aborted', 'deadline-exceeded', 'request-budget-exhausted'].includes(reason),
+      });
+      return resolved;
+    });
+    const resultsByCandidate = new Map(resolutionCandidates.map(({ candidate }, index) => [candidate, resolutionResults[index]]));
+    const observations = screened.map(({ candidate, eligible }) => {
+      if (resultsByCandidate.has(candidate)) return resultsByCandidate.get(candidate);
+      if (isAlreadyResolved(candidate)) return candidate;
+      const result = eligible ? verificationResolution(candidate, null, 'candidate-cap-exceeded') : verificationResolution(candidate, null, 'target-screen-rejected');
+      return { ...applyOriginalListingResolution(candidate, result), shortlistEligible: false };
+    });
+    initialTelemetry.unresolved = observations.filter((candidate) => candidate.classification !== 'direct' || !candidate.originalApplicationUrl).length;
+    initialTelemetry.resolutionRequests = sharedRequestBudget.used;
+    if (sharedRequestBudget.exhausted) initialTelemetry.requestBudgetExhausted = true;
+    for (const [index, { candidate }] of screened.entries()) {
+      if (resultsByCandidate.has(candidate) || isAlreadyResolved(candidate)) continue;
+      await checkpointResolution(candidate, observations[index], resolutionCandidates.length, { advance: false });
+    }
+    for (const candidate of observations) {
+      if (candidate.eligibility?.eligible === false) continue;
+      if (candidate.classification === 'direct' && candidate.originalApplicationUrl) continue;
+      verificationQueue.push({ url: candidate.discoveryUrl || candidate.canonicalUrl, company: candidate.company, reason: 'original-listing', evidence: candidate.evidence });
+    }
+    const constrained = Boolean(initialTelemetry.unresolved > 0 && (
+      initialTelemetry.skippedByCandidateCap > 0
+      || initialTelemetry.requestBudgetExhausted
+      || initialTelemetry.deadlineExhausted
+      || sourceSignal?.aborted
+    ));
+    initialTelemetry.truncated = constrained;
+    initialTelemetry.naturalTerminal = !constrained;
+    const laneErrors = [...outputs.flatMap((item) => item.manifest.errors || []),
+      ...initialTelemetry.detailErrors.map((item) => `${item.url}: ${item.reason}${item.error ? `: ${item.error}` : ''}`)];
+    if (typeof checkpoint === 'function') {
+      await checkpoint({
+        observations: [],
+        cursor: resolutionCursor(checkpointCursor),
+        manifestDelta: { telemetry: { ...initialTelemetry, checkpointed: true } },
+      });
+    }
+    return {
+      observations,
+      verificationQueue,
+      manifest: {
+        status: laneErrors.length ? (observations.length ? 'degraded' : 'failed') : observations.length ? 'ok' : 'empty',
+        failed: laneErrors.length,
+        errors: laneErrors,
+        fetched: observations.length,
+        changed: observations.length,
+        noAutoApply: true,
+        writesPlanned: false,
+        truncated: constrained,
+        naturalTerminal: !constrained,
+        telemetry: {
+          mode: 'portals',
+          browserEnabled,
+          providers: Object.keys(providerFetchers),
+          lanes: outputs.map((item) => item.manifest),
+          ...initialTelemetry,
+        },
+      },
+    };
+  }));
+  if (schedule !== 'midday' && sources.indiaStartup?.enabled) plans.push(sourcePlan('india-startup', 'brave-startup', 'india-startup', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
     // discoverIndiaStartupLanes calls transport(request, meta) with a {source, kind, query, url}
     // object, not transport(url, options) like every other lane — every configured request here
     // is kind:'search' (see INDIA_STARTUP_LANES), so route it through the same SearXNG query
@@ -522,11 +979,13 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     return discoverIndiaStartupLanes({
       ...sources.indiaStartup,
       requests,
-      transport: async (request) => searxTransport(request.query),
+      transport: async (request, options = {}) => searxTransport(request.query, { ...options, signal: sourceSignal, deadline: sourceDeadline }),
       runAt,
+      signal: sourceSignal,
+      deadline: sourceDeadline,
     });
   }));
-  if (schedule !== 'midday' && sources.searxng?.enabled) plans.push(sourcePlan('searxng-search', 'web-discovery', 'searxng', async () => {
+  if (schedule !== 'midday' && sources.searxng?.enabled) plans.push(sourcePlan('searxng-search', 'web-discovery', 'searxng', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
     if (!sources.searxng.endpoint) throw new Error('SearXNG is enabled but endpoint is unavailable');
     return discoverBraveSearch({
       ...sources.searxng,
@@ -535,6 +994,8 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       resolveOriginalListing: resolver,
       runAt,
       country: sources.searxng.country ?? 'IN',
+      signal: sourceSignal,
+      deadline: sourceDeadline,
     });
   }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   return plans;
@@ -576,7 +1037,7 @@ function braveTransportFor(config, transport) {
     url.searchParams.set('country', meta.country ?? country);
     url.searchParams.set('search_lang', searchLang);
     if (meta.offset != null) url.searchParams.set('offset', String(meta.offset));
-    return transport(url.toString(), { headers: { Accept: 'application/json', 'X-Subscription-Token': key } });
+    return requestWithDeadline(transport, url.toString(), { headers: { Accept: 'application/json', 'X-Subscription-Token': key }, signal: meta.signal, deadline: meta.deadline }, { signal: meta.signal ?? null, deadline: meta.deadline ?? null });
   };
 }
 
@@ -630,16 +1091,38 @@ export async function runCrawlerOperator({
         freshness,
       };
     };
+    let durablePlannerState = null;
+    if (config.sourcePlanner?.enabled === true) {
+      const rawPlannerState = store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get('ats-warm')?.cursor_json;
+      try { durablePlannerState = rawPlannerState ? JSON.parse(rawPlannerState).sourcePlanState ?? null : null; } catch { durablePlannerState = null; }
+    }
+  const plannerConfig = config.sourcePlanner?.enabled === true && durablePlannerState
+      ? { ...config.sourcePlanner, state: durablePlannerState }
+      : config.sourcePlanner;
+    const effectiveCrawlerConfig = plannerConfig ? { ...config, sourcePlanner: plannerConfig } : config;
+    let pendingPlannerState = null;
     let result = await crawlWorkflow({
       store,
-      runId: runId ?? `${schedule}-${runAt.replace(/[:.]/g, '-')}`,
+      runId: runId ?? dailyRunIdentity({ schedule, mode, locationPreset, at: runAt }),
       schedule,
-      config: { ...config, discoveryProfile: profile },
+      config: { ...effectiveCrawlerConfig, discoveryProfile: profile },
       clock,
       priorLifecycleRows: lifecycleRows,
       historicalRows,
       v4Snapshot,
-      sourcePlans: buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal, deadline }),
+      sourcePlans: buildSourcePlans({
+        config: effectiveCrawlerConfig,
+        transport,
+        runAt,
+        clock,
+        schedule,
+        resolver,
+        profile,
+        signal,
+        deadline,
+        onSourcePlanState: (state) => { pendingPlannerState = state; },
+        portalCandidateScreen: (candidate) => screenPortalCandidate(candidate, policy),
+      }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},
       careerTransport: (config.sources.careerSites ?? []).length
@@ -658,6 +1141,20 @@ export async function runCrawlerOperator({
       signal,
       deadline,
     });
+    const completedCrawlerRun = ['completed', 'completed_with_failures'].includes(result.run?.status);
+    if (pendingPlannerState && completedCrawlerRun && config.sourcePlanner?.enabled === true) {
+      persistSourcePlanState(store, 'ats-warm', pendingPlannerState, runAt);
+      result = {
+        ...result,
+        sourceTelemetry: {
+          ...result.sourceTelemetry,
+          'ats-warm': {
+            ...(result.sourceTelemetry?.['ats-warm'] ?? {}),
+            sourcePlanState: pendingPlannerState,
+          },
+        },
+      };
+    }
     const commercialConfig = config.sources.commercialRescue ?? {};
     if (commercialConfig.enabled) {
       if (!commercialConfig.recordsFile) throw new Error('commercial rescue is enabled but recordsFile is not configured');

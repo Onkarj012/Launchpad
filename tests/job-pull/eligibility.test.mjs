@@ -85,6 +85,16 @@ test('expanded target titles pass as strict roles', () => {
   }
 });
 
+test('Back End Developer is a strict backend role, while unrelated titles stay off target', () => {
+  const backend = classifyCandidate(candidate({ title: 'Back End Developer' }), config);
+  assert.equal(backend.title.family, 'backend-python');
+  assert.equal(backend.tier, 'strict');
+  for (const title of ['Back End Recruiter', 'Back End Sales Manager']) {
+    const result = classifyCandidate(candidate({ title }), config);
+    assert.equal(result.title.pass, false, title);
+  }
+});
+
 test('country-only India location is strict remote while US-only remains rejected', () => {
   assert.equal(classifyCandidate(candidate({ location: 'India' }), config).geo.mode, 'remote');
   assert.equal(classifyCandidate(candidate({ location: 'India' }), config).tier, 'strict');
@@ -297,4 +307,12 @@ test('seniority still rejects contextual new title families', () => {
     assert.equal(result.eligible, false, title);
     assert.equal(result.title.code, 'TITLE_SENIORITY_REJECT', title);
   }
+});
+
+test('role-specific senior requirements reject generic titles without rejecting employer boilerplate', () => {
+  const senior = candidate({ title: 'Java Developer', experience: { minYears: null, maxYears: null }, description: 'We are seeking a highly skilled Senior Java Developer to join our team.' });
+  assert.equal(classifyCandidate(senior, config).eligible, false);
+  assert.equal(classifyCandidate(senior, config).experience.code, 'EXPERIENCE_SENIOR_ROLE_REQUIREMENT');
+  const boilerplate = candidate({ title: 'Java Developer', experience: { minYears: null, maxYears: null }, description: 'Our senior leaders support every developer. Build Java applications.' });
+  assert.equal(classifyCandidate(boilerplate, config).experience.manualReview, true);
 });

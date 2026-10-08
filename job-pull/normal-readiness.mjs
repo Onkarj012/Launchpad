@@ -1,4 +1,4 @@
-import { canonicalizeUrl, candidateDedupKey } from './candidate.mjs';
+import { canonicalizeUrl, candidateDedupKey, hiringEmployerConflict } from './candidate.mjs';
 
 function text(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -33,12 +33,14 @@ export function resolveOriginalEmployer(candidate) {
   const url = canonicalizeUrl(candidate?.originalApplicationUrl);
   const status = text(candidate?.applicationResolution?.status) || (url ? 'Resolved Original' : 'Unresolved');
   const evidence = originalEvidence(candidate);
+  const employerConflict = hiringEmployerConflict(candidate?.description);
   const direct = candidate?.sourceKind === 'ats-direct' && status === 'Direct ATS';
-  const resolved = ['Direct ATS', 'Resolved Original'].includes(status) && Boolean(url) && (direct || Boolean(evidence));
+  const resolved = !employerConflict && ['Direct ATS', 'Resolved Original'].includes(status) && Boolean(url) && (direct || Boolean(evidence));
   const provenance = direct
     ? `direct-ats:${candidate.provider || candidate.source || 'unknown'}`
     : evidenceText(candidate?.evidence?.originalApplicationProvider) || null;
   const reasons = [];
+  if (employerConflict) reasons.push('HIRING_EMPLOYER_NOT_VERIFIED');
   if (!url) reasons.push('ORIGINAL_APPLICATION_URL_MISSING');
   if (!['Direct ATS', 'Resolved Original'].includes(status)) reasons.push('ORIGINAL_APPLICATION_NOT_RESOLVED');
   if (!direct && !evidence) reasons.push('ORIGINAL_APPLICATION_EVIDENCE_MISSING');
@@ -48,6 +50,7 @@ export function resolveOriginalEmployer(candidate) {
     url,
     evidence: evidenceText(evidence),
     provenance,
+    ...(employerConflict ? { employerIdentity: { status: 'Not Verified', ...employerConflict } } : {}),
     reasons,
   };
 }
@@ -69,11 +72,15 @@ export function classifyCandidateEvidence(candidate, eligibility = null) {
   const citizenship = candidate?.remoteEligibility || candidate?.citizenship || { status: 'Not Verified', evidence: null };
   const employment = candidate?.employment || { type: null, paid: null, evidence: null };
   const hardFailures = [];
+  if (!text(candidate?.description)) hardFailures.push('JD_MISSING');
+  const employmentVerified = candidate?.employment?.type === 'full-time'
+    || (candidate?.employment?.type === 'internship' && candidate?.employment?.paid === true)
+    || ['EMPLOYMENT_FULL_TIME', 'EMPLOYMENT_PAID_INTERNSHIP'].includes(eligibility?.employment?.code);
+  if (!employmentVerified) hardFailures.push('EMPLOYMENT_NOT_VERIFIED');
   if (!resolution.ready) hardFailures.push(...resolution.reasons);
   if (livenessStatus !== 'Active') hardFailures.push(livenessStatus === 'Expired' ? 'LIVENESS_EXPIRED' : 'LIVENESS_NOT_VERIFIED');
   if (feesOrBonds) hardFailures.push('FEES_OR_BOND_CONCERN');
   if (eligibility?.reasons?.length) hardFailures.push(...eligibility.reasons);
-  if (eligibility?.experience?.manualReview === true) hardFailures.push('EXPERIENCE_NOT_VERIFIED');
   return {
     resolution,
     liveness,
@@ -88,8 +95,8 @@ export function classifyCandidateEvidence(candidate, eligibility = null) {
 
 export function applicationReadiness(candidate, eligibility = null) {
   const evidence = classifyCandidateEvidence(candidate, eligibility);
-  const policyPass = eligibility ? eligibility.eligible === true && eligibility.experience?.manualReview !== true : true;
-  const finalReady = Boolean(evidence.resolution.ready && evidence.liveness.pass && !evidence.feesOrBonds.evidence && policyPass);
+  const policyPass = eligibility?.eligible === true;
+  const finalReady = Boolean(evidence.resolution.ready && evidence.liveness.pass && !evidence.feesOrBonds.evidence && !evidence.hardFailures.length && policyPass);
   return {
     ready: finalReady,
     status: finalReady ? 'Ready' : 'Needs Verification',

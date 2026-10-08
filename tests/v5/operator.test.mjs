@@ -37,6 +37,11 @@ test('full deterministic rehearsal plans all v5 paths with zero external side ef
   assert.equal(result.modes.normal.status, 'ok');
   assert.equal(result.modes.startup.status, 'ok');
   assert.equal(result.modes.remote.status, 'ok');
+  for (const mode of Object.values(result.modes)) {
+    assert.ok(mode.selected > 0);
+    assert.equal(mode.planned, mode.selected);
+    assert.deepEqual(mode.scoreOrigins, ['explicit-scored-input']);
+  }
   assert.equal(result.internship.schemaIntegrationRequired, false);
   assert.equal(result.linkedin.sideEffects.notionMutation, false);
   assert.equal(result.apify.externalCalls, 0);
@@ -44,4 +49,17 @@ test('full deterministic rehearsal plans all v5 paths with zero external side ef
   assert.equal(result.resume.sync, 'synced');
   assert.equal(result.outreach.stored, 'stored');
   assert.equal(result.outreach.sends, 0);
+});
+
+test('rehearsal fails closed when explicit fixture scores are withheld', async () => {
+  const result = await runNoWriteRehearsal({ includeExplicitScores: false });
+  assert.equal(result.status, 'failed');
+  for (const mode of Object.values(result.modes)) {
+    assert.equal(mode.status, 'fatal');
+    assert.equal(mode.selected, 0);
+    assert.equal(mode.planned, 0);
+    assert.deepEqual(mode.scoreOrigins, []);
+  }
+  assert.equal(result.externalWrites, 0);
+  assert.equal(result.externalNetwork, false);
 });

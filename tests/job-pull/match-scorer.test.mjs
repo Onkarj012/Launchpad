@@ -20,16 +20,23 @@ function candidate(index, overrides = {}) {
 }
 
 function scoreRow(row, overrides = {}) {
-  return {
-    canonicalUrl: row.canonicalUrl,
-    matchScore: 72,
+  const result = {
+    canonicalUrl: row.canonicalUrl, matchScore: 72,
     rationale: 'Python/FastAPI stack overlap; new-grad friendly.',
-    strongestHook: 'Shipped a RAG support bot used in production.',
-    responseLikelihood: 12,
-    autoSuggest: false,
-    descriptionAvailable: true,
+    strongestHook: 'Approved FastAPI and RAG experience matches the service requirements.',
+    responseLikelihood: 12, autoSuggest: false,
+    descriptionAvailable: row.descriptionAvailable ?? true,
     ...overrides,
   };
+  let remaining = Number(result.matchScore) - Number(result.responseLikelihood);
+  result.componentScores = Object.fromEntries(Object.entries({ skillMatch: 35, domainRelevance: 20, seniorityFit: 15, locationFit: 10 }).map(([key, max]) => {
+    const value = Math.min(max, Math.max(0, remaining));
+    remaining -= value;
+    return [key, value];
+  }));
+  result.componentScores.responseLikelihood = Number(result.responseLikelihood);
+  if (overrides.componentScores) result.componentScores = overrides.componentScores;
+  return result;
 }
 
 function fakeScoreChunk(handler) {
@@ -76,7 +83,7 @@ test('a merged candidate carries matchScore, rationale, hook, strongestHook and 
 
 test('a candidate without a description is flagged descriptionAvailable: false and capped at the honest partial score', async () => {
   const scoreChunk = fakeScoreChunk((rows) => rows.map((row) => scoreRow(row, {
-    matchScore: 90,
+    matchScore: 45, responseLikelihood: 20, componentScores: { skillMatch: 0, domainRelevance: 0, seniorityFit: 15, locationFit: 10, responseLikelihood: 20 },
     descriptionAvailable: row.descriptionAvailable,
   })));
   const result = await scoreCandidates([candidate(1, { description: undefined })], { scoreChunk });
@@ -103,7 +110,7 @@ test('a missing codex binary degrades with an explicit reason code instead of th
   assert.equal(result.degraded, true);
   assert.equal(result.reasonCode, 'SCORER_BINARY_MISSING');
   assert.deepEqual(result.failures, [{ canonicalUrl: 'https://jobs.example.test/roles/1', reason: 'SCORER_BINARY_MISSING' }]);
-  assert.equal(result.scored[0].matchScore, undefined);
+  assert.equal(result.scored[0].matchScore, null);
 });
 
 test('one failing chunk records its rows and does not abort the remaining chunks', async () => {
@@ -303,6 +310,11 @@ test('scoring prompt constrains codex to the chunk file only', async () => {
   await scorer([candidate(1)]);
   const prompt = calls[0].args[calls[0].args.length - 1];
   assert.ok(prompt.includes('Do not open, search, or explore any other file in the repository'));
+  assert.ok(prompt.includes('A4 Analyst'));
+  assert.ok(prompt.includes('No client, project, or production delivery work has been assigned'));
+  assert.ok(prompt.includes('componentScores'));
+  assert.ok(prompt.includes('Preserve qualifiers'));
+  assert.equal(prompt.includes('graduating Jun 2026'), false);
 });
 
 test('parent abort signal stops scoring before later chunks run', async () => {

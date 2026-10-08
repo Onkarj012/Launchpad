@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recovery Manifest — Launchpad Daily Discovery</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#e9e7dd;
+  --paper-2:#f4f2e9;
+  --paper-3:#ddd9c9;
+  --ink:#1e2a32;
+  --ink-soft:#3f4d55;
+  --rule:#b9b6a3;
+  --rule-2:#c9c6b4;
+  --red:#a23b2e;
+  --green:#3e6e52;
+  --amber:#a97a24;
+  --grey:#7c7a6c;
+  --blue:#2f5570;
+  --display:"Zilla Slab",Georgia,serif;
+  --body:"IBM Plex Sans",-apple-system,Segoe UI,sans-serif;
+  --mono:"IBM Plex Mono",SFMono-Regular,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;overflow-x:hidden}
+body{overflow-x:hidden}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--body);
+  font-size:16px;
+  line-height:1.55;
+  background-image:
+    linear-gradient(var(--paper) 0%, var(--paper) 100%),
+    repeating-linear-gradient(180deg, rgba(30,42,50,0.025) 0px, rgba(30,42,50,0.025) 1px, transparent 1px, transparent 34px);
+}
+@media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} *{animation:none!important;transition:none!important} }
+a{color:var(--blue)}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;margin:0;color:var(--ink)}
+p{margin:0 0 .8em}
+table{border-collapse:collapse;width:100%}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+.mono{font-family:var(--mono)}
+
+/* ---- top manifest strip ---- */
+.masthead{
+  background:var(--ink);
+  color:var(--paper-2);
+  padding:14px 0;
+  border-bottom:4px double var(--rule);
+}
+.masthead .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.masthead .id{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:#c9d3d6}
+.masthead .id b{color:#fff}
+.masthead .plate{font-family:var(--display);font-weight:700;font-size:15px;letter-spacing:.08em;text-transform:uppercase}
+
+/* ---- folder-tab nav ---- */
+.tabnav{
+  position:sticky;top:0;z-index:40;
+  background:var(--paper-3);
+  border-bottom:2px solid var(--ink);
+  overflow-x:auto;
+  scrollbar-width:thin;
+}
+.tabnav .wrap{display:flex;padding:0 20px;gap:2px}
+.tabnav a{
+  font-family:var(--mono);
+  font-size:11.5px;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+  text-decoration:none;
+  color:var(--ink-soft);
+  white-space:nowrap;
+  padding:10px 14px 8px;
+  border:1px solid var(--rule);
+  border-bottom:none;
+  border-radius:6px 6px 0 0;
+  background:var(--paper-2);
+  margin-top:6px;
+  transition:background .15s,color .15s;
+}
+.tabnav a:hover{background:#fff;color:var(--ink)}
+.tabnav a b{color:var(--red);font-weight:600;margin-right:5px}
+
+/* ---- hero ---- */
+.hero{position:relative;padding:56px 0 40px;border-bottom:1px solid var(--rule)}
+.hero .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--grey);margin-bottom:14px}
+.hero h1{font-size:clamp(30px,4.6vw,50px);line-height:1.08;max-width:19ch}
+.hero h1 em{font-style:normal;color:var(--red)}
+.hero .dek{font-size:17px;color:var(--ink-soft);max-width:62ch;margin-top:16px}
+
+.stamp{
+  position:absolute;
+  top:38px;right:28px;
+  width:186px;height:186px;
+  border:3px solid var(--red);
+  border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  transform:rotate(-14deg);
+  color:var(--red);
+  font-family:var(--mono);
+  text-align:center;
+  opacity:.86;
+  pointer-events:none;
+}
+.stamp::before{
+  content:"";position:absolute;inset:8px;border:1px solid var(--red);border-radius:50%;
+}
+.stamp .t{font-size:13px;font-weight:600;letter-spacing:.1em;line-height:1.5}
+.stamp .t small{display:block;font-size:9.5px;letter-spacing:.14em;margin-top:2px}
+
+/* ---- tally board ---- */
+.tally{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--ink);border:1px solid var(--ink);margin-top:32px}
+.tally div{background:var(--paper-2);padding:18px 20px}
+.tally .n{font-family:var(--display);font-weight:700;font-size:36px;line-height:1}
+.tally .l{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--grey);margin-top:6px}
+.tally .found .n{color:var(--ink)}
+.tally .fresh .n{color:var(--blue)}
+.tally .delivered .n{color:var(--red)}
+
+/* ---- inspection line ---- */
+.checkline{margin-top:28px;display:flex;gap:0;overflow-x:auto;padding-bottom:6px}
+.checkpoint{
+  flex:0 0 auto;min-width:132px;
+  border:1px solid var(--rule);
+  border-left:none;
+  background:var(--paper-2);
+  padding:12px 14px 14px;
+  position:relative;
+}
+.checkpoint:first-child{border-left:1px solid var(--rule)}
+.checkpoint .name{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.03em}
+.checkpoint .badge{
+  display:inline-block;margin-top:10px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  padding:3px 7px;border:1.5px solid currentColor;border-radius:3px;transform:rotate(-3deg);
+}
+.checkpoint.cleared .badge{color:var(--green)}
+.checkpoint.held .badge{color:var(--amber)}
+.checkpoint.stopped{background:#f6e9e6}
+.checkpoint.stopped .badge{color:var(--red)}
+.checkpoint.uninspected .badge{color:var(--grey);border-style:dashed}
+.thesis-line{margin-top:22px;font-family:var(--display);font-size:19px;font-weight:500;color:var(--ink);border-left:3px solid var(--red);padding-left:14px}
+
+/* ---- page section shell ---- */
+.page{padding:52px 0;border-bottom:1px solid var(--rule)}
+.page:nth-of-type(odd){background:var(--paper-2)}
+.page-head{display:flex;align-items:baseline;gap:14px;margin-bottom:26px;flex-wrap:wrap}
+.page-num{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.08em}
+.page-head h2{font-size:clamp(22px,3vw,30px)}
+.page-lede{color:var(--ink-soft);max-width:70ch;margin-bottom:8px}
+
+/* ---- ledger table ---- */
+.ledger{border:1px solid var(--ink);font-size:14.5px}
+.ledger th,.ledger td{padding:9px 12px;border-bottom:1px solid var(--rule-2);text-align:left;vertical-align:top}
+.ledger thead th{background:var(--ink);color:var(--paper-2);font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;font-weight:500}
+.ledger tbody tr:nth-child(even){background:rgba(30,42,50,0.035)}
+.ledger td.num,.ledger th.num{font-family:var(--mono);text-align:right}
+.ledger tbody tr:last-child td{border-bottom:none}
+
+/* ---- outcome certificates ---- */
+.certs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:20px 0}
+.cert{border:2px solid var(--ink);background:var(--paper-2);padding:16px 16px 18px;position:relative}
+.cert .status{font-family:var(--mono);font-weight:600;font-size:13px;letter-spacing:.06em;text-transform:uppercase;display:inline-block;padding:2px 8px;border:1.5px solid currentColor}
+.cert.completed .status{color:var(--green)}
+.cert.partial .status{color:var(--amber)}
+.cert.failed .status{color:var(--red)}
+.cert p{font-size:13.5px;margin-top:10px;color:var(--ink-soft)}
+
+/* ---- field notes ---- */
+.note{
+  border:1px solid var(--rule);
+  border-left:3px dashed var(--ink-soft);
+  background:var(--paper-2);
+  padding:14px 16px;margin:16px 0;font-size:14px;
+}
+.note .who{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--grey);margin-bottom:6px}
+
+/* ---- inspection log (numbered) ---- */
+.inspect-log{list-style:none;margin:18px 0;padding:0;border-left:2px solid var(--rule)}
+.inspect-log li{position:relative;padding:6px 0 6px 22px;font-size:14.5px}
+.inspect-log li::before{
+  content:counter(li,decimal-leading-zero);counter-increment:li;
+  position:absolute;left:-2px;top:6px;transform:translateX(-50%);
+  background:var(--paper);color:var(--ink-soft);font-family:var(--mono);font-size:10.5px;padding:0 4px;
+}
+.inspect-log{counter-reset:li}
+.inspect-log code{background:var(--paper-3);padding:1px 5px;border-radius:3px;font-size:12.5px}
+
+/* ---- work-order tickets ---- */
+.orders{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:22px 0}
+.order{
+  background:var(--paper-2);border:1px solid var(--ink);position:relative;padding:16px 18px 18px;
+}
+.order::after{
+  content:"";position:absolute;left:0;right:0;bottom:-1px;height:0;
+  border-bottom:2px dashed var(--paper);
+}
+.order .tag{font-family:var(--mono);font-size:11px;color:var(--red);letter-spacing:.06em}
+.order h4{font-size:16px;margin:6px 0 8px}
+.order ul{margin:0;padding-left:18px;font-size:13.5px;color:var(--ink-soft)}
+.order li{margin:4px 0}
+
+/* ---- tier chips ---- */
+.tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:18px 0}
+.tier{border:1px solid var(--rule);background:var(--paper-2);padding:12px 14px}
+.tier .chip{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;padding:2px 8px;border-radius:10px;color:#fff;display:inline-block}
+.tier[data-t="0"] .chip{background:var(--green)}
+.tier[data-t="1"] .chip{background:var(--blue)}
+.tier[data-t="2"] .chip{background:var(--amber)}
+.tier[data-t="3"] .chip{background:var(--grey)}
+.tier p{font-size:13px;margin:8px 0 0;color:var(--ink-soft)}
+
+/* ---- checkpoint phases (larger) ---- */
+.phase-manifest{margin:22px 0}
+.phase-row{
+  display:grid;grid-template-columns:56px 1.4fr 1fr 1fr;gap:14px;
+  border:1px solid var(--rule-2);border-top:none;padding:14px 16px;align-items:start;background:var(--paper-2);
+}
+.phase-row:first-child{border-top:1px solid var(--rule-2)}
+.phase-row .pn{font-family:var(--display);font-weight:700;font-size:24px;color:var(--red)}
+.phase-row h4{font-size:15.5px;margin-bottom:4px}
+.phase-row .d{font-size:13px;color:var(--ink-soft)}
+.phase-row .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--grey);margin-bottom:3px}
+.phase-row .g{font-size:12.5px}
+@media (max-width:760px){.phase-row{grid-template-columns:1fr}.phase-row .pn{font-size:18px}}
+
+/* ---- zones / packing list ---- */
+.zone{margin:20px 0}
+.zone h4{font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--red);margin-bottom:8px}
+.zone .ledger td:first-child{font-family:var(--mono);font-size:12.5px}
+
+/* ---- acceptance checklist ---- */
+.checklist{list-style:none;margin:18px 0;padding:0;display:grid;gap:8px}
+.checklist li{
+  display:grid;grid-template-columns:22px 1fr 1fr;gap:12px;
+  border:1px solid var(--rule);background:var(--paper-2);padding:10px 12px;font-size:13.5px;align-items:start;
+}
+.checklist .box{width:16px;height:16px;border:2px solid var(--ink);margin-top:2px}
+.checklist .g{font-family:var(--mono);font-size:11px;color:var(--red)}
+@media (max-width:700px){.checklist li{grid-template-columns:22px 1fr}.checklist .g{grid-column:2}}
+
+/* ---- risk hazard cards ---- */
+.hazards{display:grid;gap:10px;margin:18px 0}
+.hazard{position:relative;border:1px solid var(--rule);background:var(--paper-2);padding:12px 14px 12px 16px;display:grid;grid-template-columns:1fr 1.6fr;gap:14px}
+.hazard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px}
+.hazard.high::before{background:var(--red)}
+.hazard.medium::before{background:var(--amber)}
+.hazard.low::before{background:var(--grey)}
+.hazard .sev{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+.hazard.high .sev{color:var(--red)}
+.hazard.medium .sev{color:var(--amber)}
+.hazard.low .sev{color:var(--grey)}
+.hazard .r{font-size:13.5px;font-weight:600;margin-top:3px}
+.hazard .c{font-size:13px;color:var(--ink-soft)}
+@media (max-width:700px){.hazard{grid-template-columns:1fr}}
+
+/* ---- margin questions ---- */
+.margins{margin:20px 0;display:grid;gap:14px}
+.margin-q{
+  font-family:var(--display);font-size:15px;color:var(--ink-soft);
+  border-bottom:1px dotted var(--rule-2);padding-bottom:12px;
+  transform:rotate(-.3deg);
+}
+.margin-q b{color:var(--ink);font-weight:600}
+.margin-q em{font-style:normal;font-family:var(--mono);font-size:12px;color:var(--blue);display:block;margin-top:4px}
+
+/* ---- approval / red-line ---- */
+.approval{position:relative;background:var(--ink);color:var(--paper-2);padding:40px 0 44px}
+.approval h2{color:#fff}
+.approval p{color:#c9d3d6;max-width:70ch}
+.approval .big-stamp{
+  border:4px double var(--red);color:var(--red);
+  display:inline-block;padding:14px 26px;margin-top:22px;
+  transform:rotate(-3deg);font-family:var(--mono);font-weight:600;letter-spacing:.1em;text-transform:uppercase;font-size:14px;
+}
+.redline{border:2px solid var(--red);background:rgba(162,59,46,.12);color:#f4d9d4;padding:14px 16px;margin:18px 0;font-size:14px}
+.scope2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}
+.scope2 > div{border:1px solid #3a4952;padding:14px 16px}
+.scope2 h5{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9fb0b8;margin:0 0 8px}
+.scope2 ul{margin:0;padding-left:18px;font-size:13px;color:#c9d3d6}
+@media (max-width:700px){.scope2{grid-template-columns:1fr}}
+
+footer{padding:24px 0 60px;font-family:var(--mono);font-size:11.5px;color:var(--grey)}
+
+@media print{
+  body{background:#fff;font-size:12px}
+  .tabnav,.masthead{position:static}
+  .page{break-inside:avoid;background:#fff}
+  .stamp{position:static;transform:none;margin-bottom:16px}
+  a{color:inherit;text-decoration:none}
+}
+</style>
+</head>
+<body>
+
+<div class="masthead">
+  <div class="wrap">
+    <span class="plate">Launchpad — Recovery Manifest</span>
+    <span class="id">Run identity <b>daily-morning-normal-india-2026-08-19</b> · status <b>DRAFT</b></span>
+  </div>
+</div>
+
+<nav class="tabnav" aria-label="Manifest pages">
+  <div class="wrap">
+    <a href="#read"><b>01</b>Read first</a>
+    <a href="#contract"><b>02</b>Run contract</a>
+    <a href="#diagnosis"><b>03</b>Diagnosis</a>
+    <a href="#design"><b>04</b>Repair design</a>
+    <a href="#sequence"><b>05</b>Sequence</a>
+    <a href="#changes"><b>06</b>Change map</a>
+    <a href="#proof"><b>07</b>Proof</a>
+    <a href="#safety"><b>08</b>Safety</a>
+    <a href="#questions"><b>09</b>Questions</a>
+    <a href="#approval"><b>10</b>Approval</a>
+  </div>
+</nav>
+
+<header class="hero" id="read">
+  <div class="wrap">
+    <div class="kicker">Incident log · 2026-08-19 · Normal / Morning / India</div>
+    <h1>1,045 roles were logged. <em>Zero were handed to the applicant.</em></h1>
+    <p class="dek">Two runs today reached the database and stopped there. This manifest traces every checkpoint the day's roles passed, where the line broke, and the six-part repair that gets a real answer — completed, partial, or failed — out the door within twenty minutes.</p>
+
+    <div class="stamp" aria-hidden="true"><div class="t">DRAFT<small>not cleared<br>for release</small></div></div>
+
+    <div class="tally">
+      <div class="found"><div class="n">1,045</div><div class="l">observations logged</div></div>
+      <div class="fresh"><div class="n">19</div><div class="l">dated within 24h</div></div>
+      <div class="delivered"><div class="n">0</div><div class="l">reached the shortlist</div></div>
+    </div>
+
+    <div class="checkline" role="img" aria-label="Seven checkpoints: warm ATS cleared, batch one held, batch two held, enterprise stopped, later sources never inspected, selection never inspected, CLI report never inspected">
+      <div class="checkpoint cleared"><div class="name">Warm ATS</div><div class="badge">cleared</div></div>
+      <div class="checkpoint held"><div class="name">Batch 1</div><div class="badge">truncated</div></div>
+      <div class="checkpoint held"><div class="name">Batch 2</div><div class="badge">truncated</div></div>
+      <div class="checkpoint stopped"><div class="name">Enterprise</div><div class="badge">stopped</div></div>
+      <div class="checkpoint uninspected"><div class="name">Later sources</div><div class="badge">not inspected</div></div>
+      <div class="checkpoint uninspected"><div class="name">Selection</div><div class="badge">not inspected</div></div>
+      <div class="checkpoint uninspected"><div class="name">CLI report</div><div class="badge">not inspected</div></div>
+    </div>
+    <p class="thesis-line">Market signal reached the database. The delivery path broke after persistence.</p>
+  </div>
+</header>
+
+<section class="page" id="contract">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 02</span><h2>Target run contract</h2></div>
+    <p class="page-lede">What every Normal morning run owes the applicant, and what each terminal status is allowed to say and do.</p>
+
+    <table class="ledger">
+      <thead><tr><th>Window</th><th>Owner</th><th>Required result</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">00–12 min</td><td>Source discovery</td><td>Fetch bounded selected sources; persist observations and source state continuously.</td></tr>
+        <tr><td class="mono">12–17 min</td><td>Normalize, verify, score</td><td>Reconstruct the funnel from durable observations; score inside remaining budget only.</td></tr>
+        <tr><td class="mono">17–20 min</td><td>Handoff and receipts</td><td>Emit one terminal envelope; persist telemetry, canary, notification evidence as status allows.</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:13px;color:var(--ink-soft);margin-top:10px">Unused source time may flow downstream. Reserved downstream time may not flow back into discovery.</p>
+
+    <div class="certs">
+      <div class="cert completed"><span class="status">Completed</span><p>All planned sources reached a terminal state and selection finished. Full shortlist, backfill, verification queue, complete coverage and rejection reasons.</p></div>
+      <div class="cert partial"><span class="status">Partial</span><p>Useful observations exist; coverage or scoring ended at budget. Labelled scored / score-pending / backfill / verification / omitted evidence. <code>writesPlanned: false</code> — no ledger, v5 plan, or success receipt.</p></div>
+      <div class="cert failed"><span class="status">Failed</span><p>Config, schema, policy, manifest, database, or safety invariant failed. Exact fatal reason and last durable source state. No side effects.</p></div>
+    </div>
+
+    <div class="note"><div class="who">Stable identity</div>
+      <span class="mono">daily-&lt;schedule&gt;-&lt;mode&gt;-&lt;location-preset&gt;-&lt;IST-date&gt;</span> → example <span class="mono">daily-morning-normal-india-2026-08-19</span>. A repeated call for the same profile and date resumes the same incomplete run. Explicit <code>--run-id</code> still allows controlled replay.</div>
+  </div>
+</section>
+
+<section class="page" id="diagnosis">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 03</span><h2>Diagnosis</h2></div>
+    <p class="page-lede">Two attempts today, both stuck at <span class="mono">running / fetch</span>. Verified evidence, then the eleven-step chain that produced it.</p>
+
+    <table class="ledger">
+      <thead><tr><th>Attempt (UTC)</th><th>State</th><th class="num">Observations</th><th class="num">Distinct jobs</th><th class="num">Dated &lt;24h</th><th>Telemetry reached</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">05:05</td><td>running / fetch</td><td class="num mono">1,045</td><td class="num mono">1,019</td><td class="num mono">19</td><td>warm, batch 1, batch 2</td></tr>
+        <tr><td class="mono">05:26</td><td>running / fetch</td><td class="num mono">1,045</td><td class="num mono">1,015</td><td class="num mono">19</td><td>warm, batch 1, batch 2</td></tr>
+      </tbody>
+    </table>
+
+    <p style="margin-top:16px;font-size:13.5px">Latest source yield: warm ATS 813 observations (<b>succeeded</b>) · batch 1 132 observations (<b>truncated</b>) · batch 2 100 observations (<b>truncated</b>) · enterprise, remote, startup, SearXNG — no telemetry row.</p>
+
+    <ol class="inspect-log">
+      <li>CLI defaults to <code>dev</code> when <code>--env</code> is absent — <span class="mono">crawler/cli.mjs:116-123</span></li>
+      <li>Registry projection expands to ~109 warm and ~123 enterprise boards — <span class="mono">crawler/board-registry.mjs:721-736</span></li>
+      <li>Source groups execute serially — <span class="mono">crawler/run.mjs:530-562</span></li>
+      <li>Default whole-run deadline is 42 minutes, 5-minute downstream reserve — <span class="mono">crawler/daily-runner.mjs:25-52</span></li>
+      <li>Warm ATS receives parent cancellation inputs; several batch and enterprise wrappers do not — <span class="mono">crawler/operator.mjs:364-377</span></li>
+      <li>Outer <code>Promise.race</code> rejects the caller but does not cancel adapter work by itself — <span class="mono">crawler/run.mjs:431-445</span></li>
+      <li>Observations persist incrementally; source telemetry is inserted only after a source returns — <span class="mono">crawler/run.mjs:448-560</span></li>
+      <li>Selection starts only after the durable crawl returns — <span class="mono">crawler/workflow.mjs:337-366</span></li>
+      <li>Daily runner performs a second tracked ATS fetch after crawler completion — <span class="mono">crawler/daily-runner.mjs:466-504</span></li>
+      <li>CLI emits only after the complete daily runner resolves — <span class="mono">crawler/cli.mjs:246-275</span></li>
+      <li>Timestamped default run IDs block same-day resume despite existing stable-identity logic — <span class="mono">crawler/scheduler.mjs:25-68</span></li>
+    </ol>
+
+    <div class="note"><div class="who">Field note — hard-gate sample</div>Three recent engineering postings from completed sources inspected. All failed current hard gates: Celonis wanted six years and Bangalore; Camunda was senior and lacked captured India eligibility; Baseten was San Francisco. Real gate-driven scarcity inside completed sources — not proof of zero eligible jobs in sources that never completed.</div>
+    <div class="note"><div class="who">Field note — independent confirmation</div>Codex Luna ran read-only on 2026-08-19 under explicit no-edit, no-live-action constraints. It independently confirmed the registry/serial bottleneck, incomplete deadline propagation, hidden durable observations, timestamped-ID resume failure, ambiguous absent telemetry, duplicate ATS work, and the scorer as a second delivery boundary. No Codex edits or tests occurred.</div>
+  </div>
+</section>
+
+<section class="page" id="design">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 04</span><h2>Recovery design</h2></div>
+    <p class="page-lede">Five repair orders. Repair delivery before expanding coverage.</p>
+
+    <div class="orders">
+      <div class="order"><span class="tag">Order A</span><h4>Durable run control</h4><ul>
+        <li>Profile-scoped daily identity</li>
+        <li>Register every planned source before fetching</li>
+        <li>Persist source transitions: pending → running → succeeded / truncated / interrupted / failed</li>
+        <li>Classify stale, over-deadline <code>running</code> rows without deleting history</li>
+      </ul></div>
+      <div class="order"><span class="tag">Order B</span><h4>One real execution budget</h4><ul>
+        <li><code>createDailyExecution()</code> stays budget owner</li>
+        <li>One parent signal + absolute deadline through every wrapper, adapter, retry, page loop, resolver, detail request, transport call</li>
+        <li>Check remaining budget between boards, pages, retries, queries</li>
+        <li>Outer abort race becomes final guard, not the cancellation mechanism</li>
+      </ul></div>
+      <div class="order"><span class="tag">Order C</span><h4>Resumable partial handoff</h4><ul>
+        <li>Mark active source interrupted, untouched sources not_started</li>
+        <li>Checkpoint run as resumable partial</li>
+        <li>Reconstruct funnel from committed observations; score inside remaining budget</li>
+        <li>Emit versioned result with exact coverage and score state</li>
+      </ul></div>
+      <div class="order"><span class="tag">Order D</span><h4>Measured source planning</h4><ul>
+        <li>Deterministic tiers replace "fetch every board now"</li>
+        <li>80% measured priority / 20% deterministic exploration until 3 completed runs recalibrate</li>
+        <li>Record why every board was selected, deferred, resumed, omitted</li>
+      </ul></div>
+      <div class="order"><span class="tag">Order E</span><h4>One pass, one shortlist owner</h4><ul>
+        <li>Tracked ATS rotation moves into the durable crawler source plan</li>
+        <li>Remove the second post-crawler <code>fetchWarmAts()</code> pass</li>
+        <li>Mode selector becomes sole owner of scoring, diversity, shortlist, v5 plans</li>
+        <li>Crawler <code>shortlist</code> kept only as compatibility field</li>
+      </ul></div>
+    </div>
+
+    <h4 style="font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--red);margin:26px 0 4px">Source clearance tiers</h4>
+    <div class="tiers">
+      <div class="tier" data-t="0"><span class="chip">Tier 0 · Daily core</span><p>Best recurring India/Pune direct ATS coverage. Trusted dates, geography relevance, retained ready-role yield.</p></div>
+      <div class="tier" data-t="1"><span class="chip">Tier 1 · Targeted enterprise</span><p>Bounded Workday/enterprise. Relevance, health, continuation cursor, prior ready yield.</p></div>
+      <div class="tier" data-t="2"><span class="chip">Tier 2 · Exploration</span><p>Learn new or stale-health boards. Deterministic quota, initially 20% of enterprise budget.</p></div>
+      <div class="tier" data-t="3"><span class="chip">Tier 3 · Opportunistic</span><p>Remote, India-startup, SearXNG — only while source budget remains.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="page" id="sequence">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 05</span><h2>Delivery sequence</h2></div>
+    <p class="page-lede">Six checkpoints, strictly gated. Each must clear before the next begins.</p>
+
+    <div class="phase-manifest">
+      <div class="phase-row">
+        <div class="pn">01</div>
+        <div><h4>Know where work stopped</h4><div class="d">Stable profile ID, attempt metadata, planned-source rows, explicit source states, stale-run health.</div></div>
+        <div><div class="lbl">Exit gate</div><div class="g">Interrupt after batch 2; same command resumes same ID, no duplicate observations, complete source-state coverage.</div></div>
+        <div><div class="lbl">Rollback</div><div class="g">Restore timestamp default IDs; keep additive telemetry and history.</div></div>
+      </div>
+      <div class="phase-row">
+        <div class="pn">02</div>
+        <div><h4>Stop work on time</h4><div class="d">Signal/deadline propagation, inner-loop budget checks, transport cancellation, cursor checkpointing.</div></div>
+        <div><div class="lbl">Exit gate</div><div class="g">Hanging transport stops within deadline +2s; request count does not rise after cancellation.</div></div>
+        <div><div class="lbl">Rollback</div><div class="g">Disable new deadline path per source; keep parent safety deadline.</div></div>
+      </div>
+      <div class="phase-row">
+        <div class="pn">03</div>
+        <div><h4>Return what is usable</h4><div class="d">Partial checkpoint, durable funnel reconstruction, versioned envelope, score-pending group.</div></div>
+        <div><div class="lbl">Exit gate</div><div class="g">Forced enterprise timeout emits labelled partial output, zero write/surfacing ops; can later complete.</div></div>
+        <div><div class="lbl">Rollback</div><div class="g">Disable partial emission by config; completed/failed paths remain.</div></div>
+      </div>
+      <div class="phase-row">
+        <div class="pn">04</div>
+        <div><h4>Spend source time better</h4><div class="d">Durable ATS rotation, board dedupe, tiered planner, selection reasons, targeted hydration.</div></div>
+        <div><div class="lbl">Exit gate</div><div class="g">No board fetched twice; 3 no-write manifests; source phase ≤12 min, no yield drop.</div></div>
+        <div><div class="lbl">Rollback</div><div class="g">Switch planner to legacy projection; keep lifecycle/cancellation/dedupe telemetry.</div></div>
+      </div>
+      <div class="phase-row">
+        <div class="pn">05</div>
+        <div><h4>Produce one answer</h4><div class="d">Mode selector becomes final authority; unified fetched→dated→eligible→ready→scored→selected telemetry.</div></div>
+        <div><div class="lbl">Exit gate</div><div class="g">Shortlist, v5 plans, receipt counts reconcile; zero-job output names gates or missing coverage.</div></div>
+        <div><div class="lbl">Rollback</div><div class="g">Retain compatibility reserve fields while mode shortlist stays authoritative.</div></div>
+      </div>
+      <div class="phase-row">
+        <div class="pn">06</div>
+        <div><h4>Prove it safely</h4><div class="d">Focused tests, one final full suite, 3 no-write live-local runs, interruption/resume drill.</div></div>
+        <div><div class="lbl">Exit gate</div><div class="g">3 terminal runs ≤20 min, 1 partial→completed resume, no external mutation, nonzero inventory.</div></div>
+        <div><div class="lbl">Rollback</div><div class="g">No production activation; retain previous working config.</div></div>
+      </div>
+    </div>
+
+    <div class="redline" style="background:rgba(162,59,46,.07);color:var(--ink)">Sequential gating: Phase 01 clears before cancellation work starts · Phase 02 proves no adapter leaks before partial delivery · Phase 03 proves partial safety before source prioritization · Phase 04 holds or improves ready-role yield before funnel consolidation · Phase 05 full suite passes once before release work · Phase 06 stops at local proof — commit, push, PR, launchd install, production activation, live smoke, and promotion each need separate explicit authorization.</div>
+  </div>
+</section>
+
+<section class="page" id="changes">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 06</span><h2>Change map</h2></div>
+    <p class="page-lede">Every file this recovery touches, grouped by responsibility zone.</p>
+
+    <div class="zone"><h4>Run control and output</h4>
+      <table class="ledger">
+        <tbody>
+          <tr><td class="mono">crawler/scheduler.mjs</td><td>Modify</td><td>Stable profile identity and resume classification.</td></tr>
+          <tr><td class="mono">crawler/cli.mjs</td><td>Modify</td><td>Stable default ID and terminal completed/partial/failed envelope.</td></tr>
+          <tr><td class="mono">crawler/daily-runner.mjs</td><td>Modify</td><td>Budget partition, partial handoff, duplicate ATS removal, completed-only surfacing.</td></tr>
+          <tr><td class="mono">crawler/run.mjs</td><td>Modify</td><td>Planned source states, partial checkpoint, attempt metadata.</td></tr>
+          <tr><td class="mono">crawler/schedule-health.mjs</td><td>Modify</td><td>Active, stale, partial, resumable, completed, failed health.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="zone"><h4>Discovery and source planning</h4>
+      <table class="ledger">
+        <tbody>
+          <tr><td class="mono">crawler/operator.mjs</td><td>Modify</td><td>Parent budget propagation and bounded source plan.</td></tr>
+          <tr><td class="mono">crawler/ats-batch-1.mjs</td><td>Modify</td><td>Board/page/detail cancellation boundaries.</td></tr>
+          <tr><td class="mono">crawler/ats-batch-2.mjs</td><td>Modify</td><td>Board/item cancellation boundaries.</td></tr>
+          <tr><td class="mono">crawler/ats-enterprise.mjs</td><td>Modify</td><td>Board/page/detail limits and parent signal.</td></tr>
+          <tr><td class="mono">crawler/india-startup-lanes.mjs</td><td>Modify</td><td>Query work bounded by source budget.</td></tr>
+          <tr><td class="mono">crawler/brave-search.mjs</td><td>Modify</td><td>Search and resolver work bounded by source budget.</td></tr>
+          <tr><td class="mono">crawler/board-registry.mjs</td><td>Modify</td><td>Tiered projection by relevance, health, yield, continuation, exploration.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="zone"><h4>Funnel, configuration, and proof</h4>
+      <table class="ledger">
+        <tbody>
+          <tr><td class="mono">crawler/workflow.mjs</td><td>Modify</td><td>Reconstruct durable partial funnel; diagnostic crawler reserve.</td></tr>
+          <tr><td class="mono">config/crawler-v2-dev.json</td><td>Modify</td><td>Explicit execution and source-planning budgets.</td></tr>
+          <tr><td class="mono">config/crawler-v2.json</td><td>Modify later</td><td>Mirror approved defaults only after local proof.</td></tr>
+          <tr><td class="mono">tests/crawler/*.test.mjs</td><td>Modify/add</td><td>Resume, source states, cancellation, partial safety, rotation, dedupe, funnel, bounds.</td></tr>
+          <tr><td class="mono">docs/STATUS.md</td><td>Modify after proof</td><td>Record exact local behavior and remaining production gates.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="zone"><h4>Explicitly unchanged</h4>
+      <table class="ledger">
+        <tbody>
+          <tr><td class="mono">master_prompt.md</td><td>—</td><td>Targeting, scoring, evidence, freshness, safety policy remain authoritative.</td></tr>
+          <tr><td class="mono">config/notion-v5.manifest.json</td><td>—</td><td>No schema or target change.</td></tr>
+          <tr><td class="mono">resume / outreach paths</td><td>—</td><td>Outside discovery-recovery scope.</td></tr>
+          <tr><td class="mono">SQLite observations, cursors, history, canary, v5 state</td><td>—</td><td>Never deleted by this work.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="page" id="proof">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 07</span><h2>Acceptance board</h2></div>
+    <p class="page-lede">Twelve gates. Any failure stops the phase named.</p>
+
+    <ul class="checklist">
+      <li><span class="box"></span><span>Same schedule/mode/location/date returns same default ID.</span><span class="g">Stop Phase 01</span></li>
+      <li><span class="box"></span><span>Interrupted run continues unfinished work without duplicate observations.</span><span class="g">Stop Phase 01</span></li>
+      <li><span class="box"></span><span>Planned source count equals explicit source-state count.</span><span class="g">Stop Phase 01</span></li>
+      <li><span class="box"></span><span>Hanging transport stops within deadline +2s; no request starts after cancellation.</span><span class="g">Stop Phase 02</span></li>
+      <li><span class="box"></span><span>CLI emits completed, partial, or failed within 20 minutes.</span><span class="g">Stop Phase 02/03</span></li>
+      <li><span class="box"></span><span>Zero ledger, v5, external, application, send, or checkbox operations on partial.</span><span class="g">Stop Phase 03</span></li>
+      <li><span class="box"></span><span>Network trace records one fetch owner per board.</span><span class="g">Stop Phase 04</span></li>
+      <li><span class="box"></span><span>Selection reasons and ready yield retained for 3 no-write runs.</span><span class="g">Rollback planner flag</span></li>
+      <li><span class="box"></span><span>Crawler, mode, v5-plan, notification counts reconcile.</span><span class="g">Stop Phase 05</span></li>
+      <li><span class="box"></span><span>Empty output names exact rejection or incomplete-source reasons.</span><span class="g">Stop Phase 05</span></li>
+      <li><span class="box"></span><span>Full tracked suite passes once with nonzero inventory.</span><span class="g">Stop Phase 06</span></li>
+      <li><span class="box"></span><span>Three no-write local-live runs meet terminal SLO.</span><span class="g">Keep production blocked</span></li>
+    </ul>
+    <p style="font-size:13px;color:var(--ink-soft)">Test budget: at most 20 new focused tests, then one final full readiness run. Widen only after a real failure or demonstrated blast radius.</p>
+  </div>
+</section>
+
+<section class="page" id="safety">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 08</span><h2>Safety and risk</h2></div>
+
+    <div class="hazards">
+      <div class="hazard high"><div><div class="sev">High</div><div class="r">Partial output mistaken for final shortlist</div></div><div class="c">Visible partial status, exact coverage, separate score-pending group, <code>writesPlanned: false</code>, no surfacing or success receipt.</div></div>
+      <div class="hazard high"><div><div class="sev">High</div><div class="r">Adapter continues after caller returns</div></div><div class="c">Parent signal reaches transport and inner loops; post-cancel request count must stay fixed before Phase 03.</div></div>
+      <div class="hazard high"><div><div class="sev">High</div><div class="r">Stable IDs collide</div></div><div class="c">Include schedule, mode, location preset, IST date; preserve explicit override.</div></div>
+      <div class="hazard high"><div><div class="sev">High</div><div class="r">Priority planner hides productive boards</div></div><div class="c">Deterministic 20% exploration, omission reasons, yield measurement, legacy-planner rollback flag.</div></div>
+      <div class="hazard medium"><div><div class="sev">Medium</div><div class="r">Removing second ATS pass reduces coverage</div></div><div class="c">Move rotation into durable first pass; compare board identities before removing duplicate path.</div></div>
+      <div class="hazard medium"><div><div class="sev">Medium</div><div class="r">Stale historical rows confuse operators</div></div><div class="c">Classify stale/abandoned in health output; never auto-delete evidence.</div></div>
+      <div class="hazard medium"><div><div class="sev">Medium</div><div class="r">Scorer consumes reserve</div></div><div class="c">Hard timeout and score-pending partial group; optional scoring cannot erase ready roles.</div></div>
+      <div class="hazard low"><div><div class="sev">Low</div><div class="r">Versioned result breaks direct callers</div></div><div class="c">Retain compatibility fields until fixtures and direct callers migrate.</div></div>
+    </div>
+
+    <div class="scope2" style="margin-top:26px">
+      <div style="border:1px solid var(--rule);background:var(--paper-2)"><h5 style="color:var(--grey)">Invariants preserved</h5>
+        <ul style="color:var(--ink-soft)">
+          <li>No auto-apply, autonomous send, connection, DM, referral, reaction, comment.</li>
+          <li><code>Make Resume</code> and <code>Applied?</code> stay user-owned.</li>
+          <li>Partial creates no ledger surfacing or v5 write plan.</li>
+          <li>No legacy tracker fallback.</li>
+          <li>No fabricated job, company, location, compensation, date, link, eligibility evidence.</li>
+          <li>Existing databases stay additive and readable.</li>
+        </ul></div>
+      <div style="border:1px solid var(--rule);background:var(--paper-2)"><h5 style="color:var(--grey)">Not part of this plan</h5>
+        <ul style="color:var(--ink-soft)">
+          <li>Relaxing targeting or score thresholds.</li>
+          <li>Padding target count with weak or unverifiable roles.</li>
+          <li>Adding Crawlee, Firecrawl, paid rescue, browser automation, new providers.</li>
+          <li>Redesigning Notion schemas or v5 stores.</li>
+          <li>Changing resume, outreach, Gmail, LinkedIn, application behavior.</li>
+          <li>Deleting stale runs or historical data; installing schedules; live writes; production promotion.</li>
+        </ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="page" id="questions">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num">PAGE 09</span><h2>Open questions</h2></div>
+    <p class="page-lede">None blocks Phase 01. Defaults apply unless Phase 04 or 05 evidence proves them harmful.</p>
+    <div class="margins">
+      <div class="margin-q"><b>After three completed local-live runs, should evidence replace the initial 80/20 priority-to-exploration ratio?</b><em>Current default — no change until evidence exists.</em></div>
+      <div class="margin-q"><b>Should score-pending partial roles stay visible by default?</b><em>Current default — yes, in a separate labelled group.</em></div>
+      <div class="margin-q"><b>Should midday resume morning work?</b><em>Current default — separate schedule identity; explicit morning rerun resumes morning.</em></div>
+      <div class="margin-q"><b>Which compatibility release removes crawler <code>shortlist</code> as user-facing output?</b><em>Current default — retain until direct callers migrate.</em></div>
+    </div>
+  </div>
+</section>
+
+<section class="approval" id="approval">
+  <div class="wrap">
+    <div class="page-head"><span class="page-num" style="color:#e0897b">PAGE 10</span><h2>Approval boundary</h2></div>
+    <p>This manifest remains a draft specification. It authorizes no crawler implementation, executor handoff, branch, commit, issue, pull request, schedule installation, production config activation, live smoke, external write, or promotion.</p>
+    <div class="redline">Each downstream action requires separate explicit approval.</div>
+    <div class="big-stamp">Draft · not cleared for release</div>
+
+    <div class="scope2">
+      <div><h5>Destination</h5><ul><li>Every Normal morning run returns a truthful completed / partial / failed result within 20 minutes.</li><li>Can resume after interruption.</li><li>Never reports execution failure as market scarcity.</li></ul></div>
+      <div><h5>Completion proof</h5><ul><li>3 consecutive no-write local-live runs terminal ≤20 min.</li><li>1 forced interruption resumes under same identity and later completes.</li><li>Partial run performs zero ledger/v5/application/outreach/checkbox/external ops.</li><li>Full tracked suite passes once after the output contract is consolidated.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">Launchpad Daily Discovery Recovery Plan · draft · last updated 2026-08-19 · canonical source docs/plans/launchpad-daily-discovery-recovery.md</div></footer>
+
+</body>
+</html>

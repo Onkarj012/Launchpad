@@ -1,6 +1,7 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
 import { applyOriginalListingResolution } from './original-listing-resolver.mjs';
 import { buildBoardPromotionProposals } from './board-promotion.mjs';
+import { isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 const ATS_HOSTS = /(?:greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workable\.com|smartrecruiters\.com|breezy\.hr|recruitee\.com)$/i;
 const AGGREGATOR_HOSTS = /(?:linkedin\.com|indeed\.com|glassdoor\.|wellfound\.com|builtin\.com|ziprecruiter\.com|dice\.com|monster\.|simplyhired\.)$/i;
@@ -162,7 +163,7 @@ function observationFrom(row, sourceQuery, runAt, provider = 'brave-search') {
 }
 
 export async function discoverBraveSearch({
-  transport, runAt = new Date().toISOString(), dailyBudget, perQueryResultCap = 10, retry = {}, provider = 'brave-search', ...options
+  transport, runAt = new Date().toISOString(), dailyBudget, perQueryResultCap = 10, retry = {}, provider = 'brave-search', signal = null, deadline = null, ...options
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverBraveSearch requires injected transport');
   const configuredQueries = list(options.queries ?? options.searchConfig?.queries);
@@ -191,6 +192,7 @@ export async function discoverBraveSearch({
   const budgetQueries = uniqueQueries.slice(0, budget);
   let skipRemaining = false;
   for (const [queryIndex, query] of budgetQueries.entries()) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { telemetry.queriesSkipped += budgetQueries.length - queryIndex; break; }
     if (skipRemaining) {
       telemetry.queriesSkipped += 1;
       const queryDiagnostic = {
@@ -209,23 +211,26 @@ export async function discoverBraveSearch({
     let pagesFetchedForQuery = 0;
     const observationsBeforeQuery = observations.length;
     for (let page = 0; page < maxPages; page += 1) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { outcome = 'interrupted'; break; }
       const key = cacheKey(query, page, country);
       attempts = 0; outcome = 'terminal'; reason = null; response = undefined;
       while (attempts < maxAttempts) {
         attempts += 1;
         try {
+          throwIfNetworkWorkDisallowed(signal, deadline);
           if (enableCache && cache.has(key)) {
             response = cache.get(key);
             telemetry.cacheHits += 1;
             outcome = 'success';
             break;
           }
-          response = await transport(query, {
+          response = await requestWithDeadline(transport, query, {
             endpoint: 'brave-search', runAt, page, offset: page * perQueryResultCap, country, provider,
-          });
+          }, { signal, deadline });
           telemetry.cacheMisses += 1;
         } catch (error) {
           reason = error?.message || 'transport-error';
+          if (isDeadlineCancellation(error, signal, deadline)) { outcome = 'interrupted'; break; }
           if (error?.retryable && attempts < maxAttempts) continue;
           outcome = 'terminal'; break;
         }
@@ -242,6 +247,7 @@ export async function discoverBraveSearch({
       }
       if (outcome === 'terminal') { telemetry.terminal += 1; break; }
       if (outcome === 'retryable') { telemetry.retryable += 1; break; }
+      if (outcome === 'interrupted') break;
       body = responseBody(response);
       const pageRows = body && resultRows(body);
       if (!Array.isArray(pageRows)) { outcome = 'malformed'; telemetry.malformedResponses += 1; break; }
@@ -264,13 +270,14 @@ export async function discoverBraveSearch({
       }
       telemetry.resultCount += Math.min(pageRows.length, perQueryResultCap);
       for (const row of pageRows.slice(0, perQueryResultCap)) {
+        try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { outcome = 'interrupted'; break; }
         const url = canonical(row?.url); if (!url || seen.has(url)) { if (url) telemetry.duplicateResults += 1; continue; }
         let observation = observationFrom({ ...row, url }, query, runAt, provider); if (!observation) continue; seen.add(url);
         const resolver = options.resolveOriginalListing || options.resolver;
         if (typeof resolver === 'function') {
           let resolution;
           try {
-            resolution = await resolver(observation);
+            resolution = await resolver(observation, { signal, deadline });
           } catch (error) {
             resolution = { status: 'verification', evidence: { resolver: 'injected-resolver', reason: error?.message || 'resolver-error' } };
           }
@@ -288,12 +295,18 @@ export async function discoverBraveSearch({
         }
         observations.push(observation); telemetry[observation.classification === 'direct' ? 'direct' : observation.classification === 'lead' ? 'leads' : 'unresolved'] += 1;
         if (observation.classification !== 'direct') verificationQueue.push({ url: observation.canonicalUrl, company: observation.company, reason: observation.classification === 'unresolved' ? 'unresolved-lead' : 'original-listing', evidence: observation.evidence });
-        if (typeof options.enrichCompany === 'function') { const company = await options.enrichCompany(observation); if (company && !companyKeys.has(JSON.stringify(company))) { companyKeys.add(JSON.stringify(company)); discoveredCompanies.push(company); } }
-        if (typeof options.enrichBoard === 'function' && observation.classification === 'direct') { const board = await options.enrichBoard(observation); if (board && !boardKeys.has(JSON.stringify(board))) { boardKeys.add(JSON.stringify(board)); discoveredBoards.push(board); } }
+        if (typeof options.enrichCompany === 'function') { throwIfNetworkWorkDisallowed(signal, deadline); const company = await options.enrichCompany(observation, { signal, deadline }); if (company && !companyKeys.has(JSON.stringify(company))) { companyKeys.add(JSON.stringify(company)); discoveredCompanies.push(company); } }
+        if (typeof options.enrichBoard === 'function' && observation.classification === 'direct') { throwIfNetworkWorkDisallowed(signal, deadline); const board = await options.enrichBoard(observation, { signal, deadline }); if (board && !boardKeys.has(JSON.stringify(board))) { boardKeys.add(JSON.stringify(board)); discoveredBoards.push(board); } }
       }
+      if (outcome === 'interrupted') break;
       rows = pageRows;
       if (pageRows.length < perQueryResultCap) break;
       if (outcome === 'degraded' && skipRemaining) break;
+    }
+    if (outcome === 'interrupted') {
+      telemetry.queryDiagnostics.push({ query, status: 'interrupted', responseStatus: null, responseStatuses: [], engineHealth: 'interrupted', engineListStatus: provider === 'searxng' ? 'absent' : 'not-applicable', unresponsiveEngines: [], results: observations.length - observationsBeforeQuery });
+      receipts.push({ query, status: 'interrupted', attempts, reason, resultCap: perQueryResultCap, results: 0, observations: 0, pages: pagesFetchedForQuery, country });
+      break;
     }
     telemetry.consumedCredits = telemetry.budgetUsed;
     const queryEngineHealth = provider === 'searxng'

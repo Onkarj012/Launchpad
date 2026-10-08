@@ -2,6 +2,7 @@
   "schemaVersion": "LaunchpadV5CommandSurfaceV1",
   "defaultMode": "normal",
   "modes": ["normal", "startup", "remote"],
+  "liveSensitiveFlags": ["--execute-writes", "--credential-file", "--journal", "--receipt"],
   "commands": {
     "morning": { "invocation": "/morning", "module": "crawler/daily-runner.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
     "morning-startup": { "invocation": "/morning startup", "module": "job-pull/startup-mode.mjs", "writes": "v5-only-after-explicit-live-opt-in", "manualAction": "none" },
@@ -13,6 +14,7 @@
     "sync": { "invocation": "/sync", "module": "resume-v5/application-sync.mjs", "writes": "v5-application-and-activity-only", "manualAction": "Applied? and outcomes remain user-confirmed" },
     "crawler-validate": { "invocation": "node crawler/cli.mjs validate", "module": "crawler/cli.mjs", "writes": "none", "manualAction": "configure public sources locally" },
     "crawler-run": { "invocation": "node crawler/cli.mjs run morning --run-id <unique-id>", "module": "crawler/cli.mjs", "writes": "local-crawler-sqlite-only", "manualAction": "production scheduling and downstream writes remain explicit" },
+    "audit-v5-journal": { "invocation": "node crawler/cli.mjs audit-v5-journal --credential-file ABS_PATH --journal ABS_PATH --receipt ABS_PATH", "module": "crawler/cli.mjs", "flags": ["--credential-file", "--journal", "--receipt"], "writes": "none", "manualAction": "read-only v5 journal and Notion audit" },
     "apify-rescue": { "invocation": "node job-pull/apify-pull.mjs --profile <stable-name> --out RAW.json", "module": "job-pull/apify-pull.mjs", "writes": "none-until-v5-write-is-explicitly-enabled", "manualAction": "profile selection is explicit" }
   },
   "safety": {

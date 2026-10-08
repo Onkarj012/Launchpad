@@ -186,7 +186,19 @@ export function applyScores(sources, scoreInput) {
   }));
 }
 
-export function runPipeline({ config, conversionPlan = loadConversionPlan(), now, runId, ledgerRows = [], opportunityLedgerRows = null, opportunityRows = null, opportunityLedgerPath, sources = [], dryRun = true }) {
+export function runPipeline({
+  config,
+  conversionPlan = loadConversionPlan(),
+  now,
+  runId,
+  ledgerRows = [],
+  opportunityLedgerRows = null,
+  opportunityRows = null,
+  opportunityLedgerPath,
+  sources = [],
+  dryRun = true,
+  deferSelection = false,
+}) {
   const allCandidates = sources.flatMap((source) => source.candidates || []);
   const manifests = sources.map((source) => ({ ...source.manifest }));
   for (const manifest of manifests) {
@@ -258,8 +270,22 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     else selectionPool.push(entry);
   }
   const suppressed = Object.values(suppressionCounts).reduce((total, count) => total + count, 0);
-  const selection = selectCandidates(selectionPool, config);
-  const applicationShortlist = selectApplicationShortlist(selection.selected, config);
+  const selection = deferSelection
+    ? {
+      selected: [],
+      scoringQueue: [],
+      scoredCount: 0,
+      unscoredCount: 0,
+      scoringFailedCount: 0,
+      strictShortfall: 0,
+      familyCounts: {},
+      companyCounts: {},
+      exclusions: {},
+    }
+    : selectCandidates(selectionPool, config);
+  const applicationShortlist = deferSelection
+    ? { selected: [] }
+    : selectApplicationShortlist(selection.selected, config);
   const postSuppressionCandidates = selectionPool.map((entry) => ({
     ...entry.candidate,
     eligibility: entry.eligibility,
@@ -317,6 +343,7 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
     observations: classified,
     lifecycle: {
       fetched: allCandidates.length,
+      dated: allCandidates.filter((candidate) => candidate.postedAt != null).length,
       sourceFiltered: allCandidates.length,
       eligible: classified.filter((entry) => entry.eligibility.eligible).length,
       historicalSuppressed: 0,
@@ -327,6 +354,7 @@ export function runPipeline({ config, conversionPlan = loadConversionPlan(), now
       workdayUncorroboratedVerifyQueue: classified.filter((entry) => entry.freshness.workdayUncorroborated === true
         || entry.freshness.code === 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE').length,
       ready: classified.filter((entry) => entry.ready).length,
+      scored: selection.scoredCount,
       selected: records.length,
       newlyActionable: null,
     },

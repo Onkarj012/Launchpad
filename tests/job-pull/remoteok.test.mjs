@@ -155,6 +155,11 @@ test('remote lead without India/worldwide-compatible scope is rejected by existi
 });
 
 test('remote board lead is not application-ready until original employer destination is resolved', () => {
+  const eligibility = {
+    eligible: true,
+    reasons: [],
+    geo: { pass: true, code: 'GEO_REMOTE_INDIA_ELIGIBLE' },
+  };
   const unresolved = applicationReadiness({
     title: 'AI Engineer',
     company: 'Remoteok Co',
@@ -164,11 +169,12 @@ test('remote board lead is not application-ready until original employer destina
     liveness: { status: 'Active', evidence: 'fixture' },
     experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' },
     employment: { type: 'full-time', evidence: 'full-time' },
-  });
+  }, eligibility);
   assert.equal(unresolved.ready, false);
   assert.ok(unresolved.reasons.some((reason) => /ORIGINAL_APPLICATION/i.test(reason)));
 
   const resolved = applicationReadiness({
+    description: 'Build Python AI services. Full-time, 0-1 years.',
     title: 'AI Engineer',
     company: 'Remoteok Co',
     canonicalUrl: 'https://remoteok.com/remote-jobs/1001-ai-engineer',
@@ -178,7 +184,7 @@ test('remote board lead is not application-ready until original employer destina
     liveness: { status: 'Active', evidence: 'fixture' },
     experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' },
     employment: { type: 'full-time', evidence: 'full-time' },
-  });
+  }, eligibility);
   assert.equal(resolved.ready, true);
 });
 

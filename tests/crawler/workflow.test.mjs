@@ -102,7 +102,7 @@ test('composes career, Brave, identity, incremental policy, reserve, and durable
     braveOptions: {
       dailyBudget: 1,
       resolveOriginalListing: async (observation) => observation.company === 'Resolved Co'
-        ? { url: 'https://resolved.example/careers/ai-engineer', company: 'Resolved Co' }
+        ? { url: 'https://jobs.lever.co/resolved/ai-engineer', company: 'Resolved Co' }
         : null,
     },
     braveTransport: async () => {
@@ -127,6 +127,8 @@ test('composes career, Brave, identity, incremental policy, reserve, and durable
   assert.equal(result.observations.length, 3);
   assert.ok(result.observations.some((row) => row._crawlerIdentity?.code === 'SUPPRESSED_APPLIED'));
   assert.ok(result.observations.some((row) => row._crawlerIdentity?.code === 'NEW_TO_ME' && row.applicationResolution?.status === 'Resolved Original'));
+  assert.equal(result.observations.find((row) => row.company === 'Resolved Co').originalApplicationUrl,
+    'https://jobs.lever.co/resolved/ai-engineer');
   assert.ok(result.observations.some((row) => row._crawlerIdentity?.code === 'UNCHANGED_DUPLICATE'));
   assert.equal(result.shortlist.length, 1);
   assert.equal(result.shortfall.minimumMissing, 9);
@@ -325,8 +327,31 @@ test('adds a verifiable reserve exclusion to verification without source self-re
 
   assert.equal(result.verificationQueue.length, 1);
   assert.equal(result.verificationQueue[0].url, observation.canonicalUrl);
+  assert.equal(result.verificationQueue[0].source, null);
   assert.ok(result.verificationQueue[0].reasons.includes('ORIGINAL_APPLICATION_NOT_RESOLVED'));
-  assert.ok(result.verificationQueue[0].reasons.includes('EXPERIENCE_NOT_STATED_MANUAL_REVIEW'));
+  assert.equal(result.verificationQueue[0].reasons.includes('EXPERIENCE_NOT_STATED_MANUAL_REVIEW'), false);
+});
+
+test('source VerifyQueue rows cannot enter the crawler shortlist', async () => {
+  const observation = fixtureObservation({
+    canonicalUrl: 'https://jobs.example.test/source-verify-queue',
+    company: 'Verify Queue Co',
+    applicationReady: true,
+  });
+  const result = await runFixture({
+    runId: 'source-verify-queue',
+    observation,
+    verificationQueue: [{ url: observation.canonicalUrl, reason: 'freshness' }],
+    prepareEntry: (candidate) => ({
+      candidate: { ...candidate, applicationReady: true },
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.verificationQueue.length, 1);
+  assert.deepEqual(result.selectionInvariants, { selectedVerifyQueue: [] });
 });
 
 test('does not add a hard geography rejection to verification', async () => {
@@ -342,12 +367,51 @@ test('does not add a hard geography rejection to verification', async () => {
     observation,
     prepareEntry: (candidate) => ({
       candidate,
-      eligibility: { eligible: false, reasons: ['GEO_ONSITE_NOT_PUNE'], geo: { code: 'GEO_ONSITE_NOT_PUNE' } },
+      eligibility: {
+        eligible: false,
+        reasons: ['GEO_ONSITE_NOT_PUNE', 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW'],
+        geo: { code: 'GEO_ONSITE_NOT_PUNE' },
+        experience: { manualReview: true, code: 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW' },
+      },
       freshness: { eligible: true, ageHours: 2 },
     }),
   });
 
   assert.equal(result.verificationQueue.some((item) => item.url === observation.canonicalUrl), false);
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.reserve.length, 0);
+});
+
+test('missing eligibility cannot become a shortlist fact after preparation', async () => {
+  const result = await runFixture({
+    runId: 'missing-eligibility',
+    observation: fixtureObservation(),
+    prepareEntry: (candidate) => ({
+      candidate,
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+  assert.equal(result.run.status, 'completed');
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.shortlist.length, 0);
+  assert.equal(result.reserve.length, 0);
+  assert.equal(result.terminalEnvelope.rejectionCounts.ineligible, 1);
+});
+
+test('explicit unsupported source facts still fail the durable JSON boundary', async () => {
+  const result = await runFixture({
+    runId: 'explicit-undefined-fact',
+    observation: fixtureObservation({ readiness: undefined }),
+    prepareEntry: (candidate) => ({
+      candidate,
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+  assert.equal(result.run.status, 'completed_with_failures');
+  assert.equal(result.observations.length, 0);
+  assert.equal(result.shortlist.length, 0);
+  assert.match(result.failures[0].message, /readiness contains an unsupported undefined/);
 });
 
 test('moves an unresolved placeholder-company aggregator lead out of the primary queue', async () => {
@@ -419,4 +483,35 @@ test('an explicit empty historicalRows list preserves the existing workflow resu
   assert.deepEqual(withEmptyRows.shortfall, withoutRows.shortfall);
   assert.deepEqual(withEmptyRows.historicalSuppressions, withoutRows.historicalSuppressions);
   assert.deepEqual(withEmptyRows.counts, withoutRows.counts);
+});
+
+test('partial workflow reconstructs durable funnel state and labels source coverage', async () => {
+  const store = database();
+  const result = await crawlWorkflow({
+    store,
+    runId: 'workflow-partial-envelope',
+    clock: fixedClock(),
+    sourcePlans: [{
+      id: 'enterprise-partial',
+      lane: 'enterprise',
+      trustClass: 'direct',
+      fetch: async () => ({
+        observations: [fixtureObservation({ providerJobId: 'partial-ready' })],
+        cursor: { page: 1 },
+        interrupted: true,
+      }),
+    }],
+    prepareEntry: (candidate) => ({
+      candidate: { ...candidate, applicationReady: true },
+      eligibility: { eligible: true, strict: true },
+      freshness: { eligible: true, ageHours: 2 },
+    }),
+  });
+  assert.equal(result.terminalEnvelope.status, 'partial');
+  assert.equal(result.terminalEnvelope.writesPlanned, false);
+  assert.deepEqual(result.terminalEnvelope.sourceCoverage.interrupted, ['enterprise-partial']);
+  assert.equal(result.terminalEnvelope.sourceCoverage.not_started.length, 0);
+  assert.equal(result.terminalEnvelope.scorePendingReady.length, 1);
+  assert.equal(result.observations.length, 1);
+  store.close();
 });

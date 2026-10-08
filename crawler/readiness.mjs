@@ -14,6 +14,8 @@ export function buildLocalReadinessEvidence({
 } = {}) {
   const verified = testsPassed === true;
   const sources = Object.fromEntries(sourceIds.map((sourceId) => [sourceId, { status: 'verified-by-local-suite' }]));
+  const localOnlyOperationalEvidence = operationalEvidence
+    && (operationalEvidence.proofKind === 'local-recovery-only' || operationalEvidence.productionActivation === false);
   return {
     milestones: Object.fromEntries(REQUIRED_MILESTONES.map((id) => [id, { status: verified ? 'verified' : 'unverified' }])),
     dependencyOrder: { pass: verified, coveredMilestones: [...REQUIRED_MILESTONES] },
@@ -39,7 +41,14 @@ export function buildLocalReadinessEvidence({
     },
     liveCredentials: { required: true, available: credentialsAvailable === true },
     operationalVerification: operationalEvidence && nonEmptyArray(operationalEvidence.evidence)
-      ? { ...operationalEvidence, pass: operationalEvidence.pass === true }
+      ? {
+        ...operationalEvidence,
+        pass: localOnlyOperationalEvidence ? false : operationalEvidence.pass === true,
+        ...(localOnlyOperationalEvidence ? {
+          scope: 'local-only',
+          reason: 'LOCAL_ONLY_EVIDENCE_CANNOT_VERIFY_PRODUCTION',
+        } : {}),
+      }
       : { pass: false, evidence: [] },
   };
 }

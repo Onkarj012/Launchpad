@@ -14,6 +14,7 @@ import {
   projectLaneBoards,
   projectTrackedBoards,
   projectTrackedWarmSet,
+  planBoundedSources,
   withRegistryProjectedBoards,
   PROVIDER_LANES,
   workdayCxsUrl,
@@ -288,4 +289,70 @@ test('operator location presets project Pune and India priority without changing
   const config = { boardRegistry: registry, sources: { atsWarm: {} } };
   assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'pune' }).sources.atsWarm.boards.map((board) => board.slug), ['pune-co', 'india-co', 'global-co']);
   assert.deepEqual(withRegistryProjectedBoards(config, { locationPreset: 'india' }).sources.atsWarm.boards.map((board) => board.slug), ['india-co', 'pune-co', 'global-co']);
+});
+
+test('bounded source planning is deterministic, explains all outcomes, and resumes productive work', () => {
+  const inputs = {
+    atsWarm: [
+      { provider: 'greenhouse', slug: 'core', company: 'Core', puneRelevant: true, health: { recentReadyRoleYield: 2 } },
+      { provider: 'greenhouse', slug: 'resume', company: 'Resume', health: { recentReadyRoleYield: 1 } },
+    ],
+    atsBatch1: [
+      { provider: 'greenhouse', slug: 'resume', company: 'Resume alias' },
+      { provider: 'workable', board: 'explore', company: 'Explore' },
+    ],
+    enterprise: [{ provider: 'workday', tenant: 'acme', instance: 'wd1', site: 'Careers', company: 'Acme', indiaRelevant: true }],
+  };
+  const options = { boardsByLane: inputs, locationPreset: 'pune', maxBoards: 3, runAt: '2026-08-21T00:00:00.000Z', sourceBudgetMs: 720_000 };
+  const first = planBoundedSources(options);
+  const second = planBoundedSources(options);
+  assert.deepEqual(first.boardPlan, second.boardPlan);
+  assert.equal(first.boardPlan.sourcePhaseWithinBudget, true);
+  assert.equal(first.boardPlan.noWrite, true);
+  assert.equal(first.boardPlan.retainedReadyYield, 3);
+  assert.ok(first.boardPlan.decisions.every((decision) => decision.reason));
+  assert.ok(first.boardPlan.decisions.some((decision) => decision.reason === 'duplicate-board-alias'));
+
+  const resumed = planBoundedSources({ ...options, state: { boards: { 'greenhouse:resume': { cursor: { page: 2 }, status: 'interrupted' } } } });
+  const resumedDecision = resumed.boardPlan.decisions.find((decision) => decision.boardId === 'greenhouse:resume' && decision.sourceLane === 'atsWarm');
+  assert.equal(resumedDecision.action, 'resumed');
+  assert.equal(resumedDecision.reason, 'continuation-measured-priority');
+  for (const manifest of [first.boardPlan, second.boardPlan, resumed.boardPlan]) {
+    assert.equal(manifest.noWrite, true);
+    assert.ok(manifest.sourcePhaseBudgetMs <= 720_000);
+    assert.ok(manifest.retainedReadyYield >= 0);
+  }
+});
+
+test('bounded source planning advances deferred exploration from durable state while preserving tracked ATS coverage', () => {
+  const boardsByLane = {
+    atsWarm: [
+      { provider: 'greenhouse', slug: 'priority-a', sourceTier: 'daily-core' },
+      { provider: 'greenhouse', slug: 'priority-b', sourceTier: 'daily-core' },
+      { provider: 'greenhouse', slug: 'priority-c', sourceTier: 'daily-core' },
+      { provider: 'greenhouse', slug: 'priority-d', sourceTier: 'daily-core' },
+    ],
+    atsBatch1: [
+      { provider: 'workable', slug: 'explore-a', sourceTier: 'exploration' },
+      { provider: 'workable', slug: 'explore-b', sourceTier: 'exploration' },
+      { provider: 'workable', slug: 'explore-c', sourceTier: 'exploration' },
+    ],
+  };
+  const options = { boardsByLane, maxBoards: 5, runAt: '2026-08-21T00:00:00.000Z' };
+  const first = planBoundedSources(options);
+  const sameState = planBoundedSources({ ...options, state: first.state });
+  const sameStateAgain = planBoundedSources({ ...options, state: first.state });
+  const second = planBoundedSources({ ...options, runAt: '2026-08-22T00:00:00.000Z', state: first.state });
+
+  assert.deepEqual(sameState.boardPlan, sameStateAgain.boardPlan);
+  assert.notDeepEqual(
+    second.boardsByLane.atsBatch1.map((board) => board.boardId),
+    first.boardsByLane.atsBatch1.map((board) => board.boardId),
+  );
+  assert.equal(first.boardsByLane.atsBatch1[0].boardId, 'workable:explore-a');
+  assert.equal(second.boardsByLane.atsBatch1[0].boardId, 'workable:explore-b');
+  assert.deepEqual(first.boardPlan.trackedAts.coverage.selectedBoardIds, first.boardsByLane.atsWarm.map((board) => board.boardId));
+  assert.equal(first.state.explorationCursor, 1);
+  assert.equal(first.state.trackedAts.rotation.cursor, 0);
+  assert.ok(first.boardPlan.decisions.every((decision) => decision.reason));
 });

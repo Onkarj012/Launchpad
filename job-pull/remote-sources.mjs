@@ -1,4 +1,4 @@
-import { CANDIDATE_SCHEMA_VERSION, assertCandidate, candidateDedupKey, canonicalizeUrl, normalizeCandidate } from './candidate.mjs';
+import { discoveryCandidate, CANDIDATE_SCHEMA_VERSION, assertCandidate, candidateDedupKey, canonicalizeUrl, normalizeCandidate } from './candidate.mjs';
 import { deriveProvider, recordsFromResult, sourceManifest } from './adapters/common.mjs';
 import { fetchHimalayas } from './remote-adapters/himalayas.mjs';
 import { fetchJobicy } from './remote-adapters/jobicy.mjs';
@@ -90,7 +90,7 @@ function normalizeLaneCandidate(raw, lane, { runAt, runId }) {
   const provider = deriveProvider(raw, lane.provider || null);
   const sourceKind = raw?.sourceKind || (lane.category === 'direct-ats' ? 'ats-direct' : 'niche-public');
   const base = raw?.schemaVersion === CANDIDATE_SCHEMA_VERSION
-    ? assertCandidate(raw)
+    ? discoveryCandidate(raw)
     : normalizeCandidate(raw, { source: lane.id, provider, sourceKind, sourceCategory: lane.category, runAt });
   const discoveryUrl = canonicalizeUrl(raw?.discoveryUrl ?? raw?.discoveryURL ?? raw?.url ?? base.canonicalUrl);
   const discoverySource = raw?.discoverySource ?? raw?.source ?? lane.id;
@@ -180,7 +180,7 @@ function lookupFunction(functions, lane) {
 }
 
 /** Run every Remote lane using only injected functions, fixtures, or injected native transports. */
-export async function runRemoteSourcePlan({ sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {}, runAt, runId } = {}) {
+export async function runRemoteSourcePlan({ sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {}, runAt, runId, signal = null, deadline = null } = {}) {
   const results = [];
   for (const lane of REMOTE_SOURCE_LANES) {
     const suppliedFunction = lookupFunction(sourceFunctions, lane);
@@ -199,7 +199,7 @@ export async function runRemoteSourcePlan({ sourceFunctions = {}, sourceFixtures
       continue;
     }
     try {
-      const output = await sourceFunction({ lane, input: laneInputs[lane.id] ?? laneInputs[lane.provider], runAt, runId });
+      const output = await sourceFunction({ lane, input: laneInputs[lane.id] ?? laneInputs[lane.provider], runAt, runId, signal, deadline });
       results.push(normalizeLaneOutput(lane, output, { runAt, runId }));
     } catch (error) {
       results.push({ candidates: [], manifest: manifestFor(lane, { attempted: true, status: 'failed', failed: 1, errors: [errorMessage(error)] }) });

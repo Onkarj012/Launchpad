@@ -1,9 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ATS_BATCH_2_PROVIDERS, discoverAtsBatch2, fetchAtsBatch2 } from '../../crawler/ats-batch-2.mjs';
+import { deadlineError } from '../../crawler/deadline.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
 
 const runAt = '2026-07-23T10:00:00.000Z';
+
+test('cancellation stops a hanging page transport before another page begins', async () => {
+  let requests = 0;
+  let stopped = false;
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const pending = fetchAtsBatch2({
+    board: { provider: 'bamboohr', slug: 'deadline' },
+    signal: controller.signal,
+    deadline: { deadlineMs: startedAt + 100 },
+    transport: async (_url, { signal }) => {
+      requests += 1;
+      await new Promise((resolve) => signal.addEventListener('abort', () => {
+        stopped = true;
+        resolve();
+      }, { once: true }));
+    },
+  });
+  setTimeout(() => controller.abort(deadlineError()), 30);
+  const result = await pending;
+  assert.equal(result.manifest.status, 'interrupted');
+  assert.equal(requests, 1);
+  assert.equal(stopped, true);
+  assert.ok(Date.now() - startedAt < 2_000);
+});
 
 test('batch 2 is bounded and does not overlap the warm ATS providers', () => {
   assert.deepEqual(ATS_BATCH_2_PROVIDERS, ['breezy', 'bamboohr', 'personio', 'comeet', 'pinpoint', 'rippling']);
@@ -111,16 +137,17 @@ test('Personio XML is parsed and conditional 304 is persisted without duplicate 
   assert.equal(second.conditionalState.cursor.page, 1);
 });
 
-test('Personio provider-created date is VerifyQueue evidence, not Hot or Active freshness', async () => {
+test('Personio provider-created date remains uncorroborated VerifyQueue evidence', async () => {
   const result = await fetchAtsBatch2({
     board: { provider: 'personio', slug: 'acme' }, runAt,
     transport: async () => ({ status: 200, body: '<jobs><position><id>p-2</id><name>Backend Engineer</name><createdAt>2026-07-23T08:00:00Z</createdAt><url>https://acme.jobs.personio.com/job/p-2</url></position></jobs>' }),
   });
   const freshness = classifyFreshness(result.observations[0], { now: runAt });
   assert.equal(freshness.window, 'VerifyQueue');
+  assert.equal(freshness.eligible, false);
   assert.equal(freshness.code, 'FRESHNESS_PERSONIO_UNCORROBORATED_VERIFY_QUEUE');
-  assert.equal(freshness.verifyQueue, true);
   assert.equal(freshness.personioUncorroborated, true);
+  assert.equal(freshness.verifyQueue, true);
 });
 
 test('Comeet time_updated is retained as modification evidence without fabricating postedAt', async () => {

@@ -17,9 +17,9 @@ function entry(index, { tier = 'strict', conversionTier = null, window = 'Hot', 
     freshnessWindow: window,
     roleFamily: family,
     companyKey: company.toLowerCase(),
-    score: 100 - index,
+    description: 'Build Python AI services.', scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, score: 100 - index,
     eligibility: { eligible: true, tier, roleFamily: family, companyKey: company.toLowerCase(), relaxations: tier === 'relaxed' ? ['adjacent-title'] : [], evidenceCodes: [] },
-    freshness: { eligible: true, window, ageHours: index },
+    freshness: { eligible: true, window, ageHours: window === 'Backfill' ? 8 * 24 + index : index },
   };
 }
 
@@ -125,6 +125,34 @@ test('Auto-Suggest is disabled for an unscored candidate', () => {
   const result = selectCandidates([{ ...entry(1), score: undefined, autoSuggest: true }], config);
   assert.equal(result.selected.length, 0);
   assert.equal(result.scoringQueue[0].autoSuggest, false);
+});
+
+test('selection keeps VerifyQueue and scoringQueue disjoint from selected rows', () => {
+  const verify = {
+    ...entry(20),
+    freshness: { eligible: false, window: 'VerifyQueue', verifyQueue: true, ageHours: null },
+  };
+  const unscored = { ...entry(21), score: undefined };
+  const result = selectCandidates([entry(1), verify, unscored], {
+    ...config,
+    run: { ...config.run, minimumTotal: 1, maximumTotal: 1, strictTarget: 1 },
+  });
+  const selectedKeys = new Set(result.selected.map((candidate) => candidate.canonicalUrl));
+  assert.deepEqual(result.selected.map((candidate) => candidate.canonicalUrl), ['https://example.test/1']);
+  assert.deepEqual(result.verifyQueue.map((candidate) => candidate.canonicalUrl), [verify.canonicalUrl]);
+  assert.deepEqual(result.scoringQueue.map((candidate) => candidate.canonicalUrl), [unscored.canonicalUrl]);
+  assert.equal(result.verifyQueue.some((candidate) => selectedKeys.has(candidate.canonicalUrl)), false);
+  assert.equal(result.scoringQueue.some((candidate) => selectedKeys.has(candidate.canonicalUrl)), false);
+  assert.deepEqual(result.selectionInvariants, { selectedVerifyQueue: [], selectedScoringQueue: [] });
+});
+
+test('selection requires a known 8-to-14-day age for Backfill', () => {
+  const result = selectCandidates([{
+    ...entry(30, { window: 'Backfill' }),
+    freshness: { eligible: true, window: 'Backfill', ageHours: null },
+  }], { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 1 } });
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.scoringQueue.length, 0);
 });
 
 test('application shortlist applies role/source targets only to verified original application URLs', () => {

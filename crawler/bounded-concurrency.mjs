@@ -25,3 +25,23 @@ export async function mapProviderSafe(items, {
   await Promise.all(Array.from({ length: width }, runGroup));
   return results;
 }
+
+/** Serialize transport work for a host while callers retain their own batch width. */
+export function createHostSerializedRunner() {
+  const tails = new Map();
+  return async function run(host, task) {
+    if (typeof task !== 'function') throw new TypeError('host task must be a function');
+    const key = String(host ?? 'unknown').toLowerCase();
+    const prior = tails.get(key) ?? Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    tails.set(key, current);
+    await prior;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (tails.get(key) === current) tails.delete(key);
+    }
+  };
+}

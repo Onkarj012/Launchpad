@@ -1,6 +1,7 @@
 import { fetchIncrementally } from './incremental-fetch.mjs';
 import { createHostLimiter, parseRobotsTxt } from './http-policy.mjs';
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 const CAREER_RE = /(?:career|careers|jobs|job|work[- ]?with[- ]?us|join[- ]?us|opportunit)/i;
 const BOARD_RE = /(?:greenhouse|lever|ashby|workday|workable|smartrecruiters|breezy|recruitee|boards?\.|jobs?\.)/i;
@@ -77,7 +78,8 @@ function feedEntries(body, base) {
 }
 
 async function request(url, options) {
-  return fetchIncrementally({ url, transport: options.transport, state: options.conditionalState?.[canonical(url)] ?? {}, robots: options.robots, userAgent: options.userAgent ?? 'Launchpad-Company-Careers/1.0', limiter: options.limiter, hostLimiterOptions: options.hostLimiterOptions, retry: options.retry, maxBytes: options.maxBytes ?? 2_000_000, timeoutMs: options.timeoutMs ?? 30_000, clock: options.clock });
+  throwIfNetworkWorkDisallowed(options.signal, options.deadline);
+  return fetchIncrementally({ url, transport: (requestUrl, transportOptions) => requestWithDeadline(options.transport, requestUrl, transportOptions, { signal: options.signal, deadline: options.deadline }), state: options.conditionalState?.[canonical(url)] ?? {}, robots: options.robots, userAgent: options.userAgent ?? 'Launchpad-Company-Careers/1.0', limiter: options.limiter, hostLimiterOptions: options.hostLimiterOptions, retry: options.retry, maxBytes: options.maxBytes ?? 2_000_000, timeoutMs: options.timeoutMs ?? 30_000, clock: options.clock });
 }
 
 function candidateFrom(node, { company, url, sourceUrl, runAt, sitemapLastmod = null, classification = 'lead', feed = null, expiryGraceDays = 30 } = {}) {
@@ -98,7 +100,7 @@ function candidateFrom(node, { company, url, sourceUrl, runAt, sitemapLastmod = 
   }, { runAt });
 }
 
-export async function discoverCompanyCareers({ companies = [], company, websiteUrl, transport, runAt = new Date().toISOString(), conditionalState = {}, robots, ...options } = {}) {
+export async function discoverCompanyCareers({ companies = [], company, websiteUrl, transport, runAt = new Date().toISOString(), conditionalState = {}, robots, signal = null, deadline = null, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverCompanyCareers requires injected transport');
   const inputs = companies.length ? companies : [{ company, websiteUrl }];
   const observations = []; const seen = new Set(); const discoveredBoards = []; const boardSeen = new Set(); const verificationQueue = []; const sources = []; const next = [];
@@ -108,6 +110,7 @@ export async function discoverCompanyCareers({ companies = [], company, websiteU
   const addBoard = (url, companyName, sourceUrl) => { const value = canonical(url); if (!value || sameSite(value, sourceUrl) || boardSeen.has(value)) return; boardSeen.add(value); discoveredBoards.push({ url: value, company: companyName, classification: 'lead', sourceUrl, evidence: 'career-page-link' }); };
   const addObservation = (candidate) => { if (!candidate) return; if (seen.has(candidate.canonicalUrl)) { telemetry.duplicateUrls += 1; return; } seen.add(candidate.canonicalUrl); observations.push(candidate); telemetry.extracted += 1; };
   for (const input of inputs) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { break; }
     const companyName = text(input.company ?? input.name) || 'Unknown Company'; const root = canonical(input.websiteUrl || input.url || input.careerUrl); if (!root) continue;
     const manifest = { company: companyName, rootUrl: root, status: 'pending', fetched: [], discoveredCareerUrls: [], pagesFetched: 0, capped: false }; sources.push(manifest);
     const robotsUrl = `${new URL(root).origin}/robots.txt`;
@@ -131,6 +134,7 @@ export async function discoverCompanyCareers({ companies = [], company, websiteU
     }
     const queue = [{ url: root, kind: 'page', sourceUrl: root }]; const queued = new Set([root]);
     while (queue.length && manifest.pagesFetched < maxPagesPerCompany) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { manifest.status = 'interrupted'; break; }
       const item = queue.shift(); if (!item?.url) continue; if (item.kind === 'job' && seen.has(item.url)) { telemetry.duplicateUrls += 1; continue; }
       manifest.pagesFetched += 1;
       telemetry.attempted += 1; const result = await request(item.url, { ...options, transport, conditionalState: state, robots: effectiveRobots, limiter });

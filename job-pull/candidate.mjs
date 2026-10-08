@@ -1,3 +1,4 @@
+import { integerInRange } from './match-scorer.mjs';
 import { createHash } from 'node:crypto';
 import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
 
@@ -97,7 +98,17 @@ function finiteYears(value) {
 
 const HARD_EXPERIENCE_CUE_RE = /\b(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)/i;
 const PREFERENCE_RE = /\b(?:preferred|nice\s+to\s+have|bonus|desirable|advantage)\b/i;
-const EXPERIENCE_NUMBER = String.raw`(?<lower>\d+(?:\.\d+)?)(?:\s*(?<plus>\+)|\s*(?<separator>to|-)\s*(?<upper>\d+(?:\.\d+)?))?`;
+const EXPERIENCE_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
+const EXPERIENCE_VALUE = String.raw`(?:\d+(?:\.\d+)?|${EXPERIENCE_WORDS.join('|')})`;
+const EXPERIENCE_UNIT = String.raw`(?:years?|yrs?)(?:\(s\))?(?![A-Za-z])`;
+// A match must start at the lower bound, never at the tail of a range.
+const EXPERIENCE_NUMBER = String.raw`(?<![\d.])(?<lower>${EXPERIENCE_VALUE})(?:\s*(?<plus>\+)|\s*(?<separator>to|[-–—])\s*(?<upper>${EXPERIENCE_VALUE}))?`;
+
+// Convert an experience quantity without changing the retained JD evidence.
+function experienceNumber(value) {
+  const word = EXPERIENCE_WORDS.indexOf(value.toLowerCase());
+  return word >= 0 ? word : Number(value);
+}
 
 /** Convert provider HTML/encoded text into the plain text used by parsers. */
 export function stripHtmlToText(value) {
@@ -110,37 +121,50 @@ export function stripHtmlToText(value) {
     .trim();
 }
 
-function experienceMatch(match, text, hardCue = false) {
+// Keep applicant requirements and discard education, tenure, and preferences.
+function experienceMatch(match, text) {
   const groups = match.groups || {};
-  const lower = Number(groups.lower);
-  const upper = groups.upper == null ? (groups.plus ? null : lower) : Number(groups.upper);
+  const lower = experienceNumber(groups.lower);
+  const upper = groups.upper == null ? (groups.plus ? null : lower) : experienceNumber(groups.upper);
   const start = match.index ?? 0;
   const end = start + match[0].length;
-  const surrounding = text.slice(Math.max(0, start - 30), Math.min(text.length, end + 30));
-  const nearbyHardCue = HARD_EXPERIENCE_CUE_RE.test(text.slice(Math.max(0, start - 40), start));
-  if (PREFERENCE_RE.test(surrounding) && !hardCue && !nearbyHardCue) return null;
+  const numberStart = start + match[0].indexOf(groups.lower);
+  if (/\d\s*(?:[-–—]|to)\s*$/i.test(text.slice(0, numberStart))) return null;
+  const clauseStart = Math.max(text.lastIndexOf('. ', start), text.lastIndexOf(';', start));
+  const prefix = text.slice(Math.max(clauseStart + 1, numberStart - 180), numberStart);
+  const suffix = text.slice(end).replace(/^\.(?=\s)/, '').split(/[.!?;,]/, 1)[0].slice(0, 60);
+  const requirementTail = text.slice(numberStart).split(/[.!?;,]/, 1)[0].slice(0, 140);
+  if (/\b(?:education(?:al)?|qualification|school(?:ing)?|academic|degree)\b/i.test(match[0].slice(0, match[0].indexOf(groups.lower)))
+    || /^\s*(?:of\s+)?(?:(?:full[ -]?time|formal|academic)\s+)*(?:education(?:al)?|schooling|study|studies)\b/i.test(suffix)) return null;
+  const cue = [...prefix.slice(-80).matchAll(new RegExp(HARD_EXPERIENCE_CUE_RE.source, 'gi'))].at(-1);
+  const preference = [...prefix.slice(-80).matchAll(new RegExp(PREFERENCE_RE.source, 'gi'))].at(-1);
+  const afterPreference = /^\s*(?:is\s+|are\s+)?(?:preferred|desirable|a\s+bonus|an?\s+advantage|nice\s+to\s+have)\b/i.test(suffix);
+  const experiencePreference = /\bexperience\b(?:(?!\b(?:required|must|mandatory|and|but)\b)[^.!?;,]){0,60}\b(?:preferred|desirable|bonus|advantage|nice\s+to\s+have)\b/i.test(requirementTail);
+  const beforePreference = preference && (!cue || preference.index > cue.index);
+  if (afterPreference || experiencePreference || beforePreference) return null;
+  if (/\b(?:supported|warrantied)\s+for\s*$/i.test(prefix)) return null;
+  // Company tenure is evidence about the employer, not the applicant.
+  if (/\b(?:we|company|organisation|organization|corporation|group|business|firm|team)\b[^.!?;]*\b(?:has|have|with|brings?|boasts?|spanning)\b[^.!?;]*$/i.test(prefix)
+    && !/\b(?:you|candidate|applicant|engineer|developer|seeking|looking|expect|requires?|requirements?|must\s+have)\b[^.!?;]*$/i.test(prefix)) return null;
   return { minYears: lower, maxYears: upper, evidence: match[0].trim().replace(/\s+/g, ' ') };
 }
 
-/**
- * Extract hard-requirement experience from job-description text. The strictest
- * lower bound wins because a posting can mention multiple seniority levels.
- */
+// Extract the strictest applicant experience requirement from the JD.
 export function extractExperienceYears(text) {
   const cleaned = stripHtmlToText(text);
   if (!cleaned) return null;
   const matches = [];
   const forward = new RegExp(
-    String.raw`(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)[^\d]{0,40}?\b${EXPERIENCE_NUMBER}\s*(?:years?|yrs?)`,
+    String.raw`(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)[^\d.!?;]{0,40}?\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}`,
     'gi',
   );
   for (const match of cleaned.matchAll(forward)) {
-    const parsed = experienceMatch(match, cleaned, true);
+    const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
   }
 
   const reverse = new RegExp(
-    String.raw`\b${EXPERIENCE_NUMBER}(?:\s+[A-Za-z][A-Za-z'/-]*){0,4}\s+(?:years?|yrs?)\b(?:\s+[A-Za-z][A-Za-z'/-]*){0,4}\s+experience\b`,
+    String.raw`\b${EXPERIENCE_NUMBER}(?:\s+[A-Za-z][A-Za-z'/-]*){0,4}\s+${EXPERIENCE_UNIT}(?:\s+[A-Za-z][A-Za-z'/-]*){0,4}\s+experience(?:d)?\b`,
     'gi',
   );
   for (const match of cleaned.matchAll(reverse)) {
@@ -149,7 +173,7 @@ export function extractExperienceYears(text) {
   }
 
   const activityRequirement = new RegExp(
-    String.raw`\b${EXPERIENCE_NUMBER}\s*(?:years?|yrs?)\b(?:\s+of)?(?:\s+(?:professional|hands-on|relevant|industry))?(?:\s+[A-Za-z][A-Za-z+.#/-]*){0,3}\s+(?:experience|development|engineering|building|developing|designing|working|programming|coding|implementing|maintaining)\b`,
+    String.raw`\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}(?:\s+of)?(?:\s+(?:professional|hands-on|relevant|industry))?(?:\s+[A-Za-z][A-Za-z+.#/-]*){0,3}\s+(?:experience|development|engineering|building|developing|designing|working|programming|coding|implementing|maintaining)\b`,
     'gi',
   );
   for (const match of cleaned.matchAll(activityRequirement)) {
@@ -160,10 +184,18 @@ export function extractExperienceYears(text) {
   return matches.reduce((best, current) => current.minYears > best.minYears ? current : best);
 }
 
+// Detect recruiting on a client's behalf without mistaking client work for hiring.
+export function hiringEmployerConflict(description) {
+  const cleaned = stripHtmlToText(description);
+  const applicant = String.raw`(?:[A-Za-z-]+\s+){0,6}(?:candidates?|applicants?|engineers?|developers?|professionals?|talent)\b`;
+  const recruiting = cleaned.match(new RegExp(String.raw`\b(?:our|the|a|an)\s+client\s+(?:is|are)\s+(?:currently\s+)?(?:hiring|recruiting|(?:looking\s+for|seeking)\s+${applicant})\b|\b(?:hiring|recruiting)\s+(?:on\s+behalf\s+of|for)\s+(?:(?:our|a|an|the)\s+)?client\b|\bseeking\s+${applicant}\s+for\s+(?:(?:our|a|an|the)\s+)?client\b`, 'i'));
+  return recruiting ? { reason: 'destination-hiring-employer-unverified', evidence: recruiting[0] } : null;
+}
+
 function parseExperienceString(value) {
   const text = nonEmptyString(value);
   if (!text) return { minYears: null, maxYears: null, evidence: null };
-  const range = text.match(/(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)/i);
+  const range = text.match(/(\d+(?:\.\d+)?)\s*(?:[-–—]|to)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)/i);
   if (range) return { minYears: Number(range[1]), maxYears: Number(range[2]), evidence: text };
   const plus = text.match(/(\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)/i);
   if (plus) return { minYears: Number(plus[1]), maxYears: null, evidence: text };
@@ -328,8 +360,8 @@ export function validateCandidate(candidate) {
   if (!candidate.experience || typeof candidate.experience !== 'object') errors.push('experience is required');
   if (!candidate.liveness || typeof candidate.liveness !== 'object') errors.push('liveness is required');
   if (candidate.fingerprint != null && !/^[0-9a-f]{16}$/.test(candidate.fingerprint)) errors.push('fingerprint must be 16 lowercase hex characters or null');
-  if (candidate.matchScore != null && (!Number.isFinite(candidate.matchScore) || candidate.matchScore < 0 || candidate.matchScore > 100)) errors.push('matchScore must be 0-100 or null');
-  if (candidate.responseLikelihood != null && (!Number.isFinite(candidate.responseLikelihood) || candidate.responseLikelihood < 0 || candidate.responseLikelihood > 20)) errors.push('responseLikelihood must be 0-20 or null');
+  if (candidate.matchScore != null && (!Number.isInteger(candidate.matchScore) || candidate.matchScore < 0 || candidate.matchScore > 100)) errors.push('matchScore must be 0-100 or null');
+  if (candidate.responseLikelihood != null && (!Number.isInteger(candidate.responseLikelihood) || candidate.responseLikelihood < 0 || candidate.responseLikelihood > 20)) errors.push('responseLikelihood must be 0-20 or null');
   if (candidate.conversionScore != null && (!Number.isFinite(candidate.conversionScore) || candidate.conversionScore < 0 || candidate.conversionScore > 100)) errors.push('conversionScore must be 0-100 or null');
   if (candidate.originalApplicationUrl != null && !/^https?:\/\//i.test(candidate.originalApplicationUrl)) errors.push('originalApplicationUrl must be http(s) or null');
   return { valid: errors.length === 0, errors };
@@ -382,10 +414,16 @@ export function normalizeCandidate(raw, options = {}) {
     timezoneOverlap: normalizeTimezoneOverlap(raw.timezoneOverlap, raw),
     eor: normalizeBooleanEvidence(raw.eor, raw.eorEvidence),
     equipment: normalizeBooleanEvidence(raw.equipment, raw.equipmentEvidence),
-    matchScore: Number.isFinite(Number(raw.matchScore ?? raw.score)) ? Number(raw.matchScore ?? raw.score) : null,
+    matchScore: null,
+    scoreOrigin: 'source-input',
+    componentScores: raw.componentScores ?? null,
+    descriptionAvailable: typeof raw.descriptionAvailable === 'boolean' ? raw.descriptionAvailable : null,
+    scoringFailed: raw.scoringFailed === true || raw.scoringStatus === 'scoring-failed' || (raw.responseLikelihood != null && String(raw.responseLikelihood).trim() !== '' && integerInRange(raw.responseLikelihood, 0, 20) === null) || (raw.matchScore != null && String(raw.matchScore).trim() !== '' && integerInRange(raw.matchScore, 0, 100) === null) || (raw.score != null && String(raw.score).trim() !== '' && integerInRange(raw.score, 0, 100) === null),
+    scoringFailureReason: raw.scoringFailureReason ?? null,
+    scoringStatus: raw.scoringStatus ?? null,
     rationale: preserveText(raw.rationale),
-    hook: preserveText(raw.hook),
-    responseLikelihood: Number.isFinite(Number(raw.responseLikelihood)) ? Number(raw.responseLikelihood) : null,
+    hook: preserveText(raw.hook ?? raw.strongestHook),
+    responseLikelihood: integerInRange(raw.responseLikelihood, 0, 20),
     conversionScore: Number.isFinite(Number(raw.conversionScore)) ? Number(raw.conversionScore) : null,
     conversionFactors: raw.conversionFactors && typeof raw.conversionFactors === 'object' ? { ...raw.conversionFactors } : null,
     conversionSignals: raw.conversionSignals && typeof raw.conversionSignals === 'object'
@@ -394,9 +432,14 @@ export function normalizeCandidate(raw, options = {}) {
         humanContact: raw.humanContact === true,
         projectConnection: raw.projectConnection === true,
       },
-    autoSuggest: raw.autoSuggest === true,
+    autoSuggest: false,
   };
   return assertCandidate(candidate);
+}
+
+// Remove scoring claims at every discovery lane boundary.
+export function discoveryCandidate(candidate) {
+  return { ...assertCandidate(candidate), matchScore: null, score: null, scoreOrigin: 'source-input', autoSuggest: false };
 }
 
 export function normalizedKey(value) {

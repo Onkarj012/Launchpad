@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 export const ATS_BATCH_1 = Object.freeze(['smartrecruiters', 'workable', 'teamtailor', 'recruitee']);
 export const ATS_BATCH_SCHEMA_VERSION = 'AtsBatchFetchV1';
@@ -92,7 +93,7 @@ const ADAPTERS = {
     url: recruitee,
     rows: (body) => body?.offers || body?.jobs || body?.data,
     next: (body, { page, pageSize }) => Array.isArray(body?.offers || body?.jobs || body?.data) && (body.offers || body.jobs || body.data).length >= pageSize ? page + 1 : null,
-    map: (row, board) => ({ id: row?.id || row?.slug, title: row?.title || row?.name, company: row?.company?.name || boardName(board), location: row?.location || row?.department, description: row?.description || row?.descriptionPlain, postedAt: row?.published_at || row?.created_at, url: row?.careers_url || row?.url || row?.slug }),
+    map: (row, board) => ({ id: row?.id || row?.slug, title: row?.title || row?.name, company: row?.company?.name || boardName(board), location: row?.location || row?.department, description: [row?.description || row?.descriptionPlain, row?.requirements].filter((value) => typeof value === 'string' && value.trim()).join('\n'), employmentType: row?.employment_type, postedAt: row?.published_at || row?.created_at, url: row?.careers_url || row?.url || row?.slug }),
   },
 };
 
@@ -137,7 +138,7 @@ function smartRecruitersDetail(row, body) {
   };
 }
 
-export async function fetchAtsProvider({ provider, board, transport, runAt = new Date().toISOString(), pageSize = 50, maxPages = 5, maxJobs = 250, conditionalState = {}, cursorState = {}, adapters = createAtsBatch1Adapters(), retry = {}, enrichDetails = true } = {}) {
+export async function fetchAtsProvider({ provider, board, transport, runAt = new Date().toISOString(), pageSize = 50, maxPages = 5, maxJobs = 250, conditionalState = {}, cursorState = {}, adapters = createAtsBatch1Adapters(), retry = {}, enrichDetails = true, signal = null, deadline = null } = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchAtsProvider requires injected transport');
   const adapter = adapters[provider];
   if (!adapter) return { provider, board: boardId(board), observations: [], failures: [{ kind: 'unsupported-provider', provider }], cursorState, conditionalState, manifest: { status: 'unsupported', provider, board: boardId(board), pages: 0, jobs: 0 } };
@@ -149,11 +150,17 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
   let pages = 0; let fetched = 0; let status = 'ok'; let nextEndpoint = boardCursor.nextEndpoint || null; let naturalTerminal = false; let interrupted = false; let capHit = null; let recordsNotExamined = null;
   const boundedPages = Math.max(0, Number(maxPages)); const boundedJobs = Math.max(0, Number(maxJobs));
   while (pages < boundedPages && observations.length < boundedJobs) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) {
+      interrupted = true; status = 'interrupted'; break;
+    }
     const url = canonical(nextEndpoint || adapter.url(board, { page, pageSize: Math.max(1, Number(pageSize)) }));
     if (!url) { failures.push({ kind: 'invalid-endpoint', provider, board: boardId(board), page }); status = 'malformed'; break; }
     let response;
-    try { response = await transport(url, { method: 'GET', headers: { ...(rowOffset === 0 && conditionalState[url]?.etag ? { 'if-none-match': conditionalState[url].etag } : {}), ...(rowOffset === 0 && conditionalState[url]?.lastModified ? { 'if-modified-since': conditionalState[url].lastModified } : {}) }, provider, board, page }); }
-    catch (error) { failures.push({ kind: 'transport', provider, board: boardId(board), page, message: error?.message || 'transport error' }); status = 'failed'; interrupted = true; break; }
+    try { response = await requestWithDeadline(transport, url, { method: 'GET', headers: { ...(rowOffset === 0 && conditionalState[url]?.etag ? { 'if-none-match': conditionalState[url].etag } : {}), ...(rowOffset === 0 && conditionalState[url]?.lastModified ? { 'if-modified-since': conditionalState[url].lastModified } : {}) }, provider, board, page }, { signal, deadline }); }
+    catch (error) {
+      if (!isDeadlineCancellation(error, signal, deadline)) failures.push({ kind: 'transport', provider, board: boardId(board), page, message: error?.message || 'transport error' });
+      status = isDeadlineCancellation(error, signal, deadline) ? 'interrupted' : 'failed'; interrupted = true; break;
+    }
     const httpStatus = Number(response?.status ?? 200);
     if (httpStatus === 304) { pages += 1; status = 'not-modified'; naturalTerminal = true; break; }
     if (httpStatus < 200 || httpStatus >= 300) { failures.push({ kind: httpStatus >= 500 || httpStatus === 429 ? 'retryable' : 'http', provider, board: boardId(board), page, status: httpStatus }); status = httpStatus >= 500 || httpStatus === 429 ? 'retryable' : 'failed'; interrupted = true; break; }
@@ -165,20 +172,24 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
     const headers = headersOf(response); conditionalState[url] = { ...(conditionalState[url] || {}), canonicalUrl: url, etag: headers.etag, lastModified: headers.lastModified };
     let pageComplete = true;
     for (let rowIndex = rowOffset; rowIndex < rows.length; rowIndex += 1) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) {
+        interrupted = true; status = 'interrupted'; break;
+      }
       if (observations.length >= boundedJobs) { pageComplete = false; capHit = 'maxJobs'; recordsNotExamined = rows.length - rowIndex; break; }
       const row = rows[rowIndex];
       rowOffset = rowIndex + 1;
       let mapped = adapter.map(row, board);
       if (provider === 'smartrecruiters' && row?.ref && enrichDetails) {
         try {
-          const detailResponse = await transport(row.ref, { method: 'GET', headers: {}, provider, board, page, detail: true });
+          const detailResponse = await requestWithDeadline(transport, row.ref, { method: 'GET', headers: {}, provider, board, page, detail: true }, { signal, deadline });
           if (Number(detailResponse?.status ?? 200) >= 200 && Number(detailResponse?.status ?? 200) < 300) {
             mapped = smartRecruitersDetail(mapped, responseJson(detailResponse));
           } else {
             failures.push({ kind: 'detail-http', provider, board: boardId(board), page, status: Number(detailResponse?.status), url: row.ref });
           }
         } catch (error) {
-          failures.push({ kind: 'detail-transport', provider, board: boardId(board), page, message: error?.message || 'detail transport error', url: row.ref });
+          if (!isDeadlineCancellation(error, signal, deadline)) failures.push({ kind: 'detail-transport', provider, board: boardId(board), page, message: error?.message || 'detail transport error', url: row.ref });
+          if (isDeadlineCancellation(error, signal, deadline)) { interrupted = true; status = 'interrupted'; break; }
         }
       }
       const item = makeObservation(mapped, { provider, board, sourceUrl: url, runAt });
@@ -186,6 +197,7 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
       if (!seen.has(item.canonicalUrl)) { seen.add(item.canonicalUrl); observations.push(item); }
     }
     pages += 1;
+    if (interrupted) break;
     if (!pageComplete) break;
     rowOffset = 0;
     const next = adapter.next(body, { page, pageSize });
@@ -203,15 +215,16 @@ export async function fetchAtsProvider({ provider, board, transport, runAt = new
   return { provider, board: boardId(board), observations, failures, cursorState, conditionalState, cursor: cursorState, interrupted, manifest: { status, provider, board: boardId(board), startingCursor: boardCursor, pages, fetched, jobs: observations.length, changed: observations.length, foreignDiscardedAtSource: 0, naturalTerminal, interrupted, truncated: Boolean(capHit), capHit, recordsNotExamined, newestPostingAt, bounded: { maxPages: boundedPages, maxJobs: boundedJobs, pageSize } } };
 }
 
-export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, ...options } = {}) {
+export async function fetchAtsBatch1({ boards = [], transport, runAt = new Date().toISOString(), maxBoards = 100, signal = null, deadline = null, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchAtsBatch1 requires injected transport');
-  const cursorState = { ...(options.cursorState || {}) }; const conditionalState = { ...(options.conditionalState || {}) }; const results = []; const observations = []; const failures = []; const seen = new Set();
+  const cursorState = { ...(options.cursorState || {}) }; const conditionalState = { ...(options.conditionalState || {}) }; const results = []; const observations = []; const failures = []; const seen = new Set(); let interruptedByDeadline = false;
   for (const board of boards.slice(0, Math.max(0, Number(maxBoards)))) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) { interruptedByDeadline = true; break; }
     const provider = String(board?.provider || '').toLowerCase();
-    const result = await fetchAtsProvider({ ...options, board, provider, transport, runAt, cursorState, conditionalState }); results.push(result); failures.push(...result.failures);
+    const result = await fetchAtsProvider({ ...options, board, provider, transport, runAt, cursorState, conditionalState, signal, deadline }); results.push(result); failures.push(...result.failures);
     for (const observation of result.observations) if (!seen.has(observation.canonicalUrl)) { seen.add(observation.canonicalUrl); observations.push(observation); }
   }
-  const interrupted = results.some((result) => result.manifest.interrupted);
+  const interrupted = interruptedByDeadline || results.some((result) => result.manifest.interrupted);
   const truncated = results.some((result) => result.manifest.truncated);
   return { schemaVersion: ATS_BATCH_SCHEMA_VERSION, observations, manifest: { schemaVersion: 'AtsBatchManifestV1', batch: 'ats-batch-1', runAt, providers: ATS_BATCH_1, boardsAttempted: results.length, boardsBound: Math.min(boards.length, Math.max(0, Number(maxBoards))), pages: results.reduce((sum, result) => sum + (result.manifest.pages || 0), 0), fetched: results.reduce((sum, result) => sum + (result.manifest.fetched || 0), 0), changed: observations.length, direct: observations.filter((row) => row.evidence.classification === 'direct').length, leads: observations.filter((row) => row.evidence.classification === 'lead').length, failures: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted, truncated, capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, sources: results.map((result, index) => ({ provider: result.provider, board: result.board, company: boards[index]?.company ?? boards[index]?.name ?? result.board, startingCursor: result.manifest.startingCursor, fetched: Number(result.manifest.fetched || 0), observations: result.observations.length, foreignDiscardedAtSource: Number(result.manifest.foreignDiscardedAtSource || 0), status: result.manifest.status, naturalTerminal: result.manifest.naturalTerminal, interrupted: result.manifest.interrupted, truncated: result.manifest.truncated, capHit: result.manifest.capHit, recordsNotExamined: result.manifest.recordsNotExamined, newestPostingAt: result.manifest.newestPostingAt, failures: result.failures.length })), noAutoApply: true }, cursorState, conditionalState, failures, results };
 }

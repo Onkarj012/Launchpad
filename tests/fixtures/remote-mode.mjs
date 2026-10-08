@@ -18,6 +18,7 @@ export function remoteJob(index, overrides = {}) {
     originalApplicationUrl: `https://careers.remote-fixture.example/jobs/${index}`,
     originalApplicationEvidence: 'fixture employer ATS resolution',
     applicationResolution: { status: 'Resolved Original', evidence: 'fixture employer ATS resolution' },
+    scoreOrigin: 'explicit-scored-input', responseLikelihood: 15,
     matchScore: 90 - index,
     ...overrides,
   };

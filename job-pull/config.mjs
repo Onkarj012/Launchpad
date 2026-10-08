@@ -41,7 +41,7 @@ export function validateConfig(config) {
   else {
     if (run.cadence !== 'manual') errors.push('run.cadence must remain manual');
     if (run.onceDaily !== true) errors.push('run.onceDaily must remain true');
-    if (run.minimumTotal !== 25 || run.maximumTotal !== 35) errors.push('run total target must remain 25-35');
+    if (run.minimumTotal !== 10 || run.preferredTotal !== 12 || run.maximumTotal !== 20) errors.push('daily target must remain 10 minimum, 12 preferred, 20 maximum');
     if (run.strictTarget !== 10) errors.push('run.strictTarget must remain 10');
     if (run.maximumPerCompany !== 2) errors.push('run.maximumPerCompany must remain 2');
     if (run.maximumFamilyShare !== 0.4) errors.push('run.maximumFamilyShare must remain 0.4');

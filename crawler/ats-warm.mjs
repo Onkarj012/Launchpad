@@ -1,6 +1,11 @@
-import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { canonicalizeUrl, normalizedKey, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { boardIdentityKey, planBoardRotation, recordBoardHealth } from './board-registry.mjs';
 import { mapProviderSafe } from './bounded-concurrency.mjs';
+
+import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
+import { loadConfig } from '../job-pull/config.mjs';
+import { classifyCandidate } from '../job-pull/eligibility.mjs';
+import { classifyFreshness } from '../job-pull/freshness.mjs';
 
 const PROVIDERS = new Set(['greenhouse', 'lever', 'ashby']);
 
@@ -23,7 +28,7 @@ function rows(provider, body) {
 
 function stripHtml(value) {
   return typeof value === 'string'
-    ? value.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#xa0;/gi, ' ').replace(/\s+/g, ' ').trim()
+    ? decodeEntities(decodeEntities(value)).replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#xa0;/gi, ' ').replace(/\s+/g, ' ').trim()
     : '';
 }
 
@@ -146,6 +151,7 @@ export async function fetchWarmAts({
   runAt = new Date().toISOString(),
   maxBoards = 40,
   maxJobsPerBoard = 100,
+  maxDetailRequests = 10,
   rotation = {},
   rotationState = {},
   seenBoardIds = [],
@@ -159,6 +165,8 @@ export async function fetchWarmAts({
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('fetchWarmAts requires injected transport');
   const observations = [];
+  const policy = loadConfig();
+  let detailRequests = 0;
   const failures = [];
   const sources = [];
   const omissions = [];
@@ -214,7 +222,7 @@ export async function fetchWarmAts({
     const url = endpoint({ ...board, provider });
     const boardId = board.id || board.registryId || board.rotationBoardId || boardIdentityKey(board);
     const availableMs = remainingMs();
-    if (availableMs <= 0) {
+    if (signal?.aborted || availableMs <= 0) {
       deadlineExhausted = true;
       return { board, omitted: { boardId, provider, reason: 'source-deadline-exhausted' } };
     }
@@ -243,10 +251,31 @@ export async function fetchWarmAts({
       const foreignPassedThroughAtSource = indiaFirst
         ? eligibleListings.filter((raw) => oldFilterWouldDiscard(raw)).length
         : 0;
+      // Provider arrays may be title-sorted, so freshness must precede the row cap.
+      const newestFirst = eligibleListings.map((raw, index) => ({ raw, index, postedAt: isoDate(mapRow(provider, raw, board).postedAt) }))
+        .sort((left, right) => (right.postedAt || '').localeCompare(left.postedAt || '') || left.index - right.index);
       const boardObservations = [];
-      for (const raw of eligibleListings.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
+      for (const { raw } of newestFirst.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
         const sourceGeoObservation = oldFilterWouldDiscard(raw) ? 'india-first-filter-bypass' : null;
-        const item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
+        let item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
+        if (item && provider === 'greenhouse' && !item.description
+          && classifyCandidate(item, policy).eligible && classifyFreshness(item, { now: runAt, ...policy.freshness }).eligible) {
+          const detailUrl = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board.slug || board.board)}/jobs/${encodeURIComponent(item.jobId)}`;
+          try {
+            if (signal?.aborted || remainingMs() <= 0 || detailRequests >= maxDetailRequests) throw new Error('DETAIL_BUDGET_EXHAUSTED');
+            detailRequests++;
+            const detailResponse = await boundedTransport(transport, detailUrl, { method: 'GET', provider, board, warm: true }, Math.max(1, Math.min(Number(requestTimeoutMs) || 10_000, remainingMs())), signal);
+            if (Number(detailResponse.status) < 200 || Number(detailResponse.status) >= 300) throw new Error(`HTTP_${detailResponse.status}`);
+            const detail = typeof detailResponse.body === 'string' ? JSON.parse(detailResponse.body) : detailResponse.body;
+            if (String(detail?.id) !== item.jobId || normalizedKey(detail?.title) !== normalizedKey(item.title)
+              || canonicalizeUrl(detail?.absolute_url) !== item.canonicalUrl || !stripHtml(detail?.content)) throw new Error('DETAIL_IDENTITY_OR_CONTENT_INVALID');
+            item = candidate(mapRow(provider, { ...raw, ...detail }, board), { ...board, provider }, detailUrl, runAt, sourceGeoObservation);
+            item.evidence.detailUrl = detailUrl;
+          } catch (error) {
+            item = { ...item, liveness: { status: 'Not Verified', checkedAt: runAt, evidence: 'Greenhouse detail unavailable' },
+              evidence: { ...item.evidence, detailFailure: error.message } };
+          }
+        }
         if (item) boardObservations.push(item);
       }
       return {
@@ -295,6 +324,7 @@ export async function fetchWarmAts({
         elapsedMs: Math.max(0, clockMs(clock) - startedAt),
         maxDurationMs: Number.isFinite(effectiveDurationMs) ? effectiveDurationMs : null,
       },
+      detailRequests,
       fetched: sources.reduce((sum, source) => sum + source.fetched, 0),
       failed: failures.length,
       sources,

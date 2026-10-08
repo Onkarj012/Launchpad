@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  cloneJsonSafe,
   openCrawlerStore,
   crawlRun,
   backfillOriginalPostedAt,
@@ -25,6 +26,13 @@ function fixedClock() {
     },
     async sleep() {},
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 const enterpriseRunAt = '2026-07-23T10:00:00.000Z';
@@ -72,7 +80,8 @@ test('a crawl run persists schema, source state, observations, stages, and funne
   assert.deepEqual(result.telemetry.sources.greenhouse, {
     status: 'succeeded', attempts: 1, fetched: 1, observations: 1, changed: 1, duplicates: 0,
     startingCursor: { page: 3 }, continuationCursor: null, naturalTerminal: true, interrupted: false, truncated: false,
-    newestPostingAt: '2026-07-22T10:00:00.000Z', cursorReset: false, cursorContinued: false,
+    newestPostingAt: '2026-07-22T10:00:00.000Z', boardPlan: null, sourcePlanState: null,
+    cursorReset: false, cursorContinued: false,
     consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
   });
   assert.equal(result.stages.fetch.status, 'committed');
@@ -118,6 +127,302 @@ test('a source manifest telemetry block survives crawlRun SQLite persistence', a
     workdayDetail,
   );
   reopened.close();
+});
+
+test('checkpoint persistence is idempotent, merges manifests, and final replay is not retained twice', async () => {
+  const store = openCrawlerStore(':memory:');
+  const observation = {
+    providerJobId: 'checkpoint-1', canonicalUrl: 'https://jobs.example.test/checkpoint-1',
+    title: 'AI Engineer', company: 'Example', location: 'Pune',
+  };
+  try {
+    const result = await crawlRun({
+      store,
+      runId: 'checkpoint-idempotent',
+      sourcePlans: [{
+        id: 'checkpoint-source', lane: 'test',
+        fetch: async ({ checkpoint }) => {
+          const first = checkpoint({ observations: [observation], cursor: { page: 1 }, manifestDelta: { telemetry: { first: 1 } } });
+          const second = checkpoint({ observations: [observation], cursor: { page: 1 }, manifestDelta: { telemetry: { second: 2 } } });
+          await Promise.all([first, second]);
+          return { observations: [observation], cursor: { page: 1 }, manifest: { truncated: true, telemetry: { second: 2 } } };
+        },
+      }],
+    });
+    const source = result.telemetry.sources['checkpoint-source'];
+    assert.equal(source.status, 'truncated');
+    assert.equal(source.observations, 1);
+    assert.equal(source.duplicates, 2);
+    assert.deepEqual(source.continuationCursor, { page: 1 });
+    assert.deepEqual(source.manifest.telemetry, { first: 1, second: 2 });
+    assert.equal(readCrawlerState(store).observations.length, 1);
+    assert.deepEqual(JSON.parse(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get('checkpoint-source').cursor_json).cursor, { page: 1 });
+  } finally {
+    store.close();
+  }
+});
+
+test('portal resolution checkpoint replaces the candidate observation without row growth', async () => {
+  const store = openCrawlerStore(':memory:');
+  const sourceRecordKey = 'portal-candidate-1';
+  const initial = {
+    sourceRecordKey, canonicalUrl: 'https://www.indeed.com/viewjob?jk=portal-1',
+    title: 'AI Engineer', company: 'Example', location: 'Pune', description: 'portal snippet', classification: 'lead',
+  };
+  const resolved = {
+    ...initial, description: 'verified employer description', classification: 'direct',
+    originalApplicationUrl: 'https://boards.greenhouse.io/example/jobs/1',
+  };
+  try {
+    const result = await crawlRun({
+      store, runId: 'portal-checkpoint-replacement', sourcePlans: [{
+        id: 'portal-source', lane: 'portal',
+        fetch: async ({ checkpoint }) => {
+          await checkpoint({ observations: [initial], cursor: { nextIndex: 0 }, manifestDelta: { fetched: 1, changed: 1 } });
+          await checkpoint({ observations: [resolved], cursor: { nextIndex: 1 }, replaceObservations: true, manifestDelta: { telemetry: { resolved: 1 } } });
+          return { observations: [resolved], cursor: { nextIndex: 1 }, manifest: { fetched: 1, changed: 1, naturalTerminal: true } };
+        },
+      }],
+    });
+    const row = store.prepare('SELECT source_record_key, classification, raw_json FROM job_observations WHERE run_id = ?').get('portal-checkpoint-replacement');
+    const source = result.telemetry.sources['portal-source'];
+    assert.equal(store.prepare('SELECT COUNT(*) AS count FROM job_observations WHERE run_id = ?').get('portal-checkpoint-replacement').count, 1);
+    assert.equal(row.source_record_key, sourceRecordKey);
+    assert.equal(row.classification, 'direct');
+    assert.equal(JSON.parse(row.raw_json).description, resolved.description);
+    assert.equal(source.observations, 1);
+    assert.equal(source.fetched, 1);
+
+    const replay = await crawlRun({ store, runId: 'portal-checkpoint-replacement', sourcePlans: [] });
+    assert.equal(replay.idempotent, true);
+    assert.equal(store.prepare('SELECT COUNT(*) AS count FROM job_observations WHERE run_id = ?').get('portal-checkpoint-replacement').count, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('cancellation after a checkpoint keeps the cursor and the next run replays from it', async () => {
+  const store = openCrawlerStore(':memory:');
+  const controller = new AbortController();
+  const sourceStarted = deferred();
+  const sourceCompletion = deferred();
+  const observation = {
+    providerJobId: 'checkpoint-cancelled', canonicalUrl: 'https://jobs.example.test/checkpoint-cancelled',
+    title: 'AI Engineer', company: 'Example', location: 'Pune',
+  };
+  let lateCheckpoint;
+  let nextCursor = null;
+  try {
+    const cancelled = crawlRun({
+      store,
+      runId: 'checkpoint-cancelled',
+      signal: controller.signal,
+      sourcePlans: [{
+        id: 'checkpoint-cancel-source', lane: 'test',
+        fetch: async ({ checkpoint }) => {
+          lateCheckpoint = checkpoint;
+          await checkpoint({ observations: [observation], cursor: { page: 4 }, manifestDelta: { fetched: 1 } });
+          sourceStarted.resolve();
+          return sourceCompletion.promise;
+        },
+      }],
+    });
+    await sourceStarted.promise;
+    controller.abort(new Error('operator cancelled'));
+    await assert.rejects(cancelled, (error) => error.code === 'RUN_ABORTED');
+    assert.equal(readCrawlerState(store).observations.length, 1);
+    assert.deepEqual(JSON.parse(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get('checkpoint-cancel-source').cursor_json).cursor, { page: 4 });
+    await lateCheckpoint({ observations: [{ providerJobId: 'late', canonicalUrl: 'https://jobs.example.test/late' }], cursor: { page: 99 }, manifestDelta: { late: true } });
+    assert.equal(readCrawlerState(store).observations.length, 1);
+    assert.deepEqual(JSON.parse(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get('checkpoint-cancel-source').cursor_json).cursor, { page: 4 });
+    sourceCompletion.resolve({ observations: [], manifest: {} });
+
+    const resumed = await crawlRun({
+      store,
+      runId: 'checkpoint-resumed',
+      sourcePlans: [{
+        id: 'checkpoint-cancel-source', lane: 'test',
+        fetch: async ({ cursor }) => {
+          nextCursor = cursor;
+          return { observations: [], manifest: {} };
+        },
+      }],
+    });
+    assert.equal(resumed.run.status, 'completed');
+    assert.deepEqual(nextCursor, { page: 4 });
+    assert.equal(readCrawlerState(store).observations.length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('adapter truncation preserves its capHit when runtime budget did not abort it', async () => {
+  const store = openCrawlerStore(':memory:');
+  try {
+    const result = await crawlRun({
+      store,
+      runId: 'adapter-cap-hit',
+      config: { execution: {
+        wholeRunDeadlineMs: 100, discoveryBudgetMs: 50, downstreamReserveMs: 25,
+        handoffReserveMs: 25, scorerFloorMs: 25, perSourceMaxDurationMs: 50,
+        minimumSourceStartAllocationMs: 10,
+      } },
+      sourcePlans: [{
+        id: 'page-capped', lane: 'test',
+        fetch: async () => ({ observations: [], cursor: { page: 2 }, manifest: { truncated: true, capHit: 'maxPages' } }),
+      }],
+    });
+    assert.equal(result.telemetry.sources['page-capped'].status, 'truncated');
+    assert.equal(result.telemetry.sources['page-capped'].capHit, 'maxPages');
+    assert.equal(result.telemetry.sources['page-capped'].budgetCancellationFired, undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('invalid cursor or manifest output fails source and attempt terminally', async () => {
+  for (const [name, output] of [
+    ['cyclic-cursor', (() => { const cursor = {}; cursor.self = cursor; return { observations: [], cursor, manifest: {} }; })()],
+    ['bigint-manifest', { observations: [], manifest: { fetched: 1n } }],
+  ]) {
+    const store = openCrawlerStore(':memory:');
+    try {
+      const result = await crawlRun({
+        store, runId: `invalid-${name}`,
+        sourcePlans: [{ id: name, lane: 'test', fetch: async () => output }],
+      });
+      assert.equal(result.telemetry.sources[name].status, 'failed');
+      assert.equal(result.sourceAttempts.find((attempt) => attempt.sourceId === name).status, 'failed');
+      assert.equal(store.prepare('SELECT status FROM source_attempts WHERE run_id = ? AND source_id = ?').get(`invalid-${name}`, name).status, 'failed');
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test('runtime omissions are partial, resumable, and visible in workflow coverage', async () => {
+  const store = openCrawlerStore(':memory:');
+  let monotonic = 0;
+  const clock = {
+    now: () => '2026-07-23T10:00:00.000Z',
+    monotonicNow: () => monotonic,
+  };
+  try {
+    const result = await crawlWorkflow({
+      store,
+      runId: 'workflow-runtime-omission',
+      clock,
+      config: { execution: {
+        wholeRunDeadlineMs: 100, discoveryBudgetMs: 20, downstreamReserveMs: 40,
+        handoffReserveMs: 40, scorerFloorMs: 40, perSourceMaxDurationMs: 50,
+        minimumSourceStartAllocationMs: 10,
+      } },
+      sourcePlans: [
+        { id: 'first-source', lane: 'test', fetch: async () => { monotonic += 20; return {}; } },
+        { id: 'omitted-source', lane: 'test', fetch: async () => { throw new Error('must not start'); } },
+      ],
+    });
+    assert.equal(result.run.status, 'partial');
+    assert.equal(result.terminalEnvelope.status, 'partial');
+    assert.equal(result.terminalEnvelope.sourceCoverage.not_started.includes('omitted-source'), true);
+    assert.equal(result.terminalEnvelope.lastDurableSourceState.not_started.includes('omitted-source'), true);
+  } finally {
+    store.close();
+  }
+});
+
+test('a resumed run requeues runtime omissions and completes the planned sources', async () => {
+  const store = openCrawlerStore(':memory:');
+  const config = { execution: {
+    wholeRunDeadlineMs: 100,
+    discoveryBudgetMs: 40,
+    downstreamReserveMs: 30,
+    handoffReserveMs: 30,
+    scorerFloorMs: 30,
+    perSourceMaxDurationMs: 100,
+    minimumSourceStartAllocationMs: 10,
+  } };
+  const makeClock = () => {
+    let current = 0;
+    return {
+      now: () => new Date(Date.UTC(2026, 6, 23, 1, 0, 0, current)).toISOString(),
+      monotonicNow: () => current,
+      advance: (milliseconds) => { current += milliseconds; },
+    };
+  };
+
+  try {
+    const firstClock = makeClock();
+    const first = await crawlRun({
+      store,
+      runId: 'runtime-omission-resume',
+      clock: firstClock,
+      config,
+      sourcePlans: [
+        { id: 'first-source', lane: 'test', fetch: async () => { firstClock.advance(40); return {}; } },
+        { id: 'omitted-source', lane: 'test', fetch: async () => ({}) },
+      ],
+    });
+
+    assert.equal(first.run.status, 'partial');
+    assert.equal(first.telemetry.sources['omitted-source'].status, 'omitted_by_runtime');
+    assert.deepEqual(first.attempts.map((attempt) => attempt.status), ['partial']);
+
+    const second = await crawlRun({
+      store,
+      runId: 'runtime-omission-resume',
+      clock: makeClock(),
+      config,
+      sourcePlans: [
+        { id: 'first-source', lane: 'test', fetch: async () => { throw new Error('succeeded source must not rerun'); } },
+        { id: 'omitted-source', lane: 'test', fetch: async () => ({}) },
+      ],
+    });
+
+    assert.equal(second.run.status, 'completed');
+    assert.equal(second.run.telemetry.resumable, false);
+    assert.equal(second.telemetry.sources['omitted-source'].status, 'succeeded');
+    assert.deepEqual(second.attempts.map((attempt) => attempt.status), ['partial', 'completed']);
+  } finally {
+    store.close();
+  }
+});
+
+test('JSON cursor and manifest keys round-trip without changing Object.prototype', async () => {
+  const store = openCrawlerStore(':memory:');
+  const cursor = JSON.parse('{"__proto__":{"cursor":true},"constructor":"cursor-constructor","prototype":{"cursor":1}}');
+  const manifest = JSON.parse('{"__proto__":{"manifest":true},"constructor":"manifest-constructor","prototype":{"manifest":1}}');
+  const finalManifest = { ...manifest, truncated: true };
+  const objectPrototypeKeys = Object.getOwnPropertyNames(Object.prototype);
+
+  try {
+    const result = await crawlRun({
+      store,
+      runId: 'json-dangerous-keys',
+      sourcePlans: [{
+        id: 'json-source',
+        lane: 'test',
+        fetch: async ({ checkpoint }) => {
+          await checkpoint({ cursor, manifestDelta: manifest });
+          return { cursor, manifest: finalManifest };
+        },
+      }],
+    });
+    const sourceRow = store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get('json-source');
+    const telemetryRow = store.prepare('SELECT details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?').get('json-dangerous-keys', 'json-source');
+    const storedCursor = JSON.parse(sourceRow.cursor_json).cursor;
+    const storedDetails = JSON.parse(telemetryRow.details_json);
+
+    assert.deepEqual(storedCursor, cursor);
+    assert.deepEqual(storedDetails.manifest, finalManifest);
+    assert.deepEqual(result.telemetry.sources['json-source'].manifest, finalManifest);
+    assert.deepEqual(Object.getOwnPropertyNames(Object.prototype), objectPrototypeKeys);
+    assert.equal(Object.prototype.cursor, undefined);
+    assert.equal(Object.prototype.manifest, undefined);
+    assert.deepEqual(cloneJsonSafe(cursor), cursor);
+  } finally {
+    store.close();
+  }
 });
 
 test('a crawl run stops before starting a source after its absolute deadline', async () => {

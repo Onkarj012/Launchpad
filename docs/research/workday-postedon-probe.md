@@ -1,6 +1,6 @@
 # Workday LIST `postedOn` probe
 
-> **Superseded operational conclusion.** Preserve this dated measurement, but current Launchpad policy does not trust LIST `postedOn` for freshness. Only a usable Workday DETAIL `startDate` is trusted; list-only evidence enters `VerifyQueue`. See [`../STATUS.md`](../STATUS.md).
+> **Current policy.** LIST `postedOn` is not trusted for selection. Every Workday LIST-only row, bounded or unbounded, stays in `VerifyQueue`; only a usable DETAIL `startDate` supplies freshness. See [`../STATUS.md`](../STATUS.md).
 
 On 2026-07-25, a read-only probe compared Workday LIST `postedOn` labels with DETAIL `startDate` values across four tenants: Autodesk, Barclays, Finastra, and BP International. It read 80 LIST rows and fetched 16 corresponding DETAIL records.
 
@@ -15,4 +15,4 @@ The full sample measured 16 matches, 0 mismatches, and 0 missing `startDate` val
 
 Original dated conclusion: the measured result supported treating a bounded Workday `postedOn` label as corroborating freshness evidence without a DETAIL request. The probe covered four tenants on one day and did not establish behavior for every Workday tenant. The unbounded `Posted 30+ Days Ago` label remained unusable for dating and had to stay undated.
 
-Current superseding policy: that sample is not sufficient operational evidence across tenants, refreshes, or requisition lifecycles. Every list-only `postedOn` value remains undated and in `VerifyQueue`; a usable DETAIL `startDate` is required for trusted Workday freshness.
+The probe measured agreement between LIST `postedOn` and DETAIL `startDate` in four tenants on one day. That observation does not change the policy. LIST data remains verification-only, and detail hydration is the point where a Workday date becomes trusted freshness evidence.

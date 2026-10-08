@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "status": "draft",
+  "title": "Launchpad Daily Discovery Recovery Plan",
+  "slug": "launchpad-daily-discovery-recovery",
+  "visual_profile": "runtime-recovery-manifest",
+  "source_path": "docs/plans/launchpad-daily-discovery-recovery.md",
+  "source_sha256": "20d1c45906163a1e8029b39c436973533a83f47c40a7dcb45fb1f757af6472d4",
+  "html_path": "docs/plans/launchpad-daily-discovery-recovery.waymark.html",
+  "html_sha256": "3883b2cd19a63cd7ffe873f6202df146353086cde8b5261ee5dcbbfba7ff4505",
+  "page_id": "M3urjCXJpDzq",
+  "url": "https://waymark.leo4.dev/p/M3urjCXJpDzq",
+  "ttl_days": 0,
+  "last_known_updated_at": "2026-08-19T08:14:23.851Z"
+}

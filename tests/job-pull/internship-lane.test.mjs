@@ -135,6 +135,8 @@ test('executes only through the self-contained fake transactional gateway', asyn
   assert.deepEqual(gateway.events.map((event) => event.stage), ['reserve', 'write', 'verify', 'commit']);
   assert.equal(gateway.committed.size, 1);
   const second = await gateway.executeWrites({ operations: result.plannedNotionOperations });
-  assert.equal(second.status, 'noop');
+  assert.equal(second.status, 'replayed');
+  assert.deepEqual(second.newlyCommitted, []);
+  assert.deepEqual(second.alreadyCommitted, [result.plannedNotionOperations[0].dedupKey]);
   await assert.rejects(() => runInternshipLane({ clock: () => INTERNSHIP_NOW, records: [internshipFixture(2)], notionGateway: noWrite, executeGateway: true }), /fake gateway/);
 });

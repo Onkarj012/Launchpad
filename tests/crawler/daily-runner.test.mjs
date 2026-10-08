@@ -1,12 +1,13 @@
+import { withManualFixtureScores } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, runDailyNormal } from '../../crawler/daily-runner.mjs';
+import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, runDailyNormal as runDailyNormalActual } from '../../crawler/daily-runner.mjs';
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
@@ -14,6 +15,7 @@ import { openCrawlerStore } from '../../crawler/run.mjs';
 import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
+import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -44,6 +46,7 @@ function rawPortalJob(id, overrides = {}) {
     liveness: { status: 'Active', checkedAt: NOW, evidence: 'employer page checked' },
     originalApplicationUrl: `https://company-${id}.example.test/careers/${id}`,
     originalApplicationEvidence: 'resolved employer careers posting',
+    scoreOrigin: 'explicit-scored-input', responseLikelihood: 15,
     matchScore: 80,
     ...overrides,
   };
@@ -234,6 +237,15 @@ function runOptions(config, transport, overrides = {}) {
   };
 }
 
+function fakeWriteOptions(overrides = {}) {
+  const gateway = overrides.gateway ?? createFakeTransactionalGateway();
+  return {
+    executeWrites: true,
+    notionGatewayFactory: () => gateway,
+    ...overrides,
+  };
+}
+
 function emptyLegacyFixtures() {
   return Object.fromEntries(NORMAL_SOURCE_LANES.filter((lane) => lane.kind !== 'india-portal-search').map((lane) => [lane.id, { candidates: [], manifest: { status: 'empty' } }]));
 }
@@ -326,6 +338,18 @@ test('the scorer timeout keeps its floor when discovery leaves almost no time', 
   }
 });
 
+test('the twenty-minute execution contract reserves discovery and handoff windows', () => {
+  const execution = createDailyExecution({ execution: { wholeRunDeadlineMs: 1_200, downstreamReserveMs: 300 } }, NOW);
+  try {
+    assert.equal(execution.discoveryBudgetMs, 720);
+    assert.equal(execution.handoffReserveMs, 180);
+    assert.ok(execution.sourceBudget().deadlineMs <= execution.startedAt + 720);
+    assert.ok(execution.downstreamRemainingMs() <= 1_020);
+  } finally {
+    execution.cleanup();
+  }
+});
+
 test('tracked warm-set observations feed tracked-ats into the real Normal pipeline', async () => {
   const { config } = testConfig({ trackedBoards: ['tracked-board'] });
   const result = await runDailyNormal(runOptions(
@@ -338,6 +362,42 @@ test('tracked warm-set observations feed tracked-ats into the real Normal pipeli
   assert.deepEqual(result.scoringQueue.map((candidate) => candidate.company), ['tracked-board']);
   assert.equal(result.scoringQueue[0].normalLaneId, 'tracked-ats');
   assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats').fetched, 1);
+});
+
+test('bounded planner owns tracked ATS coverage without a second warm fetch', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'one-owner', company: 'One Owner' }] });
+  config.sourcePlanner = { enabled: true, legacyPlannerRollback: false, maxBoards: 1, priorityShare: 0.8, explorationShare: 0.2 };
+  const calls = [];
+  const result = await runDailyNormal(runOptions(config, fakeTransport({ 'one-owner': [greenhouseJob(777, 'one-owner')] }, calls), { runId: 'bounded-planner-owner' }));
+  assert.equal(calls.length, 1);
+  const tracked = result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats');
+  assert.equal(tracked.firstPassOwner, 'ats-warm');
+  assert.equal(tracked.duplicateFetches, 0);
+  assert.equal(tracked.fetched, 0);
+  assert.equal(result.crawlerV2Telemetry['ats-warm'].boardPlan.boardsSelected, 1);
+});
+
+test('legacy planner rollback filters tracked boards already owned by the first crawler pass', async () => {
+  const configBefore = readFileSync(path.resolve('config/crawler-v2.json'), 'utf8');
+  const { config } = testConfig({
+    warmBoards: [{ slug: 'shared-board', company: 'Shared Board' }],
+    trackedBoards: ['shared-board', 'legacy-only'],
+  });
+  config.sourcePlanner = { enabled: true, legacyPlannerRollback: true };
+  const calls = [];
+  const result = await runDailyNormal(runOptions(
+    config,
+    fakeTransport({ 'shared-board': [], 'legacy-only': [] }, calls),
+    { runId: 'legacy-planner-dedupe' },
+  ));
+
+  const fetchedBoards = calls.map((url) => url.match(/\/boards\/([^/]+)\/jobs/)?.[1]).filter(Boolean);
+  assert.deepEqual(fetchedBoards.sort(), ['legacy-only', 'shared-board']);
+  const tracked = result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats');
+  assert.equal(tracked.firstPassOwner, 'tracked-ats');
+  assert.equal(tracked.duplicateFetches, 0);
+  assert.deepEqual(tracked.deduplicatedBoardIds, ['greenhouse:shared-board']);
+  assert.equal(readFileSync(path.resolve('config/crawler-v2.json'), 'utf8'), configBefore);
 });
 
 test('caller-supplied fixtures for other Normal lanes are preserved', async () => {
@@ -504,6 +564,31 @@ test('a partial optional lane does not degrade the run, but a failed optional la
   }));
   assert.equal(failed.outcome.status, 'degraded');
   assert.ok(failed.shortfall.failedLanes.includes('structured-career-pages'));
+});
+
+test('degraded tracked ATS is terminal coverage, not a not-started source', async () => {
+  const { config } = testConfig({ trackedBoards: ['tracked-good', 'tracked-timeout'] });
+  const transport = async (url) => {
+    if (url.includes('/boards/tracked-timeout/jobs')) throw new Error('warm transport timed out');
+    if (url.includes('/boards/tracked-good/jobs')) {
+      return { status: 200, body: JSON.stringify({ jobs: [greenhouseJob(901, 'tracked-good')] }) };
+    }
+    return { status: 200, body: JSON.stringify({ jobs: [] }) };
+  };
+  const result = await runDailyNormal(runOptions(config, transport, {
+    scorer: async (candidates) => ({
+      scored: candidates.map((candidate) => ({ ...candidate, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })),
+      failures: [],
+      chunks: 1,
+    }),
+  }));
+
+  assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'tracked-ats').status, 'degraded');
+  assert.ok(
+    result.terminalEnvelope.completedSources.includes('tracked-ats'),
+    JSON.stringify(result.terminalEnvelope.sourceCoverage),
+  );
+  assert.equal(result.terminalEnvelope.notStartedSources.includes('tracked-ats'), false);
 });
 
 test('warm-ATS failure messages retain provider, board, and code provenance', async () => {
@@ -793,16 +878,100 @@ test('a capped enterprise source remains visibly truncated in the unified run', 
   assert.equal(telemetry.recordsNotExamined, 1);
 });
 
-test('Indian portal lanes are optional and explain that live injection is required', async () => {
+test('enterprise deadline returns a no-write partial envelope and resumes the same run without duplicate observations', async () => {
+  const { config } = testConfig();
+  config.sources.enterprise = {
+    boards: [
+      { provider: 'workday', company: 'Resumable Enterprise', url: 'https://resumable.wd1.myworkdayjobs.com/jobs' },
+    ],
+    maxPages: 2,
+    maxJobsPerBoard: 10,
+    enrichDetails: false,
+  };
+  config.execution = {
+    wholeRunDeadlineMs: 1_000,
+    discoveryBudgetMs: 600,
+    handoffReserveMs: 100,
+    downstreamReserveMs: 100,
+    perSourceMaxDurationMs: 600,
+    minimumSourceStartAllocationMs: 1,
+  };
+  let calls = 0;
+  let completed = false;
+  const transport = async (url) => {
+    calls += 1;
+    if (calls === 2 && !completed) {
+      const error = new Error('injected daily discovery deadline');
+      error.code = 'DAILY_DEADLINE_EXCEEDED';
+      throw error;
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ total: 2, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/1', locations: ['Pune, India'], postedOn: NOW, jobReqId: 'WD-1' }] }) };
+  };
+  let prohibited = 0;
+  let factoryCalls = 0;
+  const gateway = createFakeTransactionalGateway();
+  const options = runOptions(config, transport, {
+    runId: 'daily-partial-resume',
+    executeWrites: true,
+    notionGatewayFactory: () => { factoryCalls += 1; return gateway; },
+    opportunityLedgerWriter: () => { if (!completed) prohibited += 1; return { path: config.opportunityLedgerPath, rows: [] }; },
+    notionGateway: { planWrites({ operations }) { if (!completed) prohibited += 1; return operations; } },
+    scorer: async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) }),
+  });
+  const validCanaryEvidence = options.canaryEvidence;
+  options.canaryEvidence = (...args) => {
+    if (!completed) prohibited += 1;
+    return validCanaryEvidence(...args);
+  };
+  const partial = await runDailyNormal(options);
+  assert.equal(partial.terminalEnvelope.status, 'partial');
+  assert.equal(partial.observations.length, 1);
+  assert.equal(partial.terminalEnvelope.writesPlanned, false);
+  assert.ok(partial.terminalEnvelope.interruptedSources.includes('ats-enterprise'));
+  assert.equal(partial.terminalEnvelope.failedSources.length, 0);
+  assert.equal(partial.surfaced, 0);
+  assert.equal(partial.deliveryCanary, null);
+  assert.equal(prohibited, 0);
+  assert.equal(factoryCalls, 0);
+
+  completed = true;
+  const resumed = await runDailyNormal({ ...options, config: { ...config, execution: { ...config.execution, discoveryBudgetMs: 800 } } });
+  assert.equal(resumed.terminalEnvelope.status, 'completed');
+  assert.equal(resumed.terminalEnvelope.interruptedSources.length, 0);
+  assert.equal(resumed.terminalEnvelope.runId, partial.terminalEnvelope.runId);
+  const store = openCrawlerStore(config.databasePath);
+  assert.equal(store.prepare('SELECT COUNT(*) AS count FROM job_observations').get().count, 1);
+  store.close();
+  assert.equal(factoryCalls, resumed.deliveryPlan.selectedCount > 0 ? 1 : 0);
+  assert.ok(calls >= 3);
+});
+
+test('Indian portal lanes are optional and explain why each one produced nothing', async () => {
   const { config } = testConfig();
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
     sourceFixtures: emptyLegacyFixtures(),
   }));
-  for (const laneId of ['portal-naukri', 'portal-foundit', 'portal-hirist', 'portal-cutshort', 'portal-instahyre', 'portal-peerlist', 'portal-linkedin-jobs']) {
+  // Three groups, three honest explanations. A lane that owns a working adapter
+  // must not keep claiming it is waiting on injection.
+  const expected = {
+    'portal-foundit': 'PORTAL_REQUIRES_LIVE_INJECTION',
+    'portal-hirist': 'PORTAL_REQUIRES_LIVE_INJECTION',
+    'portal-cutshort': 'PORTAL_REQUIRES_LIVE_INJECTION',
+    'portal-peerlist': 'PORTAL_REQUIRES_LIVE_INJECTION',
+    // Probed 2026-08-22: 406 recaptcha over HTTP, 403 + captcha in real Chromium.
+    'portal-naukri': 'PORTAL_BLOCKED_REQUIRES_RESCUE',
+    // These own adapters; with no transport injected they are simply unavailable.
+    'portal-linkedin-jobs': 'OPTIONAL_SOURCE_UNAVAILABLE',
+    'portal-glassdoor': 'OPTIONAL_SOURCE_UNAVAILABLE',
+    'portal-instahyre': 'OPTIONAL_SOURCE_UNAVAILABLE',
+    'portal-wellfound': 'OPTIONAL_SOURCE_UNAVAILABLE',
+  };
+  for (const [laneId, reasonCode] of Object.entries(expected)) {
     const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === laneId);
+    assert.ok(manifest, `missing manifest for ${laneId}`);
     assert.equal(manifest.optional, true);
     assert.equal(manifest.required, false);
-    assert.equal(manifest.reasonCode, 'PORTAL_REQUIRES_LIVE_INJECTION');
+    assert.equal(manifest.reasonCode, reasonCode, laneId);
   }
 });
 
@@ -815,16 +984,19 @@ test('unified daily result surfaces the Normal pipeline funnel report', async ()
   assert.equal(result.funnel.reconciliation.ok, true);
 });
 
-test('no portal injection is healthy and does not create portal shortfall reasons', async () => {
+test('no portal injection stays healthy but is reported as an empty lane', async () => {
   const { config } = testConfig();
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
     sourceFixtures: emptyLegacyFixtures(),
   }));
+  // Missing portals must not degrade the run - they are optional.
   assert.equal(result.outcome.status, 'ok');
   assert.equal(result.outcome.degraded, false);
   assert.equal(result.shortfall.failedLanes.some((laneId) => laneId.startsWith('portal-')), false);
-  assert.equal(result.shortfall.emptyLanes.some((laneId) => laneId.startsWith('portal-')), false);
-  assert.equal(result.shortfall.reasons.some((reason) => /portal-/i.test(reason)), false);
+  // But they must be visible. Silently omitting an empty source is how a
+  // zero-yield run came to look identical to a healthy one.
+  assert.equal(result.shortfall.emptyLanes.includes('portal-linkedin-jobs'), true);
+  assert.equal(result.shortfall.reasons.includes('SOURCE_EMPTY:portal-linkedin-jobs'), true);
 });
 
 test('live-injected portal candidates retain their portal manifest and verification handling', async () => {
@@ -907,6 +1079,7 @@ test('daily records the exact final shortlist before persisting a valid canary',
     runId,
     canaryEvidence: canaryEvidence(config, runId, candidates),
     canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    ...fakeWriteOptions(),
     canaryStore: {
       readRuns: () => records,
       append: (record) => { events.push('canary'); records.push(record); },
@@ -937,39 +1110,122 @@ test('daily records the exact final shortlist before persisting a valid canary',
   assert.deepEqual(result.surfaced.rows.map((row) => row.canonical_url).sort(), result.shortlist.map((candidate) => candidate.canonicalUrl).sort());
 });
 
-test('malformed, preflight-unwritable, or conflicting canary stores fail before the opportunity ledger is touched', async () => {
+test('partial transaction records only committed keys and degrades failed rows for retry', async () => {
+  const { config } = testConfig();
+  const candidates = [rawPortalJob(1406), rawPortalJob(1407)];
+  const committedKey = candidateDedupKey(candidates[0]);
+  const failedKey = candidateDedupKey(candidates[1]);
+  const gateway = {
+    async executeWrites() {
+      return {
+        status: 'partial',
+        newlyCommitted: [committedKey],
+        alreadyCommitted: [],
+        failed: [{ key: failedKey, error: { code: 'INJECTED_FAILURE', message: 'retry me' } }],
+        recovery: [],
+        deliveredKeys: [committedKey],
+      };
+    },
+  };
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId: 'partial-transaction',
+    canaryEvidence: canaryEvidence(config, 'partial-transaction', candidates),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    ...fakeWriteOptions({ gateway }),
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates, manifest: { status: 'ok' } } },
+  }));
+
+  assert.equal(result.outcome.status, 'degraded');
+  assert.equal(result.transaction.status, 'partial');
+  assert.deepEqual(result.surfaced.rows.map((row) => row.dedup_key), [committedKey]);
+  assert.equal(readOpportunityLedger(config.opportunityLedgerPath).rows.some((row) => row.dedup_key === failedKey), false);
+  assert.deepEqual(result.deliveryReconciliation.counts, {
+    selected: 2,
+    shortlist: 2,
+    plannedV5Operations: 2,
+    newlyCommitted: 1,
+    alreadyCommitted: 0,
+    failed: 1,
+    recoveryBlocked: 0,
+    deliveredKeys: 1,
+    opportunityLedgerSurfaced: 1,
+    opportunityLedgerRepaired: 0,
+    canaryShortlist: 2,
+    notification: null,
+  });
+  assert.ok(result.deliveryReconciliation.mismatchReasons.includes('TRANSACTION_PARTIAL'));
+  assert.equal(result.deliveryCanary.valid, false);
+});
+
+test('replayed transaction repairs a missing ledger row at original commit time without new surfacing', async () => {
+  const { config } = testConfig();
+  const candidate = rawPortalJob(1408);
+  const gateway = createFakeTransactionalGateway();
+  await gateway.executeWrites({ operations: plannedOperations([candidate], 'seed-replay') });
+  const committedAt = '2026-07-20T05:15:00.000Z';
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId: 'replay-repair',
+    canaryEvidence: canaryEvidence(config, 'replay-repair', [candidate]),
+    canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    transactionCommitTimeForKey: () => committedAt,
+    ...fakeWriteOptions({ gateway }),
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [candidate], manifest: { status: 'ok' } } },
+  }));
+
+  assert.equal(result.transaction.status, 'replayed');
+  assert.deepEqual(result.surfaced.rows, []);
+  assert.equal(result.ledgerRepairs.rows.length, 1);
+  assert.equal(result.ledgerRepairs.rows[0].first_surfaced_at, committedAt);
+  assert.equal(result.ledgerRepairs.rows[0].last_surfaced_at, committedAt);
+  assert.equal(result.deliveryReconciliation.counts.opportunityLedgerSurfaced, 0);
+  assert.equal(result.deliveryReconciliation.counts.opportunityLedgerRepaired, 1);
+});
+
+test('malformed, preflight-unwritable, or conflicting canary stores degrade after committed rows reach the opportunity ledger', async () => {
   const cases = [
-    ['malformed', { readRuns: () => { throw new SyntaxError('malformed canary store'); } }, /malformed canary store/],
-    ['preflight-unwritable', { readRuns: () => [], preflight: () => { const error = new Error('canary store is unwritable'); error.code = 'EACCES'; throw error; } }, (error) => error.code === 'EACCES'],
-    ['conflict', { readRuns: () => [{ runId: 'conflict', runAt: NOW, counts: { shortlist: 999 } }] }, (error) => error.code === 'CANARY_RUN_ID_CONFLICT'],
+    ['malformed', { readRuns: () => { throw new SyntaxError('malformed canary store'); } }, null, /malformed canary store/],
+    ['preflight-unwritable', { readRuns: () => [], preflight: () => { const error = new Error('canary store is unwritable'); error.code = 'EACCES'; throw error; } }, 'EACCES', /canary store is unwritable/],
+    ['conflict', { readRuns: () => [{ runId: 'conflict', runAt: NOW, counts: { shortlist: 999 } }] }, 'CANARY_RUN_ID_CONFLICT', /different content/],
   ];
-  for (const [runId, canaryStore, expected] of cases) {
+  for (const [runId, canaryStore, code, message] of cases) {
     const { config } = testConfig();
     const candidates = [rawPortalJob(`1403-${runId}`)];
-    await assert.rejects(runDailyNormal(runOptions(config, fakeTransport({}), {
+    const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
       canaryStore,
       runId,
       canaryEvidence: canaryEvidence(config, runId, candidates),
+      ...fakeWriteOptions(),
       sourceFixtures: { 'portal-naukri': { candidates, manifest: { status: 'ok' } } },
-    })), expected);
-    assert.deepEqual(readOpportunityLedger(config.opportunityLedgerPath).rows, []);
+    }));
+    assert.equal(result.outcome.status, 'degraded');
+    assert.equal(result.canaryPersistenceError.stage, 'delivery-canary-preflight');
+    assert.equal(result.canaryPersistenceError.code, code);
+    assert.match(result.canaryPersistenceError.message, message);
+    assert.equal(result.deliveryCanary, null);
+    assert.equal(readOpportunityLedger(config.opportunityLedgerPath).rows.length, 1);
   }
 });
 
-test('ledger failure leaves the canary store unchanged', async () => {
+test('ledger failure degrades delivery and leaves the canary store unchanged', async () => {
   const { config } = testConfig();
   const records = [];
   const runId = 'ledger-failure';
   const candidates = [rawPortalJob(1404)];
-  await assert.rejects(runDailyNormal(runOptions(config, fakeTransport({}), {
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
     runId,
     canaryEvidence: canaryEvidence(config, runId, candidates),
     canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    ...fakeWriteOptions(),
     canaryStore: { readRuns: () => records, append: (record) => records.push(record) },
     opportunityLedgerWriter: () => { throw new Error('ledger write failed'); },
     sourceFixtures: { 'portal-naukri': { candidates, manifest: { status: 'ok' } } },
-  })), /ledger write failed/);
-  assert.deepEqual(records, []);
+  }));
+  assert.equal(result.outcome.status, 'degraded');
+  assert.match(result.outcome.errors.at(-1).message, /ledger write failed/);
+  assert.equal(result.deliveryCanary.valid, false);
+  assert.equal(result.deliveryCanary.persisted, true);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].valid, false);
 });
 
 test('canary append failure after ledger returns degraded delivery with shortlist and no valid record claim', async () => {
@@ -980,6 +1236,7 @@ test('canary append failure after ledger returns degraded delivery with shortlis
     runId,
     canaryEvidence: canaryEvidence(config, runId, candidates),
     canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    ...fakeWriteOptions(),
     canaryStore: {
       readRuns: () => [],
       append: () => { const error = new Error('canary store is unwritable'); error.code = 'EACCES'; throw error; },
@@ -1036,9 +1293,12 @@ test('a score for a canonical URL outside the unified pool is a no-op', async ()
   assert.deepEqual(withUnmatchedScore.scoringQueue, withoutScores.scoringQueue);
 });
 
-test('omitting scores preserves the unified scoring gate', async () => {
+test('omitting scores preserves the unified scoring gate without constructing the live gateway', async () => {
   const { config } = testConfig();
+  let factoryCalls = 0;
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    executeWrites: true,
+    notionGatewayFactory: () => { factoryCalls += 1; return createFakeTransactionalGateway(); },
     sourceFixtures: {
       'portal-naukri': { candidates: [rawPortalJob(1503, { matchScore: undefined })], manifest: { status: 'ok' } },
     },
@@ -1047,6 +1307,29 @@ test('omitting scores preserves the unified scoring gate', async () => {
   assert.equal(result.outcome.status, 'fatal');
   assert.equal(result.scoringQueue[0].scoringStatus, 'unscored');
   assert.match(result.outcome.errors[0].message, /unscored=1/);
+  assert.equal(factoryCalls, 0);
+});
+
+test('completed no-write run stops before live gateway construction and ledger mutation', async () => {
+  const { config } = testConfig();
+  let factoryCalls = 0;
+  const candidate = rawPortalJob(1504);
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    notionGatewayFactory: () => { factoryCalls += 1; return createFakeTransactionalGateway(); },
+    sourceFixtures: {
+      'portal-naukri': { candidates: [candidate], manifest: { status: 'ok' } },
+    },
+  }));
+
+  assert.notEqual(result.outcome.status, 'fatal');
+  assert.equal(result.deliveryReconciliation.status, 'no-write');
+  assert.equal(result.deliveryReconciliation.ok, true);
+  assert.deepEqual(result.deliveryReconciliation.mismatchReasons, []);
+  assert.equal(result.transaction, null);
+  assert.equal(result.deliveryCanary, null);
+  assert.deepEqual(result.surfaced.rows, []);
+  assert.equal(factoryCalls, 0);
+  assert.deepEqual(readOpportunityLedger(config.opportunityLedgerPath).rows, []);
 });
 
 test('focused mode fixtures require independent stage evidence for shared Startup fallback without weakening native lanes', () => {
@@ -1085,6 +1368,7 @@ test('daily mode dispatch selects Startup and Remote with mode-specific run iden
     runId: null,
     canaryEvidence: canaryEvidence(config, startupRunId, [startupCandidate]),
     canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    ...fakeWriteOptions(),
     sourceFunctions: { 'startup-employer-boards': () => { throw new Error('focused startup must use shared fixture'); } },
     sourceFixtures: Object.fromEntries([
       'startup-employer-boards', 'vc-portfolio-boards', 'yc', 'wellfound',
@@ -1111,6 +1395,7 @@ test('daily mode dispatch selects Startup and Remote with mode-specific run iden
     runId: null,
     canaryEvidence: canaryEvidence(config, remoteRunId, [remoteCandidate]),
     canaryValidationOptions: { reportRoot: path.dirname(config.databasePath) },
+    ...fakeWriteOptions(),
     sourceFunctions: { 'remote-ats': () => { throw new Error('focused remote must use shared fixture'); } },
     sourceFixtures: Object.fromEntries([
       'remote-ats', 'yc', 'wellfound', 'bounded-remote-search',
@@ -1137,3 +1422,6 @@ test('unknown daily mode is rejected before any discovery transport call', async
   );
   assert.equal(calls, 0);
 });
+
+// Route fixture totals through the explicit scoring input after the shared crawl.
+function runDailyNormal(options) { return runDailyNormalActual(withManualFixtureScores(options)); }

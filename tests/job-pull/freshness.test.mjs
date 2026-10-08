@@ -34,13 +34,14 @@ test('undated and future records are not eligible for selection', () => {
   assert.equal(classifyFreshness('2026-07-14T12:00:00.001Z', { now }).code, 'FRESHNESS_FUTURE_POSTED_AT');
 });
 
-test('Workday without verified startDate evidence is VerifyQueue', () => {
+test('Workday without verified startDate evidence remains in VerifyQueue', () => {
   const result = classifyFreshness({
     provider: 'workday',
     postedAt: '2026-07-14T08:00:00.000Z',
     evidence: { freshness: { kind: 'workday-unverified' } },
   }, { now });
   assert.equal(result.window, 'VerifyQueue');
+  assert.equal(result.eligible, false);
   assert.equal(result.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');
   assert.equal(result.verifyQueue, true);
   assert.equal(result.workdayUncorroborated, true);
@@ -54,10 +55,11 @@ test('Workday source provenance cannot masquerade as a non-Workday provider', ()
   }, { now });
   assert.equal(result.window, 'VerifyQueue');
   assert.equal(result.code, 'FRESHNESS_WORKDAY_UNCORROBORATED_VERIFY_QUEUE');
+  assert.equal(result.verifyQueue, true);
   assert.equal(result.workdayUncorroborated, true);
 });
 
-test('bounded Workday postedOn evidence stays in VerifyQueue without detail corroboration', () => {
+test('bounded Workday postedOn evidence remains in VerifyQueue without detail corroboration', () => {
   const result = classifyFreshness({
     provider: 'workday',
     postedAt: '2026-07-14T11:00:00.000Z',
@@ -90,6 +92,22 @@ test('detail-hydrated Workday rows with startDate evidence are classified by the
   assert.equal(result.eligible, true);
   assert.equal(result.code, 'FRESHNESS_HOT_0_72H');
   assert.equal(result.verifyQueue, undefined);
+});
+
+test('detail-hydrated Workday rows retain normal Active and Backfill age classes', () => {
+  const active = classifyFreshness({
+    provider: 'workday',
+    postedAt: '2026-07-10T12:00:00.000Z',
+    evidence: { freshness: { kind: 'workday-startDate' } },
+  }, { now });
+  const backfill = classifyFreshness({
+    provider: 'workday',
+    postedAt: '2026-07-06T12:00:00.000Z',
+    evidence: { freshness: { kind: 'workday-startDate' } },
+  }, { now });
+  assert.equal(active.window, 'Active');
+  assert.equal(backfill.window, 'Backfill');
+  assert.equal(backfill.backfill, true);
 });
 
 test('Workday rows with an unbounded postedOn label stay undated in VerifyQueue', () => {

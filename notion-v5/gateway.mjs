@@ -38,9 +38,11 @@ function responseBody(_response, text) { try { return text ? JSON.parse(text) : 
 function nonEmpty(value, fallback = null) { const text = String(value ?? '').trim(); return text || fallback; }
 function pageId(page) { return page?.id ?? page?.results?.[0]?.id ?? null; }
 function notionId(value) { return isNotionIdentifier(value) ? normalizeNotionId(value) : null; }
+function operationKey(operation) { return String(operation?.dedupKey ?? operation?.payload?.dedupKey ?? operation?.payload?.['Dedup Key'] ?? ''); }
 
 export function loadExternalCredential(filePath) {
   if (!filePath || !String(filePath).trim()) throw new NotionV5Error('an external credential file path is required', { code: 'CREDENTIAL_FILE_REQUIRED', stage: 'preflight' });
+  if (!path.isAbsolute(String(filePath))) throw new NotionV5Error('credential file path must be absolute', { code: 'CREDENTIAL_PATH_NOT_ABSOLUTE', stage: 'preflight' });
   const resolved = path.resolve(String(filePath));
   if (resolved === REPOSITORY_ROOT || resolved.startsWith(`${REPOSITORY_ROOT}${path.sep}`)) throw new NotionV5Error('credential file must be outside the repository', { code: 'CREDENTIAL_LOCATION_INVALID', stage: 'preflight' });
   let stats;
@@ -109,7 +111,8 @@ export class NotionV5Gateway {
     this.live = Boolean(live);
     this.testOnly = Boolean(testOnly);
     if (this.live && token && !this.testOnly) throw new NotionV5Error('direct token injection is test-only; use an external credential file', { code: 'DIRECT_TOKEN_FORBIDDEN', stage: 'preflight' });
-    this.token = this.live ? (this.testOnly ? token : credentialFile ? loadExternalCredential(credentialFile) : null) : null;
+    this.credentialFile = credentialFile;
+    this.token = this.live && this.testOnly ? token : null;
     this.fetchImpl = fetchImpl;
     this.sleep = sleep;
     this.apiBase = apiBase.replace(/\/$/, '');
@@ -117,7 +120,7 @@ export class NotionV5Gateway {
     this.maxPages = maxPages;
     this.retryDelayCapMs = retryDelayCapMs;
     this.journalPath = journalPath;
-    this.journal = journal ?? (this.live && journalPath ? createTransactionJournal({ journalPath }) : null);
+    this.journal = journal;
     this.activeJournal = null;
     this.activeTransactionKey = null;
     this.provisioning = Boolean(provisioning);
@@ -126,7 +129,7 @@ export class NotionV5Gateway {
     assertValidViewDefinitions();
     if (this.live) {
       if (!this.fetchImpl) throw new NotionV5Error('live gateway requires a transport', { code: 'FETCH_REQUIRED', stage: 'preflight' });
-      if (!nonEmpty(this.token)) throw new NotionV5Error('live gateway requires an external credential provider', { code: 'CREDENTIAL_REQUIRED', stage: 'preflight' });
+      if (this.testOnly && !nonEmpty(this.token)) throw new NotionV5Error('test live gateway requires an injected credential', { code: 'CREDENTIAL_REQUIRED', stage: 'preflight' });
       if (this.provisioning) {
         if (!notionId(this.authorizedParentId ?? this.manifest.parent?.id) || isLegacyNotionId(this.authorizedParentId ?? this.manifest.parent?.id)) throw new NotionV5Error('provisioning requires a real authorized v5 parent page id', { code: 'PARENT_REQUIRED', stage: 'preflight' });
       } else assertLiveManifest(this.manifest);
@@ -163,6 +166,42 @@ export class NotionV5Gateway {
 
   assertProvisionParent(id) {
     if (!notionId(id) || isLegacyNotionId(id) || notionId(id) !== notionId(this.authorizedParentId ?? this.manifest.parent?.id)) throw new NotionV5Error('provisioning parent is not the authorized v5 parent', { code: 'PARENT_SCOPE_REFUSED', stage: 'scope' });
+  }
+
+  validateLiveWritePreflight({ operations = [], credentialFile = this.credentialFile, journalPath = this.journalPath } = {}) {
+    if (!this.live) throw new NotionV5Error('live writes require live mode', { code: 'LIVE_OPT_IN_REQUIRED', stage: 'preflight' });
+    if (this.testOnly) throw new NotionV5Error('test mode cannot execute production writes', { code: 'TEST_MODE_REFUSED', stage: 'preflight' });
+    if (this.provisioning) throw new NotionV5Error('provisioning mode cannot execute application writes', { code: 'PROVISIONING_MODE_REFUSED', stage: 'preflight' });
+    if (this.manifest?.schemaVersion !== 'LaunchpadV5ManifestV2') throw new NotionV5Error('live writes require LaunchpadV5ManifestV2', { code: 'MANIFEST_VERSION_INVALID', stage: 'preflight' });
+    assertLiveManifest(this.manifest);
+    const token = loadExternalCredential(credentialFile);
+    const journal = createTransactionJournal({ journalPath });
+    const requestedKeys = new Set((Array.isArray(operations) ? operations : []).map(operationKey).filter(Boolean));
+    const recovery = journal.recover().filter((entry) => requestedKeys.has(String(entry.key)));
+    if (recovery.length) {
+      throw new NotionV5Error('transaction journal contains blocking recovery entries', {
+        code: 'JOURNAL_RECOVERY_REQUIRED',
+        stage: 'preflight',
+        details: { recovery: recovery.map(({ key, state, updatedAt }) => ({ key, state, updatedAt })) },
+      });
+    }
+    this.credentialFile = credentialFile;
+    this.journalPath = journalPath;
+    this.token = token;
+    this.journal = journal;
+    return {
+      ok: true,
+      manifestVersion: this.manifest.schemaVersion,
+      requestedKeys: [...requestedKeys],
+      recovery: [],
+      credentialPath: path.resolve(credentialFile),
+      journalPath: journal.path,
+    };
+  }
+
+  #ensureCredential() {
+    if (!this.live || nonEmpty(this.token)) return;
+    this.token = loadExternalCredential(this.credentialFile);
   }
 
   assertWriteJournal() {
@@ -208,10 +247,17 @@ export class NotionV5Gateway {
     for (const { id, kind } of relationIds) this.assertScopedId(id, kind);
   }
 
-  async request(requestPath, { method = 'GET', body = undefined, target = null, stage = 'http' } = {}) {
+  async request(requestPath, { method = 'GET', body = undefined, target = null, stage = 'http', auditPage = false } = {}) {
     if (!this.live) throw new NotionV5Error('live Notion access is disabled; pass live: true explicitly', { code: 'LIVE_OPT_IN_REQUIRED', stage });
-    this.#validatePathScope(requestPath);
-    this.#validateRequestBodyScope(requestPath, body);
+    this.#ensureCredential();
+    if (auditPage) {
+      if (method !== 'GET' || body !== undefined || !/^\/pages\/[0-9a-f-]+$/i.test(requestPath)) throw new NotionV5Error('audit page reads are restricted to GET /pages/{id}', { code: 'AUDIT_READ_SCOPE_INVALID', stage: 'audit' });
+      const auditId = requestPath.slice('/pages/'.length);
+      if (!isNotionIdentifier(auditId) || isLegacyNotionId(auditId)) throw new NotionV5Error('audit page identifier is unknown or audited legacy state', { code: 'UNKNOWN_ID_REFUSED', stage: 'audit', target });
+    } else {
+      this.#validatePathScope(requestPath);
+      this.#validateRequestBodyScope(requestPath, body);
+    }
     const url = `${this.apiBase}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       let response;
@@ -233,6 +279,56 @@ export class NotionV5Gateway {
       throw new NotionV5Error(parsed.message || `Notion request returned HTTP ${response.status}`, { code: `HTTP_${response.status}`, status: response.status, stage, target, details: parsed, retryable, redactionSecrets: [this.token] });
     }
     throw new NotionV5Error('Notion request retry budget exhausted', { code: 'RETRY_EXHAUSTED', stage, target, retryable: true });
+  }
+
+  async readPage(id, target) {
+    const resolved = targetFor(this.manifest, target);
+    if (!isNotionIdentifier(id) || isLegacyNotionId(id)) throw new NotionV5Error('historical page identifier is unknown or audited legacy state', { code: 'UNKNOWN_ID_REFUSED', stage: 'audit', target: resolved.key });
+    const page = await this.request(`/pages/${encodeURIComponent(id)}`, { target: resolved.key, stage: 'audit', auditPage: true });
+    const returnedId = page?.id;
+    if (!isNotionIdentifier(returnedId) || normalizeNotionId(returnedId) !== normalizeNotionId(id)) throw new NotionV5Error('Notion page read returned an invalid or mismatched page id', { code: 'RESPONSE_INVALID', stage: 'audit', target: resolved.key });
+    const parentDataSourceId = page.parent?.data_source_id ?? page.parent?.dataSourceId ?? null;
+    const pageScope = isNotionIdentifier(parentDataSourceId) && !isLegacyNotionId(parentDataSourceId) && normalizeNotionId(parentDataSourceId) === normalizeNotionId(resolved.dataSourceId) ? 'verified' : 'unresolved';
+    const archived = pageScope === 'verified' && page.archived === true;
+    const inTrash = pageScope === 'verified' && page.in_trash === true;
+    if (pageScope !== 'verified') return {
+      pageExists: true,
+      page,
+      target: resolved,
+      pageScope,
+      relationState: { status: 'unresolved', properties: [] },
+      evidence: { parentDataSourceId, archived, inTrash, in_trash: inTrash },
+    };
+    const relationProperties = Object.values(V5_SCHEMA.stores[resolved.key].properties).filter((definition) => definition.type === 'relation');
+    const relationChecks = relationProperties.map((definition) => {
+      const property = page.properties?.[definition.name];
+      if (!property || property.type !== 'relation' || !Array.isArray(property.relation)) return { property: definition.name, status: 'unresolved', relatedPageCount: null, reason: 'declared-relation-property-missing-or-malformed' };
+      const relatedPageIds = readPropertyValue(property);
+      const valid = relatedPageIds.every((relatedId) => isNotionIdentifier(relatedId) && !isLegacyNotionId(relatedId));
+      if (!valid) return { property: definition.name, status: 'unresolved', relatedPageCount: null, reason: 'relation-id-malformed' };
+      if (relatedPageIds.length === 0) return { property: definition.name, status: 'verified', relatedPageCount: 0, evidence: 'empty-relation-verified-by-declared-v5-schema-and-page-scope' };
+      return { property: definition.name, status: 'unresolved', relatedPageCount: relatedPageIds.length, reason: 'non-empty-relation-target-membership-not-verified', declaredTarget: definition.target, declaredDataSourceId: this.manifest.targets[definition.target].dataSourceId };
+    });
+    const relationState = {
+      status: pageScope === 'verified' && relationChecks.every(({ status }) => status !== 'unresolved') ? 'verified' : 'unresolved',
+      properties: relationChecks,
+    };
+    return {
+      pageExists: true,
+      page,
+      target: resolved,
+      pageScope,
+      relationState,
+      evidence: {
+        parentDataSourceId,
+        archived,
+        inTrash,
+        in_trash: inTrash,
+        title: readPropertyValue(page.properties?.Name) ?? '',
+        syntheticMarker: /synthetic/i.test(String(readPropertyValue(page.properties?.Name) ?? '')),
+        testArtifactMarker: /(?:test|fixture)/i.test(String(readPropertyValue(page.properties?.Name) ?? '')),
+      },
+    };
   }
 
   async listRows(target, { filter = undefined, sorts = undefined, pageSize = 100 } = {}) {
@@ -355,6 +451,13 @@ export class NotionV5Gateway {
 
   async writeApplications(operations, transaction = {}) {
     const planned = this.planWrites({ operations });
+    if (this.live && !this.testOnly) {
+      this.validateLiveWritePreflight({
+        operations: planned.operations,
+        credentialFile: transaction.credentialFile ?? this.credentialFile,
+        journalPath: transaction.journalPath ?? this.journalPath,
+      });
+    }
     const durableJournal = transaction.journal ?? this.journal ?? (this.live ? createTransactionJournal({ journalPath: transaction.journalPath ?? this.journalPath }) : null);
     if (this.live && !durableJournal) throw new NotionV5Error('live write requires an explicit external journal path', { code: 'JOURNAL_PATH_REQUIRED', stage: 'preflight' });
     this.activeJournal = durableJournal;

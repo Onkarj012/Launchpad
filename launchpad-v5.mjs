@@ -225,7 +225,6 @@ function rehearsalJob(prefix, index, overrides = {}) {
     originalApplicationUrl: `https://careers.rehearsal.example/${prefix}/${index}`,
     originalApplicationEvidence: 'fixture original employer ATS resolution',
     applicationResolution: { status: 'Resolved Original', evidence: 'fixture original employer ATS resolution' },
-    matchScore: 90 - index,
     ...overrides,
   };
 }
@@ -234,6 +233,17 @@ function laneFunctions(lanes, prefix, extra = {}) {
   return Object.fromEntries(lanes.map((lane, index) => {
     const additions = extra[lane.id] ?? {};
     return [lane.id, () => ({ records: [rehearsalJob(prefix, index + 1, { provider: lane.provider ?? 'greenhouse', sourceKind: lane.category === 'direct-ats' ? 'ats-direct' : 'aggregator' })], ...additions })];
+  }));
+}
+
+// Supply fixture scores through the same explicit boundary as --scores-json.
+function rehearsalScores(lanes, prefix) {
+  return lanes.map((lane, index) => ({
+    url: `https://rehearsal.example/${prefix}/${index + 1}`,
+    matchScore: 89 - index,
+    responseLikelihood: 18,
+    rationale: 'Fixture Python AI requirements match the supplied skills.',
+    strongestHook: 'Fixture Python AI systems.',
   }));
 }
 
@@ -265,19 +275,22 @@ function localGateway() {
   };
 }
 
-async function rehearsalModes() {
+// Run each fixture mode with optional explicit scores and an in-memory gateway.
+async function rehearsalModes(includeExplicitScores) {
   const noWrite = { planWrites: ({ operations }) => ({ status: 'planned', operations }) };
-  const normal = await runNormalMode({ clock: () => REHEARSAL_NOW, runId: 'rehearsal-normal', sourceFunctions: laneFunctions(NORMAL_SOURCE_LANES, 'normal'), notionGateway: noWrite });
-  const startupFunctions = laneFunctions(STARTUP_SOURCE_LANES.filter((lane) => lane.id !== 'funding-hiring-signals'), 'startup');
+  const normal = await runNormalMode({ clock: () => REHEARSAL_NOW, runId: 'rehearsal-normal', sourceFunctions: laneFunctions(NORMAL_SOURCE_LANES, 'normal'), scores: includeExplicitScores ? rehearsalScores(NORMAL_SOURCE_LANES, 'normal') : undefined, notionGateway: noWrite });
+  const startupLanes = STARTUP_SOURCE_LANES.filter((lane) => lane.id !== 'funding-hiring-signals');
+  const startupFunctions = laneFunctions(startupLanes, 'startup');
   startupFunctions['funding-hiring-signals'] = () => ({ signals: [{ company: 'Rehearsal startup 1', fundingDate: '2026-05-01', fundingEvidence: 'fixture funding evidence', verifiedAt: REHEARSAL_NOW }] });
-  const startup = await runStartupMode({ clock: () => REHEARSAL_NOW, runId: 'rehearsal-startup', sourceFunctions: startupFunctions, notionGateway: noWrite });
-  const remote = await runRemoteMode({ clock: () => REHEARSAL_NOW, runId: 'rehearsal-remote', sourceFunctions: laneFunctions(REMOTE_SOURCE_LANES, 'remote'), notionGateway: noWrite });
+  const startup = await runStartupMode({ clock: () => REHEARSAL_NOW, runId: 'rehearsal-startup', sourceFunctions: startupFunctions, scores: includeExplicitScores ? rehearsalScores(startupLanes, 'startup') : undefined, notionGateway: noWrite });
+  const remote = await runRemoteMode({ clock: () => REHEARSAL_NOW, runId: 'rehearsal-remote', sourceFunctions: laneFunctions(REMOTE_SOURCE_LANES, 'remote'), scores: includeExplicitScores ? rehearsalScores(REMOTE_SOURCE_LANES, 'remote') : undefined, notionGateway: noWrite });
   return { normal, startup, remote };
 }
 
-export async function runNoWriteRehearsal() {
+// Rehearse local paths and fail if a fixture mode cannot complete scoring.
+export async function runNoWriteRehearsal({ includeExplicitScores = true } = {}) {
   const validation = validateV5Surface();
-  const modes = await rehearsalModes();
+  const modes = await rehearsalModes(includeExplicitScores);
   const internship = await runInternshipLane({
     clock: () => REHEARSAL_NOW,
     runId: 'rehearsal-internship',
@@ -302,9 +315,9 @@ export async function runNoWriteRehearsal() {
   const outreachStored = await persistOutreach({ gateway, prepared: outreach });
   return {
     schemaVersion: 'LaunchpadV5NoWriteRehearsalV1',
-    status: validation.status === 'valid' ? 'passed' : 'passed-with-environment-blocker',
+    status: Object.values(modes).some((result) => result.outcome.fatal) ? 'failed' : validation.status === 'valid' ? 'passed' : 'passed-with-environment-blocker',
     validation,
-    modes: Object.fromEntries(Object.entries(modes).map(([name, result]) => [name, { status: result.outcome.status, selected: result.shortlist.length, planned: result.plannedNotionOperations.length, sources: result.sourceManifests.length, failedSources: result.sourceManifests.filter((source) => ['failed', 'unavailable'].includes(source.status)).length }])),
+    modes: Object.fromEntries(Object.entries(modes).map(([name, result]) => [name, { status: result.outcome.status, selected: result.shortlist.length, planned: result.plannedNotionOperations.length, scoreOrigins: [...new Set(result.shortlist.map((candidate) => candidate.scoreOrigin))], sources: result.sourceManifests.length, failedSources: result.sourceManifests.filter((source) => ['failed', 'unavailable'].includes(source.status)).length }])),
     internship: { status: internship.outcome.status, ready: internship.counts.ready, preferred: internship.counts.preferred, schemaIntegrationRequired: internship.schema.schemaIntegrationRequired },
     linkedin: { status: 'passed', ready: linkedin.counts.ready, associatedPeople: linkedin.counts.associatedPeople, sideEffects: linkedin.sideEffects },
     apify: { prepared: apify.kept.length, skipped: apify.skipped.length, externalCalls: 0 },

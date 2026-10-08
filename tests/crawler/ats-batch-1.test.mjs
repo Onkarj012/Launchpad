@@ -178,3 +178,12 @@ test('does not make live network calls and classifies non-ATS application links 
   assert.equal(result.observations[0].sourceKind, 'aggregator');
   assert.equal(result.observations[0].evidence.providerJobId, 'tt-1');
 });
+
+test('Recruitee retains requirements alongside the description', async () => {
+  const result = await fetchAtsProvider({ provider: 'recruitee', board: { slug: 'careersdeltacapita', company: 'Delta Capita' },
+    transport: async () => ({ status: 200, body: { offers: [{ id: 2756996, title: 'QA Engineer', location: 'Pune',
+      careers_url: 'https://careersdeltacapita.recruitee.com/o/qa-engineer', description: 'Engineering QA role',
+      requirements: 'Junior QA branch: 0-1 years of experience.', published_at: '2026-10-05' }] } }), maxPages: 1 });
+  assert.match(result.observations[0].description, /Junior QA branch/);
+  assert.equal(result.observations[0].experience.minYears, 0);
+});

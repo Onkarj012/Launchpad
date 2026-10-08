@@ -289,7 +289,7 @@ function scorerFailureCount(run) {
 }
 
 function candidateKey(candidate) {
-  if (candidate?.dedupKey) return candidate.dedupKey;
+  if (candidate?.dedupKey ?? candidate?.dedup_key) return candidate.dedupKey ?? candidate.dedup_key;
   if (candidate?.canonicalUrl ?? candidate?.url) return candidate.canonicalUrl ?? candidate.url;
   const providerKey = [candidate?.provider, candidate?.sourceJobId ?? candidate?.providerJobId ?? candidate?.jobId].filter(Boolean).join('|');
   return providerKey || null;
@@ -302,9 +302,15 @@ function selectedSuppressedCount(run) {
 }
 
 function rolesSurfacedBeforeCommitCount(run) {
-  if (run.transaction?.committed === false && list(run.surfaced?.rows).length) return list(run.surfaced.rows).length;
-  if (run.deliveryCommitted === false && list(run.surfaced?.rows).length) return list(run.surfaced.rows).length;
-  return 0;
+  const surfacedKeys = list(run.surfaced?.rows).map(candidateKey).filter(Boolean);
+  if (!surfacedKeys.length) return 0;
+  const transaction = run.transaction;
+  if (!transaction) return surfacedKeys.length;
+  const committed = new Set([
+    ...list(transaction.newlyCommitted),
+    ...list(transaction.alreadyCommitted),
+  ].map(String));
+  return surfacedKeys.filter((key) => !committed.has(String(key))).length;
 }
 
 function duplicateRequisitionCollisionCount(run) {

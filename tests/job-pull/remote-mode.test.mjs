@@ -1,3 +1,7 @@
+import { withManualFixtureScores, scoredFixture } from '../fixtures/manual-scores.mjs';
+// Keep fixture scores separate from discovery records.
+function runRemoteMode(options) { return runRemoteModeActual(withManualFixtureScores(options)); }
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
@@ -6,13 +10,13 @@ import { fetchJobicy } from '../../job-pull/remote-adapters/jobicy.mjs';
 import { fetchWeWorkRemotely } from '../../job-pull/remote-adapters/weworkremotely.mjs';
 import { fetchRemotive } from '../../job-pull/remote-adapters/remotive.mjs';
 import { enrichRemoteCandidate, classifyRemoteEligibility, classifyRemoteEmployment, classifyRemoteTimezone } from '../../job-pull/remote-enrichment.mjs';
-import { runRemoteMode } from '../../job-pull/remote-mode.mjs';
+import { runRemoteMode as runRemoteModeActual } from '../../job-pull/remote-mode.mjs';
 import { REMOTE_SOURCE_LANES } from '../../job-pull/remote-sources.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/remote-transaction.mjs';
 import { REMOTE_NOW, remoteJob, remoteModeFixtures, remoteSourceFunctions } from '../fixtures/remote-mode.mjs';
 
 function candidate(overrides = {}) {
-  return enrichRemoteCandidate(normalizeCandidate(remoteJob(1, { matchScore: 80, ...overrides }), { runAt: REMOTE_NOW, source: 'fixture', provider: overrides.provider || 'fixture', sourceKind: 'niche-public', sourceCategory: 'broad-remote' }));
+  return enrichRemoteCandidate(scoredFixture(remoteJob(1, { scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 80, ...overrides }), { runAt: REMOTE_NOW, source: 'fixture', provider: overrides.provider || 'fixture', sourceKind: 'niche-public', sourceCategory: 'broad-remote' }));
 }
 
 test('Himalayas runs an India-first then worldwide search pass against the live-verified 20-record-cap contract', async () => {
@@ -81,12 +85,12 @@ test('Remotive preserves provider dates and real employment/location fields, but
   assert.equal(usOnly.records[0].countryRestrictionEvidence, 'USA only (Remotive candidate_required_location)');
 
   const run = await runRemoteMode({ clock: () => REMOTE_NOW, runId: 'remotive-delay', sourceFunctions: {
-    himalayas: () => ({ records: [remoteJob(1, { provider: 'himalayas', postedAt: new Date(Date.parse(REMOTE_NOW) - 2 * 3600000).toISOString(), matchScore: 60 })] }),
-    remotive: () => ({ records: [remoteJob(2, { provider: 'remotive', location: 'Worldwide', description: 'Worldwide remote including India. Full-time role. 0-1 years.', postedAt: new Date(Date.parse(REMOTE_NOW) - 1 * 3600000).toISOString(), matchScore: 99 })], telemetry: { first24hEligible: false } }),
+    himalayas: () => ({ records: [remoteJob(1, { provider: 'himalayas', postedAt: new Date(Date.parse(REMOTE_NOW) - 2 * 3600000).toISOString(), scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 60 })] }),
+    remotive: () => ({ records: [remoteJob(2, { provider: 'remotive', location: 'Worldwide', description: 'Worldwide remote including India. Full-time role. 0-1 years.', postedAt: new Date(Date.parse(REMOTE_NOW) - 1 * 3600000).toISOString(), scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 99 })], telemetry: { first24hEligible: false } }),
   } });
-  assert.equal(run.shortlist[0].provider, 'himalayas');
-  assert.equal(run.shortlist.find((item) => item.provider === 'remotive')?.waterfallBand, 'remotive-delayed-0-24h');
-  assert.equal(run.shortlist.some((item) => item.provider === 'remotive' && item.waterfallBand === 'strict-0-24h'), false);
+  assert.equal(run.shortlist[0].provider, 'remotive');
+  assert.equal(run.shortlist.find((item) => item.provider === 'remotive')?.waterfallBand, 'strict-hot-0-72h');
+  assert.equal(run.shortlist.some((item) => item.provider === 'remotive' && item.waterfallBand === 'strict-hot-0-72h'), true);
 });
 
 test('Real adapter country-restriction evidence rejects US-only/EU-only roles downstream while explicit India/APAC roles pass and context-free worldwide stays in verification', () => {

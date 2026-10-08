@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Launchpad skill content review — 2026-08-21</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel2: #0d1117;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --green-bg: rgba(63,185,80,0.15);
+  --red: #f85149;
+  --yellow: #d29922;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+.editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: #21262d;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.dots { display: flex; gap: 6px; }
+.dot { width: 11px; height: 11px; border-radius: 50%; }
+.dot.r { background: #ff5f56; }
+.dot.y { background: #ffbd2e; }
+.dot.g { background: #27c93f; }
+.breadcrumb { color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; }
+.state-badge {
+  margin-left: auto;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  background: rgba(88,166,255,0.15);
+  color: var(--accent);
+  border: 1px solid rgba(88,166,255,0.35);
+}
+.layout { display: flex; min-height: calc(100vh - 40px); }
+aside {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 18px 12px;
+  position: sticky;
+  top: 40px;
+  height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+aside a {
+  display: block;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-family: var(--mono);
+}
+aside a:hover { background: var(--panel); color: var(--text); }
+aside .navgroup-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6e7681;
+  margin: 14px 8px 6px;
+}
+main { flex: 1; padding: 28px 40px 80px; max-width: 980px; }
+h1 { font-size: 22px; margin: 0 0 6px; }
+h2 { font-size: 17px; margin: 40px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { font-size: 14.5px; margin: 0; font-family: var(--mono); color: var(--accent); }
+p { color: var(--text); }
+.sub { color: var(--text-dim); font-size: 13px; margin-bottom: 28px; }
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 18px 0 28px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.card .num { font-size: 24px; font-weight: 600; color: var(--accent); }
+.card .label { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.callout {
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 16px 0;
+  font-size: 13.5px;
+  border: 1px solid;
+}
+.callout.note { background: rgba(88,166,255,0.08); border-color: rgba(88,166,255,0.3); }
+.callout.warn { background: rgba(210,153,34,0.08); border-color: rgba(210,153,34,0.35); }
+.callout.danger { background: rgba(248,81,73,0.08); border-color: rgba(248,81,73,0.35); }
+.callout code { font-family: var(--mono); }
+table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-dim); font-weight: 500; }
+code { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
+.skill-block { margin-bottom: 26px; }
+.skill-block-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.badge { font-size: 10.5px; padding: 2px 8px; border-radius: 20px; font-family: var(--mono); }
+.badge-clean { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.35); }
+.badge-local { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.35); }
+.diffbox {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #010409;
+}
+.diffbox-head {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.diffbox-meta {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  padding: 6px 12px;
+  background: #0d1117;
+  border-bottom: 1px solid var(--border);
+  white-space: pre-wrap;
+}
+.diffbox-body {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-x: auto;
+  padding: 4px 0;
+}
+.dline { display: flex; padding: 0 12px; white-space: pre; }
+.dline .dsign { width: 16px; flex-shrink: 0; color: #484f58; user-select: none; }
+.dline.add { background: var(--green-bg); }
+.dline.add .dsign { color: var(--green); }
+.dline.ctx .dtext { color: #8b949e; }
+footer { margin-top: 60px; color: #6e7681; font-size: 12px; border-top: 1px solid var(--border); padding-top: 16px; }
+@media (max-width: 860px) {
+  aside { display: none; }
+  main { padding: 20px; }
+}
+</style>
+</head>
+<body>
+<div class="editor-bar">
+  <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+  <span class="breadcrumb">Job Search / docs / reports / agent-contract-skill-content-review-2026-08-21.html</span>
+  <span class="state-badge">local-verified</span>
+</div>
+<div class="layout">
+<aside>
+  <div class="navgroup-label">Overview</div>
+  <a href="#summary">Summary</a>
+  <a href="#correction">Correction</a>
+  <a href="#mirror-integrity">Mirror integrity</a>
+  <div class="navgroup-label">Skills — mirrored</div>
+  <a href="#skill-launchpad">launchpad</a>
+<a href="#skill-morning">morning</a>
+<a href="#skill-daily-job-pull">daily-job-pull</a>
+<a href="#skill-quick-add">quick-add</a>
+<a href="#skill-make-applications">make-applications</a>
+<a href="#skill-resume-latex">resume-latex</a>
+<a href="#skill-resume-check">resume-check</a>
+<a href="#skill-application-agent">application-agent</a>
+<a href="#skill-outreach">outreach</a>
+<a href="#skill-followups">followups</a>
+<a href="#skill-sync">sync</a>
+<a href="#skill-linkedin-leads">linkedin-leads</a>
+  <div class="navgroup-label">Skills — .agents-only</div>
+  <a href="#skill-application-readiness">application-readiness</a>
+<a href="#skill-conversion-ops">conversion-ops</a>
+<a href="#skill-interview-loop">interview-loop</a>
+<a href="#skill-proof-of-fit">proof-of-fit</a>
+  <div class="navgroup-label">Shared</div>
+  <a href="#guardrails">guardrails.md</a>
+</aside>
+<main>
+  <h1>Launchpad skill content review</h1>
+  <div class="sub">2026-08-21 · full SKILL.md content for all 16 skills, diff-styled against the mirror. Supersedes the 2026-08-21 agent-contract report, which listed names/descriptions only.</div>
+
+  <h2 id="summary">Summary</h2>
+  <div class="card-grid">
+    <div class="card"><div class="num">16</div><div class="label">total skills</div></div>
+    <div class="card"><div class="num">12</div><div class="label">mirrored (11 operational + router)</div></div>
+    <div class="card"><div class="num">4</div><div class="label">.agents-only by design</div></div>
+    <div class="card"><div class="num">0</div><div class="label">bytes differ across all 12 mirror pairs</div></div>
+  </div>
+  <p>Every mirrored skill was diffed with <code>diff -u</code> against its <code>.claude/skills</code> copy, including reference files. All 12 pairs are byte-identical &mdash; the mirror is a real copy, not a drifted one.</p>
+
+  <h2 id="correction">Correction to the prior report</h2>
+  <div class="callout danger">
+    The 2026-08-21 <code>agent-contract-master-prompt-review</code> report stated <strong>17 skills, 13 mirrored</strong>, and showed only frontmatter name/description &mdash; not skill content. Both numbers were wrong and the content was incomplete. Actual count: <strong>16 skills total, 12 mirrored</strong> (11 operational + the <code>launchpad</code> router), <strong>4 .agents-only</strong> (<code>application-readiness</code>, <code>conversion-ops</code>, <code>interview-loop</code>, <code>proof-of-fit</code>). This report replaces that one and shows full content.
+  </div>
+
+  <h2 id="mirror-integrity">Mirror integrity</h2>
+  <p>Diffed every <code>.agents/skills/&lt;name&gt;/SKILL.md</code> against <code>.claude/skills/&lt;name&gt;/SKILL.md</code>, plus every mirrored reference file (<code>daily-job-pull/references/sourcing.md</code>, <code>quick-add/references/lead-fields.md</code>, <code>resume-latex/references/artifact-gate.md</code>, <code>sync/references/applied.md</code>, <code>sync/references/outcomes.md</code>, <code>guardrails.md</code>). Result below.</p>
+  <table>
+    <tr><th>Skill</th><th>SKILL.md diff</th><th>Reference files diff</th></tr>
+    <tr><td>launchpad</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>morning</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>daily-job-pull</td><td>0 lines</td><td>0 lines</td></tr>
+<tr><td>quick-add</td><td>0 lines</td><td>0 lines</td></tr>
+<tr><td>make-applications</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>resume-latex</td><td>0 lines</td><td>0 lines</td></tr>
+<tr><td>resume-check</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>application-agent</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>outreach</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>followups</td><td>0 lines</td><td>&mdash;</td></tr>
+<tr><td>sync</td><td>0 lines</td><td>0 lines</td></tr>
+<tr><td>linkedin-leads</td><td>0 lines</td><td>&mdash;</td></tr>
+  </table>
+
+  <h2 id="skills-mirrored">Skills &mdash; mirrored (content shown once, applies to both copies)</h2>
+  
+<section id="skill-launchpad" class="skill-block">
+  <div class="skill-block-head">
+    <h3>launchpad</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/launchpad/SKILL.md b/.claude/skills/launchpad/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/launchpad/SKILL.md
++++ b/.claude/skills/launchpad/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: launchpad</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Route a Launchpad v5 request to the correct skill. Read this first when the operator is unsure which slash command to run.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: false</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Launchpad router</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Read `master_prompt.md` and `docs/STATUS.md`. Vocabulary is in `../guardrails.md`. Mirror policy: the eleven operational skills plus this router are mirrored into `.claude/skills`; the four supporting skills remain `.agents`-only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Routed skills</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Request | Skill |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| --- | --- |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Daily discovery / morning / midday | `morning` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Source/query mechanics behind a pull | `daily-job-pull` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| One user-found role | `quick-add` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Tailor one JD into a PDF | `resume-latex` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Batch every checked Make Resume row | `make-applications` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Recruiter review of a tailored source | `resume-check` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| One role research + resume + optional draft | `application-agent` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Contacts and outreach drafts | `outreach` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Due follow-ups | `followups` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Observed Applied? / outcomes | `sync` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Explicit LinkedIn hiring-post rescue | `linkedin-leads` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Readiness gate before applying | `application-readiness` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Conversion measurement | `conversion-ops` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Interview prep loop | `interview-loop` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">| Proof-of-fit artifacts | `proof-of-fit` |</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Never auto-apply or send. Never check, uncheck, or otherwise mutate user-owned boxes. Supporting skills remain local and are routed here without `.claude` mirrors.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-morning" class="skill-block">
+  <div class="skill-block-head">
+    <h3>morning</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/morning/SKILL.md b/.claude/skills/morning/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/morning/SKILL.md
++++ b/.claude/skills/morning/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: morning</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Run the Launchpad v5 daily discovery handoff. No mode argument means Normal; `/morning startup` and `/morning remote` select the focused modes. Discovery is explicit and never auto-applies, sends, or invokes LinkedIn rescue.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Morning</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">`/morning` defaults to Normal. The only focused variants are `/morning startup` and `/morning remote`; all three use the same immutable eligibility, freshness, readiness, scoring, deduplication, shortfall, and v5 transaction contracts.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Use the corresponding public runner: `runNormalMode()` from `job-pull/normal-mode.mjs`, `runStartupMode()` from `job-pull/startup-mode.mjs`, or `runRemoteMode()` from `job-pull/remote-mode.mjs`. Every source lane must be represented in telemetry. A source failure degrades coverage; policy, readiness, scoring, deduplication, manifest, or ledger failure stops before any live plan.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Report application-ready roles first, then labelled backfill and the verification queue. The target is minimum 10, preferred 12, maximum 20. If the verified pool is materially short, suggest `/linkedin-leads` but do not run it. Internship records remain in the dedicated Internship category and do not weaken the full-time lane.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Live writes, if explicitly authorized later, may target only the declared Applications v5 and Companies v5 relations through the scoped gateway. `Make Resume` and `Applied?` remain user-owned. Never apply, send, connect, message, or fall back to a legacy tracker.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-daily-job-pull" class="skill-block">
+  <div class="skill-block-head">
+    <h3>daily-job-pull</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/daily-job-pull/SKILL.md b/.claude/skills/daily-job-pull/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/daily-job-pull/SKILL.md
++++ b/.claude/skills/daily-job-pull/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: daily-job-pull</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Run explicit Launchpad v5 discovery. Normal is the default; Startup and Remote are selected through morning. Normalize, gate, score, deduplicate, select, report telemetry, and plan v5-only writes. Never apply, send, tick user checkboxes, or invoke browser rescue.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Daily discovery</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Use the v5 mode runners and their injected source adapters. Normal uses India-first ATS, Indian portals, optional Indeed, native feeds, and startup/company lanes. Startup emphasizes startup boards, VC/YC signals, and funding evidence. Remote emphasizes direct remote ATS and native remote feeds. Apify is absent from the daily path and can run only as an explicit named rescue profile.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">The shared gates are immutable: original employer/ATS resolution, active liveness, permitted geography, paid employment, experience cap, no fees/bonds, freshness evidence, and deterministic deduplication. Internships use the separate lane and stipend tiers: INR 30,000+ Preferred, INR 25,000–29,999 Lower-Stipend, lower rejected, unknown verification-only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Selection is minimum 10, preferred 12, maximum 20. Use the documented freshness waterfall and label every relaxation. Unresolved leads remain in Needs Verification and never count toward the minimum. A source failure is visible and nonfatal; a core integrity failure is fatal before planning.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">The runner must leave `Make Resume = false` and `Applied? = false`. Use the scoped v5 gateway only for an explicitly authorized write phase, with reserve → write → verify → commit. Never write to a legacy target or use a legacy fallback.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-quick-add" class="skill-block">
+  <div class="skill-block-head">
+    <h3>quick-add</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/quick-add/SKILL.md b/.claude/skills/quick-add/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/quick-add/SKILL.md
++++ b/.claude/skills/quick-add/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: quick-add</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Normalize one user-found role into a planned v5 Applications row.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Quick add</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Vocabulary: `../guardrails.md`. Fields: `references/lead-fields.md`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Procedure</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">1. Take the user-supplied company, role, location, and source link.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">2. Normalize through CandidateV1 and the current readiness gates.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">3. Keep discovery URL and original-application evidence separate. A portal or LinkedIn link stays a lead until an active employer/ATS destination is resolved.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">4. Show the planned Applications v5 operation. Do not write unless the user authorizes a live v5 gateway.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">5. Leave `Make Resume` and `Applied?` false.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Done when</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- CandidateV1 validation passes, or every missing required field is named.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Original-application status is exactly `Resolved`, `Direct ATS`, or `Needs Verification` with evidence.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Exactly one planned v5 operation is shown for the normalized role.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- The unapproved write count is zero, and `Make Resume` and `Applied?` remain false.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">fail-closed. v5-only. no auto-apply.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-make-applications" class="skill-block">
+  <div class="skill-block-head">
+    <h3>make-applications</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/make-applications/SKILL.md b/.claude/skills/make-applications/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/make-applications/SKILL.md
++++ b/.claude/skills/make-applications/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: make-applications</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Batch-build every user-checked Make Resume v5 row into a local verified PDF.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Resume queue</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Vocabulary: `../guardrails.md`. Read `readMakeResumeQueue()` from `resume-v5/queue-reader.mjs`. Process with `processMakeResumeQueue()` from `resume-v5/resume-queue.mjs`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Procedure</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">1. Query Applications v5 with the fixed Make Resume filter. Refuse legacy targets.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">2. For each checked row: set `resumeState` to Building only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">3. Tailor that row with the `resume-latex` sequence. Do not invent slot content.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">4. Call `createLocalResumeBuilder()` then `createLocalPdfVerifier()` from `resume-v5/local-builder.mjs`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">5. Set Ready, Failed, or Stale from `verifyResumeArtifact()`. Never change `Make Resume` or `Applied?`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">6. Report every selected row, artifact path, and verification result.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Done when</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Every selected row has exactly one terminal `resumeState`: `Ready`, `Failed`, or `Stale`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- The count of terminal rows equals the count of selected rows; no selected row is skipped.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Each `Ready` row has PDF, source, matrix, and provenance artifacts, and `verifyFile` returns `PASS`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- The count of mutations to `Make Resume` and `Applied?` is zero.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Every failed row is listed with its reason and artifact state.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">user-owned. local-compile. v5-only. no auto-apply.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-resume-latex" class="skill-block">
+  <div class="skill-block-head">
+    <h3>resume-latex</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/resume-latex/SKILL.md b/.claude/skills/resume-latex/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/resume-latex/SKILL.md
++++ b/.claude/skills/resume-latex/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: resume-latex</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Tailor one JD into a verified one-page PDF from the frozen template.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Resume build</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Vocabulary: `../guardrails.md`. Policy: `master_prompt.md`. Layout: `resumes/templates/Onkar_Template.tex`. Evidence: `resumes/master/Master_Resume_ATS.tex`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Procedure</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">1. Copy the frozen template into `resumes/sources/&lt;date&gt;/Onkar_Jadhav_&lt;Company&gt;_&lt;Role&gt;.tex`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">2. Edit only `%== TAILOR-START/END ==` slots. Capgemini stays frozen. Stride stays in Experience. Exactly two other approved projects go under Engineering Projects. No em dash. No invented claims.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">3. Write `&lt;stem&gt;.matrix.md` and `&lt;stem&gt;.provenance.md` beside the source.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">4. Compile and place the PDF with `createLocalResumeBuilder()` from `resume-v5/local-builder.mjs`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">5. Verify with `createLocalPdfVerifier()` / `node tests/resume/verify.mjs &lt;source.tex&gt; &lt;output.pdf&gt;`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">6. Delete `resumes/sources/&lt;date&gt;/build/` artifacts. Leave only the PDF in `resumes/output/&lt;date&gt;/`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Done when</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Exactly one PDF exists at `resumes/output/&lt;date&gt;/Onkar_Jadhav_&lt;Company&gt;_&lt;Role&gt;.pdf`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Exactly three paired source artifacts exist under `resumes/sources/&lt;date&gt;/`: the `.tex`, `.matrix.md`, and `.provenance.md` files.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- `verifyFile` returns exactly `PASS`, and the frozen-zone comparison reports zero differences.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Every unsupported JD requirement is recorded as `Missing`, never invented, in the matrix.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- The build directory contains zero artifacts and the output directory contains PDFs only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Stop if LaTeX or verification is unavailable. user-owned boxes stay untouched. local-compile only. no auto-apply.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-resume-check" class="skill-block">
+  <div class="skill-block-head">
+    <h3>resume-check</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/resume-check/SKILL.md b/.claude/skills/resume-check/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/resume-check/SKILL.md
++++ b/.claude/skills/resume-check/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: resume-check</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Audit a v5 role-specific resume against its JD and approved evidence. Read-only; never edits the frozen template or claims a PDF is Ready without verification.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Resume check</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Review the supplied JD and `.tex`/PDF against `master_prompt.md`, `resumes/templates/Onkar_Template.tex`, and `resumes/master/Master_Resume_ATS.tex`. Report requirement coverage, provenance, grammar, repetition, ATS reading order, page count/fill, links, and any unsupported claim. The final PDF is the artifact of record; local compilation and `tests/resume/verify.mjs` remain required for Ready.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Do not modify frozen zones, invent evidence, write Notion state, apply, send, or use a legacy fallback.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-application-agent" class="skill-block">
+  <div class="skill-block-head">
+    <h3>application-agent</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/application-agent/SKILL.md b/.claude/skills/application-agent/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/application-agent/SKILL.md
++++ b/.claude/skills/application-agent/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: application-agent</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Prepare one evidence-backed v5 application package for a named role.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Single-role application</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Vocabulary: `../guardrails.md`. Require company, role, current JD, and a source link.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Procedure</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">1. Resolve the original active employer/ATS destination. Stop at Needs Verification if it is still a lead.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">2. Use the v5 Applications row and its Companies relation only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">3. Tailor and verify the resume through the `resume-latex` sequence and `resume-v5` gates.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">4. Outreach is opt-in: `prepareOutreach()` / `persistOutreach()` from `outreach-v5/workflow.mjs` create a draft record only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">5. `Applied?` changes only after the user confirms and `/sync` observes it.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Done when</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Original application status is `Resolved` or an explicit block reason is reported.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Resume status is `Ready` or the blocking gate is reported with evidence.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Optional outreach has exactly one draft-only result and a send count of zero.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- The count of mutations to `Make Resume` and `Applied?` is zero.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">user-owned. draft-only. v5-only. no auto-apply.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-outreach" class="skill-block">
+  <div class="skill-block-head">
+    <h3>outreach</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/outreach/SKILL.md b/.claude/skills/outreach/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/outreach/SKILL.md
++++ b/.claude/skills/outreach/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: outreach</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Prepare free-first v5 outreach drafts for user-selected applications. Never sends, auto-selects a contact, changes Applied?, or writes a legacy target.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Outreach</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Use `prepareOutreach()` and `persistOutreach()` from `outreach-v5/workflow.mjs` for selected Applications v5 rows. Research in `FREE_FIRST_SOURCE_ORDER` from `outreach-v5/research.mjs`; preserve public evidence, identity, current role, confidence, and channel. Missing email stays missing. Paid or credit providers are optional and only used on explicit user choice.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Deep drafts are capped at six. An attachment requires the exact role's `Resume State = Ready` artifact and a matching PDF. Store compact Outreach v5 properties plus the full draft body. A duplicate key is application × person × channel.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Only explicit user confirmation may call `confirmManualSend()` or `recordOutreachOutcome()`. Gmail integration is draft-only through injected lookup/create transport functions: it has no send capability, and the real send remains a manual user action. `observeGmailReplies()` may list/read messages only, binds evidence to the exact Gmail thread plus Outreach ID and duplicate key, and `recordObservedReply()` can stop that exact v5 cadence on a genuine reply. Follow-ups use Day 0/3/10/17 and enforce Initial -&gt; Follow-up 1 -&gt; Follow-up 2 order. Never auto-apply, auto-send, take LinkedIn action, invent a contact, or fall back to a legacy tracker.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-followups" class="skill-block">
+  <div class="skill-block-head">
+    <h3>followups</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/followups/SKILL.md b/.claude/skills/followups/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/followups/SKILL.md
++++ b/.claude/skills/followups/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: followups</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Surface and draft the v5 Follow-up Due queue using Outreach and Activity cadence. Never send, never invent a queue, and never claim an empty queue without current v5 evidence.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Follow-ups</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Read current Applications v5, Outreach v5, and Activity v5 rows through the scoped gateway. Use `dueCadenceAction()` and `deriveOutreachState()` from `outreach-v5/cadence.mjs`. Cold outreach cadence is Day 0, Day 3, Day 10, Day 17, with no more than two follow-ups. Stop on reply, rejection, opt-out, withdrawal, closure, or offer.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Present overdue items first with application, person, channel, last confirmed event, due action, and stop reason. Draft only on explicit request. A draft is not a send and does not stamp a sent date. If v5 queue evidence is unavailable, say so and request the user's current Follow-up Due view or pasted rows; do not infer an empty queue.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">No automatic email, LinkedIn message, DM, referral, checkbox change, legacy write, or legacy fallback is allowed.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-sync" class="skill-block">
+  <div class="skill-block-head">
+    <h3>sync</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/sync/SKILL.md b/.claude/skills/sync/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/sync/SKILL.md
++++ b/.claude/skills/sync/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: sync</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Record user-confirmed Applied? and lifecycle outcomes into v5 only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Launchpad v5 confirmation sync</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Vocabulary: `../guardrails.md`. Run only after Onkar confirms a submission or outcome.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Two branches live behind pointers:</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Applied? observations → `references/applied.md`</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Confirmed outcomes → `references/outcomes.md`</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Public interface: `syncAppliedApplications()` and `syncConfirmedOutcome()` in `resume-v5/application-sync.mjs`. Ledger suppression is additive via `createLedgerSuppressionAdapter()`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Procedure</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">1. Read the v5 Applications rows and observe the user-owned `Applied?` value; never set, clear, or infer it.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">2. Observed Applied? branch: for each newly observed true transition, call `syncAppliedApplications()` to preserve or stamp `Applied At`, set the v5 status, and append one idempotent Activity event.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">3. Confirmed outcome branch: for a user-confirmed lifecycle outcome, call `syncConfirmedOutcome()` only with `evidence.confirmed === true` and a source locator; update v5 status and append one idempotent Activity event.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">4. Re-run either branch with the same identity key and report `noop` without a second Activity event. Conflicts fail closed.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Done when</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Every observed Applied? transition has exactly one v5 Activity event and a preserved or stamped Applied At.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Every confirmed outcome has `evidence.confirmed === true`, a locator, and exactly one v5 Activity event.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- A repeat of either branch returns `noop` with zero additional Activity events.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- The count of `Applied?` checkbox mutations is zero; conflicts are listed as blocked.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">user-owned. v5-only. fail-closed. no auto-apply.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-linkedin-leads" class="skill-block">
+  <div class="skill-block-head">
+    <h3>linkedin-leads</h3>
+    <span class="badge badge-clean">0 diff · mirrored clean</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/linkedin-leads/SKILL.md b/.claude/skills/linkedin-leads/SKILL.md</div>
+    <div class="diffbox-meta">index identical..identical 100644
+--- a/.agents/skills/linkedin-leads/SKILL.md
++++ b/.claude/skills/linkedin-leads/SKILL.md
+@@ mirror is byte-identical — 0 lines differ @@</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">name: linkedin-leads</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">description: Explicit manual LinkedIn hiring-post rescue. Build the bounded allowlisted query plan, inspect an already-authenticated browser session read-only, and pass captured posts through the v5 classifier. Never auto-run from morning, log to Notion, apply, connect, follow, react, comment, message, or send outreach.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">---</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># LinkedIn rescue</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">This is a rescue path for a materially short verified pool. It is never part of `/morning` execution. Morning may suggest `/linkedin-leads`; it must not invoke it.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Local interface</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Query plan: `buildLinkedInRescueQueryPlan()` from `job-pull/linkedin-rescue-query.mjs`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Capture processing: `runLinkedInRescue({ explicitInvocation: true, now, capturedPosts })` from `job-pull/linkedin-rescue-mode.mjs`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- Captured fixtures and deterministic policy tests live under `tests/fixtures/linkedin-rescue/` and `tests/job-pull/linkedin-rescue.test.mjs`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Procedure</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">1. Build the default allowlisted plan from `master_prompt.md` target titles. Keep the plan within 6 queries, 20 posts per query, 60 total posts, and a 24–336 hour cutoff.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">2. Use the user's existing authenticated browser session only if the user explicitly asks for the manual rescue. Inspect posts read-only. Do not automate login or create credentials.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">3. Capture exact post URL, author identity and relationship, timestamp evidence, raw hiring context, company/title/location, job or form links, and any self-declared contact invitation. Missing values stay null.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">4. Run `runLinkedInRescue` with `explicitInvocation: true`. It applies the same original-application, liveness, freshness, eligibility, deduplication, and scoring gates.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">5. Report `applicationLeads`, `associatedPeople`, and every `reports` item. A post may produce both outputs. `Ready` requires a resolved active original application; otherwise keep it in `Needs Verification`.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">6. Hand off a Ready lead for explicit human review and a person record to `/outreach` only for drafting. This skill never calls either workflow automatically.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">## Safety</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">The deterministic module declares `network: false`, `browserAutomation: false`, `notionMutation: false`, and `outreachSend: false`. A real browser smoke is manual and read-only only. Never apply, submit a form, connect, follow, react, comment, DM, message, or send.</span></div>
+    </div>
+  </div>
+</section>
+
+  <h2 id="skills-local">Skills &mdash; .agents-only by design</h2>
+  <div class="callout note">
+    These four never had a <code>.claude</code> copy to diff against. Shown as new-file additions, per <code>launchpad/SKILL.md</code>'s own stated mirror policy and enforced by <code>npm run validate</code>.
+  </div>
+  
+<section id="skill-application-readiness" class="skill-block">
+  <div class="skill-block-head">
+    <h3>application-readiness</h3>
+    <span class="badge badge-local">.agents-only · no mirror</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/application-readiness/SKILL.md b/.claude/skills/application-readiness/SKILL.md (no mirror — by design)</div>
+    <div class="diffbox-meta">new file mode 100644
+--- /dev/null
++++ b/.agents/skills/application-readiness/SKILL.md (.agents-only, no .claude mirror by design)
+@@ -0,0 +1,25 @@</div>
+    <div class="diffbox-body">
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">name: application-readiness</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">description: Verify a job before application work.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"># Application Readiness</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Turn one discovered role into a **ready** or **blocked** manual application packet. A role is ready only when the original application page is currently accepting applications and its company evidence is coherent.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Read `references/readiness-gate.md` before checking a role. Read `config/conversion-plan.json` only to label source category; it never overrides targeting gates in `master_prompt.md`.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">## Steps</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">1. **Resolve** — start from the source URL and find the company-owned careers page or original ATS requisition. Preserve both URLs and do not guess a redirect destination.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the original ATS URL is captured, or the role is `blocked: original ATS unresolved`.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">2. **Verify** — inspect the original page, company website, company presence, company-domain contact evidence, and whether applications remain open. Check for payment, training fee, bond, or anonymous-staffing signals.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* every readiness check is `verified`, `failed`, or `Not Verified` with a source/time.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">3. **Reconcile** — compare company, title, location, work authorization, employment type, experience, salary where disclosed, and posting/requisition identifiers between lead and original page. Apply the master hard gates again.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* each material discrepancy has an outcome and no unknown is silently upgraded.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">4. **Decide** — mark `ready` only if all required checks pass; otherwise mark `blocked` or `verify manually`. A ready role can proceed to resume tailoring, not automatic submission.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the status, source evidence, timestamp, and next manual action are visible in the application record.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-conversion-ops" class="skill-block">
+  <div class="skill-block-head">
+    <h3>conversion-ops</h3>
+    <span class="badge badge-local">.agents-only · no mirror</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/conversion-ops/SKILL.md b/.claude/skills/conversion-ops/SKILL.md (no mirror — by design)</div>
+    <div class="diffbox-meta">new file mode 100644
+--- /dev/null
++++ b/.agents/skills/conversion-ops/SKILL.md (.agents-only, no .claude mirror by design)
+@@ -0,0 +1,28 @@</div>
+    <div class="diffbox-body">
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">name: conversion-ops</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">description: Manual funnel scorecards and checkpoints.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"># Conversion Operations</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Operate the local funnel ledger: selection quality, human-contact coverage, referral attempts, outcomes, weekly reports, and checkpoints. It does not apply, send, scrape profiles, or mutate Notion.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">`config/conversion-plan.json` is the policy source. Read the reference matching the requested operation.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">## Steps</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">1. **Select the record set** — collect dated copies of the local TSV templates and user-confirmed tracker rows. If evidence is incomplete, label the resulting report partial.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* every input file/date range and every unavailable field is named.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">2. **Operate one branch** — score a lead, audit daily composition, prepare contacts/referrals, record an outcome, generate a weekly report, or run a checkpoint as requested.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the branch's reference completion gate is met without inventing a tracker event.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">3. **Return actions** — list the next manual actions in priority order, including any required user confirmation. Keep discovery, application submission, and sending outside this skill.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* every recommendation points to evidence or an explicit unknown.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">## References</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">- For Conversion Score and composition, read `references/selection.md`.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">- For contacts and referrals, read `references/human-pipeline.md`.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">- For outcome handling, weekly report, and checkpoints, read `references/measurement.md`.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-interview-loop" class="skill-block">
+  <div class="skill-block-head">
+    <h3>interview-loop</h3>
+    <span class="badge badge-local">.agents-only · no mirror</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/interview-loop/SKILL.md b/.claude/skills/interview-loop/SKILL.md (no mirror — by design)</div>
+    <div class="diffbox-meta">new file mode 100644
+--- /dev/null
++++ b/.agents/skills/interview-loop/SKILL.md (.agents-only, no .claude mirror by design)
+@@ -0,0 +1,25 @@</div>
+    <div class="diffbox-body">
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">name: interview-loop</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">description: Evidence-backed interview preparation.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"># Interview Loop</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Build an interview-ready answer bank and practice loop without inventing project facts. It supports active applications but never claims an interview exists unless the user confirms it.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Read `references/answer-bank.md` for project-answer structure and `references/revision.md` for role-specific practice.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">## Steps</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">1. **Scope** — collect the target role/JD and the project(s) to prepare. If no role is active, build a general bank for Stride, LoreEngine, StockXpert, and GovBench.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* every answer topic has a named target and approved evidence source.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">2. **Build** — prepare concise, truthful answers for problem, user, personal contribution, architecture, failure/debugging, evaluation, trade-offs, 10,000-user limits, and next-month changes.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* all ten prompts are answered or explicitly marked unsupported/unknown.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">3. **Revise** — choose the role-relevant fundamentals and create a bounded session plan.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* each revision item has a topic, exercise, and observable completion check.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">4. **Mock and debrief** — run a requested mock, grade specificity and truthfulness, then create one improvement action per weak answer. Target three realistic mocks across the sprint.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the debrief separates knowledge gaps, clarity gaps, and evidence gaps.</span></div>
+    </div>
+  </div>
+</section>
+<section id="skill-proof-of-fit" class="skill-block">
+  <div class="skill-block-head">
+    <h3>proof-of-fit</h3>
+    <span class="badge badge-local">.agents-only · no mirror</span>
+  </div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/proof-of-fit/SKILL.md b/.claude/skills/proof-of-fit/SKILL.md (no mirror — by design)</div>
+    <div class="diffbox-meta">new file mode 100644
+--- /dev/null
++++ b/.agents/skills/proof-of-fit/SKILL.md (.agents-only, no .claude mirror by design)
+@@ -0,0 +1,25 @@</div>
+    <div class="diffbox-body">
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">name: proof-of-fit</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">description: Small evidence-backed proof for a top role.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">disable-model-invocation: true</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">---</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"># Proof of Fit</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Create one small, truthful proof artifact for a top application. The aim is a concrete reason to speak with Onkar, not unpaid consulting or a multi-hour assignment.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">Read `references/artifacts.md` before choosing the form. Evidence comes from the approved resume/project sources and the supplied JD.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">## Steps</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">1. **Anchor** — extract one important responsibility or product problem from the JD and one matching approved project fact.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the JD phrase and evidence source are both explicit.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">2. **Choose** — select the smallest useful form: three product observations, a short architecture suggestion, existing feature demo, small mockup, relevant code link, or brief approach note.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the form can be completed without new unsupported claims or unpaid project work.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">3. **Draft** — write a dated artifact with problem, evidence, one practical proposal/connection, limitation or assumption, and an optional link. Never claim knowledge of internal systems.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* every factual claim is sourced and every assumption is labeled.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext"></span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">4. **Record** — save the artifact path in the application record and offer it only when the user asks for a message or chooses to share it.</span></div>
+<div class="dline add"><span class="dsign">+</span><span class="dtext">   *Done when:* the artifact is reusable, reviewable, and not represented as sent.</span></div>
+    </div>
+  </div>
+</section>
+
+  <h2 id="guardrails">Shared: guardrails.md</h2>
+  <div class="callout note">Referenced by every skill as <code>../guardrails.md</code>. Also byte-identical across both trees.</div>
+  <div class="diffbox">
+    <div class="diffbox-head">diff --git a/.agents/skills/guardrails.md b/.claude/skills/guardrails.md</div>
+    <div class="diffbox-meta">index identical..identical 100644 &mdash; 0 lines differ</div>
+    <div class="diffbox-body">
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"># Launchpad guardrail vocabulary</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">Use these exact meanings in every Launchpad skill.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext"></span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- **user-owned** — `Make Resume` and `Applied?` values belong to Onkar. Skills may read them but must never check, uncheck, or mutate them.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- **draft-only** — outreach output is local or v5 draft state. It is not a Gmail draft and is never sent by a skill.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- **v5-only** — explicitly authorized live writes target only declared Launchpad v5 stores through the scoped gateway. v3/v4 are historical read-only systems and are never fallbacks.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- **fail-closed** — unknown evidence, missing credentials, unresolved original-application URLs, and unverified contacts remain blank or `Not Verified`. Never invent dates, salary, contacts, links, or experience.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- **local-compile** — resume PDFs are built on this Mac. Sources and sidecars stay under `resumes/sources/&lt;date&gt;/`; `resumes/output/&lt;date&gt;/` contains PDFs only.</span></div>
+<div class="dline ctx"><span class="dsign"> </span><span class="dtext">- **no auto-apply** — no skill submits an application, sends email/DM/referral, automates LinkedIn, or changes a user-owned checkbox.</span></div>
+    </div>
+  </div>
+
+  <footer>
+    Generated locally from the checked-out working tree. Not published unless asked. local-verified only &mdash; no live Notion, no browser, no scheduling was exercised to produce this report.
+  </footer>
+</main>
+</div>
+</body>
+</html>

@@ -167,6 +167,60 @@ test('unknown and legacy raw IDs are rejected before transport for page, body, r
   assert.equal(calls, 0);
 });
 
+test('audit page reads are GET-only, validate parent scope before fields, and do not widen write scope', async () => {
+  const relationProperties = Object.values(V5_SCHEMA.stores.applications.properties)
+    .filter((property) => property.type === 'relation')
+    .map((property) => [property.name, { type: 'relation', relation: [] }]);
+  const requests = [];
+  const gateway = testGateway({ maxRetries: 0, fetchImpl: async (url, options) => {
+    requests.push({ url, options });
+    return response({
+      id: ids.pages[2],
+      parent: { data_source_id: ids.dataSources[0] },
+      properties: { Name: { type: 'title', title: [{ plain_text: 'Historical page' }] }, ...Object.fromEntries(relationProperties) },
+    });
+  } });
+  const inspected = await gateway.readPage(ids.pages[2], 'applications');
+  assert.equal(inspected.pageScope, 'verified');
+  assert.equal(inspected.relationState.status, 'verified');
+  assert.equal(requests[0].options.method, 'GET');
+  assert.equal('body' in requests[0].options, false);
+  await assert.rejects(() => gateway.request(`/pages/${ids.pages[2]}`, { target: 'applications' }), /unknown or undeclared/);
+
+  const mismatchGateway = testGateway({ maxRetries: 0, fetchImpl: async () => ({
+    ok: true,
+    status: 200,
+    headers: new Map(),
+    text: async () => JSON.stringify({ id: ids.pages[2], parent: { data_source_id: ids.dataSources[1] } }),
+  }) });
+  const mismatch = await mismatchGateway.readPage(ids.pages[2], 'applications');
+  assert.equal(mismatch.pageScope, 'unresolved');
+  assert.equal(mismatch.relationState.status, 'unresolved');
+});
+
+test('audit relation state leaves non-empty arbitrary IDs unresolved and retains page flags', async () => {
+  const relationProperties = Object.values(V5_SCHEMA.stores.applications.properties)
+    .filter((property) => property.type === 'relation');
+  const properties = Object.fromEntries(relationProperties.map((property, index) => [property.name, {
+    type: 'relation',
+    relation: index === 0 ? [{ id: ids.pages[0] }] : [],
+  }]));
+  const gateway = testGateway({ fetchImpl: async () => response({
+    id: ids.pages[2],
+    parent: { data_source_id: ids.dataSources[0] },
+    archived: true,
+    in_trash: true,
+    properties,
+  }) });
+  const inspected = await gateway.readPage(ids.pages[2], 'applications');
+  assert.equal(inspected.relationState.status, 'unresolved');
+  assert.equal(inspected.relationState.properties[0].status, 'unresolved');
+  assert.match(inspected.relationState.properties[0].reason, /membership/);
+  assert.equal(inspected.evidence.archived, true);
+  assert.equal(inspected.evidence.inTrash, true);
+  assert.equal(inspected.evidence.in_trash, true);
+});
+
 test('credential files require external regular 0600-style ownership and injected transport errors redact secrets', async () => {
   const credentialPath = tempPath('credential');
   writeFileSync(credentialPath, 'fixture-secret\n', { mode: 0o600 });
@@ -177,6 +231,37 @@ test('credential files require external regular 0600-style ownership and injecte
   assert.throws(() => loadExternalCredential(path.join(process.cwd(), 'credential')), /outside the repository/);
   const gateway = testGateway({ fetchImpl: async () => { throw new Error('fixture-secret transport failure'); } });
   await assert.rejects(() => gateway.request('/data_sources/22222222222222222222222222222222/query'), (error) => { assert.equal(error.message.includes('fixture-secret'), false); assert.equal(structuredError(error).message.includes('fixture-secret'), false); return true; });
+});
+
+test('live write preflight owns credential, journal, manifest, and recovery checks', () => {
+  const credentialPath = tempPath('credential-preflight');
+  const journalPath = tempPath('journal-preflight.json');
+  writeFileSync(credentialPath, 'fixture-secret\n', { mode: 0o600 });
+  const operation = { resource: 'application', operation: 'create', dedupKey: 'preflight-key', payload: { Role: 'AI Engineer', Company: 'Example' } };
+  const gateway = createNotionV5Gateway({
+    manifest: realManifest,
+    live: true,
+    credentialFile: credentialPath,
+    journalPath,
+    fetchImpl: async () => { throw new Error('preflight must not call transport'); },
+  });
+  const receipt = gateway.validateLiveWritePreflight({ operations: [operation] });
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.manifestVersion, 'LaunchpadV5ManifestV2');
+  assert.deepEqual(receipt.requestedKeys, ['preflight-key']);
+
+  const journal = createTransactionJournal({ journalPath });
+  journal.reserve([{ key: 'preflight-key', target: 'applications' }]);
+  assert.throws(
+    () => gateway.validateLiveWritePreflight({ operations: [operation] }),
+    (error) => error.code === 'JOURNAL_RECOVERY_REQUIRED',
+  );
+
+  const testGatewayInstance = testGateway({ journalPath: tempPath('test-journal.json') });
+  assert.throws(
+    () => testGatewayInstance.validateLiveWritePreflight({ operations: [operation], credentialFile: credentialPath }),
+    (error) => error.code === 'TEST_MODE_REFUSED',
+  );
 });
 
 test('NotionV5Error keeps redaction secrets out of normal inspection while structured errors remain redacted', () => {
@@ -235,16 +320,43 @@ test('durable journal reserves before writes, reports restart recovery, commits,
   assert.equal(restarted.recover()[0].state, 'pending');
   let writes = 0;
   const recovered = await runReservedBatch({ items: [{ dedupKey: 'crashed' }], journal: restarted, reserve: async (items) => ({ reserved: items, committedKeys: [] }), write: async () => { writes++; }, verify: async () => true, commit: async (rows) => rows, abort: async () => {} });
-  assert.equal(recovered.status, 'aborted');
+  assert.equal(recovered.status, 'recovery');
+  assert.deepEqual(recovered.recovery.map(({ key }) => key), ['crashed']);
   assert.equal(writes, 0);
   restarted.markAborted('crashed', new Error('operator recovered')); 
   const result = await runReservedBatch({ items: [{ dedupKey: 'ok' }, { dedupKey: 'bad' }], journal: restarted, reserve: async (items) => ({ reserved: items, committedKeys: [] }), write: async (item) => { if (item.dedupKey === 'bad') throw new Error('bad row'); return { pageId: ids.pages[0] }; }, verify: async () => true, commit: async (rows) => rows, abort: async () => {} });
   assert.equal(result.status, 'partial');
+  assert.deepEqual(result.newlyCommitted, ['ok']);
+  assert.deepEqual(result.failed.map(({ key }) => key), ['bad']);
+  assert.deepEqual(result.deliveredKeys, ['ok']);
   assert.equal(restarted.get('ok').state, 'committed');
   assert.equal(restarted.get('bad').state, 'aborted');
   const duplicate = await runReservedBatch({ items: [{ dedupKey: 'ok' }], journal: restarted, reserve: async () => ({ committedKeys: [] }), write: async () => { writes++; }, verify: async () => true, commit: async (rows) => rows, abort: async () => {} });
-  assert.deepEqual(duplicate.skipped.map((item) => item.dedupKey), ['ok']);
+  assert.equal(duplicate.status, 'replayed');
+  assert.deepEqual(duplicate.alreadyCommitted, ['ok']);
+  assert.deepEqual(duplicate.deliveredKeys, ['ok']);
   assert.equal(writes, 0);
+});
+
+test('transaction commit keys must exactly match verified keys', async () => {
+  for (const commit of [
+    async () => [],
+    async () => ['one', 'one'],
+    async () => ['one', 'unknown'],
+  ]) {
+    const result = await runReservedBatch({
+      items: [{ dedupKey: 'one' }, { dedupKey: 'two' }],
+      reserve: async (items) => ({ reserved: items, committedKeys: [] }),
+      write: async (item) => ({ key: item.dedupKey }),
+      verify: async () => true,
+      commit,
+      abort: async () => {},
+    });
+    assert.equal(result.status, 'aborted');
+    assert.equal(result.newlyCommitted.length, 0);
+    assert.equal(result.failed[0].error.code, 'COMMIT_KEYS_MISMATCH');
+    assert.equal(result.deliveredKeys.length, 0);
+  }
 });
 
 test('live writes refuse missing or repository journals', async () => {

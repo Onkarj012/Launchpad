@@ -10,12 +10,13 @@
     "timezone": { "const": "Asia/Kolkata" },
     "run": {
       "type": "object",
-      "required": ["cadence", "onceDaily", "minimumTotal", "maximumTotal", "strictTarget", "maximumPerCompany", "maximumFamilyShare"],
+      "required": ["cadence", "onceDaily", "minimumTotal", "preferredTotal", "maximumTotal", "strictTarget", "maximumPerCompany", "maximumFamilyShare"],
       "properties": {
         "cadence": { "const": "manual" },
         "onceDaily": { "const": true },
-        "minimumTotal": { "const": 25 },
-        "maximumTotal": { "const": 35 },
+        "minimumTotal": { "const": 10 },
+        "preferredTotal": { "const": 12 },
+        "maximumTotal": { "const": 20 },
         "strictTarget": { "const": 10 },
         "maximumPerCompany": { "const": 2 },
         "maximumFamilyShare": { "const": 0.4 }

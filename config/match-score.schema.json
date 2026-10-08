@@ -10,8 +10,19 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["canonicalUrl", "matchScore", "rationale", "strongestHook", "responseLikelihood", "autoSuggest", "descriptionAvailable"],
+        "required": ["canonicalUrl", "matchScore", "rationale", "strongestHook", "responseLikelihood", "autoSuggest", "descriptionAvailable", "componentScores"],
         "properties": {
+          "componentScores": {
+            "type": "object", "additionalProperties": false,
+            "required": ["skillMatch", "domainRelevance", "seniorityFit", "locationFit", "responseLikelihood"],
+            "properties": {
+              "skillMatch": { "type": "integer", "minimum": 0, "maximum": 35 },
+              "domainRelevance": { "type": "integer", "minimum": 0, "maximum": 20 },
+              "seniorityFit": { "type": "integer", "minimum": 0, "maximum": 15 },
+              "locationFit": { "type": "integer", "minimum": 0, "maximum": 10 },
+              "responseLikelihood": { "type": "integer", "minimum": 0, "maximum": 20 }
+            }
+          },
           "canonicalUrl": { "type": "string", "description": "Join key echoed exactly from the input job row." },
           "matchScore": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Rubric total (0-100)." },
           "rationale": { "type": "string", "description": "One line explaining the score." },

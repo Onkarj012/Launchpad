@@ -1,5 +1,6 @@
 import { extractExperienceYears, normalizeCandidate, stripHtmlToText } from '../job-pull/candidate.mjs';
 import { parsePostedOn } from '../vendor/career-ops/providers/workday.mjs';
+import { isDeadlineCancellation, remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 const SUPPORTED = new Set(['workday', 'successfactors', 'phenom', 'icims', 'jobvite', 'oracle', 'custom']);
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -176,7 +177,7 @@ function candidateFrom(row, { provider, board, endpointUrl, page, runAt, parser 
 }
 
 function candidateIdentity(candidate) {
-  return String(candidate.jobId ?? candidate.evidence?.providerJobId ?? candidate.canonicalUrl);
+  return String(candidate.sourceRecordKey ?? candidate.jobId ?? candidate.evidence?.providerJobId ?? candidate.canonicalUrl);
 }
 
 function parserRows(provider, payload) {
@@ -410,12 +411,13 @@ function markWorkdayDetailFailure(candidate, { runAt, detailUrl, code, message }
   return next;
 }
 
-async function mapPool(items, concurrency, fn) {
+async function mapPool(items, concurrency, fn, { signal = null, deadline = null } = {}) {
   if (!items.length) return [];
   const results = new Array(items.length);
   let cursor = 0;
   async function worker() {
     while (cursor < items.length) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { return; }
       const index = cursor;
       cursor += 1;
       results[index] = await fn(items[index], index);
@@ -427,45 +429,70 @@ async function mapPool(items, concurrency, fn) {
 }
 
 async function hydrateWorkdayDetails(pending, {
-  transport, runAt, detailConcurrency, maxDetailRequests, detailTelemetry, verificationQueue,
+  transport, runAt, detailConcurrency, detailBudget, detailTelemetry, verificationQueue, signal = null, deadline = null, onOutcome = null,
 }) {
-  let remaining = Math.max(0, Number(maxDetailRequests) || 0);
-  const selected = [];
-  for (const item of pending) {
-    if (remaining <= 0) {
-      detailTelemetry.budgetExhausted += 1;
-      item.candidate.evidence = {
-        ...item.candidate.evidence,
-        detailHydration: { status: 'skipped', reason: 'budget-exhausted' },
-      };
-      continue;
-    }
-    remaining -= 1;
-    selected.push(item);
-  }
-
-  await mapPool(selected, detailConcurrency, async (item) => {
-    detailTelemetry.attempted += 1;
+  const completed = new Set();
+  let cursor = 0;
+  const outcome = async (item, kind) => {
+    const identity = candidateIdentity(item.candidate);
+    if (completed.has(identity)) return;
+    completed.add(identity);
+    if (typeof onOutcome === 'function') await onOutcome(item, kind);
+  };
+  const skip = async (item, reason, { deadlineExceeded = false, cancelled = false, budget = false } = {}) => {
+    item.candidate = {
+      ...item.candidate,
+      evidence: { ...item.candidate.evidence, detailHydration: { status: 'skipped', reason } },
+    };
+    detailTelemetry.skipped += 1;
+    if (budget) detailTelemetry.budgetExhausted += 1;
+    if (deadlineExceeded) detailTelemetry.deadlineExhausted += 1;
+    if (cancelled) detailTelemetry.cancellationSkipped += 1;
+    await outcome(item, 'skipped');
+  };
+  const worker = async () => {
+    while (cursor < pending.length) {
+      const item = pending[cursor];
+      cursor += 1;
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) {
+        await skip(item, isDeadlineCancellation(error, signal, deadline) ? 'deadline-exceeded' : 'cancelled', {
+          deadlineExceeded: isDeadlineCancellation(error, signal, deadline),
+          cancelled: !isDeadlineCancellation(error, signal, deadline),
+        });
+        continue;
+      }
+      if (detailBudget.used >= detailBudget.limit) {
+        await skip(item, 'budget-exhausted', { budget: true });
+        continue;
+      }
+      detailBudget.used += 1;
+      detailTelemetry.attempted += 1;
     const detailUrl = item.detailUrl;
     let response;
     try {
-      response = await transport(detailUrl, {
+      response = await requestWithDeadline(transport, detailUrl, {
         method: 'GET',
         headers: {},
         endpoint: 'enterprise-ats-detail',
         provider: 'workday',
         detail: true,
         runAt,
-      });
+      }, { signal, deadline, abortOnDeadline: true });
     } catch (error) {
+      if (isDeadlineCancellation(error, signal, deadline)) {
+        await skip(item, 'deadline-exceeded', { deadlineExceeded: true });
+        return;
+      }
+      if (signal?.aborted) {
+        await skip(item, 'cancelled', { cancelled: true });
+        return;
+      }
       detailTelemetry.failed += 1;
       item.candidate = markWorkdayDetailFailure(item.candidate, {
         runAt, detailUrl, code: 'WORKDAY_DETAIL_TRANSPORT_ERROR', message: error?.message || 'detail transport error',
       });
-      verificationQueue.push({
-        url: item.candidate.canonicalUrl, company: item.candidate.company,
-        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
-      });
+      verificationQueue.push({ url: item.candidate.canonicalUrl, company: item.candidate.company, reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration });
+      await outcome(item, 'failed');
       return;
     }
 
@@ -476,10 +503,8 @@ async function hydrateWorkdayDetails(pending, {
       item.candidate = markWorkdayDetailFailure(item.candidate, {
         runAt, detailUrl, code, message: response?.error?.message || `workday detail returned HTTP ${status}`,
       });
-      verificationQueue.push({
-        url: item.candidate.canonicalUrl, company: item.candidate.company,
-        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
-      });
+      verificationQueue.push({ url: item.candidate.canonicalUrl, company: item.candidate.company, reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration });
+      await outcome(item, 'failed');
       return;
     }
 
@@ -489,23 +514,19 @@ async function hydrateWorkdayDetails(pending, {
       item.candidate = markWorkdayDetailFailure(item.candidate, {
         runAt, detailUrl, code: 'WORKDAY_DETAIL_MALFORMED', message: 'workday detail response was not valid JSON jobPostingInfo',
       });
-      verificationQueue.push({
-        url: item.candidate.canonicalUrl, company: item.candidate.company,
-        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
-      });
+      verificationQueue.push({ url: item.candidate.canonicalUrl, company: item.candidate.company, reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration });
+      await outcome(item, 'failed');
       return;
     }
 
-    const detail = extractWorkdayDetail(payload);
+      const detail = extractWorkdayDetail(payload);
     if (!detail || (!detail.description && !detail.requisitionId && !detail.location)) {
       detailTelemetry.failed += 1;
       item.candidate = markWorkdayDetailFailure(item.candidate, {
         runAt, detailUrl, code: 'WORKDAY_DETAIL_EMPTY', message: 'workday detail payload lacked description, requisition id, and location',
       });
-      verificationQueue.push({
-        url: item.candidate.canonicalUrl, company: item.candidate.company,
-        reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration,
-      });
+      verificationQueue.push({ url: item.candidate.canonicalUrl, company: item.candidate.company, reason: 'workday-detail-failed', evidence: item.candidate.evidence.detailHydration });
+      await outcome(item, 'failed');
       return;
     }
 
@@ -514,8 +535,43 @@ async function hydrateWorkdayDetails(pending, {
       detail.applicationUrl = workdayPublicApplicationUrl(item.boardUrl, item.externalPath, null);
     }
     detailTelemetry.succeeded += 1;
+    const sourceRecordKey = item.sourceRecordKey || item.candidate.sourceRecordKey;
     item.candidate = applyWorkdayDetail(item.candidate, detail, { runAt, detailUrl });
-  });
+    item.candidate.sourceRecordKey = sourceRecordKey;
+    await outcome(item, 'succeeded');
+    }
+  };
+  const width = Math.max(1, Math.min(Number(detailConcurrency) || 1, pending.length));
+  await Promise.all(Array.from({ length: width }, () => worker()));
+  return { interrupted: pending.some((item) => item.candidate.evidence?.detailHydration?.reason === 'cancelled' || item.candidate.evidence?.detailHydration?.reason === 'deadline-exceeded') };
+}
+
+function listDeadlineFor(sourceDeadline, detailReserveMs) {
+  const reserve = Math.max(0, Number(detailReserveMs) || 0);
+  if (!reserve || sourceDeadline == null) return sourceDeadline;
+  return {
+    wallClock: sourceDeadline?.wallClock === true,
+    remainingMs: () => Math.max(0, remainingDeadlineMs(sourceDeadline) - reserve),
+  };
+}
+
+function boardCursorState(state, boardKey, cursor) {
+  return { ...state, __cursor: { ...(state.__cursor || {}), [boardKey]: cursor } };
+}
+
+function removeBoardCursor(state, boardKey) {
+  const cursors = { ...(state.__cursor || {}) };
+  delete cursors[boardKey];
+  if (Object.keys(cursors).length === 0) {
+    const next = { ...state };
+    delete next.__cursor;
+    return next;
+  }
+  return { ...state, __cursor: cursors };
+}
+
+function jsonSnapshot(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 export async function discoverEnterpriseAts({
@@ -523,50 +579,116 @@ export async function discoverEnterpriseAts({
   transport,
   runAt = new Date().toISOString(),
   conditionalState = {},
+  checkpoint = null,
   maxPages = 3,
   maxJobsPerBoard = 100,
   retry = {},
   enrichDetails = false,
   detailConcurrency = 4,
   maxDetailRequestsPerRun = 0,
+  workdayDetailReserveMs = 0,
   roleFamilyKeywords = DEFAULT_ROLE_FAMILY_KEYWORDS,
   locationKeywords = DEFAULT_LOCATION_KEYWORDS,
   excludedLocationKeywords = DEFAULT_EXCLUDED_LOCATION_KEYWORDS,
+  signal = null,
+  deadline = null,
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverEnterpriseAts requires injected transport');
-  const observations = []; const failures = []; const verificationQueue = []; const seen = new Set(); const state = { ...conditionalState };
+  const observations = []; const failures = []; const verificationQueue = []; const seen = new Set(); let state = { ...conditionalState };
   const sources = [];
-  const detailTelemetry = { attempted: 0, succeeded: 0, failed: 0, budgetExhausted: 0, preselected: 0, skipped: 0, selectedByReason: {} };
+  const detailReserveMs = Math.max(0, Number(workdayDetailReserveMs) || 0);
+  const detailTelemetry = {
+    configuredReserveMs: detailReserveMs, attempted: 0, succeeded: 0, failed: 0, skipped: 0,
+    budgetExhausted: 0, deadlineExhausted: 0, cancellationSkipped: 0, preselected: 0,
+    selectedByReason: {}, usedBudget: 0, remainingBudget: 0, checkpointed: false, checkpoints: 0,
+    terminalReason: null,
+  };
   const telemetry = {
     boards: boards.length, attempted: 0, succeeded: 0, pages: 0, extracted: 0, direct: 0, leads: 0, duplicates: 0, skipped: 0, capped: 0,
-    workdayDetail: detailTelemetry,
+    workdayDetail: detailTelemetry, configuredDetailReserveMs: detailReserveMs, checkpointed: false, checkpointCount: 0,
+    terminalReason: null,
   };
   const detailBudget = Math.max(0, Number(maxDetailRequestsPerRun) || (enrichDetails ? 50 : 0));
+  const detailBudgetState = { limit: detailBudget, used: 0 };
   const detailEnabled = enrichDetails === true || detailBudget > 0;
   const concurrency = Math.max(1, Number(detailConcurrency) || 4);
-  const workdayPending = [];
+  const listDeadline = listDeadlineFor(deadline, detailReserveMs);
+  const checkpointCursor = (boardKey, cursor) => boardCursorState(state, boardKey, jsonSnapshot(cursor));
+  const checkpointEvidence = (phase, cursor) => ({
+    phase, cursor: cursor == null ? null : jsonSnapshot(cursor), checkpointed: true,
+    detailTelemetry: jsonSnapshot(detailTelemetry), terminalReason: telemetry.terminalReason,
+  });
+  const emitCheckpoint = async (payload) => {
+    if (typeof checkpoint !== 'function') return;
+    await checkpoint(payload);
+    telemetry.checkpointed = true;
+    telemetry.checkpointCount += 1;
+    detailTelemetry.checkpointed = true;
+    detailTelemetry.checkpoints += 1;
+  };
+  const queueVerification = (candidate, reason, evidence = candidate.evidence) => {
+    const key = `${candidate.sourceRecordKey || candidateIdentity(candidate)}|${reason}`;
+    if (verificationQueue.some((item) => `${item.sourceRecordKey || item.url}|${item.reason}` === key)) return;
+    verificationQueue.push({ sourceRecordKey: candidate.sourceRecordKey, url: candidate.canonicalUrl, company: candidate.company, reason, evidence });
+  };
 
   for (const input of boards) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { break; }
     const board = { ...input, url: canonical(input.url || input.endpoint || input.boardUrl) };
     const provider = providerFrom(board);
     const boardKey = board.company || board.url;
     const resume = state.__cursor?.[boardKey] || {};
-    const source = { board: board.company || null, provider, url: board.url, status: 'pending', startingCursor: resume, pagesFetched: 0, pagesCapped: false, failures: [], naturalTerminal: false, interrupted: false, truncated: false, capHit: null, recordsNotExamined: null, newestPostingAt: null };
+    const source = { board: board.company || null, provider, url: board.url, status: 'pending', startingCursor: resume, pagesFetched: 0, pagesCapped: false, failures: [], naturalTerminal: false, interrupted: false, truncated: false, capHit: null, terminalReason: null, recordsNotExamined: null, newestPostingAt: null, detailReserveMs: provider === 'workday' ? detailReserveMs : 0 };
     sources.push(source);
     if (!board.url || !provider || !SUPPORTED.has(provider)) {
       const item = failure(board, 0, 'UNSUPPORTED_PROVIDER', 'board provider is unsupported or private; no listing was inferred', board.url);
       failures.push(item); source.failures.push(item); source.status = 'degraded'; telemetry.skipped += 1; continue;
     }
-    let endpointUrl = resume.endpointUrl || board.url; const visited = new Set(); let page = Number(resume.page || 0); let boardJobs = 0; let workdayTotal = null; let workdayReceived = Number(resume.workdayReceived || 0);
+    let endpointUrl = resume.endpointUrl || board.url; const visited = new Set(); let page = Number(resume.page || 0); let boardJobs = 0; let workdayTotal = null; let workdayReceived = Number(resume.workdayReceived || 0); let replayCursor = { endpointUrl, page, workdayReceived };
     while (endpointUrl && page < Math.max(1, Number(maxPages))) {
+      const listBudgetGone = provider === 'workday' && !signal?.aborted && detailReserveMs > 0 && remainingDeadlineMs(listDeadline) <= 0 && remainingDeadlineMs(deadline) > 0;
+      if (listBudgetGone) {
+        source.truncated = true; source.status = 'truncated'; source.capHit = 'workdayDetailReserve'; source.terminalReason = 'workday-detail-reserve-exhausted';
+        telemetry.terminalReason = source.terminalReason; detailTelemetry.terminalReason = source.terminalReason;
+        state = boardCursorState(state, boardKey, { endpointUrl, page, workdayReceived });
+        break;
+      }
+      try { throwIfNetworkWorkDisallowed(signal, provider === 'workday' ? listDeadline : deadline); } catch (error) {
+        const reserveExhausted = provider === 'workday' && !signal?.aborted && detailReserveMs > 0 && remainingDeadlineMs(deadline) > 0;
+        source.interrupted = !reserveExhausted; source.truncated = reserveExhausted; source.status = reserveExhausted ? 'truncated' : 'interrupted';
+        source.capHit = reserveExhausted ? 'workdayDetailReserve' : null;
+        source.terminalReason = reserveExhausted ? 'workday-detail-reserve-exhausted' : (isDeadlineCancellation(error, signal, deadline) ? 'source-cancelled' : 'source-interrupted');
+        telemetry.terminalReason = source.terminalReason; detailTelemetry.terminalReason = source.terminalReason;
+        state = boardCursorState(state, boardKey, { endpointUrl, page, workdayReceived });
+        break;
+      }
+      const pageStartCursor = { endpointUrl, page, workdayReceived };
+      replayCursor = pageStartCursor;
       const workdayOffset = provider === 'workday' ? workdayReceived : 0;
       page += 1; telemetry.pages += 1; telemetry.attempted += 1; source.pagesFetched += 1; visited.add(endpointUrl);
       let response; let attempts = 0; const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
       while (attempts < maxAttempts) {
         attempts += 1;
-        try { response = await transport(endpointUrl, { endpoint: 'enterprise-ats', provider, page, ...requestOptions(provider, maxJobsPerBoard, state[endpointUrl]?.etag, workdayOffset), runAt }); }
-        catch (error) { if (error?.retryable && attempts < maxAttempts) continue; response = { status: 0, error }; break; }
+        try {
+          throwIfNetworkWorkDisallowed(signal, provider === 'workday' ? listDeadline : deadline);
+          response = await requestWithDeadline(transport, endpointUrl, { endpoint: 'enterprise-ats', provider, page, ...requestOptions(provider, maxJobsPerBoard, state[endpointUrl]?.etag, workdayOffset), runAt }, { signal, deadline: provider === 'workday' ? listDeadline : deadline });
+        } catch (error) {
+          const reserveExhausted = provider === 'workday' && !signal?.aborted && detailReserveMs > 0 && remainingDeadlineMs(deadline) > 0;
+          if (isDeadlineCancellation(error, signal, deadline)) {
+            source.interrupted = !reserveExhausted; source.truncated = reserveExhausted; source.status = reserveExhausted ? 'truncated' : 'interrupted';
+            source.capHit = reserveExhausted ? 'workdayDetailReserve' : null;
+            source.terminalReason = reserveExhausted ? 'workday-detail-reserve-exhausted' : 'source-cancelled';
+            telemetry.terminalReason = source.terminalReason; detailTelemetry.terminalReason = source.terminalReason;
+            response = { status: 0, error }; break;
+          }
+          if (error?.retryable && attempts < maxAttempts) continue;
+          response = { status: 0, error }; break;
+        }
         if (!RETRYABLE.has(Number(response?.status)) || attempts >= maxAttempts) break;
+      }
+      if ((source.interrupted || source.truncated) && response?.status === 0) {
+        state = boardCursorState(state, boardKey, pageStartCursor);
+        break;
       }
       const status = Number(response?.status ?? 200);
       if (status === 304) { source.status = 'ok'; source.naturalTerminal = true; state[endpointUrl] = { ...state[endpointUrl], canonicalUrl: endpointUrl, notModified: true }; telemetry.succeeded += 1; break; }
@@ -594,16 +716,23 @@ export async function discoverEnterpriseAts({
         source.status = 'degraded';
       }
       telemetry.succeeded += 1; source.status = 'ok';
+      const pageObservations = [];
+      const pagePending = [];
       for (let rowIndex = 0; rowIndex < parsed.rows.length; rowIndex += 1) {
+        try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { source.interrupted = true; source.status = 'interrupted'; source.terminalReason = 'source-cancelled'; break; }
         const row = parsed.rows[rowIndex];
         if (boardJobs >= Math.max(0, Number(maxJobsPerBoard))) { source.pagesCapped = true; source.truncated = true; source.capHit = 'maxJobsPerBoard'; source.recordsNotExamined = parsed.rows.length - rowIndex; telemetry.capped += 1; break; }
         const parsedRow = row?.__malformedJsonLd ? null : candidateFrom(row, { provider, board, endpointUrl, page, runAt, parser: parsed.parser });
         if (!parsedRow?.value) { if (parsedRow?.failure) { const item = failure(board, page, parsedRow.failure.code, parsedRow.failure.message, endpointUrl); failures.push(item); source.failures.push(item); } telemetry.skipped += 1; continue; }
         const candidate = parsedRow.value; const identity = candidateIdentity(candidate); if (seen.has(identity)) { telemetry.duplicates += 1; continue; }
         seen.add(identity);
-        observations.push(candidate); boardJobs += 1; source.newestPostingAt = [source.newestPostingAt, candidate.postedAt].filter(Boolean).sort().at(-1) ?? null; telemetry.extracted += 1; telemetry[candidate.classification === 'direct' ? 'direct' : 'leads'] += 1;
+        if (provider === 'workday') candidate.sourceRecordKey = `workday|${boardKey}|${candidate.providerJobId || candidate.canonicalUrl}`;
+        observations.push(candidate); pageObservations.push(candidate); boardJobs += 1; source.newestPostingAt = [source.newestPostingAt, candidate.postedAt].filter(Boolean).sort().at(-1) ?? null; telemetry.extracted += 1; telemetry[candidate.classification === 'direct' ? 'direct' : 'leads'] += 1;
         if (candidate.classification !== 'direct') verificationQueue.push({ url: candidate.canonicalUrl, company: candidate.company, reason: 'enterprise-lead', evidence: candidate.provenance });
 
+        if (provider === 'workday' && !detailEnabled) {
+          candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: 'detail-disabled' } };
+        }
         if (provider === 'workday' && detailEnabled) {
           const selection = preselectWorkdayListRow(row, { roleFamilyKeywords, locationKeywords, excludedLocationKeywords });
           if (!selection.selected) {
@@ -617,8 +746,9 @@ export async function discoverEnterpriseAts({
               detailTelemetry.skipped += 1;
               candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: 'no-detail-url' } };
             } else {
-              workdayPending.push({
+              pagePending.push({
                 candidate,
+                sourceRecordKey: candidate.sourceRecordKey,
                 observationIndex: observations.length - 1,
                 detailUrl,
                 boardUrl: board.url,
@@ -631,6 +761,35 @@ export async function discoverEnterpriseAts({
         }
         delete candidate._listExternalPath;
       }
+      if (source.interrupted) break;
+      if (provider === 'workday' && detailEnabled) {
+        const listCheckpoint = checkpointCursor(boardKey, pageStartCursor);
+        state = listCheckpoint;
+        await emitCheckpoint({
+          observations: pageObservations, cursor: listCheckpoint,
+          manifestDelta: { telemetry: jsonSnapshot(telemetry), checkpoint: checkpointEvidence('list', pageStartCursor) },
+        });
+        pagePending.sort((left, right) => left.priority - right.priority);
+        const hydrated = await hydrateWorkdayDetails(pagePending, {
+          transport, runAt, detailConcurrency: concurrency, detailBudget: detailBudgetState, detailTelemetry, verificationQueue,
+          signal, deadline,
+          onOutcome: async (item) => {
+            observations[item.observationIndex] = item.candidate;
+            await emitCheckpoint({
+              observations: [item.candidate], cursor: listCheckpoint, replaceObservations: true,
+              manifestDelta: { telemetry: jsonSnapshot(telemetry), checkpoint: checkpointEvidence('detail', pageStartCursor) },
+            });
+          },
+        });
+        detailTelemetry.usedBudget = detailBudgetState.used;
+        detailTelemetry.remainingBudget = Math.max(0, detailBudgetState.limit - detailBudgetState.used);
+        if (hydrated.interrupted || signal?.aborted || remainingDeadlineMs(deadline) <= 0) {
+          source.interrupted = true; source.status = 'interrupted'; source.naturalTerminal = false; source.terminalReason = signal?.aborted ? 'source-cancelled' : 'detail-deadline-exceeded';
+          telemetry.terminalReason = source.terminalReason; detailTelemetry.terminalReason = source.terminalReason;
+          state = boardCursorState(state, boardKey, pageStartCursor);
+          break;
+        }
+      }
       if (provider === 'workday') {
         const moreOnServer = workdayTotal == null || workdayReceived < workdayTotal;
         endpointUrl = boardJobs < Math.max(0, Number(maxJobsPerBoard)) && moreOnServer ? board.url : null;
@@ -638,28 +797,46 @@ export async function discoverEnterpriseAts({
         const next = nextUrl(provider, payload, endpointUrl, page);
         endpointUrl = next && !visited.has(next) ? next : null;
       }
-      if (source.truncated) state.__cursor = { ...(state.__cursor || {}), [boardKey]: { endpointUrl: endpointUrl || board.url, page, workdayReceived } };
-      else if (endpointUrl && !source.truncated && !source.interrupted) state.__cursor = { ...(state.__cursor || {}), [boardKey]: { endpointUrl, page, workdayReceived } };
-      else if (!endpointUrl && !source.truncated && !source.interrupted && state.__cursor) delete state.__cursor[boardKey];
+      if (source.truncated) state = boardCursorState(state, boardKey, { endpointUrl: endpointUrl || board.url, page, workdayReceived });
+      else if (endpointUrl && !source.truncated && !source.interrupted) state = boardCursorState(state, boardKey, { endpointUrl, page, workdayReceived });
+      else if (!endpointUrl && !source.truncated && !source.interrupted) state = removeBoardCursor(state, boardKey);
       if (!endpointUrl && !source.truncated && !source.interrupted) source.naturalTerminal = true;
+      if (provider === 'workday' && !signal?.aborted && detailReserveMs > 0 && remainingDeadlineMs(listDeadline) <= 0 && remainingDeadlineMs(deadline) > 0 && endpointUrl) {
+        source.truncated = true; source.status = 'truncated'; source.capHit = 'workdayDetailReserve'; source.terminalReason = 'workday-detail-reserve-exhausted';
+        telemetry.terminalReason = source.terminalReason; detailTelemetry.terminalReason = source.terminalReason;
+        state = boardCursorState(state, boardKey, { endpointUrl, page, workdayReceived });
+        break;
+      }
     }
-    if (endpointUrl) { source.pagesCapped = true; source.truncated = true; source.capHit = source.capHit ?? 'maxPages'; telemetry.capped += 1; }
+    if (source.status === 'interrupted') {
+      source.status = 'interrupted';
+      state = boardCursorState(state, boardKey, replayCursor);
+    } else if (endpointUrl && !source.interrupted) {
+      source.pagesCapped = true; source.truncated = true; source.capHit = source.capHit ?? 'maxPages'; source.terminalReason = source.terminalReason ?? 'max-pages';
+      telemetry.terminalReason = telemetry.terminalReason ?? source.terminalReason; telemetry.capped += 1;
+    }
   }
 
-  if (workdayPending.length && detailEnabled) {
-    workdayPending.sort((left, right) => left.priority - right.priority);
-    await hydrateWorkdayDetails(workdayPending, {
-      transport, runAt, detailConcurrency: concurrency, maxDetailRequests: detailBudget, detailTelemetry, verificationQueue,
-    });
-    for (const item of workdayPending) {
-      observations[item.observationIndex] = item.candidate;
+  for (const candidate of observations.filter((item) => item.provider === 'workday')) {
+    const hydration = candidate.evidence?.detailHydration;
+    if (hydration?.status === 'failed') {
+      continue;
+    }
+    if (hydration?.status === 'succeeded') {
+      if (!candidate.postedAt) queueVerification(candidate, 'workday-undated');
+    } else {
+      queueVerification(candidate, !candidate.postedAt ? 'workday-list-only-undated' : `workday-list-only-${hydration?.reason || 'detail-unverified'}`);
     }
   }
+
+  detailTelemetry.usedBudget = detailBudgetState.used;
+  detailTelemetry.remainingBudget = Math.max(0, detailBudgetState.limit - detailBudgetState.used);
+  telemetry.workdayDetail = detailTelemetry;
 
   return {
     observations,
     manifests: sources,
-    manifest: { schemaVersion: 'EnterpriseAtsManifestV1', runAt, sources, telemetry, changed: observations.length, naturalTerminal: sources.length > 0 && sources.every((source) => source.naturalTerminal), interrupted: sources.some((source) => source.interrupted), truncated: sources.some((source) => source.truncated), capHit: sources.find((source) => source.capHit)?.capHit ?? null, recordsNotExamined: sources.reduce((sum, source) => sum + (source.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true },
+    manifest: { schemaVersion: 'EnterpriseAtsManifestV1', runAt, sources, telemetry, changed: observations.length, naturalTerminal: sources.length > 0 && sources.every((source) => source.naturalTerminal), interrupted: sources.some((source) => source.interrupted), truncated: sources.some((source) => source.truncated), capHit: sources.find((source) => source.capHit)?.capHit ?? null, terminalReason: telemetry.terminalReason, truncationReason: sources.find((source) => source.truncated)?.terminalReason ?? null, recordsNotExamined: sources.reduce((sum, source) => sum + (source.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true },
     conditionalState: state,
     failures,
     verificationQueue,

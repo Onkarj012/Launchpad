@@ -15,7 +15,7 @@ When sources conflict, do not infer promotion from prose. Re-run allowed local c
 ## Checkout identity and warning
 
 - Branch: `feat/launchpad-readiness-completion`
-- HEAD at this documentation synchronization: `3b391863e3632fca52703066df141ebd8e460c2a`
+- HEAD at this documentation synchronization: `ae89f73eba5a2bdb8eea5b9a39694e33919c7d99`
 - Working tree: dirty, with substantial tracked and untracked implementation work.
 - Consequence: all implementation claims below are **working-tree** claims. They are not claims about HEAD alone, a clean committed baseline, a pushed branch, or production.
 - Preservation rule: do not reset, restore, clean, stash, stage, commit, rebase, switch branches, or remove unrelated user work as part of status maintenance.
@@ -31,7 +31,46 @@ When sources conflict, do not infer promotion from prose. Re-run allowed local c
 
 ## Current local position
 
-Working-tree implementations for readiness Phases 00–06 are present. Local engineering paths are substantially complete; credentialed, elapsed-time, and outward-facing gates remain open.
+Working-tree implementations for readiness Phases 00–06 and daily-discovery recovery are present. Discovery now includes public LinkedIn guest search plus Chromium-backed Glassdoor, Instahyre, and Wellfound lanes. Workday LIST-only `postedOn` and genuinely undated roles remain in `VerifyQueue`; only DETAIL `startDate` supplies Workday freshness. Local engineering paths are substantially complete; shortlist selection, live v5 writes, and production promotion remain open.
+
+### 2026-10-07 enforcement repairs and bounded verification
+
+- Applicant experience now handles `year(s)` and excludes education quantities, including `yrs. of full time educational`. All five retained Accenture JDs parse minima 2, 3, 2, 2, and 5. Three false experience rejects are repaired; actual 3+ requirements still reject.
+- Resolver and readiness reject an unnamed client hiring route even when ATS JSON-LD names the recruiter. Leading Edge remains `Needs Verification`; ordinary software work for clients still passes this identity check.
+- Frozen saved-body replay yields zero ready jobs. Today's bounded verification yields one ready, scored, locally selected fallback: Snowflake Cloud Support Engineer, AI/ML, posted 25 September, requiring 2+ years and a 10 PM IST night shift. Configured `gpt-5.6-luna` scored it 55/100. Strict selection is zero and the minimum-target shortage is nine.
+- Focused regressions pass 39/39 and the full suite passes 890/890. Readiness covers all six test groups with 890/890 passing, but the command exits 1 for `OPERATIONAL_VERIFICATION_MISSING`; `codeComplete` is true and `productionReady` and `operationallyVerified` remain false.
+- [Retained bounded report](../.local/bugfix-recheck-2026-10-07/RESULTS.md) separates the frozen replay from 65 public GETs, including 55 job-detail/redirect requests and ten original-employer searches. No external delivery, Notion write, application, message, checkbox change, scheduling, or promotion occurred. Real-history suppression remains unproved.
+
+### 2026-10-06 local pipeline completion and bounded proof
+
+- Local selection now exhausts each Strict/freshness band before balancing another band. Source provenance claims cannot bypass the explicit score or validated model boundary. Daily allocation rejects malformed present days and conflicting duplicate metadata.
+- Warm ATS sorts trusted provider dates before its row cap. Missing Greenhouse JDs use bounded identity-checked detail retrieval; Recruitee requirements survive normalization. Explicit senior-role JD requirements reject. Verified readiness requires a retained JD and full-time or paid-internship evidence; unknown employment remains in verification.
+- The bounded fresh public-source Normal run retained 75 GETs in 61.303 seconds, 966 observations and 866 dated rows. It ended partial with zero selected. A GET-only proof fence refused Workday's read-only search POST and later lanes remained interrupted; this is a proof limitation, not a production transport defect.
+- After the freshness-cap repair, an ATS-only replay of those current captures refreshed Capco job 8255708 through its exact employer API. Real `gpt-5.6-luna` scoring returned 62 with valid components in 22.056 seconds. This retained diagnostic proves the configured model route. The official application page supplied no employment-type evidence. Final readiness replay has 868 observations, 768 dated, one provisional candidate, zero ready/scored/selected and one verification row, with a shortage of 10. The final replay invoked no scorer.
+- Total public network reads were 77 GETs. All writes, history, database, allocation and rotation state were isolated under `.local/pipeline-completion-2026-10-06/finish/`. No external delivery, notification, real-history suppression, scheduling or promotion was exercised.
+- Full local suite passed 883/883. Validate, safety and rehearsal passed. Check counts and process receipts are retained in that directory. Readiness's deterministic tests pass; its outer command remains fail-closed for `OPERATIONAL_VERIFICATION_MISSING`, with `productionReady: false` and `operationallyVerified: false`. No production or 10–20-role yield claim is made.
+- Same-run retries with changed inventory can fail safely instead of replaying the exact retained shortlist. This nonblocking limitation remains.
+
+### 2026-08-24 production-shadow discovery
+
+- Scheduler is installed and loaded: `~/Library/LaunchAgents/com.launchpad.crawler.morning.plist` and `.midday.plist`. Morning runs at 04:30 local; production plists invoke `--env production --mode normal --location-preset pune` without live-write execution.
+- Morning shadow run: 676 fetched, 3 eligible, 0 selected, terminal status `partial`. `ats-warm` consumed the source budget; eight configured plans remained `notStarted`, including portal discovery.
+- Midday shadow run: 2917 fetched, 66 eligible, 0 selected, terminal status `completed`. Portal contribution: LinkedIn 74, Glassdoor 26, Instahyre 40, Wellfound 107.
+- The 2026-08-24 shadow run exposed two policy defects: unstated experience was rejected by `job-pull/normal-readiness.mjs`, and undated rows received no `normal-selection.mjs` waterfall band. Phase A T0-T1 repairs now keep undated rows in `VerifyQueue`, require explicit eligibility, and allow unstated experience only after eligibility passes.
+- Notification path has 18 retained receipts in `logs/notification-receipts.jsonl`; latest receipts report `freshCount: 0`. This proves receipt generation, not successful v5 persistence.
+- v5 manifest and external credential file exist. No successful real Notion write is retained. Journal still contains only aborted initialization; CLI has no live execution flag and Normal mode rejects non-fake gateways.
+
+### Daily-discovery recovery — local no-write proof
+
+- Daily runs now use stable schedule + mode + location + IST-date identity, durable SQLite run/source attempts, same-identity resume, and observation-key deduplication.
+- One absolute execution deadline owns discovery cancellation. Source adapters receive the parent signal and remaining budget; terminal envelopes distinguish `completed`, `partial`, and `failed` outcomes.
+- Partial outcomes fail closed before opportunity-ledger surfacing, v5 execution planning, canary persistence, or notification delivery.
+- Board selection is deterministic and bounded with priority/exploration allocation, deferred/omitted reasons, completion-gated rotation, and resumed-source ownership that avoids duplicate legacy fetches.
+- Mode selector owns final shortlist and delivery plan. Funnel and delivery reconciliation cover fetched → dated → eligible → ready → scored → selected plus ledger, v5 plan, canary, and notification counts.
+- Retained local evidence: `.local/launchpad-recovery-proof-2026-08-21-v2/evidence.json` (`LaunchpadLocalRecoveryProofV1`, SHA-256 `6a1e5cc58b2e69ee2d530e343366a67f20c371736d25d044cd84ab1e5b1ebef0`). Three sequential Normal/morning/india public-source no-write exercises reached terminal states in 107,699 ms, 73,905 ms, and 59,941 ms: one truthful scoring failure and two partial coverage outcomes. None is represented as a successful production-scored run.
+- Fixture-only interruption/resume proof retained one run ID across `partial` → `completed`, persisted two unique observations with zero duplicates, recorded a resumed source attempt, started zero requests after cancellation, and performed zero prohibited partial operations.
+- All external side-effect counters remained zero: no ledger persistence, gateway execution, canary persistence, notification, application, outreach, checkbox, credential, schedule, or production-config mutation.
+- Latest tracked test run passed 725/725 across 76 inventoried test files. Readiness reports `codeComplete: true`, while correctly retaining `productionReady: false` and `operationallyVerified: false` because local-only evidence cannot satisfy production operational verification. Receipt: `.local/launchpad-recovery-proof-2026-08-21-v2/readiness-passing.json` (SHA-256 `5113d5d6053b783bfb12823f8a396777722b7b0e23611141f52f3230754b2ca7`).
 
 ### Phase 00 — resume path
 
@@ -43,7 +82,7 @@ Working-tree implementations for readiness Phases 00–06 are present. Local eng
 ### Phase 01 — discovery correctness
 
 - Durable opportunity identity prefers provider + requisition ID. Distinct requisitions do not merge through company/title/location fallback.
-- Workday DETAIL `startDate` is trusted; list-only relative `postedOn` remains unverified.
+- Workday DETAIL `startDate` is trusted and follows the normal `Hot`, `Active`, and `Backfill` age classes. LIST-only `postedOn`, including bounded labels, and genuinely undated rows route to `VerifyQueue`. See [workday-postedon-probe.md](research/workday-postedon-probe.md).
 - Deadline and source signals propagate into scoring and mode selection.
 - Remote eligibility requires explicit India/APAC evidence or compatible IST overlap; context-free worldwide/global text is insufficient.
 - Apify remains explicit rescue only and default-off, with persisted offsets, seen-cache state, hard budget controls, and cost reconciliation paths.
@@ -73,7 +112,7 @@ Working-tree implementations for readiness Phases 00–06 are present. Local eng
 - It verifies eight reciprocal relations, journals external page IDs, supports replay, and makes no rollback/deletion claim.
 - Structured Notion errors redact configured secrets; secret lists are frozen and non-enumerable.
 - Daily notification receipts bind run/profile/outcome/fresh count and persist append-only JSONL evidence without changing crawler exit status on notification failure.
-- No live Notion write or real notification-delivery claim exists.
+- v5 manifest and external credential path are present, but no successful real Notion write exists. Eighteen notification receipts are retained through 2026-08-24; receipts report `freshCount: 0` and do not prove v5 persistence.
 
 ### Phase 05 — Gmail/outreach seams
 
@@ -112,10 +151,13 @@ One shared crawl feeds selected Normal, Startup, or Remote selector. Midday Remo
 
 Following have **not** happened:
 
+- live shortlist delivery from verified, eligible, scored rows; undated rows remain in `VerifyQueue`;
+- morning source-budget partitioning with every configured plan reaching a terminal state;
 - real checked-role/JD resume build and retained role-specific PDF verification;
 - manual rotation of previously exposed Notion credential; exposed value must not be reused;
 - restored credentialed access and live four-store Notion v5 smoke;
-- authenticated LinkedIn/browser smoke;
+- guarded live v5 execution from CLI and one retained real write proof;
+- authenticated LinkedIn/browser smoke beyond current production-shadow discovery;
 - real Gmail account connection, draft creation, send, or reply observation;
 - seven actual distinct valid UTC canary dates for every intended production profile on one clean release version;
 - real launchd installation, immutable release promotion, bootstrap recovery drill, or rollback drill;
@@ -129,11 +171,11 @@ GitHub is live status authority. This conservative local snapshot must not be up
 
 | Ticket | Local status | Current interpretation |
 |---|---|---|
-| LP-001 | Locally complete, combined-suite gate open | Daily schedule/mode/location propagation and shared crawl-to-selector dispatch are implemented. |
-| LP-002 | Locally complete, combined-suite gate open | Workday detail `startDate` is trusted and list `postedOn` is verification-only. |
-| LP-003 | Locally complete, combined-suite gate open | Opportunity ledger owns cross-day suppression/cooldown; surfacing occurs only for final shortlist. |
-| LP-004 | Partial | Rotation-state implementation exists; operational/live proof remains open. |
-| LP-005 | Locally complete, live gate open | Outcome-bound notification receipts exist; installation and delivery proof remain open. |
+| LP-001 | Locally complete, live gate open | Daily schedule/mode/location propagation, stable daily identity, durable resume, and shared crawl-to-selector dispatch passed the tracked suite. |
+| LP-002 | Locally complete, live gate open | Workday detail `startDate` is trusted; every LIST-only `postedOn` and undated row stays in `VerifyQueue`. |
+| LP-003 | Locally complete, live gate open | Opportunity ledger owns cross-day suppression/cooldown; partial outcomes suppress delivery and completed surfacing is selector-owned. |
+| LP-004 | Locally implemented, live gate open | Bounded priority/exploration planning, completion-gated rotation, request accounting, and fixture resume/deduplication have local proof; production operation remains open. |
+| LP-005 | Locally complete, live gate open | Outcome-bound notification receipts exist; scheduler is installed and shadow runs are retained, but shortlist delivery remains empty. |
 | LP-006 | Partial | Resolver-limit propagation is improved but not declared complete across all sources. |
 | LP-007 | Locally implemented, live gate open | Apify persisted offset and seen-cache paths exist; live retained-dataset proof remains open. |
 | LP-008 | Locally implemented, live gate open | Apify budget guards and reconciliation paths exist; live cost-policy proof remains open. |
@@ -164,4 +206,4 @@ node crawler/cli.mjs readiness --run-tests
 git diff --check
 ```
 
-Latest bounded verification on 2026-08-18 included Phase 06 tests (27/27), Launchpad validator, safety-contract validation, full tracked diff checks, and a clean committed-copy combined run covering 75 test files (713/713 passed). Earlier independently retained evidence includes Phase 00 (13/13), Phase 01 (168/168), and clean-copy Phase 03 (64/64). Combined test sub-run passes; overall readiness remains intentionally non-production because live, elapsed-time, credentialed, and promotion evidence is absent.
+Latest bounded verification on 2026-08-21 included Launchpad validation, safety-contract validation, full tracked diff checks, production-config byte-diff protection, and 725/725 passing tests across a fail-closed inventory of 76 files. Local no-write recovery evidence includes three terminal public-source exercises and one fixture interruption/resume drill. Readiness is code-complete but intentionally non-production because evidence is local-only; credentialed operational verification, external writes, schedule installation, release promotion, and rollback evidence remain absent. Earlier retained evidence includes Phase 00 (13/13), Phase 01 (168/168), clean-copy Phase 03 (64/64), and Phase 06 (27/27).

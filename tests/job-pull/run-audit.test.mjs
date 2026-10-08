@@ -1,3 +1,4 @@
+import { scoredFixture } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../../job-pull/config.mjs';
@@ -9,10 +10,11 @@ const config = loadConfig();
 const now = '2026-07-14T12:00:00.000Z';
 
 function raw(index, { title = 'AI Engineer', postedAt = '2026-07-14T08:00:00.000Z', experience = { minYears: 0, maxYears: 1 }, location = 'Pune' } = {}) {
-  return normalizeCandidate({
+  return scoredFixture({
+    description: 'Build Python AI services.',
     url: `https://jobs.example.test/${index}`, source: 'greenhouse-full', sourceKind: 'ats-direct', provider: 'greenhouse', id: String(index),
     company: `Company ${index}`, title, location, postedAt, employment: { type: 'full-time' }, experience,
-    liveness: { status: 'Active', evidence: 'fixture' }, matchScore: 80 - (index % 20),
+    liveness: { status: 'Active', evidence: 'fixture' }, scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 80 - (index % 20),
   });
 }
 
@@ -63,7 +65,7 @@ test('undated candidates are surfaced in verifyQueue and never selected or rejec
 });
 
 test('score merge preserves agent scoring and daily date uses India timezone', () => {
-  const candidate = raw(99);
+  const candidate = { ...raw(99), description: null };
   const sources = applyScores([{ candidates: [candidate], manifest: {} }], [{
     url: candidate.canonicalUrl,
     matchScore: 87,
@@ -86,6 +88,7 @@ test('run telemetry separates scored, unscored, scoring-failed, and selected can
   const scored = raw(201);
   const unscored = raw(202);
   delete unscored.matchScore;
+  delete unscored.score;
   const failed = { ...raw(203), scoringFailed: true };
   const result = runPipeline({
     config: { ...config, run: { ...config.run, minimumTotal: 1, maximumTotal: 3, strictTarget: 1 } },

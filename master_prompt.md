@@ -21,8 +21,7 @@
 ## 2. Targeting
 
 > Used for **fit-scoring** at pull time. Edit freely — this drives which jobs get a high Match Score.
-> Items marked `[CONFIRM]` are assumptions — correct them.
-> Company **stage** (startup / mid / big tech) is intentionally varied at sourcing time via `companies.json` and the dork queries in `skills/daily-job-pull` — see § 6/§ 7. Role targets below stay fixed regardless of stage.
+> Company **stage** (startup / mid / big tech) is intentionally varied at sourcing time via `companies.json` and the dork queries in `.agents/skills/daily-job-pull` — see § 6/§ 7. Role targets below stay fixed regardless of stage.
 
 ### Target titles
 **Strict families:**
@@ -79,11 +78,14 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 **Soft-score-down signals (drag Domain/Skill, not a gate):** pure frontend-only / pixel-pushing roles, non-technical/sales/support roles, hard requirement of a stack with zero overlap to mine that dominates the role.
 
 - **Recency** is tracked separately via freshness classes: `Hot` 0–72h · `Active` 3–7d · `Backfill` 8–14d. Fresher class wins ranking ties; older classes fill shortages. Undated roles go to the `VerifyQueue` for manual verification; >14d fails the gate.
-- Output per job: integer 0–100 + a one-line rationale + the **single strongest hook** to lead the resume/email with + an `Auto-Suggest` boolean (see rule below).
-- Target **25–35 curated roles** (sprint volume), with **at least 10 Strict when inventory supports it**. Selection order: Strict Hot → Strict Active → Strict Backfill → Shortage Fallback Hot → Fallback Active → Fallback Backfill.
+- Output per job: five integer component scores within their rubric weights, their deterministic sum 0–100 + a one-line rationale + the **single strongest hook** to lead the resume/email with + an `Auto-Suggest` boolean (see rule below).
+- Target **10 minimum, 12 preferred, 20 maximum verified scored roles per IST day across modes and schedules**, with **at least 10 Strict when inventory supports it**. Selection order: Strict Hot → Strict Active → Strict Backfill → Shortage Fallback Hot → Fallback Active → Fallback Backfill.
 - Shortage fallback may relax only adjacent title and hard experience requirement up to 2 years. Display it separately with exact relaxation; never hide a strict shortfall.
-- Diversity after scoring: maximum 2 roles per company; balance role families, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist.
-- **No auto-apply.** Present ranked list; Onkar reviews and picks ~7–8/day. `Make Resume` (build-selection) and `Applied?` (progress tally) checkboxes are manual — never auto-checked.
+- Verified daily selection requires a retained JD and evidence of full-time employment or a paid internship; summary-only records stay in verification. Unknown numeric experience may still be manual review when the JD passes the hard gates.
+- Explicit `--scores-json` inputs remain a labelled manual scoring seam. Legacy totals require whole points and a valid Response Likelihood; missing JD caps them at 45. Source scores never establish model output. Runtime and cached model results require all five components, matching Response Likelihood, total, and JD-availability flag. Rationale and hook must refer to supplied JD and approved resume evidence. Structural validation does not prove semantic truth.
+- Morning and midday share a cumulative 20-role daily ceiling. Completed local plans consume daily capacity; retries reuse their run allocation. A shortage never relaxes eligibility, verification, or scoring gates.
+- Diversity after scoring: maximum 2 roles per company; balance role families within each Strict/freshness band, aiming for ≥4 families and ≤40% from one family when eligible alternatives exist in that band. Exhaust the band before advancing.
+- **No auto-apply.** Present ranked list; Onkar reviews the daily shortlist. `Make Resume` (build-selection) and `Applied?` (progress tally) checkboxes are manual — never auto-checked.
 
 **Score bands (guidance, not gates):**
 - 80–100: strong fit, tailor immediately.
@@ -91,7 +93,7 @@ Hard gates (§ 2) run first and drop disqualified roles before scoring. Survivor
 - 50–64: stretch, only if low day-volume.
 - <50: skip unless special reason.
 
-**Auto-Suggest rule:** `score ≥ 80 AND Freshness Window ∈ {Hot, Active} AND Selection Tier = Strict AND Response-Likelihood sub-score ≥ 14/20`. This sets the `Auto-Suggest` checkbox (cloud's pick opinion) — it never sets `Make Resume` or `Applied?`; the user always confirms manually.
+**Auto-Suggest rule:** `score ≥ 80 AND Freshness Window ∈ {Hot, Active} AND Selection Tier = Strict AND Response-Likelihood sub-score ≥ 14/20`. Retain this opinion in the local report. The current v5 store schema does not declare an `Auto-Suggest` property, so planning must flag that limitation and omit the unsupported field; it never sets `Make Resume` or `Applied?`; the user always confirms manually.
 
 ---
 
@@ -228,7 +230,7 @@ Onkar
 - Keep each follow-up 1–2 lines + one small new detail (a project update, a relevant stat) — never repeat the whole pitch.
 - Seeded only after Onkar confirms he sent the initial email. Surfaced as a flagged list by `/followups`; Onkar reviews, Claude drafts, Onkar sends. Never auto-sent.
 - Best send window: Tue–Thu, 8–10 AM the recipient's local time; avoid Fri evening/weekends.
-- (This is the cold-email cadence. Portal-application follow-ups are separate — day 7 then day 14, max 2 — per `career-ops/followup-cadence.mjs`.)
+- (This is the cold-email cadence. Portal-application follow-ups are separate: day 7 then day 14, max 2. That policy currently lives only here — `career-ops/followup-cadence.mjs` sits in ignored runtime state and no runtime module imports it, so treat this line as the rule.)
 
 ---
 
@@ -237,7 +239,7 @@ Onkar
 | Say | Claude does |
 |---|---|
 | "morning" / `/morning` | Unified daily path, Normal by default; explicit Startup or Remote source emphasis. One shared crawl → shared gates/scoring/suppression → requested mode selector → final-shortlist handoff. Never applies or sends |
-| "pull today's jobs" / `/pull-jobs` | Tracked + warm reverse ATS + public sources + optional Indeed → normalize → gate → freshness/dedup → Match and Conversion Score → 25–35 local leads plus a verified-original-ATS ten-role shortlist when inventory supports it |
+| "pull today's jobs" / `/daily-job-pull` | Tracked + warm reverse ATS + public sources + optional Indeed → normalize → gate → freshness/dedup → Match and Conversion Score → a diagnostic local lead pool plus the shared 10–20 verified scored daily shortlist when inventory supports it |
 | "follow-ups?" / `/followups` | Read v5 Outreach/Activity cadence evidence → draft only on request, never send |
 | "make applications" / `/make-applications` | Local-only: build an evidence-backed, verifier-passed PDF for each user-checked `Make Resume` row; never check `Make Resume` or `Applied?` |
 | "run outreach" / `/outreach` | Free-first contact research and evidence-backed draft preparation; persist only through an explicitly authorized v5 path. No Gmail draft or send guarantee |
@@ -248,11 +250,11 @@ Onkar
 | "quick add this job" / `/quick-add` | Capture → gate/dedup → Match and Conversion Score → propose a local lead record with explicit readiness status |
 | "draft cold email for <company/contact>" | Draft one evidence-backed human message only when requested; never send, claim delivery, or claim contact without evidence |
 
-- **Pull sources:** tracked `career-ops/scan.mjs`; full reverse `scan-ats-full.mjs` across Greenhouse/Lever/Ashby/Workday; YC/a16z and dated public feeds; WebSearch across ATS domains, LinkedIn, Naukri, Wellfound, Instahyre, and company careers; every `companies.json` slug; Indeed MCP when connected. Unavailable sources are reported, never assumed.
+- **Pull sources:** tracked `vendor/career-ops/scan.mjs`; full reverse `vendor/career-ops/scan-ats-full.mjs` across Greenhouse/Lever/Ashby/Workday; YC/a16z and dated public feeds; WebSearch across ATS domains, LinkedIn, Naukri, Wellfound, Instahyre, and company careers; every `companies.json` slug; Indeed MCP when connected. Unavailable sources are reported, never assumed.
 - **Canonical local daily commands:** `node crawler/cli.mjs daily morning|midday --mode normal|startup|remote --location-preset india|pune`. The implementation performs one shared crawl and then the requested mode selector; Midday Remote skips native remote feeds. `/morning` delegates to this surface.
 - **Scheduling:** local launchd generation/install support exists for morning and midday. Do not claim it is installed, enabled, healthy, or production-verified without retained machine evidence. Cloud scheduling is not the active contract.
 - **Discovery restrictions:** no email ingestion, logged-in/computer-use portal browsing, application submission, outreach send, or user-owned checkbox change.
-- **Dedup:** canonical URL → provider+Job ID → normalized company/title/location → local write ledger → JD fingerprint where description exists. `fingerprint-core.mjs` supplies SimHash; `detect-reposts.mjs` is a separate repost-pattern report.
+- **Dedup:** canonical URL → provider+Job ID → normalized company/title/location → local write ledger → JD fingerprint where description exists. `vendor/career-ops/fingerprint-core.mjs` supplies SimHash. A separate repost-pattern report exists as `career-ops/detect-reposts.mjs`, which is ignored runtime state rather than release code; run it ad hoc, never as a pipeline dependency.
 - **Watchlist growth:** propose a verified ATS+slug addition for manual approval; never alter `companies.json` as a side effect of a lead or application state.
 - **Selection checkboxes (Applications v5):** `Make Resume` = Onkar's pick of rows for Claude to build resumes for (read by `/make-applications` and outreach preparation, never set by an agent). `Applied?` = Onkar's post-submission progress tally, observed by `/sync`, never set by any skill. `Auto-Suggest` = system opinion only.
 - **Runtime generation:** v5 is current. v3/v4 are historical read-only systems and may supply bounded identity/history evidence only; no write, migration, fallback, archive, or delete action is permitted.
@@ -261,30 +263,29 @@ Onkar
 
 ## 7. Pointers
 
-- Resume content SoT: `resumes/master/Master_Resume_ATS.tex` · layout SoT (frozen, cp-then-edit-slots): `resumes/templates/Onkar_Template.tex`
-- Tailored `.tex` sources: `resumes/sources/<YYYY-MM-DD>/` · compile scratch: `resumes/sources/build/`
-- Final PDFs (PDF-only): `resumes/output/<YYYY-MM-DD>/Onkar_Jadhav_<Company>_<Role>.pdf`
-- Sourcing watchlist: `companies.json` (project root) — manually approved company/ATS/slug list for Layer 2 fetch
-- Discovery/hygiene engine (harvested from career-ops — library, **not** a tracker; `career-ops/data/*` is run cache only):
-  - Config (user layer, survives `update-system.mjs`): `career-ops/portals.yml`, `career-ops/config/profile.yml`, `career-ops/cv.md` (stub — resume SoT stays the `.tex` masters)
-  - Tracked scan: from `career-ops/`, `node scan.mjs --dry-run --json`
-  - Full reverse ATS: `node scan-ats-full.mjs --ats greenhouse,lever,ashby,workday --since 3 --dry-run --json`
-  - Browserless liveness: `node check-liveness.mjs --api-only --json ...`
-  - Fingerprint dedup primitive: `career-ops/fingerprint-core.mjs`; repost pattern report: `node detect-reposts.mjs --summary`
-  - Follow-up cadence logic: `career-ops/followup-cadence.mjs`
-- Tracking: Launchpad v5 Applications, Companies, Outreach, Activity, and Referrals are the sole active runtime stores. The identifiers below document historical v3/v4 systems only and remain read-only.
-  - Page: https://app.notion.com/p/3885c2b5d1b081458df2c68954540105
-  - Applications data source (v3, archived — read-only history, no new writes): `d8d525b0-e436-44b7-ae65-28c08a358684`
-  - Companies data source: `9cb28730-1c2e-4e81-bb54-4cb1ac4b3a1d`
-  - Outreach data source: `bf40caf6-8b07-4c55-9d21-787b8033f454`
-  - **Applications v4 (historical read-only snapshot; formerly current as of 2026-07-09):** built per `NOTION_V4_SETUP.md`, all 44 open v3 rows migrated in, v3 DB renamed "Applications (v3 archive)".
-    - Applications v4 data source: `7bc3de3a-91d9-4391-8b22-9e68b264e8d2` (DB page: https://app.notion.com/p/d7db471ca1fb4686868b4ca4c9f56824)
-    - Activity data source: `76a31def-a145-45db-9b82-0c263b80ab1b` (DB page: https://app.notion.com/p/abe8d58130844fd480c24b4edb285dee)
-    - Adds vs v3: `Fingerprint`, `Liveness`, `Liveness Checked`, `Freshness`, `Next Follow-up`, `Follow-up Count`, `Last Activity`, `Hook`, `Rationale`, `Experience Asked`, `CTC/Salary`, `Work Mode`, richer `Status`/`Resume Status`; `Activity` DB replaces ad-hoc follow-up tracking with a dual-relation log.
-    - Views: Today's Pull, To Apply, Follow-up Due, Pipeline (board), Archive (Applications v4); Due (Activity).
-  - **Historical v4 conversion-plan additions (applied 2026-07-21, see `conversion/SCHEMA_PROPOSAL.md`):** Applications v4 gained `Original ATS URL`, `Original ATS Verified At`, `Application Readiness`, `Conversion Score`, `Resume Variant`, `Submitted Answers Path`, `Recruiter Contacted`, `Hiring Manager Contacted`, `Referral Requested`, `First Follow-up Date`, `Second Follow-up Date`, `First Human Response Date`, `Interview Stage`, `Rejection Timing`, `Rejection Reason`, `Source Category`, `Proof-of-Fit Path`, and a `Referrals` relation. Outreach gained `Contact Role`, `Contact Channel`, `Sequence Stage`, `Last Contact Date`, `Next Eligible Contact`, `Duplicate Guard`, `Response Outcome`. Activity gained `Source Category`, `Resume Variant`, `Rejection Timing`, `Evidence Link`, and its `Type` select expanded with `Recruiter Screen`, `Technical Interview`, `Assessment`, `Profile View`, `Resume Download`, `Rejection`.
-    - **Referrals (new, dedicated DB):** `Person`, `Application` (dual relation to Applications v4), `Relationship Signal`, `Requested At`, `Response`, `Referral Submitted At`, `Outcome`, `Notes`. Data source: `346c1a15-3808-4e4a-bcb7-8d24f0ea597a` (DB page: https://app.notion.com/p/c72c4997616745428d28e7340336d32d).
-    - The local TSV templates (`conversion/templates/*.tsv`) and `conversion/report.mjs` still work standalone; nothing in the pipeline writes to these new Notion fields automatically yet — skills that populate Applications v4 rows should start filling them in going forward.
-- Skills (project-scoped, single-slash): `.agents/skills/morning`, `.agents/skills/daily-job-pull`, `.agents/skills/application-readiness`, `.agents/skills/make-applications`, `.agents/skills/conversion-ops`, `.agents/skills/proof-of-fit`, `.agents/skills/interview-loop`, `.agents/skills/followups`, `.agents/skills/application-agent`, `.agents/skills/resume-latex`, `.agents/skills/resume-check`, `.agents/skills/quick-add`
-- Integration plan: `PLAN_career_ops_integration.md` (why harvest-not-migrate + build phases)
-- Reference prompt (not a skill): `prompts/deep-job-search.md`
+### Resume
+- Content SoT: `resumes/master/Master_Resume_ATS.tex` · layout SoT (frozen, copy-then-edit-slots): `resumes/templates/Onkar_Template.tex`
+- Role-family profiles: `resumes/profiles/` · evidence contract and sidecar shapes: `resumes/evidence/README.md` · stable locators: `resumes/evidence/approved-evidence.md`
+- Tailored `.tex` sources: `resumes/sources/<YYYY-MM-DD>/` · compile scratch: `resumes/sources/build/` · final PDFs (PDF-only): `resumes/output/<YYYY-MM-DD>/Onkar_Jadhav_<Company>_<Role>.pdf`
+- Artifact verifier: `node tests/resume/verify.mjs <source.tex> <output.pdf>`
+
+### Discovery
+- Sourcing watchlist: `companies.json` — manually approved company/ATS/slug list, changed only by explicit request
+- Mechanical gate values and aliases: `config/job-pull.json` (§ 2 is the human-readable policy over it)
+- Opportunity ledger (cross-day suppression): `job-pull/opportunity-ledger.mjs`, backed by `career-ops/data/opportunity-ledger.tsv`
+- Vendored discovery library — **release code lives in `vendor/career-ops/`**; root `career-ops/` is gitignored mutable config and run cache, never imported as release code:
+  - Tracked scan: `node vendor/career-ops/scan.mjs --dry-run --json`
+  - Full reverse ATS: `node vendor/career-ops/scan-ats-full.mjs --ats greenhouse,lever,ashby,workday --since 3 --dry-run --json`
+  - Browserless liveness: `vendor/career-ops/liveness-browser.mjs` and `vendor/career-ops/liveness-core.mjs`
+  - Fingerprint dedup primitive: `vendor/career-ops/fingerprint-core.mjs`
+  - User-layer config (survives updates): `career-ops/portals.yml`, `career-ops/config/profile.yml`, `career-ops/cv.md` (stub — resume SoT stays the `.tex` masters)
+
+### Tracking
+- Launchpad v5 Applications, Companies, Outreach, Activity, and Referrals are the sole active runtime stores. Targets: `config/notion-v5.manifest.json`; gateway: `notion-v5/gateway.mjs`.
+- v3/v4 identifiers, migration history, and field lists: `docs/notion-v3-v4-history.md` — read-only history, never a runtime or fallback target.
+- Conversion measurement standalone tools: `conversion/report.mjs`, `conversion/templates/*.tsv`
+
+### Skills and docs
+- Skills live in `.agents/skills/`; start at the router `.agents/skills/launchpad/SKILL.md`. Guardrail vocabulary: `AGENTS.md`.
+- Executable contract: `docs/SYSTEM-REFERENCE.md` · current status and open gates: `docs/STATUS.md`
+- Reference prompt, run occasionally, not a skill: `prompts/deep-job-search.md`

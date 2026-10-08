@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 const ATS_HOST = /(?:greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|recruitee\.com|myworkdayjobs\.com)$/i;
 const CAREER_PATH = /(?:career|careers|jobs|job|join[-_ ]?us|work[-_ ]?with[-_ ]?us|opportunit)/i;
@@ -141,38 +142,49 @@ function observationFrom(record, request, runAt) {
  * Executes only injected public-input adapters. It intentionally has no network fallback.
  * A source without a configured feed/search/connector input is reported as unavailable.
  */
-export async function discoverIndiaStartupLanes({ transport, runAt = new Date().toISOString(), retry = {}, perRequestResultCap = 20, ...options } = {}) {
+export async function discoverIndiaStartupLanes({ transport, runAt = new Date().toISOString(), retry = {}, perRequestResultCap = 20, signal = null, deadline = null, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverIndiaStartupLanes requires injected transport');
   const requests = buildIndiaStartupRequests(options);
   const observations = []; const seen = new Set(); const verificationQueue = []; const sources = [];
   const telemetry = { requestsGenerated: requests.length, budgetRequested: Number(options.queryBudget ?? options.dailyBudget ?? requests.length), budgetUsed: 0, extracted: 0, duplicateRecords: 0, unavailable: 0, retryable: 0, terminal: 0, malformed: 0, direct: 0, leads: 0 };
-  const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
+  const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1)); let interruptedByDeadline = false;
   for (const request of requests) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { interruptedByDeadline = true; break; }
     const manifest = { source: request.source, input: request.kind, query: request.query, url: request.url, status: 'pending', attempts: 0, observations: 0, failures: [], provenance: { adapter: `india-startup-${request.source}`, injected: true } };
     sources.push(manifest); telemetry.budgetUsed += 1;
     if (!request.query && !request.url && !request.connector) { manifest.status = 'unavailable'; manifest.failures.push({ reason: 'missing-safe-input' }); telemetry.unavailable += 1; verificationQueue.push({ source: request.source, reason: 'source-unavailable', evidence: manifest.failures[0] }); continue; }
     let response = null; let outcome = 'terminal'; let reason = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       manifest.attempts = attempt;
-      try { response = await transport(request, { runAt, attempt, lane: INDIA_STARTUP_LANES[request.source] || null }); }
-      catch (error) { reason = error?.message || 'transport-error'; if (error?.retryable && attempt < maxAttempts) continue; outcome = error?.retryable ? 'retryable' : 'terminal'; break; }
+      try {
+        throwIfNetworkWorkDisallowed(signal, deadline);
+        response = await requestWithDeadline(transport, request, { runAt, attempt, lane: INDIA_STARTUP_LANES[request.source] || null }, { signal, deadline });
+      } catch (error) {
+        reason = error?.message || 'transport-error';
+        if (isDeadlineCancellation(error, signal, deadline)) { outcome = 'interrupted'; break; }
+        if (error?.retryable && attempt < maxAttempts) continue;
+        outcome = error?.retryable ? 'retryable' : 'terminal'; break;
+      }
       const status = Number(response?.status ?? 200);
       if (status >= 200 && status < 300) { outcome = 'success'; break; }
       reason = `http-${status}`; if (retryableStatus(status) && attempt < maxAttempts) continue;
       outcome = retryableStatus(status) ? 'retryable' : 'terminal'; break;
     }
+    if (outcome === 'interrupted') { manifest.status = 'interrupted'; manifest.failures.push({ reason }); interruptedByDeadline = true; break; }
     if (outcome !== 'success') { manifest.status = outcome; manifest.failures.push({ reason }); telemetry[outcome] += 1; verificationQueue.push({ source: request.source, query: request.query, url: request.url, reason: 'source-fetch', evidence: reason }); continue; }
     const rows = recordsFrom(response, request);
     if (!Array.isArray(rows)) { manifest.status = 'malformed'; manifest.failures.push({ reason: 'records-not-array' }); telemetry.malformed += 1; continue; }
     manifest.status = 'succeeded';
     for (const record of rows.slice(0, perRequestResultCap)) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { manifest.status = 'interrupted'; interruptedByDeadline = true; break; }
       const candidate = observationFrom(record, request, runAt); if (!candidate) continue;
       if (seen.has(candidate.canonicalUrl)) { telemetry.duplicateRecords += 1; continue; }
       seen.add(candidate.canonicalUrl); observations.push(candidate); manifest.observations += 1; telemetry.extracted += 1; telemetry[candidate.classification === 'direct' ? 'direct' : 'leads'] += 1;
       if (candidate.classification !== 'direct') verificationQueue.push({ source: request.source, url: candidate.canonicalUrl, company: candidate.company, reason: 'original-listing', evidence: candidate.evidence });
     }
+    if (manifest.status === 'interrupted') break;
   }
-  return { observations, verificationQueue, manifest: { schemaVersion: 'IndiaStartupLanesManifestV1', runAt, sources, telemetry, noAutoApply: true }, telemetry };
+  return { observations, verificationQueue, manifest: { schemaVersion: 'IndiaStartupLanesManifestV1', runAt, sources, telemetry, interrupted: interruptedByDeadline, naturalTerminal: !interruptedByDeadline, noAutoApply: true }, telemetry };
 }
 
 export const discoverIndianStartupLanes = discoverIndiaStartupLanes;

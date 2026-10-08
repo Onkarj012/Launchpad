@@ -13,6 +13,10 @@ import { buildSourceYieldReport } from './source-yield.mjs';
 import { buildFunnelReport } from '../job-pull/funnel-report.mjs';
 import {
   crawlRun,
+  cloneJsonSafe,
+  cloneJsonCollection,
+  cloneJsonEnvelope,
+  TERMINAL_COLLECTIONS,
   finishCrawlRun,
   readCrawlerRunData,
 } from './run.mjs';
@@ -23,7 +27,8 @@ const nowAt = (clock) => {
 };
 
 const asArray = (value) => Array.isArray(value) ? value : [];
-const jsonSafe = (value) => JSON.parse(JSON.stringify(value));
+const jsonSafe = (value, label = 'workflow value') => Array.isArray(value)
+  ? cloneJsonCollection(value, label) : cloneJsonSafe(value, label);
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const VERIFICATION_EXCLUSIONS = new Set(['ineligible', 'unresolved', 'undated', 'stale']);
 const HARD_REASON_PATTERNS = [
@@ -149,9 +154,6 @@ function entryReasons(entry, selection) {
     reasons.push(...asArray(resolution.reasons), 'ORIGINAL_APPLICATION_NOT_RESOLVED');
   }
   if (candidate.liveness?.status && !['Active', 'Expired'].includes(candidate.liveness.status)) reasons.push('LIVENESS_NOT_VERIFIED');
-  if (eligibility.experience?.manualReview === true || eligibility.experience?.code === 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW') {
-    reasons.push(eligibility.experience.code || 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
-  }
   if (freshness.verifyQueue === true || freshness.code === 'FRESHNESS_UNDATED_VERIFY_QUEUE'
     || freshness.code === 'FRESHNESS_NOT_VERIFIED' || (candidate.postedAt == null && freshness.eligible !== true)) {
     reasons.push(freshness.code || 'FRESHNESS_NOT_VERIFIED');
@@ -174,14 +176,27 @@ function isUnresolvedPlaceholderLead(candidate) {
   return nonDirect && isPlaceholderCompany(candidate?.company) && !hasRealListingEvidence(candidate);
 }
 
+function sourceCoverage(sourceTelemetry = {}) {
+  const coverage = { completed: [], interrupted: [], failed: [], not_started: [] };
+  for (const [sourceId, telemetry] of Object.entries(sourceTelemetry)) {
+    const status = telemetry?.status;
+    if (['succeeded', 'truncated'].includes(status)) coverage.completed.push(sourceId);
+    else if (status === 'interrupted') coverage.interrupted.push(sourceId);
+    else if (status === 'failed') coverage.failed.push(sourceId);
+    else if (status === 'not_started' || status === 'pending' || status === 'omitted_by_runtime') coverage.not_started.push(sourceId);
+  }
+  for (const values of Object.values(coverage)) values.sort();
+  return coverage;
+}
+
 function verificationRecord(entry, reasons) {
   const candidate = candidateOf(entry);
   return {
     url: queueUrl(candidate),
-    company: candidate.company,
-    title: candidate.title,
-    provider: candidate.provider,
-    source: candidate.source,
+    company: candidate.company ?? null,
+    title: candidate.title ?? null,
+    provider: candidate.provider ?? null,
+    source: candidate.source ?? null,
     reason: reasons[0],
     reasons,
     evidence: { eligibility: entry.eligibility || {}, freshness: entry.freshness || {}, readiness: candidate.readiness || null },
@@ -260,12 +275,13 @@ export async function crawlWorkflow({
           prepared = prepareEntry(observation, null, { runAt, source: plan, context });
           if (prepared != null) {
             const cand = prepared.candidate || observation;
-            working = {
-              ...observation,
-              applicationReady: cand.applicationReady ?? observation.applicationReady,
-              applicationResolution: cand.applicationResolution ?? observation.applicationResolution,
-              readiness: cand.readiness ?? observation.readiness,
-            };
+            working = { ...observation };
+            // Optional facts may be absent. Do not synthesize undefined fields:
+            // the durable JSON boundary correctly rejects explicit undefined.
+            for (const field of ['applicationReady', 'applicationResolution', 'readiness']) {
+              const fact = cand[field] ?? observation[field];
+              if (fact !== undefined) working[field] = fact;
+            }
           }
         }
         const identity = resolveJobIdentity(working, { existingJobs: knownJobs, lifecycleRows: priorLifecycleRows });
@@ -308,7 +324,7 @@ export async function crawlWorkflow({
       id: 'career-sites', lane: 'career-site', trustClass: 'direct',
       capabilities: { incremental: true, robots: true, sitemap: true },
       ratePolicy: careerOptions.hostLimiterOptions ?? {},
-      fetch: async ({ clock: sourceClock }) => {
+      fetch: async ({ clock: sourceClock, signal: sourceSignal, deadline: sourceDeadline }) => {
         const priorCursor = sourceCursor(priorState, 'career-sites');
         const result = await discoverCompanyCareers({
           ...careerOptions,
@@ -316,6 +332,8 @@ export async function crawlWorkflow({
           transport: careerTransport,
           runAt,
           clock: sourceClock,
+          signal: sourceSignal,
+          deadline: sourceDeadline,
           conditionalState: priorCursor?.conditionalState ?? priorCursor ?? {},
         });
         return sourceResult(result, result.telemetry);
@@ -327,8 +345,8 @@ export async function crawlWorkflow({
     composedPlans.push(makeDecoratedPlan({
       id: 'brave-search', lane: 'brave', trustClass: 'mixed',
       capabilities: { queryBudget: true, resolver: typeof braveOptions.resolveOriginalListing === 'function' },
-      fetch: async () => {
-        const result = await discoverBraveSearch({ ...braveOptions, ...brave, transport: braveTransport, runAt });
+      fetch: async ({ signal: sourceSignal, deadline: sourceDeadline }) => {
+        const result = await discoverBraveSearch({ ...braveOptions, ...brave, transport: braveTransport, runAt, signal: sourceSignal, deadline: sourceDeadline });
         return sourceResult(result, result.manifest?.telemetry);
       },
     }));
@@ -363,7 +381,14 @@ export async function crawlWorkflow({
   });
   const historicalAmbiguousEntries = entries.filter((entry) => historicalAmbiguousCandidates.has(candidateOf(entry)));
   const nonHistoricalEntries = entries.filter((entry) => keptCandidates.has(candidateOf(entry)));
-  const selection = selectDailyReserve(nonHistoricalEntries, reserveOptions);
+  const upstreamVerificationKeys = new Set([
+    ...verificationFromSources,
+    ...asArray(persistedWorkflow?.verificationQueue),
+  ].map(candidateKey).filter(Boolean));
+  const selection = selectDailyReserve(
+    nonHistoricalEntries.filter((entry) => !upstreamVerificationKeys.has(candidateKey(candidateOf(entry)))),
+    reserveOptions,
+  );
   const selectedCandidates = new Set(selection.reserve.map((item) => item.candidate));
   const recordsByKey = new Map(records.map((record) => [candidateKey(record), record]));
   const historicalKeys = new Set(historicalSuppressedEntries.map((entry) => candidateKey(candidateOf(entry))));
@@ -430,6 +455,10 @@ export async function crawlWorkflow({
     const item = verificationRecord(entry, reasons);
     addVerification(item, candidateOf(entry));
   }
+  const selectedKeys = new Set(selection.shortlist.map((item) => candidateKey(candidateOf(item))));
+  const verificationQueueKeys = new Set(verificationQueue.map(candidateKey).filter(Boolean));
+  const selectedVerifyQueue = [...selectedKeys].filter((key) => verificationQueueKeys.has(key));
+  if (selectedVerifyQueue.length) throw new Error('selection invariant failed: selected overlaps VerifyQueue');
   const handoff = {
     schemaVersion: 'LaunchpadV5CrawlerHandoffV1',
     noAutoApply: true,
@@ -531,6 +560,28 @@ export async function crawlWorkflow({
     selected: funnel.lifecycle.selected,
     novelty: noveltyBreakdown,
   };
+  const coverage = sourceCoverage(sourceTelemetry);
+  const runtimeOmitted = coverage.not_started.some((sourceId) => sourceTelemetry[sourceId]?.status === 'omitted_by_runtime');
+  const terminalStatus = durable.run.status === 'partial' || runtimeOmitted
+    ? 'partial'
+    : durable.run.status === 'failed'
+      ? 'failed'
+      : 'completed';
+  const terminalEnvelope = {
+    schemaVersion: 'LaunchpadDailyTerminalEnvelopeV1',
+    status: terminalStatus,
+    runId,
+    writesPlanned: false,
+    sourceCoverage: coverage,
+    rejectionCounts: { ...(selection.excluded || {}) },
+    rejectionReasons: Object.keys(selection.excluded || {}).sort(),
+    backfill: selection.reserve.filter((candidate) => candidate.selectionTier === 'Backfill'),
+    verificationQueue: jsonSafe(verificationQueue),
+    scoredReady: selection.reserve.filter((candidate) => Number.isFinite(Number(candidate.matchScore)) && Number(candidate.matchScore) >= 0 && Number(candidate.matchScore) <= 100),
+    scorePendingReady: selection.reserve.filter((candidate) => !Number.isFinite(Number(candidate.matchScore)) || Number(candidate.matchScore) < 0 || Number(candidate.matchScore) > 100),
+    fatalReason: terminalStatus === 'failed' ? durable.run.error ?? null : null,
+    lastDurableSourceState: coverage,
+  };
   if (!durable.idempotent) {
     const workflowTelemetry = {
       ...durable.telemetry,
@@ -546,6 +597,7 @@ export async function crawlWorkflow({
         funnel: jsonSafe(funnel),
         v4Snapshot: jsonSafe(v4SnapshotTelemetry),
         novelty: jsonSafe(noveltyBreakdown),
+        terminalEnvelope: cloneJsonEnvelope(terminalEnvelope, 'terminal envelope', TERMINAL_COLLECTIONS.map((key) => [key])),
       },
     };
     const status = durable.run.status;
@@ -582,6 +634,8 @@ export async function crawlWorkflow({
     sourceYield: jsonSafe(persistedWorkflow?.sourceYield ?? sourceYield),
     plannedDownstreamHandoff: handoff,
     failures: durable.failures,
+    selectionInvariants: { selectedVerifyQueue },
+    terminalEnvelope,
   };
 }
 

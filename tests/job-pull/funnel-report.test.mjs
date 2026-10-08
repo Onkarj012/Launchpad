@@ -99,7 +99,7 @@ test('overlapping gate evidence is reported separately from first-failure totals
   assert.doesNotMatch(report.narrative, /First-failure exits[^\\n]*title=/);
 });
 
-test('Workday uncorroborated dates route to verification-queue funnel counts', () => {
+test('Workday list-evidence dates remain in the verification queue', () => {
   const workday = classified(base(20, {
     provider: 'workday',
     postedAt: '2026-07-24T08:00:00.000Z',
@@ -112,9 +112,21 @@ test('Workday uncorroborated dates route to verification-queue funnel counts', (
   const report = buildFunnelReport({ observations: [workday] });
   assert.equal(report.firstFailures.verifyQueue, 1);
   assert.equal(report.lifecycle.workdayUncorroboratedVerifyQueue, 1);
-  assert.equal(report.lifecycle.verifyQueue, 1);
-  assert.equal(report.firstFailures.selected, 0);
   assert.match(report.narrative, /Workday uncorroborated 1/);
+});
+
+test('a genuinely undated Workday row still routes to the verification queue', () => {
+  // The guardrail that must survive the policy change: no date at all is still
+  // no date. Only a bounded label became usable.
+  const undated = classified(base(21, {
+    provider: 'workday',
+    postedAt: null,
+    evidence: { freshness: { kind: 'workday-unverified' } },
+  }));
+  assert.equal(undated.freshness.window, 'VerifyQueue');
+  assert.equal(undated.freshness.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
+  const report = buildFunnelReport({ observations: [undated] });
+  assert.equal(report.lifecycle.verifyQueue, 1);
 });
 
 test('null salary floor rejects nothing; explicit floor still rejects below-floor roles', () => {
@@ -334,7 +346,7 @@ test('funnel report defaults new inputs without changing existing fields', () =>
       total: 0,
     },
     reconciliation: { normalized: 1, firstFailureTotal: 1, ok: true, delta: 0 },
-    narrative: 'Fetched 1 records; source-filtered 1; normalized observations 1.\nEligible 1; verify-queue 0 (Workday uncorroborated 0); ready 1; selected 1.\nNewly actionable not yet tracked: 0.\nFirst-failure exits (mutually exclusive, sum=1): selected=1.\nAlso failed (overlapping evidence, not in first-failure totals): none.\nHistorical suppressions 0; cooldown suppressions 0; previously-observed backfill suppressions 0.\nReconciliation OK: first-failure total 1 equals normalized 1.',
+    narrative: 'Fetched 1 records; dated 0; source-filtered 1; normalized observations 1.\nEligible 1; verify-queue 0 (Workday uncorroborated 0); ready 1; selected 1.\nNewly actionable not yet tracked: 0.\nFirst-failure exits (mutually exclusive, sum=1): selected=1.\nAlso failed (overlapping evidence, not in first-failure totals): none.\nHistorical suppressions 0; cooldown suppressions 0; previously-observed backfill suppressions 0.\nReconciliation OK: first-failure total 1 equals normalized 1.',
   });
 });
 

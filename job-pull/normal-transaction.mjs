@@ -61,7 +61,7 @@ export function createFakeTransactionalGateway({ failOn = null, verifyFailureOn 
         const key = keyOf(operation);
         if (!seen.has(key)) { seen.add(key); unique.push(operation); }
       }
-      if (!unique.length) return { status: 'noop', reserved: [], verified: [], committed: [], failed: [], skipped: [], recovery: [] };
+      if (!unique.length) return { status: 'noop', newlyCommitted: [], alreadyCommitted: [], failed: [], recovery: [], deliveredKeys: [] };
 
       events.push({ stage: 'reserve', keys: unique.map(keyOf) });
       const committedKeys = new Set(committed.keys());
@@ -80,7 +80,7 @@ export function createFakeTransactionalGateway({ failOn = null, verifyFailureOn 
           if (verification !== true) throw verificationError();
           verified.push({ item: operation, result, verification });
         } catch (error) {
-          failed.push({ item: operation, error: structuredError(error) });
+          failed.push({ key: keyOf(operation), error: structuredError(error) });
           events.push({ stage: 'abort', keys: [keyOf(operation)], error: structuredError(error) });
         }
       }
@@ -93,21 +93,24 @@ export function createFakeTransactionalGateway({ failOn = null, verifyFailureOn 
           for (const row of verified) committed.set(keyOf(row.item), row.result);
           committedRows = verified;
         } catch (error) {
-          failed.push({ item: null, error: structuredError(error) });
+          failed.push({ key: null, error: structuredError(error) });
           events.push({ stage: 'abort', keys: verified.map(({ item }) => keyOf(item)), error: structuredError(error) });
         }
       }
 
-      const result = {
-        status: failed.length ? (committedRows.length ? 'partial' : 'aborted') : 'committed',
-        reserved: unique,
-        verified,
-        committed: committedRows,
+      const newlyCommitted = committedRows.map(({ item }) => keyOf(item));
+      const alreadyCommitted = skipped.map(keyOf);
+      const delivered = new Set([...newlyCommitted, ...alreadyCommitted]);
+      return {
+        status: alreadyCommitted.length === unique.length
+          ? 'replayed'
+          : failed.length ? (newlyCommitted.length ? 'partial' : 'aborted') : 'committed',
+        newlyCommitted,
+        alreadyCommitted,
         failed,
-        skipped,
         recovery: [],
+        deliveredKeys: unique.map(keyOf).filter((key) => delivered.has(key)),
       };
-      return skipped.length === unique.length ? { ...result, status: 'noop' } : result;
     },
   };
   gateway.execute = gateway.executeWrites;

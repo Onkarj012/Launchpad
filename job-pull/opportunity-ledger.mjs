@@ -117,6 +117,21 @@ function rowsForMutation(ledgerPath) {
   return readOpportunityLedger(ledgerPath).rows;
 }
 
+function newSurfacedRow(candidate, key, now) {
+  return {
+    dedup_key: key,
+    company: candidate.company,
+    role: candidate.title,
+    canonical_url: candidate.canonicalUrl || '',
+    provider: candidate.provider || '',
+    first_surfaced_at: now,
+    last_surfaced_at: now,
+    times_surfaced: 1,
+    action_state: 'none',
+    action_at: null,
+  };
+}
+
 export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUNITY_LEDGER_PATH, now = new Date().toISOString() } = {}) {
   if (!Array.isArray(candidates)) throw new OpportunityLedgerError('recordSurfaced requires an array of candidates');
   if (!validTimestamp(now)) throw new OpportunityLedgerError(`invalid surfaced clock: ${now}`);
@@ -138,18 +153,7 @@ export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUN
           })
           : null);
       if (!row) {
-        row = {
-          dedup_key: key,
-          company: candidate.company,
-          role: candidate.title,
-          canonical_url: candidate.canonicalUrl || '',
-          provider: candidate.provider || '',
-          first_surfaced_at: now,
-          last_surfaced_at: now,
-          times_surfaced: 1,
-          action_state: 'none',
-          action_at: null,
-        };
+        row = newSurfacedRow(candidate, key, now);
         rows.push(row);
       } else {
         row.last_surfaced_at = now;
@@ -161,6 +165,29 @@ export function recordSurfaced(candidates, { path: ledgerPath = DEFAULT_OPPORTUN
     }
     atomicWrite(ledgerPath, rows);
     return { path: ledgerPath, rows: recorded };
+  });
+}
+
+export function repairMissingSurfaced(candidates, {
+  path: ledgerPath = DEFAULT_OPPORTUNITY_LEDGER_PATH,
+  committedAtForKey,
+} = {}) {
+  if (!Array.isArray(candidates)) throw new OpportunityLedgerError('repairMissingSurfaced requires an array of candidates');
+  if (typeof committedAtForKey !== 'function') throw new OpportunityLedgerError('repairMissingSurfaced requires committedAtForKey');
+  return withOpportunityLedgerLock(ledgerPath, () => {
+    const rows = rowsForMutation(ledgerPath);
+    const repaired = [];
+    for (const candidate of candidates) {
+      const key = candidateDedupKey(candidate);
+      if (rows.some((row) => row.dedup_key === key)) continue;
+      const committedAt = committedAtForKey(key);
+      if (!validTimestamp(committedAt)) throw new OpportunityLedgerError(`missing original commit time for replayed key: ${key}`);
+      const row = newSurfacedRow(candidate, key, committedAt);
+      rows.push(row);
+      repaired.push(row);
+    }
+    if (repaired.length) atomicWrite(ledgerPath, rows);
+    return { path: ledgerPath, rows: repaired };
   });
 }
 

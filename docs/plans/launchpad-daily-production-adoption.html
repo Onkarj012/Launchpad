@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Launchpad daily production adoption</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f2e9;
+      --paper-strong: #fffdf7;
+      --ink: #17201d;
+      --muted: #5f6b65;
+      --line: #d7d7cc;
+      --navy: #16324f;
+      --blue: #2d6a8a;
+      --green: #176b4d;
+      --green-soft: #dff0e8;
+      --amber: #9a5b00;
+      --amber-soft: #fff0cf;
+      --red: #9b342d;
+      --red-soft: #f8dfdc;
+      --slate-soft: #e9eeeb;
+      --shadow: 0 14px 40px rgba(27, 42, 36, 0.08);
+      --radius: 18px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --serif: Iowan Old Style, Charter, "Bitstream Charter", Georgia, serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 4%, rgba(45, 106, 138, 0.10), transparent 27rem),
+        linear-gradient(180deg, #f8f6ef 0, var(--paper) 28rem);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.58;
+    }
+
+    a { color: var(--blue); text-underline-offset: 3px; }
+    a:hover { color: var(--navy); }
+    code, pre { font-family: var(--mono); }
+    code {
+      padding: 0.12em 0.35em;
+      border-radius: 5px;
+      background: #edf0eb;
+      font-size: 0.9em;
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      color: #eef8f3;
+      background: #172a25;
+      border: 1px solid #29443a;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 252px minmax(0, 1fr);
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+
+    .side {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 2rem 1.25rem 2rem 1.5rem;
+      border-right: 1px solid var(--line);
+      background: rgba(248, 246, 239, 0.88);
+      backdrop-filter: blur(14px);
+      overflow-y: auto;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      margin-bottom: 1.75rem;
+      font-weight: 780;
+      letter-spacing: -0.02em;
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      color: #fff;
+      background: var(--navy);
+      border-radius: 10px;
+      font-family: var(--serif);
+      font-size: 1.15rem;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-bottom: 1.4rem;
+      padding: 0.36rem 0.65rem;
+      color: var(--amber);
+      background: var(--amber-soft);
+      border: 1px solid #efd291;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .status-pill.complete { color: var(--green); background: var(--green-soft); border-color: #9ecfb9; }
+    .status-dot { width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
+    .side nav { display: grid; gap: 0.15rem; }
+    .side nav a {
+      padding: 0.48rem 0.65rem;
+      color: var(--muted);
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 0.86rem;
+      font-weight: 620;
+    }
+    .side nav a:hover { color: var(--navy); background: rgba(22, 50, 79, 0.07); }
+    .side-note {
+      margin-top: 1.5rem;
+      padding: 0.9rem;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      font-size: 0.78rem;
+    }
+
+    main { min-width: 0; padding: 0 3.5rem 5rem; }
+    .hero {
+      position: relative;
+      max-width: 1100px;
+      padding: 5.2rem 0 3.5rem;
+    }
+    .eyebrow {
+      margin: 0 0 0.8rem;
+      color: var(--blue);
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+    }
+    h1, h2, h3, h4 { text-wrap: balance; }
+    h1 {
+      max-width: 880px;
+      margin: 0;
+      font-family: var(--serif);
+      font-size: clamp(3rem, 7vw, 6.4rem);
+      font-weight: 580;
+      line-height: 0.94;
+      letter-spacing: -0.055em;
+    }
+    .hero-copy {
+      max-width: 780px;
+      margin: 1.6rem 0 0;
+      color: #40504a;
+      font-size: clamp(1.05rem, 1.7vw, 1.35rem);
+      line-height: 1.48;
+    }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem 1.4rem;
+      margin-top: 1.7rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 650;
+    }
+
+    .orientation {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 1px;
+      max-width: 1200px;
+      margin-bottom: 4.5rem;
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .orientation article { min-height: 180px; padding: 1.25rem; background: var(--paper-strong); }
+    .orientation span {
+      display: block;
+      margin-bottom: 0.75rem;
+      color: var(--blue);
+      font-size: 0.7rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+    .orientation h2 { margin: 0 0 0.55rem; font-size: 1rem; line-height: 1.25; }
+    .orientation p { margin: 0; color: var(--muted); font-size: 0.83rem; line-height: 1.5; }
+
+    section {
+      max-width: 1100px;
+      margin: 0 0 5rem;
+      scroll-margin-top: 1.5rem;
+    }
+    .section-head {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      gap: 2rem;
+      align-items: start;
+      margin-bottom: 2rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+    }
+    .section-no {
+      color: var(--blue);
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+    }
+    .section-head h2 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: clamp(2rem, 4vw, 3.3rem);
+      font-weight: 580;
+      line-height: 1.05;
+      letter-spacing: -0.035em;
+    }
+    .section-intro { max-width: 760px; margin: 0.8rem 0 0; color: var(--muted); font-size: 1.03rem; }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .card {
+      padding: 1.3rem;
+      background: rgba(255, 253, 247, 0.82);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+    .card h3 { margin: 0 0 0.55rem; font-size: 1rem; }
+    .card p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .card ul { margin-bottom: 0; }
+
+    .callout {
+      margin: 1.4rem 0;
+      padding: 1.15rem 1.25rem;
+      border-left: 4px solid var(--blue);
+      background: #e6eff3;
+      border-radius: 0 12px 12px 0;
+    }
+    .callout.risk { border-color: var(--red); background: var(--red-soft); }
+    .callout.decision { border-color: var(--green); background: var(--green-soft); }
+    .callout strong { display: block; margin-bottom: 0.25rem; }
+    .callout p { margin: 0; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1.7rem;
+      margin: 2rem 0 0.7rem;
+      counter-reset: flow;
+    }
+    .flow-item {
+      position: relative;
+      min-height: 150px;
+      padding: 1.2rem;
+      background: var(--navy);
+      color: #fff;
+      border-radius: 15px;
+      counter-increment: flow;
+    }
+    .flow-item::before {
+      content: "0" counter(flow);
+      display: block;
+      margin-bottom: 1.2rem;
+      color: #9cc9db;
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      font-weight: 800;
+    }
+    .flow-item:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -1.25rem;
+      top: 50%;
+      color: var(--blue);
+      font-size: 1.4rem;
+      font-weight: 900;
+      transform: translateY(-50%);
+    }
+    .flow-item h3 { margin: 0 0 0.45rem; font-size: 1rem; }
+    .flow-item p { margin: 0; color: #c8dbd5; font-size: 0.82rem; }
+    .caption { margin: 0.7rem 0 0; color: var(--muted); font-size: 0.78rem; }
+
+    .decision-list { display: grid; gap: 0.8rem; }
+    .decision-row {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 1.2rem;
+      padding: 1rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .decision-row strong { color: var(--navy); font-size: 0.86rem; }
+    .decision-row p { margin: 0; color: var(--muted); }
+
+    .invariant {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .invariant pre { margin: 0; height: 100%; }
+
+    .phase-stack { display: grid; gap: 1.2rem; }
+    .phase {
+      padding: 0;
+      background: var(--paper-strong);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: 0 8px 24px rgba(27, 42, 36, 0.05);
+    }
+    .phase-header {
+      display: grid;
+      grid-template-columns: 125px 1fr auto;
+      gap: 1.2rem;
+      align-items: center;
+      padding: 1.2rem 1.35rem;
+      background: var(--slate-soft);
+      border-bottom: 1px solid var(--line);
+    }
+    .phase-letter {
+      font-family: var(--mono);
+      color: var(--blue);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+    .phase-header h3 { margin: 0; font-size: 1.22rem; }
+    .phase-state {
+      padding: 0.28rem 0.55rem;
+      color: var(--muted);
+      background: var(--paper-strong);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+    .tasks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .task { padding: 1.25rem 1.35rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .task:nth-child(even) { border-right: 0; }
+    .task h4 { margin: 0 0 0.45rem; font-size: 0.94rem; }
+    .task p, .task li { color: var(--muted); font-size: 0.84rem; }
+    .task p { margin: 0; }
+    .task ul { margin: 0.55rem 0 0; padding-left: 1.1rem; }
+    .stop {
+      padding: 1rem 1.35rem;
+      color: var(--red);
+      background: var(--red-soft);
+      font-size: 0.84rem;
+      font-weight: 700;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { padding: 0.85rem 0.8rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--navy); background: var(--slate-soft); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    td { color: var(--muted); }
+    td:first-child { color: var(--ink); font-weight: 700; }
+
+    .checklist { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+    .checklist li { position: relative; padding: 0.72rem 0.8rem 0.72rem 2.35rem; background: rgba(255, 253, 247, 0.72); border: 1px solid var(--line); border-radius: 10px; }
+    .checklist li::before {
+      content: "✓";
+      position: absolute;
+      left: 0.8rem;
+      top: 0.65rem;
+      color: var(--green);
+      font-weight: 900;
+    }
+
+    .operator {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    .steps { counter-reset: steps; margin: 0; padding: 0; list-style: none; }
+    .steps li {
+      position: relative;
+      min-height: 2.2rem;
+      padding: 0.6rem 0 0.6rem 2.7rem;
+      border-bottom: 1px solid var(--line);
+      counter-increment: steps;
+    }
+    .steps li::before {
+      content: counter(steps);
+      position: absolute;
+      left: 0;
+      top: 0.55rem;
+      display: grid;
+      place-items: center;
+      width: 1.7rem;
+      height: 1.7rem;
+      color: #fff;
+      background: var(--navy);
+      border-radius: 50%;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 800;
+    }
+    .failure-grid { display: grid; gap: 0.7rem; }
+    .failure {
+      padding: 0.9rem 1rem;
+      background: var(--paper-strong);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    .failure strong { display: block; margin-bottom: 0.25rem; font-size: 0.86rem; }
+    .failure p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+
+    .status-track {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-top: 1.2rem;
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      overflow: hidden;
+    }
+    .status-track div { padding: 1rem; background: var(--paper-strong); text-align: center; font-family: var(--mono); font-size: 0.78rem; font-weight: 750; }
+    .status-track div:first-child { color: #fff; background: var(--green); }
+
+    .approval {
+      padding: 1.5rem;
+      color: #f8faf9;
+      background: #172a25;
+      border-radius: var(--radius);
+    }
+    .approval h3 { margin-top: 0; font-family: var(--serif); font-size: 1.7rem; }
+    .approval p, .approval li { color: #c8d8d1; }
+    .approval code { color: #fff; background: #29443a; }
+
+    footer {
+      max-width: 1100px;
+      padding: 2rem 0 4rem;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-size: 0.78rem;
+    }
+
+    @media (max-width: 1100px) {
+      .shell { grid-template-columns: 210px minmax(0, 1fr); }
+      main { padding-inline: 2rem; }
+      .orientation { grid-template-columns: repeat(2, 1fr); }
+      .orientation article:last-child { grid-column: 1 / -1; }
+      .flow { grid-template-columns: repeat(2, 1fr); }
+      .flow-item:nth-child(2)::after { display: none; }
+    }
+
+    @media (max-width: 760px) {
+      .shell { display: block; }
+      .side {
+        position: relative;
+        width: 100%;
+        height: auto;
+        padding: 1rem;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand, .side-note { display: none; }
+      .status-pill { margin: 0 0 0.65rem; }
+      .side nav { display: flex; gap: 0.35rem; overflow-x: auto; padding-bottom: 0.2rem; }
+      .side nav a { flex: 0 0 auto; background: var(--paper-strong); border: 1px solid var(--line); }
+      main { padding: 0 1rem 3rem; }
+      .hero { padding: 3.2rem 0 2.4rem; }
+      h1 { font-size: clamp(2.7rem, 15vw, 4.5rem); }
+      .orientation, .grid-2, .grid-3, .invariant, .operator { grid-template-columns: 1fr; }
+      .orientation article:last-child { grid-column: auto; }
+      .section-head { grid-template-columns: 1fr; gap: 0.5rem; }
+      .decision-row { grid-template-columns: 1fr; gap: 0.3rem; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-item:not(:last-child)::after { content: "↓"; left: 50%; right: auto; top: auto; bottom: -1.55rem; transform: translateX(-50%); }
+      .phase-header { grid-template-columns: 1fr; gap: 0.4rem; }
+      .phase-state { width: fit-content; }
+      .tasks { grid-template-columns: 1fr; }
+      .task { border-right: 0; }
+      .status-track { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; white-space: normal; }
+    }
+
+    @media print {
+      @page { size: A4; margin: 14mm; }
+      :root { --paper: #fff; --paper-strong: #fff; }
+      body { background: #fff; font-size: 9.5pt; line-height: 1.4; }
+      .shell { display: block; max-width: none; }
+      .side { display: none; }
+      main { padding: 0; }
+      .hero { padding: 0 0 12mm; }
+      h1 { font-size: 34pt; }
+      .orientation { grid-template-columns: repeat(5, 1fr); box-shadow: none; margin-bottom: 12mm; }
+      .orientation article { min-height: 0; padding: 4mm; }
+      .orientation article:last-child { grid-column: auto; }
+      section { max-width: none; margin-bottom: 12mm; break-before: auto; }
+      .section-head { break-after: avoid; }
+      .section-head { grid-template-columns: 32mm 1fr; }
+      .section-head h2 { font-size: 22pt; }
+      .card, .phase, .approval, .failure, pre { break-inside: avoid; box-shadow: none; }
+      .flow, .grid-2, .grid-3, .operator { break-inside: avoid; }
+      .flow-item { min-height: 0; color: #000; background: #eef1ef; border: 1px solid #bbb; }
+      .flow-item p { color: #333; }
+      .flow-item::before { color: #333; }
+      .approval { color: #000; background: #eef1ef; border: 1px solid #bbb; }
+      .approval p, .approval li { color: #222; }
+      pre { color: #000; background: #f3f3f3; border-color: #ccc; white-space: pre-wrap; }
+      a { color: #000; text-decoration: none; }
+      footer { padding-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="side" aria-label="Plan navigation">
+      <div class="brand"><span class="brand-mark">L</span><span>Launchpad</span></div>
+      <div class="status-pill complete"><span class="status-dot"></span>Phase A local-verified</div>
+      <nav>
+        <a href="#summary">Summary</a>
+        <a href="#progress">Phase A progress</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#decisions">Decisions</a>
+        <a href="#scope">Scope</a>
+        <a href="#design">Requirements and design</a>
+        <a href="#phases">Phases</a>
+        <a href="#acceptance">Acceptance</a>
+        <a href="#operator">Daily use</a>
+        <a href="#risks">Risks</a>
+        <a href="#questions">Open questions</a>
+        <a href="#approval">Approval boundary</a>
+      </nav>
+      <div class="side-note">Phase A passed local gates. No credential change, live write, schedule change, promotion, commit, push, or PR authorized.</div>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Production adoption plan · updated 2026-08-30</p>
+        <h1>Daily job discovery that ends in a real, truthful application.</h1>
+        <p class="hero-copy">Move Launchpad from locally complete code to one dependable morning loop: fresh roles in Applications v5, resumes built only after Onkar chooses, applications submitted manually, and every production claim backed by retained evidence.</p>
+        <div class="hero-meta">
+          <span>Status: Phase A local-verified</span>
+          <span>Initial profile: morning / normal / pune</span>
+          <span>Boundary: no auto-apply</span>
+          <span>Target: promoted immutable release</span>
+        </div>
+      </header>
+
+      <div class="orientation" aria-label="Plan orientation">
+        <article><span>Destination</span><h2>Useful every morning</h2><p>Fresh ranked roles, live v5 delivery, local verified resumes, manual submission, idempotent sync.</p></article>
+        <article><span>Change</span><h2>Close proof gaps</h2><p>Fix freshness authority, source fairness, fail-closed readiness, transaction accounting, and schedule adoption.</p></article>
+        <article><span>Sequence</span><h2>Four evidence phases</h2><p>Local correctness, one-row pilot, real application proof, then seven-day immutable promotion.</p></article>
+        <article><span>Primary risk</span><h2>Inventories diverge</h2><p>Partial writes or replay can make plan, ledger, notification, and canary disagree.</p></article>
+        <article><span>Completion proof</span><h2>Same release, seven dates</h2><p>Plus live row, replay, real PDF, manual application sync, installed schedule, and rollback.</p></article>
+      </div>
+
+      <section id="summary">
+        <div class="section-head"><div class="section-no">01 / SUMMARY</div><div><h2>One bounded production profile first.</h2><p class="section-intro">Normal morning Pune delivery becomes trustworthy before any other mode gains live writes.</p></div></div>
+
+        <div class="callout decision"><strong>Initial production profile</strong><p><code>morning / normal / pune / production / live-v5</code>. Startup, Remote, and midday stay no-write until separately proven.</p></div>
+
+        <div class="flow" role="img" aria-label="Four phase sequence from local correctness through production promotion">
+          <div class="flow-item"><h3>Local correctness</h3><p>One policy contract, fair source budget, canonical selection, exact delivery reconciliation.</p></div>
+          <div class="flow-item"><h3>Controlled live pilot</h3><p>Scoped v5 preflight, one-row write, relation verification, replay without duplicate.</p></div>
+          <div class="flow-item"><h3>Real application</h3><p>User-owned resume choice, truthful local PDF, manual submission, idempotent sync.</p></div>
+          <div class="flow-item"><h3>Production adoption</h3><p>Immutable release, seven valid dates, schedule install, first run, rollback proof.</p></div>
+        </div>
+        <p class="caption">Textual equivalent: complete Phase A, stop for approval, complete one-row Phase B, stop, complete manual application Phase C, stop, then run immutable Phase D promotion.</p>
+
+        <div class="grid-3" style="margin-top: 1.6rem">
+          <article class="card"><h3>Discovery</h3><p>Fresh Pune and India-eligible remote roles. Every enabled source gets bounded opportunity or explicit omission.</p></article>
+          <article class="card"><h3>Delivery</h3><p>Only final selected rows reach Applications and Companies v5. Failed rows remain retryable.</p></article>
+          <article class="card"><h3>Application</h3><p>Onkar chooses, Launchpad builds PDF, Onkar submits, `/sync` observes confirmed state.</p></article>
+        </div>
+      </section>
+
+      <section id="progress">
+        <div class="section-head"><div class="section-no">01A / PROGRESS</div><div><h2>Phase A passed local gates.</h2><p class="section-intro">T0 through T7 are implemented. STOP A evidence is complete. Live proof remains untouched.</p></div></div>
+
+        <div class="callout decision"><strong>Local verification complete · 2026-08-30</strong><p>Full suite 768/768. Focused suite 80/80. Validation, all six safety checks, and diff checks passed.</p></div>
+
+        <div class="grid-3">
+          <article class="card"><h3>No-write shadow</h3><ul><li><code>shadow-20260830T123328Z</code></li><li>Terminal status: completed</li><li>4,818 fetched</li><li>18 ready and scored</li><li>3 selected and 3 planned</li></ul></article>
+          <article class="card"><h3>Accounting</h3><ul><li>9 sources completed</li><li>0 interrupted</li><li>0 failed</li><li>0 not started</li><li>0 reconciliation mismatches</li></ul></article>
+          <article class="card"><h3>External effects</h3><ul><li>No transaction</li><li>No ledger write or repair</li><li>No canary persistence</li><li>No notification</li><li>No credential or gateway access</li></ul></article>
+        </div>
+
+        <div class="callout risk"><strong>Degradation retained honestly</strong><p>Tracked ATS fetched 1,739 rows. Three request timeouts and one HTTP 404 remain in source evidence. Source coverage now records this attempted terminal lane as degraded, never falsely not started.</p></div>
+
+        <div class="grid-2">
+          <article class="card"><h3>Selected-row gates</h3><p>All 3 selected rows had Ready evidence, original employer URL, Active liveness, no fee or bond evidence, finite score, and no verification or scoring queue overlap.</p></article>
+          <article class="card"><h3>Next gate</h3><p>Phase B starts with T8. Onkar rotates previously exposed credential manually. Scoped v5 preflight needs separate approval. T9 one-row write and replay needs another explicit approval.</p></article>
+        </div>
+      </section>
+
+      <section id="evidence">
+        <div class="section-head"><div class="section-no">02 / EVIDENCE</div><div><h2>Local proof exists. Production proof does not.</h2><p class="section-intro">Phase A is local-verified. Missing evidence now sits at live delivery, real resume use, immutable operation, and promotion.</p></div></div>
+
+        <div class="grid-2">
+          <article class="card"><h3>Locally established</h3><ul><li>Shared daily pipeline, durable run identity, cancellation, partial recovery, scoring, mode selection.</li><li>v5 gateway and external transaction journal.</li><li>Local resume compilation and synchronization paths.</li><li>Promotion and rollback implementation paths.</li><li>Latest full suite reports 768 passing tests with zero failures.</li></ul></article>
+          <article class="card"><h3>Still unproven live</h3><ul><li>No successful retained real Notion write.</li><li>No real checked-role PDF evidence.</li><li>No manually submitted application sync proof.</li><li>No seven-date same-version canary.</li><li>No immutable promoted live-write schedule or rollback exercise.</li></ul></article>
+        </div>
+
+        <div class="callout decision"><strong>Freshness authority reconciled</strong><p><code>master_prompt.md</code>, <code>docs/SYSTEM-REFERENCE.md</code>, tests, and executable behavior now keep Workday LIST-only and undated rows in <code>VerifyQueue</code>.</p></div>
+
+        <table aria-label="Current evidence table">
+          <thead><tr><th>Area</th><th>Current evidence</th><th>Missing proof</th></tr></thead>
+          <tbody>
+            <tr><td>Discovery</td><td>Production shadow completed all 9 sources, selected 3 gate-passing rows, and balanced no-write reconciliation.</td><td>Retained live delivery proof on the approved v5 target.</td></tr>
+            <tr><td>v5 delivery</td><td>Manifest, gateway, journal, relation verification, replay code paths exist.</td><td>Credentialed preflight, one real row, relation check, replay proof.</td></tr>
+            <tr><td>Resume</td><td>Fixture and local builder verification paths exist.</td><td>One live selected role producing retained truthful one-page PDF.</td></tr>
+            <tr><td>Application</td><td>User-owned controls and idempotent sync contract exist.</td><td>One manual submission followed by confirmed `/sync`.</td></tr>
+            <tr><td>Promotion</td><td>Immutable checkout, schedule, and rollback code paths exist.</td><td>Seven valid dates, installed release, first scheduled run, rollback proof.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="decisions">
+        <div class="section-head"><div class="section-no">03 / DECISIONS</div><div><h2>Policy stays strict. Proof gets stronger.</h2><p class="section-intro">No volume target authorizes invented freshness, unsafe eligibility, automatic submission, or legacy fallback.</p></div></div>
+
+        <div class="decision-list">
+          <div class="decision-row"><strong>Freshness</strong><p>Only Workday DETAIL <code>startDate</code> establishes freshness. LIST-only and genuinely undated roles remain <code>VerifyQueue</code>. Backfill requires known age from 8 to 14 days.</p></div>
+          <div class="decision-row"><strong>Experience</strong><p>Missing experience text may pass after full eligibility. Explicit 3+ years fails. Missing eligibility never passes daily selection.</p></div>
+          <div class="decision-row"><strong>Surfacing</strong><p>Newly committed Applications v5 row starts cooldown. Planned, failed, recovery-blocked, and no-write rows do not.</p></div>
+          <div class="decision-row"><strong>Replay</strong><p>Already committed row creates no duplicate, does not refresh cooldown, and does not increment surfacing count.</p></div>
+          <div class="decision-row"><strong>User control</strong><p>Launchpad never changes <code>Make Resume</code> or <code>Applied?</code>. Submission and sending remain manual.</p></div>
+          <div class="decision-row"><strong>Live scope</strong><p>Only Normal morning Pune profile gains initial live delivery. Other profiles remain no-write.</p></div>
+        </div>
+      </section>
+
+      <section id="scope">
+        <div class="section-head"><div class="section-no">04 / SCOPE</div><div><h2>Finish daily loop. Skip adjacent expansion.</h2><p class="section-intro">Production readiness means dependable discovery-to-application use, not every possible source or mode.</p></div></div>
+        <div class="grid-2">
+          <article class="card"><h3>In scope</h3><ul><li>Normal morning discovery and selection.</li><li>Applications and Companies v5 delivery.</li><li>Ledger cooldown and notification receipts.</li><li>Local truthful resume compilation.</li><li>Manual application and `/sync` proof.</li><li>Immutable promotion, schedule, rollback, operator runbook.</li></ul></article>
+          <article class="card"><h3>Not required now</h3><ul><li>Auto-apply, auto-send, LinkedIn automation.</li><li>Gmail live connection.</li><li>Startup, Remote, or midday live writes.</li><li>Crawlee, Firecrawl, SearXNG, speculative source work.</li><li>Resume redesign or legacy migration.</li><li>Publication, branch, commit, push, or PR.</li></ul></article>
+        </div>
+      </section>
+
+      <section id="design">
+        <div class="section-head"><div class="section-no">05 / DESIGN</div><div><h2>One pipeline, one keyed delivery truth.</h2><p class="section-intro">Complexity stays at source, gateway, and transaction boundaries. Selector and operator flow remain direct.</p></div></div>
+
+        <h3>Canonical selection pipeline</h3>
+        <pre><code>normalize
+-> resolve original URL
+-> liveness
+-> freshness
+-> eligibility
+-> opportunity-ledger suppression
+-> historical suppression
+-> readiness
+-> scoring
+-> selection
+-> shortlist limit
+-> delivery plan</code></pre>
+
+        <div class="invariant">
+          <article class="card"><h3>Selection invariants</h3><pre><code>selected ∩ VerifyQueue = empty
+selected ∩ scoringQueue = empty
+selected = planned operations
+selected rows have score
+selected rows have employer URL</code></pre></article>
+          <article class="card"><h3>Budget invariants</h3><pre><code>scorer floor <= downstream reserve
+discovery + downstream + handoff
+  <= whole-run deadline
+source gets start allocation
+  or explicit planner omission</code></pre></article>
+        </div>
+
+        <h3 style="margin-top: 2rem">Keyed transaction result</h3>
+        <pre><code>{
+  status,
+  newlyCommitted,
+  alreadyCommitted,
+  failed,
+  recovery,
+  deliveredKeys,
+}</code></pre>
+        <div class="grid-3">
+          <article class="card"><h3>Status is explicit</h3><p><code>noop</code>, <code>replayed</code>, <code>committed</code>, <code>partial</code>, <code>aborted</code>, or <code>recovery</code>.</p></article>
+          <article class="card"><h3>Commit cardinality</h3><p>Committed keys must equal verified keys. Missing, duplicate, or unknown key fails closed.</p></article>
+          <article class="card"><h3>Journal remains evidence</h3><p>Recovery entries stay visible. No deletion to force retry. Secrets remain redacted.</p></article>
+        </div>
+
+        <h3 style="margin-top: 2rem">Delivery order</h3>
+        <ol>
+          <li>Build delivery plan.</li>
+          <li>Stop before gateway factory in no-write mode.</li>
+          <li>Require completed discovery and scoring.</li>
+          <li>Construct live gateway lazily and run gateway-owned preflight.</li>
+          <li>Execute and reconcile keyed transaction.</li>
+          <li>Record new ledger surfacing and repair missing replay ledger rows from original commit time.</li>
+          <li>Compute final outcome, evaluate canary, then emit notification receipt.</li>
+        </ol>
+
+        <div class="callout risk"><strong>Success is all-or-truthful</strong><p>Partial, aborted, recovery, or notification failure degrades run and invalidates success canary. Committed rows remain real. Failed rows remain retryable.</p></div>
+
+        <h3>Strict live command</h3>
+        <pre><code>node crawler/cli.mjs daily morning \
+  --env production \
+  --mode normal \
+  --location-preset pune \
+  --execute-writes \
+  --credential-file ABS_PATH \
+  --journal ABS_PATH</code></pre>
+        <p>Live mode rejects midday, Startup, Remote, non-production environment, arbitrary config, relative paths, orphan secret flags, and incomplete discovery. Partial, failed, and no-write runs call gateway factory zero times.</p>
+      </section>
+
+      <section id="phases">
+        <div class="section-head"><div class="section-no">06 / PHASES</div><div><h2>Evidence gates separate each irreversible step.</h2><p class="section-intro">Every stop reports evidence. No stop implies permission for next phase.</p></div></div>
+
+        <div class="phase-stack">
+          <article class="phase">
+            <div class="phase-header"><div class="phase-letter">PHASE A</div><h3>Local correctness</h3><div class="phase-state">Local-verified · 2026-08-30</div></div>
+            <div class="tasks">
+              <div class="task"><h4>T0 · Reconcile freshness authority</h4><p>Restore Workday LIST-only and undated rows to <code>VerifyQueue</code>. Align tests and lower-level docs to policy.</p></div>
+              <div class="task"><h4>T1 · Fix readiness without fail-open</h4><p>Require accepted eligibility. Remove only unstated-experience manual-review rejection.</p></div>
+              <div class="task"><h4>T2 · Fair source budgeting</h4><p>Per-source max duration and start allocation. Every enabled source terminates or has explicit omission.</p></div>
+              <div class="task"><h4>T3 · Canonical pipeline</h4><p>No side pools. One suppression, readiness, scoring, selection, and balanced reconciliation path.</p></div>
+              <div class="task"><h4>T4 · Transaction and replay</h4><p>Gateway preflight, keyed categories, replay status, commit cardinality, visible recovery.</p></div>
+              <div class="task"><h4>T5 · Delivery side effects</h4><p>Reconcile before ledger and canary. Replay-idempotent cooldown. Notification failure degrades.</p></div>
+              <div class="task"><h4>T6 · Strict live CLI</h4><p>Morning Normal Pune production only. Lazy gateway. Unsafe combinations rejected.</p></div>
+              <div class="task"><h4>T7 · Local gates and shadow</h4><p>Focused tests, full validation, production-config no-write shadow, retained balanced reports.</p></div>
+            </div>
+            <div class="stop">STOP A. Report local evidence. No credential, Notion, schedule, promotion, publication, commit, push, or PR action.</div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-header"><div class="phase-letter">PHASE B</div><h3>Controlled live proof</h3><div class="phase-state">Separate approval</div></div>
+            <div class="tasks">
+              <div class="task"><h4>T8 · Restore and verify v5 access</h4><p>Onkar rotates exposed credential manually. Run scoped manifest, relation, credential, journal, and target preflight.</p></div>
+              <div class="task"><h4>T9 · One-row write and replay</h4><p>Use <code>--shortlist-limit 1</code>. Verify live values, relation, untouched checkboxes, replay, and cooldown.</p></div>
+            </div>
+            <div class="stop">STOP B. Report one-row proof. Do not set user-owned fields, submit application, install schedule, or promote.</div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-header"><div class="phase-letter">PHASE C</div><h3>Real application proof</h3><div class="phase-state">User action required</div></div>
+            <div class="tasks">
+              <div class="task"><h4>T10 · Real role-specific resume</h4><p>Onkar checks <code>Make Resume</code>. Build source, JD matrix, provenance, and verified one-page PDF locally.</p></div>
+              <div class="task"><h4>T11 · Manual application and sync</h4><p>Onkar submits and checks <code>Applied?</code>. `/sync` writes one deterministic Activity and suppresses resurfacing.</p></div>
+            </div>
+            <div class="stop">STOP C. Report application proof. No schedule change or promotion without separate approval.</div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-header"><div class="phase-letter">PHASE D</div><h3>Production promotion</h3><div class="phase-state">Immutable release</div></div>
+            <div class="tasks">
+              <div class="task"><h4>T12 · Candidate release</h4><p>Clean reviewed revision, detached content-addressed checkout, pinned install, full validation, bound fingerprints.</p></div>
+              <div class="task"><h4>T13 · Seven-day canary</h4><p>Same release and profile on seven valid UTC dates with matching reports and manual inventory confirmation.</p></div>
+              <div class="task"><h4>T14 · Schedule and rollback</h4><p>Install immutable morning schedule, observe first run, retain promotion receipt, prove restoration on failure.</p></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="acceptance">
+        <div class="section-head"><div class="section-no">07 / ACCEPTANCE</div><div><h2>Ready means usable, live-proven, and recoverable.</h2><p class="section-intro">Passing tests alone remains local evidence. Promotion needs real daily behavior on one immutable release.</p></div></div>
+
+        <div class="grid-3">
+          <article class="card"><h3>Local acceptance</h3><ul><li>Authority conflict removed.</li><li>Undated roles never auto-select.</li><li>Missing eligibility never passes.</li><li>Every source terminates or is explicitly omitted.</li><li>Funnel and delivery counts balance.</li><li>No-write path reads no credential.</li></ul></article>
+          <article class="card"><h3>Live pilot acceptance</h3><ul><li>Exact v5 preflight passes.</li><li>One row and Company relation verify.</li><li>User checkboxes remain untouched.</li><li>Replay creates no duplicate or cooldown refresh.</li><li>Real role produces verified PDF.</li><li>Manual application syncs once.</li></ul></article>
+          <article class="card"><h3>Promotion acceptance</h3><ul><li>Clean immutable release retained.</li><li>Seven consecutive valid UTC dates.</li><li>Matching reports and inventory.</li><li>Morning schedule points to release.</li><li>Rollback proof retained.</li><li>First scheduled live run succeeds.</li></ul></article>
+        </div>
+
+        <div class="status-track" aria-label="Status progression"><div>local-verified</div><div>live-pilot</div><div>canary-in-progress</div><div>promoted</div></div>
+        <p class="caption">Textual equivalent: status advances only after evidence for each preceding stage exists. No prose claim may skip a stage.</p>
+
+        <h3 style="margin-top: 2rem">Local gate commands</h3>
+        <pre><code>npm run validate
+npm run safety
+npm test
+node crawler/cli.mjs readiness --run-tests
+git diff --check</code></pre>
+
+        <ul class="checklist">
+          <li>Production-config shadow reaches completed status with no unaccounted source.</li>
+          <li>Transaction, gateway, credential, ledger, and canary side-effect counters remain zero in shadow.</li>
+          <li>Selected rows satisfy original URL, liveness, freshness, eligibility, readiness, and score gates.</li>
+          <li>Markdown and JSON reports agree on source, funnel, selection, and delivery counts.</li>
+          <li>Low shortlist count remains valid when gates explain inventory loss.</li>
+        </ul>
+      </section>
+
+      <section id="operator">
+        <div class="section-head"><div class="section-no">08 / DAILY USE</div><div><h2>Morning work stays human-controlled.</h2><p class="section-intro">Automation finds, filters, writes, builds, and records. Onkar chooses, reviews, submits, and confirms.</p></div></div>
+        <div class="operator">
+          <article class="card"><h3>Normal morning</h3><ol class="steps"><li>Read notification receipt.</li><li>Require completed status and valid canary.</li><li>Open Applications v5 by Run ID.</li><li>Review shortlist and employer URLs.</li><li>Choose roughly 7 to 8 roles when inventory supports it.</li><li>Check <code>Make Resume</code>.</li><li>Run <code>/make-applications</code>.</li><li>Review PDF and live application page.</li><li>Submit manually.</li><li>Check <code>Applied?</code>.</li><li>Run <code>/sync</code>.</li><li>Prepare outreach draft only when useful.</li></ol></article>
+          <article class="card"><h3>Failure handling</h3><div class="failure-grid">
+            <div class="failure"><strong>Partial discovery</strong><p>No gateway or success canary. Inspect source manifests. Resume only through supported same-identity recovery.</p></div>
+            <div class="failure"><strong>Partial transaction</strong><p>Keep committed rows and journal. Failed rows remain retryable. Recovery needs explicit action.</p></div>
+            <div class="failure"><strong>Notification failure</strong><p>Treat run as degraded. Inspect v5 and local report. Day does not count toward canary streak.</p></div>
+            <div class="failure"><strong>Resume failure</strong><p>Do not apply. Keep <code>Applied?</code> false. Fix evidence or rendering issue and rebuild.</p></div>
+            <div class="failure"><strong>Dead application page</strong><p>Do not substitute aggregator URL. Record dead state through supported path and suppress resurfacing.</p></div>
+          </div></article>
+        </div>
+      </section>
+
+      <section id="risks">
+        <div class="section-head"><div class="section-no">09 / RISKS</div><div><h2>Promotion fails closed at real boundaries.</h2><p class="section-intro">Each risk has one concrete mechanism that prevents false success or unsafe action.</p></div></div>
+        <table aria-label="Risk and mitigation table">
+          <thead><tr><th>Risk</th><th>Consequence</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            <tr><td>Freshness drift</td><td>Stale or unverifiable roles auto-select.</td><td>One authority contract plus LIST-only Workday tests.</td></tr>
+            <tr><td>Source starvation</td><td>Most configured sources never run.</td><td>Start allocations, duration caps, terminal-state accounting.</td></tr>
+            <tr><td>Eligibility fail-open</td><td>Unsafe role reaches shortlist.</td><td>Daily readiness requires explicit accepted eligibility.</td></tr>
+            <tr><td>Partial delivery drift</td><td>Canary or cooldown claims undelivered rows.</td><td>Keyed reconciliation before ledger and canary.</td></tr>
+            <tr><td>Replay cooldown change</td><td>Old role disappears for another seven days.</td><td>Original commit time and no replay surfacing increment.</td></tr>
+            <tr><td>Secret access on no-write</td><td>Credential read without delivery need.</td><td>Lazy gateway after completed run.</td></tr>
+            <tr><td>Notification false success</td><td>Unattended failure appears healthy.</td><td>Failed receipt degrades and invalidates canary.</td></tr>
+            <tr><td>Dirty release</td><td>Production cannot be reproduced.</td><td>Clean content-addressed immutable checkout.</td></tr>
+            <tr><td>Resume claim inflation</td><td>Unsupported claim reaches application.</td><td>Master provenance, JD matrix, local PDF gates.</td></tr>
+            <tr><td>Schedule failure</td><td>Wrong or dead code runs unattended.</td><td>Dry run, immutable target, first-run watch, rollback proof.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="questions">
+        <div class="section-head"><div class="section-no">10 / OPEN QUESTIONS</div><div><h2>Non-blocking choices remain visible.</h2><p class="section-intro">None blocks scoped Phase B preflight. Material policy changes require renewed approval.</p></div></div>
+        <ol>
+          <li>Should <code>VerifyQueue</code> receive a separate manual-review report or remain inside current run report?</li>
+          <li>Should notification remain local-only or later use an approved external provider?</li>
+          <li>Which date starts seven-day canary after one-row and application proof?</li>
+          <li>Should Startup or Remote become second promoted profile after Normal stabilizes?</li>
+        </ol>
+      </section>
+
+      <section id="approval">
+        <div class="section-head"><div class="section-no">11 / APPROVAL</div><div><h2>Next approvals start here.</h2><p class="section-intro">Phase A completion grants no authority for credential, live-write, schedule, or promotion actions.</p></div></div>
+        <div class="approval">
+          <h3>Phase A and this progress report are complete. Each remaining action needs separate approval.</h3>
+          <ul>
+            <li>Rotate or test credentials.</li>
+            <li>Execute live v5 preflight.</li>
+            <li>Execute one-row live write.</li>
+            <li>Build resume from user-checked live row.</li>
+            <li>Install or change schedule.</li>
+            <li>Create immutable release, promote, or roll back.</li>
+            <li>Publish this plan to Waymark.</li>
+            <li>Create branch, commit, issue, push, or pull request.</li>
+          </ul>
+          <p>Current evidence rung remains <code>local-verified</code> until Phase B live proof passes.</p>
+        </div>
+      </section>
+
+      <footer>
+        <p>Launchpad daily production adoption · Phase A local-verified · 2026-08-30</p>
+        <p>Canonical source: <code>docs/plans/launchpad-daily-production-adoption.md</code>. This self-contained HTML is the synchronized Waymark source.</p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

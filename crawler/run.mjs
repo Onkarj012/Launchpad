@@ -9,8 +9,21 @@ import {
   SURFACED_SUPPRESSION_STATES,
 } from './identity.mjs';
 
+// Keep the public schema version stable; recovery tables are additive and old
+// stores must continue to report their historical version to existing callers.
 const SCHEMA_VERSION = 4;
 const TERMINAL_RUN_STATES = new Set(['completed', 'completed_with_failures', 'failed']);
+const RESUMABLE_RUN_STATES = new Set(['running', 'partial', 'resumed']);
+import {
+  createSourceDeadline,
+  deadlineError,
+  isDeadlineCancellation,
+  isSourceBudgetCancellation,
+  planSourceBudgets,
+  remainingDeadlineMs,
+  sourceBudgetError,
+} from './deadline.mjs';
+const SOURCE_TERMINAL_STATES = new Set(['succeeded', 'truncated', 'interrupted', 'failed', 'omitted_by_planner', 'omitted_by_runtime']);
 const STAGES = ['fetch', 'commit'];
 
 const SCHEMA = `
@@ -48,6 +61,16 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   counts_json TEXT NOT NULL DEFAULT '{}',
   telemetry_json TEXT NOT NULL DEFAULT '{}',
   config_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS crawl_run_attempts (
+  run_id TEXT NOT NULL REFERENCES crawl_runs(run_id) ON DELETE CASCADE,
+  attempt INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT,
+  PRIMARY KEY (run_id, attempt)
 );
 
 CREATE TABLE IF NOT EXISTS crawl_run_stages (
@@ -146,6 +169,20 @@ CREATE TABLE IF NOT EXISTS source_telemetry (
   PRIMARY KEY (run_id, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS source_attempts (
+  run_id TEXT NOT NULL REFERENCES crawl_runs(run_id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  attempt INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  starting_cursor_json TEXT,
+  continuation_cursor_json TEXT,
+  error TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (run_id, source_id, attempt)
+);
+
 CREATE INDEX IF NOT EXISTS idx_job_observations_run ON job_observations(run_id);
 CREATE INDEX IF NOT EXISTS idx_job_observations_job_dated_latest
   ON job_observations(job_key, observed_at DESC, posted_at)
@@ -171,6 +208,7 @@ export function openCrawlerStore(path = ':memory:') {
   ensureColumn(db, 'jobs', 'lifecycle_state', 'TEXT');
   ensureColumn(db, 'jobs', 'lifecycle_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'source_telemetry', 'details_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'crawl_runs', 'attempt_count', 'INTEGER NOT NULL DEFAULT 1');
   db.prepare(`INSERT INTO crawler_meta(key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = CASE
       WHEN CAST(crawler_meta.value AS INTEGER) < CAST(excluded.value AS INTEGER) THEN excluded.value
@@ -187,6 +225,110 @@ const json = (value, fallback) => {
   try { return JSON.parse(value); } catch { return fallback; }
 };
 
+const MAX_JSON_DEPTH = 32;
+const MAX_JSON_NODES = 10_000;
+
+function defineJsonProperty(target, key, value) {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value,
+  });
+}
+
+/** Clone only the bounded plain-JSON subset that can be durably persisted. */
+export function cloneJsonSafe(value, label = 'value', state = { seen: new WeakSet(), nodes: 0 }, depth = 0) {
+  if (depth > MAX_JSON_DEPTH) throw new TypeError(`${label} exceeds JSON depth limit`);
+  if (++state.nodes > MAX_JSON_NODES) throw new TypeError(`${label} exceeds JSON size limit`);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError(`${label} contains a non-finite number`);
+    return value;
+  }
+  if (typeof value === 'undefined' || typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
+    throw new TypeError(`${label} contains an unsupported ${typeof value}`);
+  }
+  if (typeof value !== 'object') throw new TypeError(`${label} contains an unsupported value`);
+  let prototype;
+  try { prototype = Object.getPrototypeOf(value); } catch { throw new TypeError(`${label} is not JSON-safe`); }
+  if (prototype !== Object.prototype && prototype !== null && !Array.isArray(value)) {
+    throw new TypeError(`${label} contains a non-plain object`);
+  }
+  if (state.seen.has(value)) throw new TypeError(`${label} contains a cycle`);
+  state.seen.add(value);
+  try {
+    if (Object.getOwnPropertySymbols(value).length) throw new TypeError(`${label} contains symbol keys`);
+    if (Array.isArray(value)) {
+      const clone = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) throw new TypeError(`${label} contains a sparse array`);
+        clone.push(cloneJsonSafe(value[index], `${label}[${index}]`, state, depth + 1));
+      }
+      return clone;
+    }
+    const clone = {};
+    for (const key of Object.keys(value)) defineJsonProperty(clone, key, cloneJsonSafe(value[key], `${label}.${key}`, state, depth + 1));
+    return clone;
+  } finally {
+    state.seen.delete(value);
+  }
+}
+
+function jsonStringifySafe(value, label) {
+  return JSON.stringify(cloneJsonSafe(value, label));
+}
+
+const MAX_JSON_RECORDS = 10_000;
+const MAX_JSON_RECORD_BYTES = 2_000_000;
+const MAX_JSON_ENVELOPE_BYTES = 20_000_000;
+
+/** Collections have count/byte bounds; each record keeps the ordinary node/depth guard. */
+export function cloneJsonCollection(value, label = 'collection') {
+  if (!Array.isArray(value)) throw new TypeError(`${label} must be an array`);
+  if (value.length > MAX_JSON_RECORDS) throw new TypeError(`${label} exceeds record count limit`);
+  if (Object.getOwnPropertySymbols(value).length) throw new TypeError(`${label} contains symbol keys`);
+  let bytes = 2;
+  return Array.from({ length: value.length }, (_, index) => {
+    if (!Object.hasOwn(value, index)) throw new TypeError(`${label} contains a sparse array`);
+    const record = cloneJsonSafe(value[index], `${label}[${index}]`);
+    const size = Buffer.byteLength(JSON.stringify(record));
+    if (size > MAX_JSON_RECORD_BYTES) throw new TypeError(`${label}[${index}] exceeds record byte limit`);
+    bytes += size + (index ? 1 : 0);
+    if (bytes > MAX_JSON_ENVELOPE_BYTES) throw new TypeError(`${label} exceeds total byte limit`);
+    return record;
+  });
+}
+
+/** Only declared envelope boundaries split the per-record node budget. */
+export function cloneJsonEnvelope(value, label, boundaries) {
+  const collections = { count: 0 };
+  const visit = (input, name, paths) => {
+    if (!paths.length) return cloneJsonSafe(input, name);
+    if (paths.some((path) => path.length === 0)) {
+      const result = cloneJsonCollection(input, name);
+      collections.count += result.length;
+      if (collections.count > MAX_JSON_RECORDS) throw new TypeError(`${label} exceeds total record count limit`);
+      return result;
+    }
+    if (!isRecord(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw new TypeError(`${name} must be a plain object`);
+    if (Object.getOwnPropertySymbols(input).length) throw new TypeError(`${name} contains symbol keys`);
+    const result = {};
+    if (Object.keys(input).length > MAX_JSON_RECORDS) throw new TypeError(`${name} exceeds field count limit`);
+    for (const key of Object.keys(input)) {
+      const nested = paths.filter((path) => path[0] === key || path[0] === '*').map((path) => path.slice(1));
+      defineJsonProperty(result, key, visit(input[key], `${name}.${key}`, nested));
+    }
+    return result;
+  };
+  const result = visit(value, label, boundaries);
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_JSON_ENVELOPE_BYTES) throw new TypeError(`${label} exceeds total byte limit`);
+  return result;
+}
+
+export const WORKFLOW_COLLECTIONS = ['verificationQueue', 'unresolvedLeads', 'historicalSuppressions', 'historicalAmbiguous'];
+export const TERMINAL_COLLECTIONS = ['verificationQueue', 'backfill', 'scoredReady', 'scorePendingReady'];
+
 const text = (value) => value == null ? null : String(value);
 const nowFrom = (clock) => {
   const value = typeof clock?.now === 'function' ? clock.now() : new Date();
@@ -198,6 +340,24 @@ const normalized = (value) => String(value ?? '').trim().toLowerCase().replace(/
 function clockSleep(clock, milliseconds) {
   if (typeof clock?.sleep === 'function') return clock.sleep(milliseconds);
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function monotonicNow(clock) {
+  const value = typeof clock?.monotonicNow === 'function' ? Number(clock.monotonicNow()) : performance.now();
+  return Number.isFinite(value) ? value : performance.now();
+}
+
+function sleepWithSignal(clock, milliseconds, signal) {
+  if (!signal) return clockSleep(clock, milliseconds);
+  if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('source aborted'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason instanceof Error ? signal.reason : new Error('source aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function sourceHost(url) {
@@ -214,6 +374,7 @@ function runRow(db, runId) {
     stage: row.stage,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    attemptCount: Number(row.attempt_count ?? 1),
     error: row.error,
     counts: json(row.counts_json, {}),
     telemetry: json(row.telemetry_json, {}),
@@ -231,28 +392,39 @@ function stagesFor(db, runId) {
 }
 
 function telemetryFor(db, runId) {
-  return Object.fromEntries(db.prepare('SELECT * FROM source_telemetry WHERE run_id = ? ORDER BY source_id').all(runId).map((row) => [row.source_id, {
-    status: row.status,
-    attempts: row.attempts,
-    observations: row.observations,
-    changed: row.changed,
-    duplicates: row.duplicates,
-    ...(row.fetched == null ? {} : { fetched: row.fetched }),
-    ...json(row.details_json, {}),
-    ...(row.error ? { error: row.error } : {}),
-  }]));
+  return Object.fromEntries(db.prepare('SELECT * FROM source_telemetry WHERE run_id = ? ORDER BY source_id').all(runId).map((row) => {
+    const details = Object.fromEntries(Object.entries(json(row.details_json, {})));
+    const attempts = db.prepare('SELECT * FROM source_attempts WHERE run_id = ? AND source_id = ? ORDER BY attempt').all(runId, row.source_id);
+    return [row.source_id, {
+      status: row.status,
+      attempts: row.attempts,
+      observations: row.observations,
+      changed: row.changed,
+      duplicates: row.duplicates,
+      ...(row.fetched == null ? {} : { fetched: row.fetched }),
+      ...details,
+      ...(attempts.length > 1 ? {
+        attemptHistory: attempts.map((attempt) => ({
+          attempt: attempt.attempt, status: attempt.status, startedAt: attempt.started_at, finishedAt: attempt.finished_at,
+          startingCursor: json(attempt.starting_cursor_json, null), continuationCursor: json(attempt.continuation_cursor_json, null), error: attempt.error,
+          ...json(attempt.details_json, {}),
+        })),
+      } : {}),
+      ...(row.error ? { error: row.error } : {}),
+    }];
+  }));
 }
 
 function sourceState(value, fallback = null) {
   const parsed = typeof value === 'string' ? json(value, null) : value;
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.scanStatus === 'string') {
-    return { cursor: ['interrupted', 'truncated'].includes(parsed.scanStatus) ? parsed.cursor ?? null : null, state: parsed };
+    return { cursor: ['interrupted', 'truncated', 'checkpointed'].includes(parsed.scanStatus) ? parsed.cursor ?? null : null, state: parsed };
   }
   return { cursor: fallback ?? parsed ?? null, state: { scanStatus: 'legacy' } };
 }
 
 function encodedSourceState(cursor, state) {
-  return JSON.stringify({ version: 1, cursor: cursor ?? null, ...state });
+  return JSON.stringify(cloneJsonSafe({ version: 1, cursor: cursor ?? null, ...state }, 'source state'));
 }
 
 function newestPostingAt(observations, manifest) {
@@ -262,7 +434,19 @@ function newestPostingAt(observations, manifest) {
 
 function snapshot(db, runId) {
   const run = runRow(db, runId);
-  return { run, stages: stagesFor(db, runId), telemetry: { sources: telemetryFor(db, runId) }, failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, message: row.message })) };
+  return {
+    run,
+    stages: stagesFor(db, runId),
+    attempts: db.prepare('SELECT * FROM crawl_run_attempts WHERE run_id = ? ORDER BY attempt').all(runId).map((row) => ({
+      attempt: row.attempt, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, error: row.error,
+    })),
+    telemetry: { ...run.telemetry, sources: telemetryFor(db, runId) },
+    sourceAttempts: db.prepare('SELECT * FROM source_attempts WHERE run_id = ? ORDER BY source_id, attempt').all(runId).map((row) => ({
+      sourceId: row.source_id, attempt: row.attempt, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at,
+      startingCursor: json(row.starting_cursor_json, null), continuationCursor: json(row.continuation_cursor_json, null), error: row.error,
+    })),
+    failures: db.prepare('SELECT * FROM source_failures WHERE run_id = ? ORDER BY failure_id').all(runId).map((row) => ({ sourceId: row.source_id, stage: row.stage, attempt: row.attempt, retryClass: row.retry_class, message: row.message })),
+  };
 }
 
 function beginStage(db, runId, stage, at) {
@@ -276,21 +460,214 @@ function finishStage(db, runId, stage, status, at, error = null) {
   db.prepare('UPDATE crawl_run_stages SET status = ?, finished_at = ?, error = ? WHERE run_id = ? AND stage = ?').run(status, at, error, runId, stage);
 }
 
+/** Persist the effective lane configuration without duplicating the registry.
+ * Registry identity covers every normalized board, including disabled boards.
+ * Each board still passes the ordinary JSON guard; the collection has its own
+ * count and byte bounds. The effective sources.*.boards remain in the snapshot.
+ */
+export function persistedCrawlerConfig(config) {
+  if (!config.boardRegistry) return cloneJsonSafe(config, 'run config');
+  const { boards, ...identity } = config.boardRegistry;
+  if (!Array.isArray(boards) || boards.length > 1000) throw new TypeError('run registry exceeds board count limit');
+  const safeIdentity = cloneJsonSafe(identity, 'run registry identity');
+  const hash = createHash('sha256');
+  let bytes = 0;
+  const append = (value) => {
+    const encoded = JSON.stringify(value);
+    bytes += Buffer.byteLength(encoded);
+    if (bytes > 2_000_000) throw new TypeError('run registry exceeds byte limit');
+    hash.update(encoded).update('\n');
+  };
+  append(safeIdentity);
+  for (const [index, board] of boards.entries()) append(cloneJsonSafe(board, `run registry board[${index}]`));
+  return cloneJsonSafe({
+    ...config,
+    boardRegistry: {
+      identity: safeIdentity,
+      boardCount: boards.length,
+      fingerprint: `sha256:${hash.digest('hex')}`,
+      fingerprintFormat: 'registry-identity-and-ordered-boards-json-lines-v1',
+    },
+  }, 'run config');
+}
+
 export function startCrawlRun(store, { runId, schedule = 'manual', config = {}, clock } = {}) {
   const at = nowFrom(clock);
+  const safeConfig = persistedCrawlerConfig(config);
   const existing = runRow(store, runId);
-  if (existing) return { run: existing, idempotent: TERMINAL_RUN_STATES.has(existing.status) };
+  if (existing) {
+    if (TERMINAL_RUN_STATES.has(existing.status)) return { run: existing, idempotent: true };
+    const previousFingerprint = existing.config?.boardRegistry?.fingerprint;
+    if (previousFingerprint && previousFingerprint !== safeConfig.boardRegistry?.fingerprint) {
+      throw new Error('run registry fingerprint changed; resume requires the original registry');
+    }
+    const attempt = Number(existing.config?.attemptCount ?? existing.attemptCount ?? store.prepare('SELECT COUNT(*) AS n FROM crawl_run_attempts WHERE run_id = ?').get(runId)?.n ?? 0) + 1;
+    store.prepare('UPDATE crawl_runs SET status = ?, stage = ?, finished_at = NULL, error = NULL, attempt_count = ? WHERE run_id = ?')
+      .run('running', 'fetch', attempt, runId);
+    store.prepare('INSERT INTO crawl_run_attempts(run_id, attempt, status, started_at) VALUES (?, ?, ?, ?)')
+      .run(runId, attempt, 'running', at);
+    return { run: runRow(store, runId), idempotent: false, resumed: true, attempt };
+  }
   store.exec('BEGIN');
   try {
-    store.prepare(`INSERT INTO crawl_runs(run_id, schedule, status, stage, started_at, counts_json, telemetry_json, config_json)
-      VALUES (?, ?, 'running', 'fetch', ?, '{}', '{}', ?)`).run(runId, schedule, at, JSON.stringify(config));
+    store.prepare(`INSERT INTO crawl_runs(run_id, schedule, status, stage, started_at, counts_json, telemetry_json, config_json, attempt_count)
+      VALUES (?, ?, 'running', 'fetch', ?, '{}', '{}', ?, 1)`).run(runId, schedule, at, JSON.stringify(safeConfig));
     for (const stage of STAGES) store.prepare('INSERT INTO crawl_run_stages(run_id, stage, status) VALUES (?, ?, ?)' ).run(runId, stage, stage === 'fetch' ? 'running' : 'pending');
+    store.prepare('INSERT INTO crawl_run_attempts(run_id, attempt, status, started_at) VALUES (?, 1, ?, ?)').run(runId, 'running', at);
     store.exec('COMMIT');
   } catch (error) {
     store.exec('ROLLBACK');
     throw error;
   }
-  return { run: runRow(store, runId), idempotent: false };
+  return { run: runRow(store, runId), idempotent: false, resumed: false, attempt: 1 };
+}
+
+function sourcePlanRow(source) {
+  return {
+    lane: source.lane ?? 'unknown',
+    trustClass: source.trustClass ?? 'unknown',
+    capabilities: source.capabilities ?? {},
+    ratePolicy: source.ratePolicy ?? {},
+  };
+}
+
+function notStartedBugError(sourceIds) {
+  const error = new Error(`not_started_bug: ${sourceIds.join(', ')}`);
+  error.code = 'NOT_STARTED_BUG';
+  return error;
+}
+
+function sourceAbortContext(parentSignal, parentDeadline, maxDurationMs, parentNow = Date.now(), clock = {}) {
+  const controller = new AbortController();
+  const nowMs = parentDeadline?.wallClock === true || typeof clock?.now !== 'function'
+    ? Date.now
+    : () => {
+      const value = clock.now();
+      const current = value instanceof Date ? value.getTime() : new Date(value).getTime();
+      return Number.isFinite(current) ? current : Date.now();
+    };
+  const startedAt = Number.isFinite(Number(parentNow)) ? Number(parentNow) : nowMs();
+  const sourceDeadline = createSourceDeadline(parentDeadline, maxDurationMs, startedAt, nowMs);
+  let timer = null;
+  const abortFromParent = () => controller.abort(parentSignal.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener?.('abort', abortFromParent, { once: true });
+  const remaining = sourceDeadline.remainingMs();
+  if (remaining !== Infinity) {
+    const maxDuration = Math.max(1, Number(maxDurationMs) || 1);
+    const parentRemaining = remainingDeadlineMs(parentDeadline, nowMs());
+    const reason = parentRemaining <= maxDuration ? deadlineError() : sourceBudgetError();
+    timer = typeof clock.setTimeout === 'function'
+      ? clock.setTimeout(() => controller.abort(reason), Math.max(1, remaining))
+      : setTimeout(() => controller.abort(reason), Math.max(1, remaining));
+  }
+  return {
+    signal: controller.signal,
+    deadline: sourceDeadline,
+    budgetCancellationFired: () => controller.signal.reason?.code === 'SOURCE_MAX_DURATION_EXCEEDED',
+    cleanup() {
+      if (timer) {
+        if (typeof clock.clearTimeout === 'function') clock.clearTimeout(timer);
+        else clearTimeout(timer);
+      }
+      parentSignal?.removeEventListener?.('abort', abortFromParent);
+    },
+  };
+}
+
+/** Register the complete source plan before the first adapter can run. */
+export function registerSourcePlans(store, runId, sourcePlans = [], { clock, at: suppliedAt = null } = {}) {
+  const at = suppliedAt ?? nowFrom(clock);
+  for (const source of sourcePlans) {
+    if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
+    const row = sourcePlanRow(source);
+    const safeCapabilities = cloneJsonSafe(row.capabilities, `source ${source.id} capabilities`);
+    const safeRatePolicy = cloneJsonSafe(row.ratePolicy, `source ${source.id} rate policy`);
+    store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, NULL, ?)
+      ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class,
+      capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`)
+      .run(source.id, row.lane, row.trustClass, JSON.stringify(safeCapabilities), JSON.stringify(safeRatePolicy), at);
+    const plannedStatus = source.budget?.status === 'omitted_by_planner' ? 'omitted_by_planner' : 'pending';
+    const plannedDetails = {
+      plannedAt: at,
+      lane: row.lane,
+      provider: source.provider ?? null,
+      budget: source.budget ?? null,
+      ...(plannedStatus === 'omitted_by_planner' ? {
+        initialPlannedAllocationMs: 0,
+        runtimeAllowanceMs: 0,
+        actualDurationMs: 0,
+        unusedMs: 0,
+        recycledMs: 0,
+        laterSourceReserveMs: 0,
+        capHit: null,
+      } : {}),
+      ...(plannedStatus === 'omitted_by_planner' ? { reason: source.budget.reason } : {}),
+    };
+    store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json)
+      VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?)
+      ON CONFLICT(run_id, source_id) DO NOTHING`)
+    .run(runId, source.id, plannedStatus, JSON.stringify(cloneJsonSafe(plannedDetails, `source ${source.id} plan telemetry`)));
+  }
+  return telemetryFor(store, runId);
+}
+
+function updateSourceStatus(store, runId, sourceId, status, { clock, error = null, details = {} } = {}) {
+  const at = nowFrom(clock);
+  const current = store.prepare('SELECT details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, sourceId);
+  const mergedDetails = cloneJsonSafe({ ...json(current?.details_json, {}), ...details }, `source ${sourceId} telemetry`);
+  store.prepare('UPDATE source_telemetry SET status = ?, error = COALESCE(?, error), details_json = ? WHERE run_id = ? AND source_id = ?')
+    .run(status, error, jsonStringifySafe(mergedDetails, `source ${sourceId} telemetry`), runId, sourceId);
+  return at;
+}
+
+function requeueRuntimeOmissions(store, runId, sourcePlans, { clock } = {}) {
+  const plannedSourceIds = new Set(sourcePlans
+    .filter((source) => source?.budget?.status !== 'omitted_by_planner')
+    .map((source) => source.id));
+  const omitted = store.prepare("SELECT source_id FROM source_telemetry WHERE run_id = ? AND status = 'omitted_by_runtime'").all(runId);
+  for (const { source_id: sourceId } of omitted) {
+    if (plannedSourceIds.has(sourceId)) updateSourceStatus(store, runId, sourceId, 'pending', { clock });
+  }
+}
+
+function markUnstartedSources(store, runId, sourceIds, { clock } = {}) {
+  for (const sourceId of sourceIds) {
+    const row = store.prepare('SELECT status FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, sourceId);
+    if (row?.status === 'pending') updateSourceStatus(store, runId, sourceId, 'interrupted', { clock, details: { reason: 'deadline-before-source' } });
+  }
+}
+
+function markNotStartedBugSources(store, runId, sourceIds, { clock } = {}) {
+  for (const sourceId of sourceIds) {
+    const row = store.prepare('SELECT status FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, sourceId);
+    if (row?.status === 'pending' || row?.status === 'not_started') {
+      updateSourceStatus(store, runId, sourceId, 'failed', { clock, error: 'not_started_bug', details: { reason: 'not_started_bug' } });
+    }
+  }
+}
+
+function markRunAttempt(store, runId, attempt, status, { clock, error = null } = {}) {
+  store.prepare('UPDATE crawl_run_attempts SET status = ?, finished_at = ?, error = ? WHERE run_id = ? AND attempt = ?')
+    .run(status, nowFrom(clock), error, runId, attempt);
+}
+
+function runtimeSourceBudget(sourcePlans, sourceIndex, store, runId, remainingDiscoveryMs, minimumStartMs, configuredCapMs) {
+  const laterSourceReserveMs = sourcePlans.slice(sourceIndex + 1).reduce((reserve, candidate) => {
+    if (candidate?.budget?.status !== 'planned') return reserve;
+    const row = store.prepare('SELECT status FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, candidate.id);
+    if (!['pending', 'not_started'].includes(row?.status)) return reserve;
+    const candidateCap = Number(candidate.budget?.maxDurationMs ?? candidate.maxDurationMs ?? configuredCapMs);
+    const positiveCap = Number.isFinite(candidateCap) && candidateCap > 0 ? Math.floor(candidateCap) : minimumStartMs;
+    return reserve + Math.min(minimumStartMs, positiveCap);
+  }, 0);
+  const safeRemainingMs = Math.max(0, finiteCount(remainingDiscoveryMs, 0));
+  const runtimeAllowanceMs = Math.min(configuredCapMs, Math.max(0, safeRemainingMs - laterSourceReserveMs));
+  return {
+    runtimeAllowanceMs: finiteCount(runtimeAllowanceMs),
+    laterSourceReserveMs: finiteCount(laterSourceReserveMs),
+  };
 }
 
 export function transitionStage(store, runId, stage, status, { clock, error = null } = {}) {
@@ -302,7 +679,13 @@ export function transitionStage(store, runId, stage, status, { clock, error = nu
 
 export function finishCrawlRun(store, runId, { status = 'completed', counts = {}, telemetry = {}, clock, error = null } = {}) {
   const at = nowFrom(clock);
-  store.prepare('UPDATE crawl_runs SET status = ?, stage = ?, finished_at = ?, error = ?, counts_json = ?, telemetry_json = ? WHERE run_id = ?').run(status, 'complete', at, error, JSON.stringify(counts), JSON.stringify(telemetry), runId);
+  const safeCounts = cloneJsonSafe(counts, 'run counts');
+  const safeTelemetry = cloneJsonEnvelope(telemetry, 'run telemetry', [
+    ['sources', '*', 'attemptHistory'],
+    ...WORKFLOW_COLLECTIONS.map((key) => ['workflow', key]),
+    ...TERMINAL_COLLECTIONS.map((key) => ['workflow', 'terminalEnvelope', key]),
+  ]);
+  store.prepare('UPDATE crawl_runs SET status = ?, stage = ?, finished_at = ?, error = ?, counts_json = ?, telemetry_json = ? WHERE run_id = ?').run(status, status === 'partial' ? 'fetch' : 'complete', at, error, JSON.stringify(safeCounts), JSON.stringify(safeTelemetry), runId);
   return runRow(store, runId);
 }
 
@@ -314,7 +697,7 @@ export function failCrawlRun(store, runId, error, { clock } = {}) {
 }
 
 function sourceRecordKey(observation) {
-  return text(observation.sourceRecordKey ?? observation.providerJobId ?? observation.canonicalUrl) ?? hash(JSON.stringify(observation));
+  return text(observation.sourceRecordKey ?? observation.providerJobId ?? observation.canonicalUrl) ?? hash(jsonStringifySafe(observation, 'observation'));
 }
 
 function fingerprint(observation) {
@@ -363,8 +746,8 @@ export function updateJobLifecycle(store, jobKey, nextState, { at = new Date().t
     nextJson.actionState = merged;
     nextJson.actionAt = at;
   }
-  store.prepare('UPDATE jobs SET lifecycle_state = ?, lifecycle_json = ? WHERE job_key = ?')
-    .run(merged, JSON.stringify(nextJson), jobKey);
+    store.prepare('UPDATE jobs SET lifecycle_state = ?, lifecycle_json = ? WHERE job_key = ?')
+    .run(merged, jsonStringifySafe(nextJson, 'job lifecycle'), jobKey);
   return merged;
 }
 
@@ -374,11 +757,13 @@ export function markJobsSurfaced(store, jobKeys, { at = new Date().toISOString()
   return keys.length;
 }
 
-function persistObservation(store, source, runId, observation, observedAt) {
+function persistObservation(store, source, runId, observation, observedAt, { replaceCheckpoint = false } = {}) {
   const sourceKey = sourceRecordKey(observation);
   const observationKey = hash(`${runId}|${source.id}|${sourceKey}`);
-  const existingObservation = store.prepare('SELECT observation_key FROM job_observations WHERE observation_key = ?').get(observationKey);
-  if (existingObservation) return { duplicate: true, jobKey: null };
+  const existingObservation = store.prepare(`SELECT observation_key FROM job_observations
+    WHERE observation_key = ? OR (run_id = ? AND source_id = ? AND source_record_key = ?)
+    LIMIT 1`).get(observationKey, runId, source.id, sourceKey);
+  if (existingObservation && !replaceCheckpoint) return { duplicate: true, jobKey: null };
   const providerJobId = observation.providerJobId ?? observation.jobId;
   const provider = observation.provider ?? source.provider ?? source.id;
   const jobKey = findJob(store, source, observation) ?? hash(`${provider}|${providerJobId ?? ''}|${observation.canonicalUrl ?? ''}|${normalized(observation.company)}|${normalized(observation.title)}|${normalized(observation.location)}`);
@@ -423,9 +808,123 @@ function persistObservation(store, source, runId, observation, observedAt) {
       lifecycle_state = excluded.lifecycle_state,
       lifecycle_json = excluded.lifecycle_json`).run(jobKey, companyKey, provider, text(providerJobId), text(observation.canonicalUrl), companyName, normalized(observation.title), normalized(observation.location), observedAt, observedAt, text(observation.postedAt), text(observation.updatedAt), text(observation.inferredRepostAt), closedAt, fp, nextLifecycle, JSON.stringify(lifecycleJson));
   if (observation.description != null) store.prepare('INSERT OR IGNORE INTO job_descriptions(fingerprint, description, first_seen_at) VALUES (?, ?, ?)').run(fp, String(observation.description), observedAt);
-  store.prepare(`INSERT INTO job_observations(observation_key, job_key, source_id, run_id, source_record_key, canonical_url, posted_at, updated_at, observed_at, fingerprint, classification, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observationKey, jobKey, source.id, runId, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp, observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation));
-  return { duplicate: false, jobKey, lifecycle: nextLifecycle };
+  const rowKey = existingObservation?.observation_key ?? observationKey;
+  if (existingObservation) {
+    store.prepare(`UPDATE job_observations SET job_key = ?, source_record_key = ?, canonical_url = ?, posted_at = ?, updated_at = ?, observed_at = ?, fingerprint = ?, classification = ?, raw_json = ?
+      WHERE observation_key = ?`).run(jobKey, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp,
+      observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation), rowKey);
+  } else {
+    store.prepare(`INSERT INTO job_observations(observation_key, job_key, source_id, run_id, source_record_key, canonical_url, posted_at, updated_at, observed_at, fingerprint, classification, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(rowKey, jobKey, source.id, runId, sourceKey, text(observation.canonicalUrl), text(observation.postedAt), text(observation.updatedAt), observedAt, fp, observation.classification === 'direct' ? 'direct' : 'lead', JSON.stringify(observation));
+  }
+  return { duplicate: false, replaced: Boolean(existingObservation), jobKey, lifecycle: nextLifecycle };
+}
+
+function isRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stableJson(value) {
+  const safeValue = cloneJsonSafe(value, 'stable JSON value');
+  if (Array.isArray(safeValue)) return `[${safeValue.map(stableJson).join(',')}]`;
+  if (isRecord(safeValue)) return `{${Object.keys(safeValue).sort().map((key) => `${JSON.stringify(key)}:${stableJson(safeValue[key])}`).join(',')}}`;
+  return JSON.stringify(safeValue);
+}
+
+function mergeManifestValues(current, delta) {
+  if (!isRecord(current) || !isRecord(delta)) return delta;
+  const merged = { ...current };
+  for (const key of Object.keys(delta).sort()) {
+    defineJsonProperty(merged, key, isRecord(current[key]) && isRecord(delta[key])
+      ? mergeManifestValues(current[key], delta[key])
+      : delta[key]);
+  }
+  return merged;
+}
+
+function finiteCount(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
+}
+
+function safeContinuationCursor(value, fallback = null) {
+  if (value === undefined) return fallback;
+  try { return cloneJsonSafe(value, 'continuation cursor'); } catch { return fallback; }
+}
+
+function durableSourceProgress(store, runId, sourceId) {
+  const row = store.prepare('SELECT observations, duplicates, fetched, changed, details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?')
+    .get(runId, sourceId);
+  if (!row) return { observations: 0, duplicates: 0, fetched: 0, changed: 0, details: {} };
+  return {
+    observations: finiteCount(row.observations), duplicates: finiteCount(row.duplicates),
+    fetched: finiteCount(row.fetched), changed: finiteCount(row.changed), details: json(row.details_json, {}),
+    manifest: json(row.details_json, {}).__manifest ?? json(row.details_json, {}).manifest ?? {},
+    checkpointed: json(row.details_json, {}).__checkpointed === true,
+  };
+}
+
+/** Persist an incremental or final source result through one durable path. */
+function persistSourceProgress(store, source, runId, {
+  observations = [], cursor, replaceObservations = false,
+  manifestDelta = null, observedAt, checkpointed = false,
+} = {}) {
+  const progress = durableSourceProgress(store, runId, source.id);
+  const safeObservations = cloneJsonCollection(observations, 'source observations');
+  const safeCursor = cursor === undefined ? undefined : cloneJsonSafe(cursor, 'source cursor');
+  const delta = manifestDelta == null ? null : cloneJsonSafe(manifestDelta, 'source manifest');
+  if (delta != null && !isRecord(delta)) throw new TypeError('source manifest must be a plain object');
+  const deltaKey = delta ? hash(stableJson(delta)) : null;
+  const manifestKeys = Array.isArray(progress.details.__manifestDeltaKeys)
+    ? progress.details.__manifestDeltaKeys.map(String)
+    : [];
+  const shouldMergeManifest = delta && !manifestKeys.includes(deltaKey);
+  const mergedManifest = shouldMergeManifest
+    ? mergeManifestValues(progress.details.__manifest ?? {}, delta)
+    : progress.details.__manifest ?? {};
+  const nextManifestKeys = shouldMergeManifest ? [...manifestKeys, deltaKey].sort() : manifestKeys;
+  let retained = 0;
+  let duplicates = 0;
+
+  store.exec('BEGIN');
+  try {
+    for (const observation of safeObservations) {
+      const persisted = persistObservation(store, source, runId, observation, observedAt, { replaceCheckpoint: replaceObservations });
+      if (persisted.duplicate) duplicates += 1;
+      else if (!persisted.replaced) retained += 1;
+    }
+    const nextObservations = progress.observations + retained;
+    const nextDuplicates = progress.duplicates + duplicates;
+    const manifestFetched = finiteCount(delta?.fetched, 0);
+    const manifestChanged = finiteCount(delta?.changed, 0);
+    const nextFetched = Math.max(progress.fetched, manifestFetched, nextObservations);
+    const nextChanged = Math.max(progress.changed, manifestChanged, nextObservations);
+    const details = {
+      ...progress.details,
+      ...(delta && (checkpointed || progress.details.__checkpointed || progress.details.manifest) ? { manifest: mergedManifest } : {}),
+      ...(delta ? { __manifest: mergedManifest, __manifestDeltaKeys: nextManifestKeys } : {}),
+      ...(checkpointed ? { __checkpointed: true } : {}),
+    };
+    store.prepare('UPDATE source_telemetry SET fetched = ?, changed = ?, observations = ?, duplicates = ?, details_json = ? WHERE run_id = ? AND source_id = ?')
+      .run(nextFetched, nextChanged, nextObservations, nextDuplicates, jsonStringifySafe(details, `source ${source.id} progress`), runId, source.id);
+    if (safeCursor !== undefined) {
+      const sourceRow = store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id);
+      const prior = sourceState(sourceRow?.cursor_json, null);
+      store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?')
+        .run(encodedSourceState(safeCursor, {
+          ...(prior.state && prior.state.scanStatus !== 'legacy' ? prior.state : {}),
+          scanStatus: 'checkpointed', naturalTerminal: false, truncated: false, checkpointed: true,
+        }), observedAt, source.id);
+    }
+    store.exec('COMMIT');
+  } catch (error) {
+    store.exec('ROLLBACK');
+    throw error;
+  }
+  return { observations: progress.observations + retained, duplicates: progress.duplicates + duplicates,
+    fetched: Math.max(progress.fetched, finiteCount(delta?.fetched, 0), progress.observations + retained),
+    changed: Math.max(progress.changed, finiteCount(delta?.changed, 0), progress.observations + retained),
+    manifest: mergedManifest, checkpointed: checkpointed || progress.checkpointed };
 }
 
 async function abortableSourceFetch(sourcePromise, signal) {
@@ -435,79 +934,222 @@ async function abortableSourceFetch(sourcePromise, signal) {
     error.code ??= 'RUN_ABORTED';
     throw error;
   }
-  return Promise.race([
-    sourcePromise,
-    new Promise((_, reject) => signal.addEventListener('abort', () => {
-      const error = signal.reason instanceof Error ? signal.reason : new Error('source aborted');
-      error.code ??= 'RUN_ABORTED';
-      reject(error);
-    }, { once: true })),
-  ]);
+  let timer = null;
+  let onAbort = null;
+  const finalGuard = new Promise((_, reject) => {
+    onAbort = () => {
+      // Cooperative adapters get one turn to checkpoint their cursor and
+      // telemetry. This race remains only the safety guard for a source that
+      // ignores the parent signal entirely.
+      timer = setTimeout(() => {
+        const reason = signal.reason instanceof Error ? signal.reason.message : 'source aborted';
+        const error = new Error(reason);
+        error.code = 'RUN_ABORTED';
+        reject(error);
+      }, 0);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([sourcePromise, finalGuard]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
-async function fetchSource(store, source, runId, priorState, config, clock, { signal = null, deadline = null } = {}) {
+async function fetchSource(store, source, runId, priorState, config, clock, {
+  signal = null, deadline = null, budgetCancellationFired = () => false,
+} = {}) {
   const retry = { maxAttempts: 1, baseDelayMs: 250, ...(config.retry ?? {}) };
   const sourceRow = store.prepare('SELECT * FROM sources WHERE source_id = ?').get(source.id);
   const persisted = sourceState(sourceRow?.cursor_json, priorState?.sources?.[source.id]?.cursor ?? null);
   const sourceCapabilities = source.capabilities ?? {};
   const previousState = persisted.state;
-  const cursor = sourceCapabilities.newestFirst && !['interrupted', 'truncated'].includes(previousState.scanStatus)
+  const cursor = sourceCapabilities.newestFirst && !['interrupted', 'truncated', 'checkpointed'].includes(previousState.scanStatus)
     ? null
     : persisted.cursor;
   const telemetry = {
     status: 'running', attempts: 0, fetched: 0, changed: 0, observations: 0,
     startingCursor: cursor,
     continuationCursor: null,
-    cursorReset: Boolean(sourceCapabilities.newestFirst && !['interrupted', 'truncated'].includes(previousState.scanStatus) && (previousState.scanStatus !== 'legacy' || persisted.cursor != null)),
-    cursorContinued: Boolean(cursor != null && ['interrupted', 'truncated'].includes(previousState.scanStatus)),
+    cursorReset: Boolean(sourceCapabilities.newestFirst && !['interrupted', 'truncated', 'checkpointed'].includes(previousState.scanStatus) && (previousState.scanStatus !== 'legacy' || persisted.cursor != null)),
+    cursorContinued: Boolean(cursor != null && ['interrupted', 'truncated', 'checkpointed'].includes(previousState.scanStatus)),
     naturalTerminal: false, interrupted: false, truncated: false, newestPostingAt: null,
     consecutiveZeroNewRuns: 0, capHit: null, recordsNotExamined: null,
   };
+  let checkpointTail = Promise.resolve();
+  let checkpointOpen = true;
+  let checkpointFailure = null;
+  const checkpoint = (payload = {}) => {
+    if (!checkpointOpen) return Promise.resolve({ ignored: true });
+    const { observations = [], cursor, manifestDelta = null, replaceObservations = false } = payload ?? {};
+    const operation = checkpointTail.then(() => persistSourceProgress(store, source, runId, {
+      observations, cursor, manifestDelta, replaceObservations, observedAt: nowFrom(clock), checkpointed: true,
+    }));
+    checkpointTail = operation.catch((error) => {
+      checkpointFailure ??= error;
+    });
+    operation.catch(() => {});
+    return operation;
+  };
+  const closeCheckpoints = async () => {
+    checkpointOpen = false;
+    await checkpointTail;
+    if (checkpointFailure) throw checkpointFailure;
+  };
   let lastError;
+  let validatingOutput = false;
   for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     telemetry.attempts = attempt;
     try {
-      const result = await abortableSourceFetch(
-        source.fetch({ source, runId, cursor, priorState, attempt, config, clock, signal, deadline }),
-        signal,
-      );
-      const observations = Array.isArray(result?.observations) ? result.observations : [];
-      let duplicates = 0;
-      for (const observation of observations) if (persistObservation(store, source, runId, observation, nowFrom(clock)).duplicate) duplicates += 1;
-      const manifest = result?.manifest ?? {};
+      const sourcePromise = Promise.resolve().then(() => {
+        if (signal?.aborted) {
+          const error = signal?.reason instanceof Error ? signal.reason : new Error('crawler source deadline exceeded');
+          error.code ??= 'DAILY_DEADLINE_EXCEEDED';
+          throw error;
+        }
+        return source.fetch({ source, runId, cursor, sourceState: previousState, priorState, attempt, config, clock, signal, deadline, checkpoint });
+      });
+      const result = await abortableSourceFetch(sourcePromise, signal);
+      await closeCheckpoints();
+      validatingOutput = true;
+      if (result?.observations !== undefined && !Array.isArray(result.observations)) throw new TypeError('source result observations must be an array');
+      if (result?.manifest !== undefined && result.manifest == null) throw new TypeError('source result manifest must be a plain object');
+      const observations = cloneJsonCollection(result?.observations ?? [], 'source result observations');
+      const resultCursor = result?.cursor === undefined ? undefined : cloneJsonSafe(result.cursor, 'source result cursor');
+      const manifest = cloneJsonSafe(result?.manifest ?? {}, 'source result manifest');
+      if (!isRecord(manifest)) throw new TypeError('source result manifest must be a plain object');
+      const sourcePlanState = result?.sourcePlanState == null ? null : cloneJsonSafe(result.sourcePlanState, 'source plan state');
+      const sourceBudgetExceeded = budgetCancellationFired() || isSourceBudgetCancellation(null, signal)
+        || result?.budgetCancellationFired === true || result?.budgetCancelled === true;
+      const interrupted = Boolean(result?.interrupted || manifest.interrupted) && !sourceBudgetExceeded;
+      const truncated = Boolean(manifest.truncated || sourceBudgetExceeded);
+      await checkpointTail;
+      const progress = persistSourceProgress(store, source, runId, {
+        observations,
+        cursor: interrupted || truncated ? resultCursor : undefined,
+        manifestDelta: manifest,
+        observedAt: nowFrom(clock),
+      });
       if (manifest.telemetry && typeof manifest.telemetry === 'object' && !Array.isArray(manifest.telemetry)) {
         telemetry.detail = { telemetry: manifest.telemetry };
       }
-      const interrupted = Boolean(result?.interrupted || manifest.interrupted);
-      const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !manifest.truncated);
-      telemetry.status = interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'succeeded';
-      telemetry.observations = observations.length;
-      telemetry.duplicates = duplicates;
-      telemetry.fetched = Number(manifest.fetched ?? observations.length);
-      telemetry.changed = Number(manifest.changed ?? observations.length - duplicates);
+      const naturalTerminal = manifest.naturalTerminal ?? (!interrupted && !truncated);
+      telemetry.status = sourceBudgetExceeded ? 'truncated' : interrupted ? 'interrupted' : truncated ? 'truncated' : manifest.status === 'failed' ? 'failed' : 'succeeded';
+      if (telemetry.status === 'failed') {
+        telemetry.error = (manifest.errors || []).join('; ') || 'source reported failed';
+        store.prepare(`INSERT INTO source_failures(run_id, source_id, stage, attempt, retry_class, host, status_code, message, created_at)
+          VALUES (?, ?, 'fetch', ?, 'terminal', ?, NULL, ?, ?)`).run(runId, source.id, telemetry.attempts, sourceHost(source.url), telemetry.error, nowFrom(clock));
+      }
+      telemetry.observations = progress.observations;
+      telemetry.duplicates = progress.duplicates;
+      telemetry.fetched = progress.fetched;
+      telemetry.changed = progress.changed;
+      if (progress.checkpointed) telemetry.manifest = progress.manifest;
       telemetry.naturalTerminal = Boolean(naturalTerminal);
       telemetry.interrupted = interrupted;
-      telemetry.truncated = Boolean(manifest.truncated);
-      telemetry.capHit = manifest.capHit ?? null;
+      telemetry.truncated = truncated;
+      telemetry.capHit = sourceBudgetExceeded ? 'maxDuration' : manifest.capHit ?? null;
       telemetry.recordsNotExamined = manifest.recordsNotExamined ?? null;
       telemetry.newestPostingAt = newestPostingAt(observations, manifest);
+      telemetry.boardPlan = manifest.boardPlan ?? null;
+      telemetry.sourcePlanState = sourcePlanState;
+      if (sourceBudgetExceeded) telemetry.budgetCancellationFired = true;
       telemetry.consecutiveZeroNewRuns = telemetry.changed === 0 ? Number(previousState.consecutiveZeroNewRuns ?? 0) + 1 : 0;
-      const nextCursor = interrupted || manifest.truncated ? result?.cursor ?? cursor : null;
+      const savedCursor = sourceState(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id)?.cursor_json, cursor).cursor;
+      const nextCursor = telemetry.interrupted || telemetry.truncated ? resultCursor ?? savedCursor ?? cursor : null;
       telemetry.continuationCursor = nextCursor;
       store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(nextCursor, {
-        scanStatus: interrupted ? 'interrupted' : manifest.truncated ? 'truncated' : 'completed',
+        scanStatus: telemetry.interrupted ? 'interrupted' : telemetry.truncated ? 'truncated' : 'completed',
         naturalTerminal: Boolean(naturalTerminal),
-        truncated: Boolean(manifest.truncated),
+        truncated: telemetry.truncated,
         newestPostingAt: telemetry.newestPostingAt,
         consecutiveZeroNewRuns: telemetry.consecutiveZeroNewRuns,
         cursorReset: telemetry.cursorReset,
         cursorContinued: telemetry.cursorContinued,
+        ...(sourcePlanState ? { sourcePlanState } : previousState.sourcePlanState ? { sourcePlanState: previousState.sourcePlanState } : {}),
       }), nowFrom(clock), source.id);
-      return { telemetry, duplicates };
+      telemetry.checkpointed = progress.checkpointed;
+      validatingOutput = false;
+      return { telemetry, duplicates: progress.duplicates };
     } catch (error) {
+      const finalAttempt = !error?.retryable || attempt >= retry.maxAttempts
+        || isSourceBudgetCancellation(error, signal) || isDeadlineCancellation(error, signal, deadline);
+      if (finalAttempt) {
+        try { await closeCheckpoints(); } catch (checkpointError) { error = checkpointError; }
+      } else {
+        await checkpointTail;
+      }
       lastError = error;
+      if (checkpointFailure) lastError = checkpointFailure;
+      const invalidDurableOutput = Boolean(checkpointFailure || validatingOutput);
+      if (error?.code === 'RUN_ABORTED' && !isSourceBudgetCancellation(error, signal)
+        && !isDeadlineCancellation(error, signal, deadline)) {
+        const progress = durableSourceProgress(store, runId, source.id);
+        telemetry.status = 'failed';
+        telemetry.error = error?.message || 'source aborted';
+        telemetry.interrupted = true;
+        telemetry.naturalTerminal = false;
+        telemetry.observations = progress.observations;
+        telemetry.duplicates = progress.duplicates;
+        telemetry.fetched = progress.fetched;
+        telemetry.changed = progress.changed;
+        if (progress.checkpointed) telemetry.manifest = progress.manifest;
+        telemetry.checkpointed = progress.checkpointed;
+        telemetry.continuationCursor = safeContinuationCursor(error?.cursor,
+          sourceState(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id)?.cursor_json, cursor).cursor ?? cursor);
+        return { telemetry, duplicates: 0, fatalError: error };
+      }
+      if (!invalidDurableOutput && isSourceBudgetCancellation(error, signal)) {
+        const progress = durableSourceProgress(store, runId, source.id);
+        telemetry.status = 'truncated';
+        telemetry.error = error?.message || 'source maximum duration exceeded';
+        telemetry.truncated = true;
+        telemetry.naturalTerminal = false;
+        telemetry.capHit = 'maxDuration';
+        telemetry.budgetCancellationFired = true;
+        telemetry.observations = progress.observations;
+        telemetry.duplicates = progress.duplicates;
+        telemetry.fetched = progress.fetched;
+        telemetry.changed = progress.changed;
+        if (progress.checkpointed) telemetry.manifest = progress.manifest;
+        telemetry.checkpointed = progress.checkpointed;
+        telemetry.continuationCursor = safeContinuationCursor(error?.cursor,
+          sourceState(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id)?.cursor_json, cursor).cursor ?? cursor);
+        store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(telemetry.continuationCursor, {
+          scanStatus: 'truncated', naturalTerminal: false, truncated: true, capHit: 'maxDuration',
+          ...(previousState.sourcePlanState ? { sourcePlanState: previousState.sourcePlanState } : {}),
+        }), nowFrom(clock), source.id);
+        return { telemetry, duplicates: 0 };
+      }
+      if (!invalidDurableOutput && isDeadlineCancellation(error, signal, deadline)) {
+        const progress = durableSourceProgress(store, runId, source.id);
+        telemetry.status = 'interrupted';
+        telemetry.error = error?.message || 'source interrupted';
+        telemetry.interrupted = true;
+        telemetry.naturalTerminal = false;
+        telemetry.observations = progress.observations;
+        telemetry.duplicates = progress.duplicates;
+        telemetry.fetched = progress.fetched;
+        telemetry.changed = progress.changed;
+        if (progress.checkpointed) telemetry.manifest = progress.manifest;
+        telemetry.checkpointed = progress.checkpointed;
+        telemetry.continuationCursor = safeContinuationCursor(error?.cursor,
+          sourceState(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id)?.cursor_json, cursor).cursor ?? cursor);
+        store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(telemetry.continuationCursor, {
+          scanStatus: 'interrupted', naturalTerminal: false, interrupted: true,
+          ...(previousState.sourcePlanState ? { sourcePlanState: previousState.sourcePlanState } : {}),
+        }), nowFrom(clock), source.id);
+        return { telemetry, duplicates: 0 };
+      }
       if (!error?.retryable || attempt >= retry.maxAttempts) break;
-      await clockSleep(clock, retry.baseDelayMs * (2 ** (attempt - 1)));
+      try {
+        await sleepWithSignal(clock, retry.baseDelayMs * (2 ** (attempt - 1)), signal);
+      } catch (sleepError) {
+        try { await closeCheckpoints(); } catch (checkpointError) { throw checkpointError; }
+        throw sleepError;
+      }
     }
   }
   const retryClass = lastError?.retryable ? 'retryable_exhausted' : 'terminal';
@@ -519,10 +1161,19 @@ async function fetchSource(store, source, runId, priorState, config, clock, { si
   telemetry.interrupted = true;
   telemetry.naturalTerminal = false;
   telemetry.newestPostingAt = null;
+  const progress = durableSourceProgress(store, runId, source.id);
+  telemetry.observations = progress.observations;
+  telemetry.duplicates = progress.duplicates;
+  telemetry.fetched = progress.fetched;
+  telemetry.changed = progress.changed;
+  if (progress.checkpointed) telemetry.manifest = progress.manifest;
+  telemetry.checkpointed = progress.checkpointed;
   telemetry.consecutiveZeroNewRuns = Number(previousState.consecutiveZeroNewRuns ?? 0) + 1;
-  store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(lastError?.cursor ?? cursor, {
+  const failureCursor = safeContinuationCursor(lastError?.cursor, cursor);
+  store.prepare('UPDATE sources SET cursor_json = ?, updated_at = ? WHERE source_id = ?').run(encodedSourceState(failureCursor, {
     scanStatus: 'interrupted', naturalTerminal: false, newestPostingAt: null,
     consecutiveZeroNewRuns: telemetry.consecutiveZeroNewRuns,
+    ...(previousState.sourcePlanState ? { sourcePlanState: previousState.sourcePlanState } : {}),
   }), nowFrom(clock), source.id);
   return { telemetry, duplicates: 0 };
 }
@@ -536,29 +1187,181 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
     const at = nowFrom(clock);
     const undatedBefore = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
     backfillOriginalPostedAt(store);
+    const planned = config.execution
+      ? planSourceBudgets(sourcePlans, config.execution)
+      : { plans: sourcePlans, telemetry: null };
+    sourcePlans = planned.plans;
+    registerSourcePlans(store, runId, sourcePlans, { clock, at });
+    if (started.resumed) requeueRuntimeOmissions(store, runId, sourcePlans, { clock });
     const sourceDurations = {};
-    for (const source of sourcePlans) {
+    const runtimeBudget = config.execution ? planned.budget : null;
+    const discoveryStartedAt = monotonicNow(clock);
+    let interruptedByDeadline = false;
+    let activeSourceId = null;
+    const plannedSourceIds = sourcePlans.map((source) => source.id);
+    for (const [sourceIndex, source] of sourcePlans.entries()) {
       if (!source?.id || typeof source.fetch !== 'function') throw new TypeError('each source plan requires id and fetch');
-      const currentTime = typeof clock?.now === 'function' ? new Date(clock.now()).getTime() : Date.now();
+      const currentTime = deadline?.wallClock
+        ? Date.now()
+        : typeof clock?.now === 'function' ? new Date(clock.now()).getTime() : Date.now();
       if (signal?.aborted) {
         const error = signal?.reason instanceof Error ? signal.reason : new Error('crawler source deadline exceeded');
-        error.code ??= 'DAILY_DEADLINE_EXCEEDED';
+        const preflightAbort = !store.prepare("SELECT 1 FROM source_telemetry WHERE run_id = ? AND status NOT IN ('pending', 'not_started') LIMIT 1").get(runId);
+        if (!error.code && /deadline|aborted/i.test(error.message)) error.code = 'DAILY_DEADLINE_EXCEEDED';
+        if (preflightAbort && signal.reason) {
+          markUnstartedSources(store, runId, plannedSourceIds, { clock });
+          throw error;
+        }
+        if (error.code === 'DAILY_DEADLINE_EXCEEDED') {
+          interruptedByDeadline = true;
+          break;
+        }
+        markUnstartedSources(store, runId, plannedSourceIds, { clock });
         throw error;
       }
-      if (Number(deadline?.remainingMs) <= 0 || Number(deadline?.deadlineMs) <= currentTime) break;
-      const initialCursor = priorState.sources?.[source.id]?.cursor;
-      store.prepare(`INSERT INTO sources(source_id, lane, trust_class, capabilities_json, rate_policy_json, cursor_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(source_id) DO UPDATE SET lane = excluded.lane, trust_class = excluded.trust_class, capabilities_json = excluded.capabilities_json, rate_policy_json = excluded.rate_policy_json, updated_at = excluded.updated_at`).run(source.id, source.lane ?? 'unknown', source.trustClass ?? 'unknown', JSON.stringify(source.capabilities ?? {}), JSON.stringify(source.ratePolicy ?? {}), initialCursor == null ? null : JSON.stringify(initialCursor), at);
-      if (!store.prepare('SELECT 1 FROM source_telemetry WHERE run_id = ? AND source_id = ? AND status = ?').get(runId, source.id, 'succeeded')) {
-        const sourceStartedAt = performance.now();
-        const result = await fetchSource(store, source, runId, priorState, config, clock, { signal, deadline });
-        sourceDurations[source.id] = Math.max(0, Math.round(performance.now() - sourceStartedAt));
-        const t = result.telemetry;
-        store.prepare(`INSERT INTO source_telemetry(run_id, source_id, status, attempts, fetched, changed, observations, duplicates, details_json, error)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, attempts = excluded.attempts, fetched = excluded.fetched, changed = excluded.changed, observations = excluded.observations, duplicates = excluded.duplicates, details_json = excluded.details_json, error = excluded.error`).run(runId, source.id, t.status, t.attempts, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify({ startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, detail: t.detail }), t.error ?? null);
+      const existingSource = store.prepare('SELECT status, attempts FROM source_telemetry WHERE run_id = ? AND source_id = ?').get(runId, source.id);
+      if (['succeeded', 'failed', 'truncated', 'omitted_by_runtime'].includes(existingSource?.status)) continue;
+      if (existingSource?.status === 'omitted_by_planner') continue;
+      if (remainingDeadlineMs(deadline, currentTime) <= 0) {
+        interruptedByDeadline = true;
+        break;
       }
+      const configuredCapMs = source.budget?.maxDurationMs
+        ?? (runtimeBudget ? runtimeBudget.perSourceMaxDurationMs : Number(source.maxDurationMs));
+      const hasRuntimeCap = Number.isFinite(configuredCapMs) && configuredCapMs > 0;
+      const remainingDiscoveryMs = runtimeBudget
+        ? Math.min(
+          Math.max(0, runtimeBudget.discoveryBudgetMs - (monotonicNow(clock) - discoveryStartedAt)),
+          remainingDeadlineMs(deadline, currentTime),
+        )
+        : null;
+      const runtime = runtimeBudget
+        ? runtimeSourceBudget(sourcePlans, sourceIndex, store, runId, remainingDiscoveryMs, runtimeBudget.minimumSourceStartAllocationMs, Math.floor(configuredCapMs))
+        : null;
+      if (runtime && runtime.runtimeAllowanceMs <= 0) {
+        updateSourceStatus(store, runId, source.id, 'omitted_by_runtime', {
+          clock,
+          details: {
+            reason: 'runtime-allowance-unavailable',
+            initialPlannedAllocationMs: finiteCount(source.budget?.startAllocationMs),
+            runtimeAllowanceMs: runtime.runtimeAllowanceMs,
+            actualDurationMs: 0,
+            unusedMs: 0,
+            recycledMs: finiteCount(Math.max(0, runtime.runtimeAllowanceMs - finiteCount(source.budget?.startAllocationMs)), 0),
+            laterSourceReserveMs: runtime.laterSourceReserveMs,
+            capHit: null,
+          },
+        });
+        continue;
+      }
+      activeSourceId = source.id;
+      const sourceAttempt = Number(existingSource?.attempts ?? 0) + 1;
+      const sourceStartedAt = monotonicNow(clock);
+      const persistedCursor = sourceState(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id)?.cursor_json, priorState.sources?.[source.id]?.cursor ?? null).cursor;
+      store.prepare('INSERT INTO source_attempts(run_id, source_id, attempt, status, started_at, starting_cursor_json) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(runId, source.id, sourceAttempt, 'running', at, persistedCursor == null ? null : jsonStringifySafe(persistedCursor, `source ${source.id} starting cursor`));
+      updateSourceStatus(store, runId, source.id, 'running', { clock, details: { attempt: sourceAttempt, startingCursor: persistedCursor } });
+      store.prepare('UPDATE source_telemetry SET attempts = ? WHERE run_id = ? AND source_id = ?').run(sourceAttempt, runId, source.id);
+      const sourceContext = sourceAbortContext(signal, deadline, runtime?.runtimeAllowanceMs ?? (hasRuntimeCap ? Math.floor(configuredCapMs) : Infinity), currentTime, clock);
+      let result;
+      try {
+        result = await fetchSource(store, source, runId, priorState, config, clock, sourceContext);
+      } catch (error) {
+        sourceDurations[source.id] = Math.max(0, Math.round(monotonicNow(clock) - sourceStartedAt));
+        const progress = durableSourceProgress(store, runId, source.id);
+        const continuationCursor = safeContinuationCursor(error?.cursor,
+          sourceState(store.prepare('SELECT cursor_json FROM sources WHERE source_id = ?').get(source.id)?.cursor_json, persistedCursor).cursor ?? persistedCursor);
+        const status = isDeadlineCancellation(error, sourceContext.signal, deadline) ? 'interrupted' : 'failed';
+        const failureRuntime = runtime ? {
+          initialPlannedAllocationMs: finiteCount(source.budget?.startAllocationMs),
+          runtimeAllowanceMs: runtime.runtimeAllowanceMs,
+          actualDurationMs: sourceDurations[source.id],
+          unusedMs: finiteCount(Math.max(0, runtime.runtimeAllowanceMs - sourceDurations[source.id])),
+          recycledMs: finiteCount(Math.max(0, runtime.runtimeAllowanceMs - finiteCount(source.budget?.startAllocationMs))),
+          laterSourceReserveMs: runtime.laterSourceReserveMs,
+        } : {};
+        const details = cloneJsonSafe({
+          durationMs: sourceDurations[source.id],
+          budget: source.budget ?? null,
+          ...failureRuntime,
+          startingCursor: persistedCursor,
+          continuationCursor,
+          fetched: progress.fetched,
+          changed: progress.changed,
+          observations: progress.observations,
+          duplicates: progress.duplicates,
+          error: error?.message || String(error),
+        }, `source ${source.id} failure telemetry`);
+        store.prepare(`UPDATE source_telemetry SET status = ?, fetched = ?, changed = ?, observations = ?, duplicates = ?, details_json = ?, error = ?
+          WHERE run_id = ? AND source_id = ?`).run(status, progress.fetched, progress.changed, progress.observations, progress.duplicates,
+          JSON.stringify(details), error?.message || String(error), runId, source.id);
+        store.prepare('UPDATE source_attempts SET status = ?, finished_at = ?, continuation_cursor_json = ?, error = ?, details_json = ? WHERE run_id = ? AND source_id = ? AND attempt = ?')
+          .run(status, nowFrom(clock), continuationCursor == null ? null : jsonStringifySafe(continuationCursor, `source ${source.id} continuation cursor`), error?.message || String(error),
+            jsonStringifySafe({ durationMs: sourceDurations[source.id], fetched: progress.fetched, changed: progress.changed, ...failureRuntime }, `source ${source.id} attempt details`), runId, source.id, sourceAttempt);
+        activeSourceId = null;
+        if (status === 'interrupted') {
+          interruptedByDeadline = true;
+          break;
+        }
+        throw error;
+      } finally {
+        sourceContext.cleanup();
+      }
+      sourceDurations[source.id] = Math.max(0, Math.round(monotonicNow(clock) - sourceStartedAt));
+      const t = result.telemetry;
+      if (runtime) {
+        const actualDurationMs = finiteCount(sourceDurations[source.id]);
+        const unusedMs = finiteCount(Math.max(0, runtime.runtimeAllowanceMs - actualDurationMs));
+        t.initialPlannedAllocationMs = finiteCount(source.budget?.startAllocationMs);
+        t.runtimeAllowanceMs = runtime.runtimeAllowanceMs;
+        t.actualDurationMs = actualDurationMs;
+        t.unusedMs = unusedMs;
+        t.recycledMs = finiteCount(Math.max(0, runtime.runtimeAllowanceMs - t.initialPlannedAllocationMs));
+        t.laterSourceReserveMs = runtime.laterSourceReserveMs;
+        if (t.budgetCancellationFired === true && runtime.runtimeAllowanceMs < configuredCapMs) t.capHit = 'runtimeAllowance';
+      }
+      const recoveryDetails = sourceAttempt > 1 || t.attempts > 1
+        ? { attempt: sourceAttempt, retryAttempts: t.attempts }
+        : {};
+      const durationTelemetry = source.budget ? {
+        durationMs: sourceDurations[source.id], budget: source.budget,
+        ...(runtime ? {
+          initialPlannedAllocationMs: t.initialPlannedAllocationMs,
+          runtimeAllowanceMs: t.runtimeAllowanceMs,
+          actualDurationMs: t.actualDurationMs,
+          unusedMs: t.unusedMs,
+          recycledMs: t.recycledMs,
+          laterSourceReserveMs: t.laterSourceReserveMs,
+        } : {}),
+      } : {};
+      const sourceDetails = cloneJsonSafe(Object.fromEntries(Object.entries({ ...recoveryDetails, ...durationTelemetry, startingCursor: t.startingCursor, continuationCursor: t.continuationCursor, naturalTerminal: t.naturalTerminal, interrupted: t.interrupted, truncated: t.truncated, newestPostingAt: t.newestPostingAt, cursorReset: t.cursorReset, cursorContinued: t.cursorContinued, consecutiveZeroNewRuns: t.consecutiveZeroNewRuns, capHit: t.capHit, recordsNotExamined: t.recordsNotExamined, boardPlan: t.boardPlan, sourcePlanState: t.sourcePlanState, budgetCancellationFired: t.budgetCancellationFired, ...(t.checkpointed ? { manifest: t.manifest } : {}), detail: t.detail }).filter(([, value]) => value !== undefined)), `source ${source.id} telemetry`);
+      store.prepare(`UPDATE source_telemetry SET status = ?, fetched = ?, changed = ?, observations = ?, duplicates = ?, details_json = ?, error = ?
+        WHERE run_id = ? AND source_id = ?`).run(t.status, t.fetched, t.changed, t.observations, t.duplicates ?? 0, JSON.stringify(sourceDetails), t.error ?? null, runId, source.id);
+      store.prepare('UPDATE source_telemetry SET attempts = ? WHERE run_id = ? AND source_id = ?').run(t.attempts, runId, source.id);
+      store.prepare('UPDATE source_attempts SET status = ?, finished_at = ?, continuation_cursor_json = ?, error = ?, details_json = ? WHERE run_id = ? AND source_id = ? AND attempt = ?')
+        .run(t.status, nowFrom(clock), t.continuationCursor == null ? null : jsonStringifySafe(t.continuationCursor, `source ${source.id} continuation cursor`), t.error ?? null, jsonStringifySafe({ durationMs: sourceDurations[source.id], fetched: t.fetched, changed: t.changed, ...(runtime ? {
+          initialPlannedAllocationMs: t.initialPlannedAllocationMs,
+          runtimeAllowanceMs: t.runtimeAllowanceMs,
+          actualDurationMs: t.actualDurationMs,
+          unusedMs: t.unusedMs,
+          recycledMs: t.recycledMs,
+          laterSourceReserveMs: t.laterSourceReserveMs,
+        } : {}) }, `source ${source.id} attempt details`), runId, source.id, sourceAttempt);
+      activeSourceId = null;
+      if (result.fatalError) throw result.fatalError;
+      if (t.status === 'interrupted') {
+        interruptedByDeadline = true;
+        break;
+      }
+    }
+    if (interruptedByDeadline) {
+      if (activeSourceId) updateSourceStatus(store, runId, activeSourceId, 'interrupted', { clock, details: { reason: 'deadline' } });
+      markUnstartedSources(store, runId, plannedSourceIds, { clock });
+    }
+    const incomplete = store.prepare("SELECT source_id, status FROM source_telemetry WHERE run_id = ? AND status NOT IN ('succeeded', 'truncated', 'interrupted', 'failed', 'omitted_by_planner', 'omitted_by_runtime') ORDER BY source_id").all(runId);
+    if (!interruptedByDeadline && incomplete.length) {
+      markNotStartedBugSources(store, runId, incomplete.map((row) => row.source_id), { clock });
+      throw notStartedBugError(incomplete.map((row) => row.source_id));
     }
     const undatedAfter = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
     const newlyDated = Math.max(0, undatedBefore - undatedAfter);
@@ -570,13 +1373,36 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
       duplicates: total.duplicates + source.duplicates,
       failed: total.failed + (source.status === 'failed' || source.status === 'interrupted' || source.status === 'truncated' ? 1 : 0),
     }), { fetched: 0, changed: 0, observations: 0, duplicates: 0, failed: 0 });
-    transitionStage(store, runId, 'fetch', 'committed', { clock });
-    transitionStage(store, runId, 'commit', 'running', { clock });
-    finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
-    finishCrawlRun(store, runId, { status: counts.failed ? 'completed_with_failures' : 'completed', counts, telemetry: { sources: telemetry, sourceDurations }, clock });
-    return { ...snapshot(store, runId), idempotent: false, newlyDated };
+    const hasRuntimeOmissions = Object.values(telemetry).some((source) => source.status === 'omitted_by_runtime');
+    const partial = interruptedByDeadline || hasRuntimeOmissions;
+    const status = partial ? 'partial' : counts.failed ? 'completed_with_failures' : 'completed';
+    if (partial) {
+      finishStage(store, runId, 'fetch', 'interrupted', nowFrom(clock), interruptedByDeadline
+        ? 'daily execution deadline exceeded' : 'planned source omitted by runtime');
+      markRunAttempt(store, runId, started.attempt, 'partial', { clock });
+    } else {
+      transitionStage(store, runId, 'fetch', 'committed', { clock });
+      transitionStage(store, runId, 'commit', 'running', { clock });
+      finishStage(store, runId, 'commit', 'committed', nowFrom(clock));
+      markRunAttempt(store, runId, started.attempt, status, { clock });
+    }
+    finishCrawlRun(store, runId, {
+      status,
+      counts,
+      telemetry: {
+        sources: telemetry,
+        sourceDurations,
+        sourceBudget: planned.telemetry,
+        resumable: partial,
+        attempt: started.attempt,
+      },
+      clock,
+    });
+    return { ...snapshot(store, runId), idempotent: false, resumed: started.resumed, newlyDated };
   } catch (error) {
-    failCrawlRun(store, runId, error, { clock });
+    const failedRun = failCrawlRun(store, runId, error, { clock });
+    error.lastDurableSourceState = snapshot(store, runId);
+    error.failedRun = failedRun;
     throw error;
   }
 }

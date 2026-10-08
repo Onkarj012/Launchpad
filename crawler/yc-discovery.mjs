@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 import { applyOriginalListingResolution } from './original-listing-resolver.mjs';
 
 export const YC_DISCOVERY_MANIFEST_VERSION = 'YcDiscoveryManifestV1';
@@ -119,6 +120,8 @@ export async function discoverYcJobs({
   dailyBudget,
   perQueryResultCap = 10,
   retry = {},
+  signal = null,
+  deadline = null,
 } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverYcJobs requires injected transport');
   if (typeof resolveOriginalListing !== 'function') {
@@ -140,12 +143,14 @@ export async function discoverYcJobs({
   const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
 
   for (const query of activeQueries) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { break; }
     telemetry.budgetUsed += 1;
     let response; let outcome = 'terminal'; let reason = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try { response = await transport(query, { endpoint: 'yc-discovery', runAt, attempt }); }
+      try { response = await requestWithDeadline(transport, query, { endpoint: 'yc-discovery', runAt, attempt }, { signal, deadline }); }
       catch (error) {
         reason = error?.message || 'transport-error';
+        if (isDeadlineCancellation(error, signal, deadline)) { outcome = 'interrupted'; break; }
         if (error?.retryable && attempt < maxAttempts) continue;
         outcome = error?.retryable ? 'retryable' : 'terminal';
         break;
@@ -157,6 +162,7 @@ export async function discoverYcJobs({
       outcome = retryableStatus(status) ? 'retryable' : 'terminal';
       break;
     }
+    if (outcome === 'interrupted') break;
     if (outcome !== 'success') {
       telemetry[outcome] += 1;
       receipts.push({ query, status: outcome, reason });
@@ -173,12 +179,13 @@ export async function discoverYcJobs({
     const listings = extractYcJobListings(rows.slice(0, perQueryResultCap));
     let extractedForQuery = 0;
     for (const listing of listings) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { outcome = 'interrupted'; break; }
       if (seen.has(listing.url)) { telemetry.duplicateResults += 1; continue; }
       seen.add(listing.url);
       let observation = observationFrom(listing, query, runAt);
       telemetry.extracted += 1; extractedForQuery += 1;
       let resolution;
-      try { resolution = await resolveOriginalListing(observation); }
+      try { resolution = await resolveOriginalListing(observation, { signal, deadline }); }
       catch (error) { resolution = { status: 'verification', evidence: { resolver: 'yc-discovery', reason: error?.message || 'resolver-error' } }; }
       observation = applyOriginalListingResolution(observation, resolution);
       if (observation.classification === 'direct') {
@@ -196,6 +203,7 @@ export async function discoverYcJobs({
       }
       observations.push(observation);
     }
+    if (outcome === 'interrupted') break;
     receipts.push({ query, status: 'succeeded', results: Math.min(rows.length, perQueryResultCap), extracted: extractedForQuery });
   }
 

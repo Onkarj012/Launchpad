@@ -11,6 +11,7 @@ import {
 import {
   discoverReadinessTests,
   main,
+  parseDailyWriteOptions,
   parseDiscoveryProfileArgs,
   runReadinessTests,
 } from '../../crawler/cli.mjs';
@@ -34,7 +35,7 @@ const baseConfig = (databasePath) => ({
 });
 
 const notificationArgs = (root) => ['--notification-log', path.join(root, 'notification-receipts.jsonl')];
-const testNotifier = () => ({ sent: false, reason: 'test notifier' });
+const testNotifier = () => ({ sent: true, reason: null });
 
 test('normalizes profile choices and rejects unsupported values', () => {
   const profile = buildDiscoveryProfile({ mode: ' STARTUP ', locationPreset: 'PUNE', schedule: 'MIDDAY' });
@@ -124,6 +125,173 @@ test('CLI and plan plumbing preserve defaults and expose explicit profile flags'
   });
   assert.equal(plan.profile.mode, 'startup');
   assert.equal(plan.profile.locationPreset, 'pune');
+});
+
+test('strict daily write options accept only the morning production normal Pune profile', () => {
+  const valid = [
+    'daily', 'morning',
+    '--env', 'production',
+    '--mode', 'normal',
+    '--location-preset', 'pune',
+    '--execute-writes',
+    '--credential-file', '/tmp/launchpad-notion-token',
+    '--journal', '/tmp/launchpad-transaction-journal.jsonl',
+    '--shortlist-limit', '1',
+  ];
+  assert.deepEqual(parseDailyWriteOptions(valid, 'morning'), {
+    executeWrites: true,
+    credentialFile: '/tmp/launchpad-notion-token',
+    journalPath: '/tmp/launchpad-transaction-journal.jsonl',
+    shortlistLimit: 1,
+  });
+
+  const replaceValue = (args, option, nextValue) => {
+    const copy = [...args];
+    copy[copy.indexOf(option) + 1] = nextValue;
+    return copy;
+  };
+  const rejected = [
+    [['daily', 'midday', ...valid.slice(2)], 'midday', /requires daily morning/],
+    [replaceValue(valid, '--env', 'dev'), 'morning', /requires --env production/],
+    [replaceValue(valid, '--env', 'live-test'), 'morning', /requires --env production/],
+    [[...valid, '--config', '/tmp/custom.json'], 'morning', /rejects arbitrary --config/],
+    [replaceValue(valid, '--mode', 'startup'), 'morning', /requires --mode normal/],
+    [replaceValue(valid, '--mode', 'remote'), 'morning', /requires --mode normal/],
+    [replaceValue(valid, '--location-preset', 'india'), 'morning', /requires --location-preset pune/],
+    [replaceValue(valid, '--credential-file', 'relative-token'), 'morning', /credential-file must be an absolute path/],
+    [replaceValue(valid, '--journal', 'relative-journal.jsonl'), 'morning', /journal must be an absolute path/],
+    [['daily', '--env', 'production', '--credential-file', '/tmp/token'], 'morning', /require --execute-writes/],
+    [['daily', '--env', 'production', '--mode', 'normal', '--location-preset', 'pune', '--execute-writes'], 'morning', /requires --credential-file and --journal/],
+    [replaceValue(valid, '--shortlist-limit', '0'), 'morning', /shortlist-limit must be an integer between 1 and 20/],
+  ];
+  for (const [args, schedule, expected] of rejected) {
+    assert.throws(() => parseDailyWriteOptions(args, schedule), expected);
+  }
+});
+
+test('strict write CLI keeps credential paths lazy when runner returns no-write', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-strict-shadow-'));
+  let gatewayFactoryCalls = 0;
+  let received = null;
+  let emitted = null;
+  const credentialFile = path.join(root, 'missing-token');
+  const journalPath = path.join(root, 'missing-journal.jsonl');
+  const exitCode = await main([
+    'daily', 'morning',
+    '--env', 'production',
+    '--mode', 'normal',
+    '--location-preset', 'pune',
+    '--execute-writes',
+    '--credential-file', credentialFile,
+    '--journal', journalPath,
+    '--shortlist-limit', '1',
+    '--run-id', 'strict-no-write-shadow',
+    '--lock-path', path.join(root, 'daily.lock'),
+  ], {
+    dailyRunner: async (options) => {
+      received = options;
+      return {
+        runId: 'strict-no-write-shadow',
+        outcome: { status: 'ok' },
+        deliveryReconciliation: { status: 'no-write' },
+      };
+    },
+    notionGatewayFactory: () => { gatewayFactoryCalls += 1; throw new Error('must stay lazy'); },
+    emit: (result) => { emitted = result; },
+    notify: () => { throw new Error('no-write must not notify'); },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(received.executeWrites, true);
+  assert.equal(received.credentialFile, credentialFile);
+  assert.equal(received.journalPath, journalPath);
+  assert.equal(received.shortlistLimit, 1);
+  assert.equal(typeof received.notionGatewayFactory, 'function');
+  assert.equal(gatewayFactoryCalls, 0);
+  assert.equal(emitted.notificationReceipt, null);
+});
+
+test('notification failure degrades write output and persists an invalid canary', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-notification-failure-'));
+  const canaryLog = path.join(root, 'delivery-canary.json');
+  const notificationLog = path.join(root, 'notification-receipts.jsonl');
+  let emitted = null;
+  const deliveryPlan = {
+    status: 'planned',
+    shortlist: [{ dedupKey: 'workday|req-1' }],
+    plannedNotionOperations: [{ dedupKey: 'workday|req-1' }],
+    selectedCount: 1,
+    plannedV5OperationCount: 1,
+  };
+  const counts = {
+    selected: 1,
+    shortlist: 1,
+    plannedV5Operations: 1,
+    newlyCommitted: 1,
+    alreadyCommitted: 0,
+    failed: 0,
+    recoveryBlocked: 0,
+    deliveredKeys: 1,
+    opportunityLedgerSurfaced: 1,
+    opportunityLedgerRepaired: 0,
+    canaryShortlist: 1,
+    notification: null,
+  };
+  const exitCode = await main([
+    'daily', 'morning',
+    '--env', 'production',
+    '--mode', 'normal',
+    '--location-preset', 'pune',
+    '--execute-writes',
+    '--credential-file', path.join(root, 'missing-token'),
+    '--journal', path.join(root, 'missing-journal.jsonl'),
+    '--run-id', 'notification-failure',
+    '--lock-path', path.join(root, 'daily.lock'),
+    '--canary-log', canaryLog,
+    '--notification-log', notificationLog,
+  ], {
+    dailyRunner: async () => ({
+      runId: 'notification-failure',
+      outcome: { status: 'ok', fatal: false, degraded: false, errors: [] },
+      shortlist: deliveryPlan.shortlist,
+      deliveryPlan,
+      transaction: {
+        status: 'committed',
+        newlyCommitted: ['workday|req-1'],
+        alreadyCommitted: [],
+        failed: [],
+        recovery: [],
+        deliveredKeys: ['workday|req-1'],
+      },
+      deliveryReconciliation: {
+        status: 'completed',
+        counts,
+        sourceCoverage: { completed: ['ats-enterprise'], interrupted: [], failed: [], not_started: [] },
+        rejectionReasons: [],
+      },
+      deliveryCanary: {
+        runId: 'notification-failure',
+        runAt: '2026-08-30T06:30:00.000Z',
+        valid: true,
+        invalidReasons: [],
+        counts: { shortlist: 1 },
+        persisted: false,
+      },
+    }),
+    emit: (result) => { emitted = result; },
+    notify: () => ({ sent: false, reason: 'desktop unavailable' }),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(emitted.outcome.status, 'degraded');
+  assert.equal(emitted.deliveryCanary.valid, false);
+  assert.equal(emitted.deliveryCanary.preparedValid, true);
+  assert.equal(emitted.deliveryCanary.persisted, true);
+  assert.ok(emitted.deliveryCanary.invalidReasons.some((reason) => /notification failed/.test(reason)));
+  assert.ok(emitted.deliveryReconciliation.mismatchReasons.includes('NOTIFICATION_FAILED'));
+  const persisted = JSON.parse(readFileSync(canaryLog, 'utf8'));
+  assert.equal(persisted.runs.length, 1);
+  assert.equal(persisted.runs[0].valid, false);
 });
 
 test('daily command invokes the unified runner and emits its operator result with local canary evidence', async () => {
@@ -306,6 +474,21 @@ test('daily keeps terminal exit codes and emits receipts when delivery or persis
   assert.equal(persistenceExitCode, 0);
   assert.equal(persistenceEmitted.notificationReceipt.persistence.persisted, false);
   assert.equal(persistenceEmitted.notificationReceipt.outcome.fatal, false);
+});
+
+test('daily CLI emits one partial envelope without notification or notification persistence', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-partial-'));
+  let emitted = null;
+  let notifications = 0;
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-partial', '--lock-path', path.join(root, 'daily.lock'), '--notification-log', path.join(root, 'notifications.json')], {
+    dailyRunner: async () => ({ runId: 'command-daily-partial', outcome: { status: 'partial' }, terminalEnvelope: { schemaVersion: 'LaunchpadDailyTerminalEnvelopeV1', status: 'partial', writesPlanned: false } }),
+    emit: (result) => { emitted = result; },
+    notify: () => { notifications += 1; },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(notifications, 0);
+  assert.equal(emitted.terminalEnvelope.status, 'partial');
+  assert.equal(emitted.notificationReceipt, null);
 });
 
 test('operator passes profile metadata into workflow config and result metadata', async () => {

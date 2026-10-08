@@ -10,7 +10,7 @@ import {
 const morning = '2026-07-24T00:30:00.000Z';
 
 test('daily identities are deterministic and use the IST calendar date', () => {
-  assert.equal(dailyRunIdentity({ schedule: 'morning', at: morning }), 'morning-2026-07-24');
+  assert.equal(dailyRunIdentity({ schedule: 'morning', at: morning }), 'daily-morning-normal-india-2026-07-24');
   assert.equal(dailyRunIdentity({ schedule: 'morning', at: morning }), dailyRunIdentity({ schedule: 'morning', at: morning }));
   assert.notEqual(dailyRunIdentity({ schedule: 'midday', at: morning }), dailyRunIdentity({ schedule: 'morning', at: morning }));
 });

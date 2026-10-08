@@ -1,4 +1,4 @@
-import { CANDIDATE_SCHEMA_VERSION, assertCandidate, canonicalizeUrl, normalizeCandidate } from './candidate.mjs';
+import { discoveryCandidate, CANDIDATE_SCHEMA_VERSION, assertCandidate, canonicalizeUrl, normalizeCandidate } from './candidate.mjs';
 import { deriveProvider, recordsFromResult, sourceManifest } from './adapters/common.mjs';
 
 const ATS_PROVIDERS = new Set(['greenhouse', 'lever', 'ashby', 'workday', 'workable', 'smartrecruiters', 'breezy', 'recruitee']);
@@ -59,7 +59,7 @@ function normalizeLaneCandidate(raw, lane, { runAt, runId }) {
     ? { ...raw, company: raw.company.name || raw.company.companyName }
     : raw;
   const base = input?.schemaVersion === CANDIDATE_SCHEMA_VERSION
-    ? assertCandidate(input)
+    ? discoveryCandidate(input)
     : normalizeCandidate(input, {
       source: lane.id,
       provider,
@@ -146,7 +146,7 @@ function lookupFunction(functions, lane) {
 }
 
 /** Run all Startup lanes using only injected functions or deterministic fixtures. */
-export async function runStartupSourcePlan({ sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, runAt, runId } = {}) {
+export async function runStartupSourcePlan({ sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, runAt, runId, signal = null, deadline = null } = {}) {
   const results = [];
   for (const lane of STARTUP_SOURCE_LANES) {
     const suppliedFunction = lookupFunction(sourceFunctions, lane);
@@ -162,7 +162,7 @@ export async function runStartupSourcePlan({ sourceFunctions = {}, sourceFixture
       continue;
     }
     try {
-      const output = await sourceFunction({ lane, input: laneInputs[lane.id] ?? laneInputs[lane.kind], runAt, runId });
+      const output = await sourceFunction({ lane, input: laneInputs[lane.id] ?? laneInputs[lane.kind], runAt, runId, signal, deadline });
       results.push(normalizeLaneOutput(lane, output, { runAt, runId }));
     } catch (error) {
       results.push({ candidates: [], companyRecords: [], fundingSignals: [], hiringSignals: [], manifest: manifestFor(lane, {

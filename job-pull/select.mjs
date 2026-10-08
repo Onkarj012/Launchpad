@@ -1,34 +1,21 @@
 import { normalizedKey } from './candidate.mjs';
+import { scoreState } from './mode-scoring.mjs';
+import { autoSuggestFor } from './match-scorer.mjs';
 import { sourceQuality } from './dedup.mjs';
 
 function selectionView(entry) {
   const eligibility = entry.eligibility || {};
   const freshness = entry.freshness || {};
   const candidate = entry.candidate || entry;
-  const scoreInput = entry.candidate
-    ? [candidate.matchScore, candidate.score, entry.matchScore]
-    : [entry.matchScore, entry.score];
-  const rawScore = scoreInput.find((value) => value !== null && value !== undefined);
-  const score = rawScore === '' || (typeof rawScore === 'string' && !rawScore.trim())
-    ? null
-    : typeof rawScore === 'boolean' || rawScore === undefined
-      ? null
-      : Number(rawScore);
-  const scoringStatus = candidate.scoringFailed === true || candidate.scoringStatus === 'scoring-failed'
-    ? 'scoring-failed'
-    : rawScore === null || rawScore === undefined || rawScore === '' || (typeof rawScore === 'string' && !rawScore.trim())
-    ? 'unscored'
-    : Number.isFinite(score) && score >= 0 && score <= 100
-      ? 'scored'
-      : 'scoring-failed';
+  const { status: scoringStatus, score } = scoreState(entry);
   return {
     candidate,
     eligibility,
     freshness,
-    tier: entry.selectionTier || eligibility.tier || null,
+    tier: entry.selectionTier || eligibility.tier || candidate.selectionTier || (eligibility.strict === true ? 'strict' : 'relaxed'),
     conversionTier: entry.conversionTier || (entry.candidate || entry).conversionTier || null,
     window: entry.freshnessWindow || freshness.window || null,
-    family: entry.roleFamily || eligibility.roleFamily || 'adjacent-engineering',
+    family: entry.roleFamily || candidate.roleFamily || eligibility.roleFamily || 'adjacent-engineering',
     company: entry.companyKey || eligibility.companyKey || normalizedKey(candidate.company),
     score: scoringStatus === 'scored' ? score : null,
     scoringStatus,
@@ -51,15 +38,9 @@ export function rankCandidate(entry) {
   };
 }
 
+// Compute the suggestion from validated scoring and selector facts.
 function autoSuggest(view) {
-  const responseLikelihood = Number(view.candidate.responseLikelihood);
-  return view.scoringStatus === 'scored'
-    && view.candidate.autoSuggest === true
-    && view.score >= 80
-    && ['Hot', 'Active'].includes(view.window)
-    && String(view.tier).toLocaleLowerCase() === 'strict'
-    && Number.isFinite(responseLikelihood)
-    && responseLikelihood >= 14;
+  return view.scoringStatus === 'scored' && autoSuggestFor({ ...view.candidate, freshnessWindow: view.window, selectionTier: view.tier }, view.score, view.candidate.responseLikelihood);
 }
 
 function queueCandidate(view) {
@@ -69,6 +50,22 @@ function queueCandidate(view) {
     scoringQueueReason: view.scoringStatus === 'scoring-failed' ? 'INVALID_MATCH_SCORE' : 'MATCH_SCORE_REQUIRED',
     autoSuggest: false,
   };
+}
+
+function candidateKey(view) {
+  const candidate = view.candidate;
+  return candidate.canonicalUrl || candidate.url || [candidate.provider, candidate.company, candidate.title, candidate.location]
+    .map((value) => String(value || '').trim().toLocaleLowerCase())
+    .join('|');
+}
+
+function isVerifyQueue(view) {
+  return view.freshness.verifyQueue === true || view.window === 'VerifyQueue';
+}
+
+function hasKnownBackfillAge(view) {
+  const ageHours = Number(view.freshness.ageHours);
+  return Number.isFinite(ageHours) && ageHours > 7 * 24 && ageHours <= 14 * 24;
 }
 
 function compareRank(a, b) {
@@ -82,99 +79,54 @@ function compareRank(a, b) {
   return left.key.localeCompare(right.key);
 }
 
-function makeFamilyQueues(pool) {
-  const groups = new Map();
-  for (const entry of pool) {
-    const view = selectionView(entry);
-    if (!groups.has(view.family)) groups.set(view.family, []);
-    groups.get(view.family).push(entry);
+// Balance families inside each policy band before advancing to the next band.
+export function pickDailyEntries(ordered, target, { maximumPerCompany = 2, maximumFamilyShare = 0.4, previousDailyCandidates = [] } = {}) {
+  const selected = [];
+  const companies = new Map();
+  const families = new Map();
+  const seen = new Set();
+  for (const candidate of previousDailyCandidates) {
+    const company = normalizedKey(candidate.company);
+    const family = candidate.roleFamily || 'adjacent-engineering';
+    companies.set(company, (companies.get(company) || 0) + 1);
+    families.set(family, (families.get(family) || 0) + 1);
   }
-  for (const group of groups.values()) group.sort(compareRank);
-  return groups;
-}
-
-function familyCapFor(targetCount, share) {
-  if (targetCount < 3) return 1;
-  return Math.max(1, Math.floor(targetCount * share));
-}
-
-function pickBalanced(pool, selected, exclusions, targetCount, policy) {
-  const queues = makeFamilyQueues(pool);
-  const counts = new Map();
-  const companyCounts = new Map();
-  for (const entry of selected) {
-    const view = selectionView(entry);
-    counts.set(view.family, (counts.get(view.family) || 0) + 1);
-    companyCounts.set(view.company, (companyCounts.get(view.company) || 0) + 1);
-  }
-  const familyCap = familyCapFor(targetCount, policy.run.maximumFamilyShare);
-  const familyAlternatives = queues.size > 1;
-  let added = 0;
-
-  while (selected.length < targetCount) {
-    const availableFamilies = [...queues.entries()]
-      .filter(([, queue]) => queue.length > 0)
-      .sort(([familyA, queueA], [familyB, queueB]) => {
-        const countA = counts.get(familyA) || 0;
-        const countB = counts.get(familyB) || 0;
-        if (countA !== countB) return countA - countB;
-        return compareRank(queueA[0], queueB[0]);
-      });
-    if (!availableFamilies.length) break;
-    let chosen = null;
-    for (const [family, queue] of availableFamilies) {
-      const view = selectionView(queue[0]);
-      if ((companyCounts.get(view.company) || 0) >= policy.run.maximumPerCompany) {
-        exclusions.push({ candidate: view.candidate, code: 'SELECTION_COMPANY_CAP', evidence: view.company });
-        queue.shift();
-        continue;
-      }
-      if (familyAlternatives && (counts.get(family) || 0) >= familyCap) {
-        // Defer, don't discard. A later volume-fill pass may use this candidate
-        // only after other families and earlier strict phases are exhausted.
-        continue;
-      }
-      chosen = [family, queue.shift()];
-      break;
+  const cap = Math.max(1, Math.floor((target + previousDailyCandidates.length) * maximumFamilyShare));
+  const view = (entry) => selectionView(entry);
+  const canPick = (entry) => {
+    const item = view(entry);
+    return !seen.has(candidateKey(item)) && (companies.get(item.company) || 0) < maximumPerCompany;
+  };
+  const bands = [...new Set(ordered.map((entry) => entry.waterfallBand || `${String(view(entry).tier).toLowerCase()}:${view(entry).window}`))];
+  for (const band of bands) {
+    const pool = ordered.filter((entry) => (entry.waterfallBand || `${String(view(entry).tier).toLowerCase()}:${view(entry).window}`) === band);
+    while (selected.length < target) {
+      const available = pool.filter(canPick);
+      if (!available.length) break;
+      const represented = new Set(families.keys());
+      const unseen = available.filter((entry) => !represented.has(view(entry).family));
+      const balanced = available.filter((entry) => (families.get(view(entry).family) || 0) < cap);
+      const choice = represented.size < 4 && unseen.length ? unseen[0] : balanced[0] || available[0];
+      const item = view(choice);
+      selected.push(choice);
+      seen.add(candidateKey(item));
+      companies.set(item.company, (companies.get(item.company) || 0) + 1);
+      families.set(item.family, (families.get(item.family) || 0) + 1);
     }
-    if (!chosen) break;
-    const [family, entry] = chosen;
-    const view = selectionView(entry);
-    selected.push(entry);
-    counts.set(family, (counts.get(family) || 0) + 1);
-    companyCounts.set(view.company, (companyCounts.get(view.company) || 0) + 1);
-    added++;
   }
-  return added;
-}
-
-function fillForVolume(pool, selected, exclusions, targetCount, policy) {
-  const companyCounts = new Map();
-  for (const entry of selected) {
-    const view = selectionView(entry);
-    companyCounts.set(view.company, (companyCounts.get(view.company) || 0) + 1);
-  }
-  for (const entry of [...pool].sort(compareRank)) {
-    if (selected.length >= targetCount) break;
-    if (selected.includes(entry)) continue;
-    const view = selectionView(entry);
-    if ((companyCounts.get(view.company) || 0) >= policy.run.maximumPerCompany) {
-      if (!exclusions.some((item) => item.candidate === view.candidate && item.code === 'SELECTION_COMPANY_CAP')) {
-        exclusions.push({ candidate: view.candidate, code: 'SELECTION_COMPANY_CAP', evidence: view.company });
-      }
-      continue;
-    }
-    selected.push(entry);
-    companyCounts.set(view.company, (companyCounts.get(view.company) || 0) + 1);
-  }
+  // Preserve the policy waterfall and fit rank in the returned list.
+  return selected.sort((left, right) => ordered.indexOf(left) - ordered.indexOf(right));
 }
 
 export function selectCandidates(entries, config) {
-  const eligible = entries.map(selectionView).filter((entry) => entry.eligibility?.eligible && entry.freshness?.eligible);
+  const views = entries.map(selectionView);
+  const verifyQueue = views.filter(isVerifyQueue);
+  const eligible = views.filter((entry) => entry.eligibility?.eligible === true
+    && entry.freshness?.eligible === true
+    && !isVerifyQueue(entry)
+    && (entry.window !== 'Backfill' || hasKnownBackfillAge(entry)));
   const scored = eligible.filter((entry) => entry.scoringStatus === 'scored');
-  const scoringQueue = eligible.filter((entry) => entry.scoringStatus !== 'scored');
   const targetCount = Math.min(config.run.maximumTotal, Math.max(config.run.minimumTotal, scored.length));
-  const selected = [];
   const exclusions = [];
   const phases = [
     ['strict', 'Hot'],
@@ -184,23 +136,26 @@ export function selectCandidates(entries, config) {
     ['relaxed', 'Active'],
     ['relaxed', 'Backfill'],
   ];
-  for (const [tier, window] of phases) {
-    if (selected.length >= targetCount) break;
-    const sourceEntries = scored.filter((entry) => entry.tier === tier && entry.window === window);
-    const remaining = sourceEntries.filter((entry) => !selected.includes(entry));
-    pickBalanced(remaining, selected, exclusions, targetCount, config);
-  }
-  // Diversity is a ranking constraint, not a reason to miss daily volume. Fill
-  // remaining slots in the same strict/freshness order after alternatives were
-  // exhausted, while retaining the hard company cap.
-  for (const [tier, window] of phases) {
-    if (selected.length >= targetCount) break;
-    fillForVolume(scored.filter((entry) => entry.tier === tier && entry.window === window), selected, exclusions, targetCount, config);
+  const ordered = phases.flatMap(([tier, window]) => scored.filter((entry) => entry.tier === tier && entry.window === window).sort(compareRank));
+  const selected = pickDailyEntries(ordered, targetCount, config.run);
+  for (const entry of scored) {
+    if (!selected.includes(entry) && selected.filter((picked) => picked.company === entry.company).length >= config.run.maximumPerCompany) {
+      exclusions.push({ candidate: entry.candidate, code: 'SELECTION_COMPANY_CAP', evidence: entry.company });
+    }
   }
 
   const strictEligible = scored.filter((entry) => entry.tier === 'strict').length;
   const strictSelected = selected.filter((entry) => entry.tier === 'strict').length;
   const relaxedSelected = selected.filter((entry) => entry.tier === 'relaxed').length;
+  const selectedKeys = new Set(selected.map(candidateKey));
+  const scoringQueue = eligible.filter((entry) => entry.scoringStatus !== 'scored' && !selectedKeys.has(candidateKey(entry)));
+  const verifyQueueKeys = new Set(verifyQueue.map(candidateKey));
+  const scoringQueueKeys = new Set(scoringQueue.map(candidateKey));
+  const selectedVerifyQueue = [...selectedKeys].filter((key) => verifyQueueKeys.has(key));
+  const selectedScoringQueue = [...selectedKeys].filter((key) => scoringQueueKeys.has(key));
+  if (selectedVerifyQueue.length || selectedScoringQueue.length) {
+    throw new Error('selection invariant failed: selected overlaps VerifyQueue or scoringQueue');
+  }
   const familyCounts = {};
   const companyCounts = {};
   for (const entry of selected) {
@@ -234,6 +189,11 @@ export function selectCandidates(entries, config) {
     companyCounts,
     exclusions,
     scoringQueue: scoringQueue.map(queueCandidate),
+    verifyQueue: verifyQueue.map((entry) => entry.candidate),
+    selectionInvariants: {
+      selectedVerifyQueue,
+      selectedScoringQueue,
+    },
     scoredCount: scored.length,
     unscoredCount: scoringQueue.filter((entry) => entry.scoringStatus === 'unscored').length,
     scoringFailedCount: scoringQueue.filter((entry) => entry.scoringStatus === 'scoring-failed').length,
@@ -261,14 +221,14 @@ function broadRemote(entry) {
 }
 
 /**
- * Produce a separate, apply-ready list from the 25-35 discovery pool. Quotas
+ * Produce a separate manual application list from the daily discovery pool. Quotas
  * are attempted in priority order and every unmet target is reported instead
  * of filling the list with unresolved or unverified aggregator postings.
  */
 export function selectApplicationShortlist(entries, config) {
   const policy = config.applicationShortlist;
   const ready = entries
-    .filter((entry) => selectionView(entry).candidate.applicationReady === true)
+    .filter((entry) => selectionView(entry).candidate.applicationReady === true && selectionView(entry).scoringStatus === 'scored')
     .sort(compareRank);
   const selected = [];
   const counts = { roles: { ai: 0, backendFullStack: 0, newGrad: 0, adjacent: 0 }, directOrVc: 0, indiaNiche: 0, broadRemote: 0, stretch: 0 };

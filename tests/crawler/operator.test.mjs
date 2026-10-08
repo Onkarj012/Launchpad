@@ -19,6 +19,8 @@ import { JOBICY_FEED_URL } from '../../job-pull/remote-adapters/jobicy.mjs';
 import { WWR_FEED_URL } from '../../job-pull/remote-adapters/weworkremotely.mjs';
 import { REMOTIVE_FEED_URL } from '../../job-pull/remote-adapters/remotive.mjs';
 import { REMOTEOK_FEED_URL } from '../../job-pull/remote-adapters/remoteok.mjs';
+import { mapProviderSafe } from '../../crawler/bounded-concurrency.mjs';
+import { requestWithDeadline } from '../../crawler/deadline.mjs';
 
 function validTheirStackConfig(overrides = {}) {
   return {
@@ -39,6 +41,31 @@ function crawlerConfigWithTheirStack(theirstack) {
     schemaVersion: 'LaunchpadCrawlerConfigV1',
     databasePath: ':memory:',
     sources: { theirstack },
+  };
+}
+
+function linkedinCards(count, { offTargetAt = null } = {}) {
+  return Array.from({ length: count }, (_, index) => {
+    const title = index === offTargetAt ? 'Sales Manager' : 'AI Engineer';
+    return `<li><h3 class="base-search-card__title">${title}</h3><h4 class="base-search-card__subtitle"><a>Company ${index}</a></h4><span class="job-search-card__location">Pune, Maharashtra, India</span><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/100${String(index).padStart(3, '0')}"></a><time datetime="2026-08-31"></time></li>`;
+  }).join('');
+}
+
+function portalPlanConfig() {
+  return {
+    sources: {
+      portals: {
+        enabled: true,
+        maxCandidates: 24,
+        maxResolverRequests: 48,
+        resolverConcurrency: 3,
+        perHostConcurrency: 1,
+        resolverMaxDurationMs: 60000,
+        handoffReserveMs: 5000,
+        http: { providers: ['linkedin-jobs'] },
+        linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] },
+      },
+    },
   };
 }
 
@@ -192,7 +219,7 @@ test('run resolver forwards configured maxHosts and maxRequests', async () => {
   assert.equal(requests.length, 1);
 });
 
-test('operator resolver receives the parent signal and absolute deadline', async () => {
+test('operator resolver receives a deadline-aware signal and absolute deadline', async () => {
   const controller = new AbortController();
   const deadline = { deadlineMs: Date.now() + 10_000, remainingMs: 10_000 };
   const seen = [];
@@ -202,9 +229,175 @@ test('operator resolver receives the parent signal and absolute deadline', async
     transport: async (_url, options) => { seen.push(options); throw new Error('offline fixture'); },
   });
   await resolve({ canonicalUrl: 'https://www.indeed.com/viewjob?id=deadline' });
-  assert.equal(seen[0].signal, controller.signal);
+  assert.notEqual(seen[0].signal, controller.signal);
+  assert.equal(seen[0].signal.aborted, false);
   assert.equal(seen[0].deadline, deadline);
-  assert.equal(seen[0].remainingMs, 10_000);
+  assert.ok(seen[0].remainingMs > 0);
+  assert.ok(seen[0].remainingMs <= 10_000);
+});
+
+test('ordinary deadline requests preserve the parent signal and reject non-cooperative transports', async () => {
+  const controller = new AbortController();
+  let receivedSignal;
+  await assert.rejects(
+    () => requestWithDeadline(async (_url, options) => {
+      receivedSignal = options.signal;
+      return new Promise(() => {});
+    }, 'https://example.test/slow', {}, {
+      signal: controller.signal,
+      deadline: { remainingMs: 10 },
+    }),
+    (error) => error.code === 'DAILY_DEADLINE_EXCEEDED',
+  );
+  assert.equal(receivedSignal, controller.signal);
+});
+
+test('enterprise operator forwards the derived DETAIL abort signal to the injected transport', async () => {
+  const controller = new AbortController();
+  const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
+  let detailSignal;
+  const plans = buildSourcePlans({
+    config: {
+      sources: {
+        atsWarm: { boards: [] }, atsBatch1: { boards: [] }, atsBatch2: { boards: [] },
+        enterprise: {
+          boards: [{ provider: 'workday', company: 'Acme', url: listUrl }],
+          enrichDetails: true, detailConcurrency: 1, maxDetailRequestsPerRun: 1,
+        },
+      },
+    },
+    transport: async (_url, options) => {
+      if (!options.detail) return { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{ jobReqId: 'PUNE', title: 'AI Engineer', externalPath: '/job/Pune/PUNE', locationsText: 'Pune' }] }) };
+      detailSignal = options.signal;
+      controller.abort(new Error('operator abort'));
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    },
+    runAt: '2026-08-31T10:00:00.000Z', schedule: 'morning', signal: controller.signal,
+  });
+  const plan = plans.find(({ id }) => id === 'ats-enterprise');
+  const result = await plan.fetch({ signal: controller.signal, deadline: { remainingMs: () => 10_000 }, checkpoint: async () => {} });
+
+  assert.ok(plan);
+  assert.notEqual(detailSignal, controller.signal);
+  assert.equal(detailSignal.aborted, true);
+  assert.equal(result.manifest.interrupted, true);
+  assert.deepEqual(result.cursor.__cursor.Acme, { endpointUrl: listUrl, page: 0, workdayReceived: 0 });
+});
+
+test('portal resolution screens before network, caps candidates, checkpoints first, and preserves order', async () => {
+  const resolverCalls = [];
+  const checkpoints = [];
+  const plans = buildSourcePlans({
+    config: portalPlanConfig(),
+    transport: async () => ({ status: 200, body: linkedinCards(25, { offTargetAt: 24 }) }),
+    runAt: '2026-08-31T10:00:00.000Z',
+    clock: { now: () => '2026-08-31T10:00:00.000Z' },
+    schedule: 'morning',
+    profile: { mode: 'normal' },
+    portalCandidateScreen: (candidate) => ({ eligible: candidate.title === 'AI Engineer' }),
+    resolver: async (candidate) => {
+      resolverCalls.push(candidate.title);
+      return {
+        status: 'resolved',
+        originalApplicationUrl: `https://jobs.lever.co/company-${candidate.jobId}/role`,
+        patch: { description: `Verified ${candidate.title}`, applicationResolution: { status: 'Resolved Original' } },
+      };
+    },
+  });
+  const plan = plans.find(({ id }) => id === 'portal-discovery');
+  assert.ok(plan);
+  const result = await plan.fetch({ checkpoint: async (payload) => checkpoints.push({ payload, resolverCalls: resolverCalls.length }) });
+
+  assert.equal(resolverCalls.length, 24);
+  assert.equal(checkpoints[0].resolverCalls, 0);
+  assert.equal(checkpoints[0].payload.observations.length, 25);
+  assert.ok(checkpoints.length >= 25);
+  assert.deepEqual(result.observations.map((candidate) => candidate.jobId), Array.from({ length: 25 }, (_, index) => `100${String(index).padStart(3, '0')}`));
+  assert.equal(result.observations.at(-1).applicationResolution.status, 'Needs Verification');
+  assert.equal(result.observations.at(-1).shortlistEligible, false);
+  assert.equal(result.manifest.telemetry.candidatesFetched, 25);
+  assert.equal(result.manifest.telemetry.targetScreened, 24);
+  assert.equal(result.manifest.telemetry.resolutionCandidates, 24);
+  assert.equal(result.manifest.telemetry.skippedByTargetScreen, 1);
+  assert.equal(result.manifest.telemetry.resolved, 24);
+  assert.equal(result.manifest.telemetry.unresolved, 1);
+  assert.equal(result.manifest.telemetry.naturalTerminal, true);
+});
+
+test('portal root terminal state distinguishes constraints from ordinary unresolved leads', async (t) => {
+  const runPlan = async ({ count = 2, config = {}, clock = {}, deadline = null, signal = null, resolver }) => {
+    const plans = buildSourcePlans({
+      config: { ...portalPlanConfig(), sources: { portals: { ...portalPlanConfig().sources.portals, ...config } } },
+      transport: async () => ({ status: 200, body: linkedinCards(count) }),
+      runAt: '2026-08-31T10:00:00.000Z', clock, schedule: 'morning', profile: { mode: 'normal' },
+      signal, deadline, resolver,
+    });
+    return plans.find(({ id }) => id === 'portal-discovery').fetch({ signal, deadline });
+  };
+
+  await t.test('candidate cap', async () => {
+    const result = await runPlan({ count: 25, config: { maxCandidates: 1 }, resolver: async () => ({ status: 'verification' }) });
+    assert.equal(result.manifest.truncated, true);
+    assert.equal(result.manifest.naturalTerminal, false);
+  });
+  await t.test('aggregate request budget', async () => {
+    const result = await runPlan({ count: 2, config: { maxCandidates: 2, maxResolverRequests: 1 }, resolver: async (_candidate, { requestBudget }) => {
+      requestBudget.claim();
+      return { status: 'verification' };
+    } });
+    assert.equal(result.manifest.truncated, true);
+    assert.equal(result.manifest.naturalTerminal, false);
+  });
+  await t.test('resolver deadline', async () => {
+    const result = await runPlan({
+      count: 1,
+      clock: { now: () => '2026-08-31T10:00:00.000Z', monotonicNow: (() => { const values = [0, 60_000]; return () => values.shift() ?? 60_000; })() },
+      resolver: async () => ({ status: 'verification' }),
+    });
+    assert.equal(result.manifest.truncated, true);
+    assert.equal(result.manifest.naturalTerminal, false);
+  });
+  await t.test('abort with unresolved work', async () => {
+    const controller = new AbortController();
+    const result = await runPlan({ signal: controller.signal, resolver: async () => {
+      controller.abort(new Error('operator abort'));
+      return { status: 'verification' };
+    } });
+    assert.equal(result.manifest.truncated, true);
+    assert.equal(result.manifest.naturalTerminal, false);
+  });
+  await t.test('ordinary unresolved target lead', async () => {
+    const result = await runPlan({ resolver: async () => ({
+      status: 'verification', originalApplicationUrl: null,
+      applicationResolution: { status: 'Needs Verification', evidence: null },
+      evidence: { resolution: { status: 'verification', reason: 'destination-intermediary' } },
+    }) });
+    assert.equal(result.manifest.truncated, false);
+    assert.equal(result.manifest.naturalTerminal, true);
+    assert.equal(result.observations[0].applicationResolution.status, 'Needs Verification');
+    assert.equal(result.observations[0].shortlistEligible, false);
+  });
+});
+
+test('mapProviderSafe preserves order, bounds global concurrency, and serializes each host', async () => {
+  let active = 0;
+  let maximum = 0;
+  const activeByHost = new Map();
+  let sameHostMaximum = 0;
+  const items = Array.from({ length: 9 }, (_, index) => ({ index, host: `host-${index % 3}` }));
+  const result = await mapProviderSafe(items, { concurrency: 3, providerKey: (item) => item.host }, async (item) => {
+    active += 1;
+    activeByHost.set(item.host, (activeByHost.get(item.host) ?? 0) + 1);
+    maximum = Math.max(maximum, active);
+    sameHostMaximum = Math.max(sameHostMaximum, activeByHost.get(item.host));
+    await Promise.resolve();
+    active -= 1;
+    activeByHost.set(item.host, activeByHost.get(item.host) - 1);
+    return item.index;
+  });
+  assert.deepEqual(result, items.map((item) => item.index));
+  assert.equal(maximum, 3);
+  assert.equal(sameHostMaximum, 1);
 });
 
 test('operator runs a configured career-site discovery into durable SQLite', async () => {
@@ -526,4 +719,61 @@ test('SearXNG transport preserves unresponsive_engines so zero-result degradatio
     ['brave', 'too many requests'],
     ['duckduckgo', 'timeout'],
   ]);
+});
+
+test('bounded planner state is retained in the crawler source record after a completed pass', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-planner-'));
+  const config = {
+    schemaVersion: 'LaunchpadCrawlerConfigV1',
+    databasePath: path.join(root, 'crawler.sqlite'),
+    sourcePlanner: { enabled: true, maxBoards: 1, priorityShare: 0.8, explorationShare: 0.2 },
+    sources: {
+      atsWarm: { boards: [] },
+      atsBatch1: { boards: [
+        { provider: 'workable', slug: 'explore-a', company: 'Explore A', sourceTier: 'exploration' },
+        { provider: 'workable', slug: 'explore-b', company: 'Explore B', sourceTier: 'exploration' },
+      ] },
+    },
+  };
+  const selectedBoardIds = (boardPlan) => (boardPlan?.decisions ?? [])
+    .filter((decision) => ['selected', 'resumed'].includes(decision.action))
+    .map((decision) => decision.boardId);
+  const transport = async () => ({ status: 200, body: { jobs: [] } });
+  let partialBudgetChecks = 0;
+  const partial = await runCrawlerOperator({
+    config,
+    runId: 'planner-durable-state',
+    transport,
+    clock: { now: () => '2026-08-21T10:00:00.000Z' },
+    deadline: { remainingMs: () => partialBudgetChecks++ === 0 ? 10_000 : 0 },
+  });
+  assert.equal(partial.run.status, 'partial');
+  const firstPlan = partial.sourceTelemetry['ats-warm'].boardPlan;
+  assert.deepEqual(selectedBoardIds(firstPlan), ['workable:explore-a']);
+
+  const resumed = await runCrawlerOperator({
+    config,
+    runId: 'planner-durable-state',
+    transport,
+    clock: { now: () => '2026-08-21T10:00:00.000Z' },
+    deadline: { remainingMs: () => 10_000 },
+  });
+  assert.equal(resumed.run.status, 'completed');
+  assert.deepEqual(selectedBoardIds(resumed.sourceTelemetry['ats-warm'].boardPlan), ['workable:explore-a']);
+
+  const later = await runCrawlerOperator({
+    config,
+    runId: 'planner-durable-state-next',
+    transport,
+    clock: { now: () => '2026-08-22T10:00:00.000Z' },
+    deadline: { remainingMs: () => 10_000 },
+  });
+  assert.equal(later.run.status, 'completed');
+  assert.deepEqual(selectedBoardIds(later.sourceTelemetry['ats-warm'].boardPlan), ['workable:explore-b']);
+  const plan = later.sourceTelemetry['ats-warm'].boardPlan;
+  assert.equal(plan.noWrite, true);
+  const row = later.sourceTelemetry['ats-warm'].sourcePlanState;
+  assert.equal(row.schemaVersion, 'BoundedBoardPlanStateV1');
+  assert.deepEqual(row.trackedAts.coverage.selectedBoardIds, []);
+  assert.equal(row.trackedAts.rotation.cursor, 0);
 });

@@ -1,0 +1,69 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { loadConfig, loadConversionPlan } from '../job-pull/config.mjs';
+import { classifyCandidate } from '../job-pull/eligibility.mjs';
+import { classifyFreshness } from '../job-pull/freshness.mjs';
+import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
+
+const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+
+/** Render retained operator observations; never score or persist a lifecycle. */
+export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? new Date().toISOString(), policy = null } = {}) {
+  const effectivePolicy = policy ?? { ...loadConfig(), salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
+  const buckets = { strictReady: [], fallbackReady: [], verification: [], rejected: [] };
+  for (const raw of result.observations ?? []) {
+    const candidate = normalizeCandidate(raw, { runAt: now });
+    const eligibility = classifyCandidate(candidate, effectivePolicy);
+    const freshness = classifyFreshness(candidate, { now, ...effectivePolicy.freshness });
+    const readiness = applicationReadiness(candidate, eligibility);
+    const reasons = [...eligibility.reasons, ...(freshness.eligible === false && freshness.window !== 'VerifyQueue' ? [freshness.code ?? 'FRESHNESS_REJECTED'] : [])];
+    const row = { candidate, eligibility, freshness, readiness, reasons };
+    if (reasons.length) buckets.rejected.push(row);
+    else if (readiness.ready && freshness.eligible) buckets[eligibility.strict ? 'strictReady' : 'fallbackReady'].push(row);
+    else buckets.verification.push(row);
+  }
+  const lines = ['# Local lead handoff', '', `Observed at ${now}. Public evidence only. No scores, applications, outreach or store delivery.`, '',
+    `Strict ready: ${buckets.strictReady.length}. Shortage fallback ready: ${buckets.fallbackReady.length}. Needs verification: ${buckets.verification.length}. Rejected: ${buckets.rejected.length}.`, ''];
+  const table = (name, rows) => {
+    lines.push(`## ${name}`, '');
+    if (!rows.length) { lines.push('None.', ''); return; }
+    lines.push('| Role / company | Public URL | JD excerpt | Portal date / freshness | Salary | Experience | Application / liveness / applied | Exact reasons |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const row of rows) {
+      const { candidate: c, eligibility: e, freshness: f, readiness: r } = row;
+      const reasonList = row.reasons.length ? row.reasons : [...r.reasons,
+        ...(e.experience.manualReview ? [e.experience.code] : []),
+        ...(!c.description ? ['PORTAL_DESCRIPTION_MISSING'] : []),
+        ...(c.evidence?.resolution?.reason ? [c.evidence.resolution.reason] : []),
+        ...(f.eligible ? [] : [f.code ?? 'FRESHNESS_NOT_VERIFIED'])];
+      lines.push(`| ${cell(c.title)} / ${cell(c.company)} | ${cell(c.discoveryUrl ?? c.canonicalUrl)} | ${cell(c.description || 'Not Verified').slice(0, 240)} | ${cell(c.postedAt)} / ${cell(f.window)} | ${cell(c.salary?.evidence || 'Not Verified')} | ${cell(e.experience.evidence || 'Not stated; manual review')} | ${cell(c.applicationResolution?.status)} / ${cell(c.liveness?.status)} / Applied?: Not Verified | ${cell([...new Set(reasonList)].join('; ') || 'Ready, unscored')} |`);
+    }
+    lines.push('');
+  };
+  table('Strict ready, unscored', buckets.strictReady);
+  table('Shortage fallback ready, unscored', buckets.fallbackReady);
+  table('Needs verification', buckets.verification);
+  table('Rejected', buckets.rejected);
+  const counts = {};
+  for (const row of buckets.rejected) for (const reason of row.reasons) counts[reason] = (counts[reason] ?? 0) + 1;
+  lines.push('## Rejection counts', '', ...Object.entries(counts).map(([reason, count]) => `- ${reason}: ${count}`));
+  if (!Object.keys(counts).length) lines.push('None.');
+  lines.push('', '## Source limits and failures', '');
+  for (const [id, source] of Object.entries(result.sourceTelemetry ?? {})) {
+    const telemetry = source.detail?.telemetry ?? source.manifest?.telemetry ?? {};
+    lines.push(`- ${cell(id)}: ${cell(source.status)} / ${cell(source.detail?.status ?? source.manifest?.status)}; fetched ${source.fetched ?? 0}; detail/resolver GETs ${telemetry.resolutionRequests ?? 0}/${telemetry.maxRequests ?? 'unknown'}; candidate cap ${telemetry.maxCandidates ?? 'unknown'}; truncated ${Boolean(source.truncated || telemetry.truncated)}.`);
+    for (const error of [...new Set([source.error, ...(source.detail?.errors ?? []), ...(source.manifest?.errors ?? [])].filter(Boolean))]) lines.push(`  - ${cell(error)}`);
+  }
+  if (result.error) lines.push(`- ${cell(result.error)}`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  const [input, output] = process.argv.slice(2);
+  if (!input || !output || process.argv.length !== 4) throw new Error('Usage: node crawler/local-lead-report.mjs INPUT.json OUTPUT.md');
+  const result = JSON.parse(fs.readFileSync(input, 'utf8'));
+  fs.writeFileSync(output, renderLocalLeadReport(result, { now: result.runAt ?? result.run?.startedAt }));
+}

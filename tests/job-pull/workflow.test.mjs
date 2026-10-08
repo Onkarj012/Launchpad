@@ -1,3 +1,4 @@
+import { scoredFixture } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
@@ -6,7 +7,8 @@ import { runV5Workflow } from '../../job-pull/workflow.mjs';
 const NOW = '2026-07-23T06:30:00.000Z';
 
 function candidate(index, overrides = {}) {
-  return normalizeCandidate({
+  return scoredFixture({
+    description: 'Build Python AI services.',
     url: `https://jobs.example.test/${index}`,
     source: 'greenhouse-full',
     sourceKind: 'ats-direct',
@@ -19,7 +21,7 @@ function candidate(index, overrides = {}) {
     employment: { type: 'full-time' },
     experience: { minYears: 0, maxYears: 1 },
     liveness: { status: 'Active', evidence: 'fixture' },
-    matchScore: 80,
+    scoreOrigin: 'explicit-scored-input', responseLikelihood: 15, matchScore: 80,
     ...overrides,
   });
 }

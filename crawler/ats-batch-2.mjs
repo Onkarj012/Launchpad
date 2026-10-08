@@ -1,4 +1,5 @@
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 export const ATS_BATCH_2_PROVIDERS = Object.freeze(['breezy', 'bamboohr', 'personio', 'comeet', 'pinpoint', 'rippling']);
 const COMPLETE_ARRAY_PROVIDERS = new Set(['breezy', 'personio', 'comeet', 'pinpoint', 'rippling']);
@@ -170,7 +171,7 @@ function nextState(response, url, prior = {}) {
   return { ...prior, url, etag: get('etag') || prior.etag || null, lastModified: get('last-modified') || prior.lastModified || null, fetchedAt: prior.fetchedAt || null };
 }
 
-async function request(url, transport, state, retry = {}) {
+async function request(url, transport, state, retry = {}, { signal = null, deadline = null } = {}) {
   const maxAttempts = Math.max(1, Number(retry.maxAttempts ?? 1));
   const headers = {};
   if (state?.etag) headers['if-none-match'] = state.etag;
@@ -179,36 +180,41 @@ async function request(url, transport, state, retry = {}) {
   while (attempts < maxAttempts) {
     attempts += 1;
     try {
-      const response = await transport(url, { headers, attempt: attempts });
+      throwIfNetworkWorkDisallowed(signal, deadline);
+      const response = await requestWithDeadline(transport, url, { headers, attempt: attempts }, { signal, deadline });
       const status = Number(response?.status ?? 200);
       if (status >= 200 && status < 300 || status === 304) return { response, attempts };
       if (!(RETRYABLE.has(status) || status >= 500) || attempts === maxAttempts) return { response, attempts, error: `http-${status}`, retryable: RETRYABLE.has(status) || status >= 500 };
     } catch (error) {
+      if (isDeadlineCancellation(error, signal, deadline)) return { attempts, error: error?.message || 'deadline-exceeded', interrupted: true };
       if (!error?.retryable || attempts === maxAttempts) return { attempts, error: error?.message || 'transport-error', retryable: Boolean(error?.retryable) };
     }
   }
   return { attempts, error: 'retry-exhausted', retryable: true };
 }
 
-export async function fetchAtsBatch2({ board, transport, runAt = new Date().toISOString(), state = {}, maxPages = 2, maxItems = 100, pageSize = 25, retry = {} } = {}) {
+export async function fetchAtsBatch2({ board, transport, runAt = new Date().toISOString(), state = {}, maxPages = 2, maxItems = 100, pageSize = 25, retry = {}, signal = null, deadline = null } = {}) {
   if (!board?.provider || !ATS_BATCH_2_PROVIDERS.includes(board.provider)) throw new TypeError(`unsupported ATS batch 2 provider: ${board?.provider}`);
   if (typeof transport !== 'function') throw new TypeError('fetchAtsBatch2 requires injected transport');
   const observations = [], errors = [], seen = new Set();
   const prior = state || {}; const completeArray = COMPLETE_ARRAY_PROVIDERS.has(board.provider); let cursor = { page: Number(prior.cursor?.page || 1) }; const startPage = cursor.page; let status = 'ok'; let fetchedPages = 0; let notModified = false; let lastResponse = null; let naturalTerminal = false; let interrupted = false; let capHit = null; let recordsNotExamined = null;
   const pageLimit = completeArray ? startPage + 1 : startPage + maxPages;
   for (let page = startPage; page < pageLimit && observations.length < maxItems; page += 1) {
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) { interrupted = true; status = 'interrupted'; break; }
     const url = endpointFor(board, page); if (!url) { status = 'terminal'; errors.push('invalid board URL'); break; }
-    const result = await request(url, transport, page === cursor.page ? prior : {}, retry); fetchedPages += 1;
-    if (result.error) { status = result.retryable ? 'retryable' : 'terminal'; interrupted = true; errors.push(result.error); break; }
+    const result = await request(url, transport, page === cursor.page ? prior : {}, retry, { signal, deadline }); fetchedPages += 1;
+    if (result.error) { status = result.interrupted ? 'interrupted' : result.retryable ? 'retryable' : 'terminal'; interrupted = true; errors.push(result.error); break; }
     const response = result.response; lastResponse = response; if (response.status === 304) { notModified = true; status = 'not-modified'; naturalTerminal = true; break; }
     const rows = parseRows(board.provider, responseBody(response));
     if (!Array.isArray(rows)) { status = 'malformed'; interrupted = true; errors.push('response did not contain a supported jobs array'); break; }
     const available = Math.max(0, maxItems - observations.length);
     if (rows.length > available) { capHit = 'maxItems'; recordsNotExamined = rows.length - available; }
     for (const row of rows.slice(0, available)) {
+      try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) { interrupted = true; status = 'interrupted'; break; }
       const candidate = candidateFrom(board, row, runAt, url); if (!candidate || seen.has(candidateIdentity(candidate))) continue;
       seen.add(candidateIdentity(candidate)); observations.push(candidate);
     }
+    if (interrupted) { cursor = { page }; break; }
     const hasMore = !completeArray && board.provider === 'bamboohr' && (responseBody(response)?.nextPage || responseBody(response)?.next_page || rows.length >= pageSize);
     if (capHit) { cursor = { page: page + 1 }; break; }
     if (!hasMore || rows.length < pageSize) { cursor = { page: page + 1 }; naturalTerminal = true; break; }
@@ -224,14 +230,15 @@ export async function fetchAtsBatch2({ board, transport, runAt = new Date().toIS
   };
 }
 
-export async function discoverAtsBatch2({ boards = [], transport, runAt, state = {}, maxBoards = 20, ...options } = {}) {
+export async function discoverAtsBatch2({ boards = [], transport, runAt, state = {}, maxBoards = 20, signal = null, deadline = null, ...options } = {}) {
   if (typeof transport !== 'function') throw new TypeError('discoverAtsBatch2 requires injected transport');
-  const results = [], observations = [], failures = [];
+  const results = [], observations = [], failures = []; let interruptedByDeadline = false;
   for (const board of boards.slice(0, maxBoards)) {
-    try { const result = await fetchAtsBatch2({ board, transport, runAt, state: state[board.slug || board.company] || {}, ...options }); results.push(result); observations.push(...result.observations); if (result.manifest.status !== 'ok' && result.manifest.status !== 'not-modified') failures.push(result.manifest); }
+    try { throwIfNetworkWorkDisallowed(signal, deadline); } catch (error) { interruptedByDeadline = true; break; }
+    try { const result = await fetchAtsBatch2({ board, transport, runAt, state: state[board.slug || board.company] || {}, ...options, signal, deadline }); results.push(result); observations.push(...result.observations); if (result.manifest.status !== 'ok' && result.manifest.status !== 'not-modified') failures.push(result.manifest); if (result.manifest.status === 'interrupted') break; }
     catch (error) { failures.push({ sourceId: `ats-batch-2:${board.provider}:${board.slug || board.company || 'board'}`, status: 'terminal', errors: [error.message] }); }
   }
-  return { observations, results, failures, manifest: { schemaVersion: 'AtsBatch2BatchManifestV1', sourceId: 'ats-batch-2', providers: [...new Set(boards.slice(0, maxBoards).map((board) => board.provider))], boardsAttempted: results.length + failures.length, fetched: observations.length, changed: observations.length, failed: failures.length, naturalTerminal: results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted: results.some((result) => result.manifest.interrupted), truncated: results.some((result) => result.manifest.truncated), capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true } };
+  return { observations, results, failures, manifest: { schemaVersion: 'AtsBatch2BatchManifestV1', sourceId: 'ats-batch-2', providers: [...new Set(boards.slice(0, maxBoards).map((board) => board.provider))], boardsAttempted: results.length + failures.length, fetched: observations.length, changed: observations.length, failed: failures.length, naturalTerminal: !interruptedByDeadline && results.length > 0 && results.every((result) => result.manifest.naturalTerminal), interrupted: interruptedByDeadline || results.some((result) => result.manifest.interrupted), truncated: results.some((result) => result.manifest.truncated), capHit: results.find((result) => result.manifest.capHit)?.manifest.capHit ?? null, recordsNotExamined: results.reduce((sum, result) => sum + (result.manifest.recordsNotExamined ?? 0), 0) || null, newestPostingAt: observations.map((row) => row.postedAt).filter(Boolean).sort().at(-1) ?? null, noAutoApply: true } };
 }
 
 export const discoverExpandedAtsBatch2 = discoverAtsBatch2;

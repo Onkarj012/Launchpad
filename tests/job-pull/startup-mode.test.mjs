@@ -1,8 +1,12 @@
+import { withManualFixtureScores, scoredFixture } from '../fixtures/manual-scores.mjs';
+// Keep fixture scores separate from discovery records.
+function runStartupMode(options) { return runStartupModeActual(withManualFixtureScores(options)); }
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { enrichStartupSources, normalizeFundingSignal } from '../../job-pull/startup-enrichment.mjs';
-import { runStartupMode } from '../../job-pull/startup-mode.mjs';
+import { runStartupMode as runStartupModeActual } from '../../job-pull/startup-mode.mjs';
 import { STARTUP_SOURCE_LANES, runStartupSourcePlan } from '../../job-pull/startup-sources.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/startup-transaction.mjs';
 import { STARTUP_NOW, startupModeFixtures, startupSourceFunctions } from '../fixtures/startup-mode.mjs';

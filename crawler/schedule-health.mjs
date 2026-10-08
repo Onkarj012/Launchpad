@@ -76,6 +76,19 @@ function countsFor(run) {
   };
 }
 
+function healthState(lastRun, now) {
+  if (!lastRun) return null;
+  if (lastRun.status === 'partial') return 'partial/resumable';
+  if (lastRun.status === 'failed') return 'failed';
+  if (lastRun.status === 'completed' || lastRun.status === 'completed_with_failures') return 'completed';
+  if (lastRun.status === 'running') {
+    const started = Date.parse(lastRun.startedAt || '');
+    const elapsed = Number.isFinite(started) ? Math.max(0, now.getTime() - started) : 0;
+    return elapsed > 20 * 60 * 1000 ? 'stale/abandoned' : 'active';
+  }
+  return lastRun.status;
+}
+
 /**
  * Read-only per-schedule health report built from durable crawler run history
  * (crawler/run.mjs sqlite store) plus crawler/scheduler.mjs's pure run
@@ -111,6 +124,7 @@ export function buildScheduleHealthReport({ databasePath, now = new Date() } = {
         sourceFailures: sourceFailureCount(db, lastRun?.runId),
         sourceTelemetry: lastRun?.sourceTelemetry ?? {},
         counts: countsFor(lastRun),
+        health: healthState(lastRun, now instanceof Date ? now : new Date(now)),
         classification,
       };
     }

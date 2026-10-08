@@ -27,6 +27,10 @@ export function verifySafetyContracts({ root = process.cwd(), files = {} } = {})
   const daily = sources['crawler/daily-runner.mjs'];
   const normal = sources['job-pull/normal-mode.mjs'];
   const prompt = sources['master_prompt.md'];
+  const liveSensitiveFlags = commands.liveSensitiveFlags;
+  const commandEntries = Object.entries(commands.commands ?? {});
+  const auditCommand = commands.commands?.['audit-v5-journal'];
+  const requiredAuditFlags = ['--credential-file', '--journal', '--receipt'];
   const checks = [
     {
       id: 'discovery-only-scheduling',
@@ -56,6 +60,20 @@ export function verifySafetyContracts({ root = process.cwd(), files = {} } = {})
         && !/legacyFallback\s*:\s*true/.test(normal)
         && /live or non-transactional gateway execution is disabled/.test(normal)
         && !/legacy fallback|v3/i.test(daily),
+    },
+    {
+      id: 'executable-command-parity',
+      ok: Array.isArray(liveSensitiveFlags)
+        && liveSensitiveFlags.length > 0
+        && liveSensitiveFlags.every((flag) => typeof flag === 'string')
+        && new Set(liveSensitiveFlags).size === liveSensitiveFlags.length
+        && commandEntries.every(([, command]) => (command.flags ?? []).every((flag) => liveSensitiveFlags.includes(flag)))
+        && liveSensitiveFlags.every((flag) => operator.includes(flag))
+        && Boolean(auditCommand)
+        && typeof auditCommand.invocation === 'string'
+        && requiredAuditFlags.every((flag) => auditCommand.invocation.includes(flag))
+        && requiredAuditFlags.every((flag) => auditCommand.flags?.includes(flag))
+        && requiredAuditFlags.every((flag) => liveSensitiveFlags.includes(flag)),
     },
   ];
   return {

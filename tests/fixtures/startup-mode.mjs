@@ -10,6 +10,7 @@ function job(index, overrides = {}) {
     employment: { type: 'full-time', evidence: 'full-time' },
     experience: { minYears: 0, maxYears: 1, evidence: '0-1 years' },
     liveness: { status: 'Active', checkedAt: STARTUP_NOW, evidence: 'fixture employer page check' },
+    scoreOrigin: 'explicit-scored-input', responseLikelihood: 15,
     matchScore: 80 - index,
     originalApplicationUrl: `https://careers.startup-fixture.test/${index}`,
     originalApplicationEvidence: 'fixture employer ATS resolution',

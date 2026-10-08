@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launchpad full production implementation plan</title>
+<style>
+:root {
+  color-scheme: light;
+  --paper: #f5f2e9;
+  --paper-2: #fffdf7;
+  --ink: #16201d;
+  --muted: #5b6862;
+  --line: #d6d8cf;
+  --navy: #18364f;
+  --blue: #2f6f8d;
+  --green: #17694b;
+  --green-soft: #e0f0e8;
+  --amber: #925800;
+  --amber-soft: #fff0cc;
+  --red: #9a3730;
+  --red-soft: #f8dfdc;
+  --shadow: 0 18px 46px rgba(22, 32, 29, .08);
+  --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --serif: Iowan Old Style, Charter, Georgia, serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: radial-gradient(circle at 8% 2%, rgba(47,111,141,.11), transparent 28rem), linear-gradient(180deg, #faf8f1 0, var(--paper) 32rem);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.62;
+}
+a { color: var(--blue); text-underline-offset: 3px; }
+code, pre { font-family: var(--mono); }
+code { padding: .12em .34em; border-radius: 5px; background: #ecefe9; font-size: .9em; }
+pre { overflow: auto; padding: 1rem 1.1rem; color: #eaf6f0; background: #172a25; border: 1px solid #29453b; border-radius: 12px; line-height: 1.5; }
+pre code { padding: 0; color: inherit; background: transparent; }
+.shell { display: grid; grid-template-columns: 270px minmax(0, 1fr); max-width: 1540px; margin: 0 auto; }
+.side { position: sticky; top: 0; height: 100vh; padding: 1.6rem 1.25rem; overflow-y: auto; border-right: 1px solid var(--line); background: rgba(250,248,241,.9); backdrop-filter: blur(14px); }
+.brand { display: flex; align-items: center; gap: .7rem; margin-bottom: 1rem; font-weight: 800; }
+.mark { display: grid; place-items: center; width: 38px; height: 38px; color: #fff; background: var(--navy); border-radius: 11px; font-family: var(--serif); font-size: 1.2rem; }
+.state { display: inline-flex; align-items: center; gap: .45rem; margin-bottom: 1.2rem; padding: .38rem .66rem; color: var(--amber); background: var(--amber-soft); border: 1px solid #e8cf91; border-radius: 999px; font-size: .72rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.state::before { content: ""; width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
+.side nav { display: grid; gap: .1rem; }
+.side nav a { padding: .44rem .58rem; color: var(--muted); border-radius: 8px; font-size: .82rem; font-weight: 650; text-decoration: none; }
+.side nav a:hover { color: var(--navy); background: rgba(24,54,79,.07); }
+.side-note { margin-top: 1.2rem; padding: .85rem; color: var(--muted); border: 1px solid var(--line); border-radius: 11px; font-size: .76rem; }
+main { min-width: 0; padding: 0 3.5rem 5rem; }
+.hero { max-width: 1120px; padding: 5rem 0 3.2rem; }
+.eyebrow { margin: 0 0 .8rem; color: var(--blue); font-size: .78rem; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+h1 { max-width: 970px; margin: 0; font-family: var(--serif); font-size: clamp(3rem, 6.6vw, 6.2rem); font-weight: 570; line-height: .95; letter-spacing: -.055em; }
+.hero-copy { max-width: 820px; margin: 1.5rem 0 0; color: #40504a; font-size: clamp(1.05rem, 1.7vw, 1.34rem); line-height: 1.5; }
+.hero-meta { display: flex; flex-wrap: wrap; gap: .65rem 1.25rem; margin-top: 1.5rem; color: var(--muted); font-size: .8rem; font-weight: 700; }
+.orientation { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; max-width: 1220px; margin-bottom: 4.2rem; overflow: hidden; background: var(--line); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+.orientation article { min-height: 180px; padding: 1.2rem; background: var(--paper-2); }
+.orientation span { display: block; margin-bottom: .7rem; color: var(--blue); font-size: .68rem; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+.orientation h2 { margin: 0 0 .45rem; font-size: 1rem; line-height: 1.25; }
+.orientation p { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.48; }
+.content { max-width: 1120px; }
+.content > h2 { margin: 5rem 0 1rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-family: var(--serif); font-size: clamp(2.1rem, 4vw, 3.35rem); font-weight: 580; line-height: 1.05; letter-spacing: -.035em; scroll-margin-top: 1rem; }
+.content > h2:first-child { display: none; }
+.content h3 { margin: 2.4rem 0 .7rem; color: var(--navy); font-size: 1.25rem; }
+.content h4 { margin: 1.65rem 0 .55rem; font-size: 1rem; }
+.content p, .content li { max-width: 900px; }
+.content ul, .content ol { padding-left: 1.35rem; }
+.content li { margin: .32rem 0; }
+blockquote { margin: 1.2rem 0; padding: 1rem 1.2rem; border-left: 4px solid var(--blue); background: #e7eff3; border-radius: 0 11px 11px 0; }
+table { width: 100%; margin: 1.2rem 0; border-collapse: collapse; font-size: .86rem; }
+th, td { padding: .8rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+th { color: var(--navy); background: #e9eeeb; font-size: .73rem; letter-spacing: .05em; text-transform: uppercase; }
+td:first-child { color: var(--ink); font-weight: 700; }
+.callout { margin: 1.4rem 0; padding: 1.15rem 1.25rem; border-left: 4px solid var(--green); background: var(--green-soft); border-radius: 0 12px 12px 0; }
+.callout strong { display: block; margin-bottom: .25rem; }
+.sequence { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: .85rem; margin: 2rem 0; }
+.sequence div { position: relative; min-height: 120px; padding: 1rem; color: #fff; background: var(--navy); border-radius: 13px; }
+.sequence div:not(:last-child)::after { content: "→"; position: absolute; right: -.68rem; top: 45%; color: var(--blue); font-size: 1.2rem; font-weight: 900; z-index: 2; }
+.sequence b { display: block; margin-bottom: .4rem; font-size: .85rem; }
+.sequence small { color: #c9dcd4; line-height: 1.4; }
+.caption { color: var(--muted); font-size: .78rem; }
+footer { max-width: 1120px; margin-top: 5rem; padding: 2rem 0 4rem; color: var(--muted); border-top: 1px solid var(--line); font-size: .78rem; }
+@media (max-width: 1120px) {
+  .shell { grid-template-columns: 220px minmax(0,1fr); }
+  main { padding-inline: 2rem; }
+  .orientation { grid-template-columns: repeat(2, 1fr); }
+  .orientation article:last-child { grid-column: 1 / -1; }
+  .sequence { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 760px) {
+  .shell { display: block; }
+  .side { position: relative; width: 100%; height: auto; padding: 1rem; border-right: 0; border-bottom: 1px solid var(--line); }
+  .brand, .side-note { display: none; }
+  .side nav { display: flex; overflow-x: auto; gap: .3rem; }
+  .side nav a { flex: 0 0 auto; background: var(--paper-2); border: 1px solid var(--line); }
+  main { padding: 0 1rem 3rem; }
+  .hero { padding: 3rem 0 2rem; }
+  h1 { font-size: clamp(2.7rem, 14vw, 4.5rem); }
+  .orientation, .sequence { grid-template-columns: 1fr; }
+  .orientation article:last-child { grid-column: auto; }
+  .sequence div:not(:last-child)::after { content: "↓"; right: auto; left: 50%; top: auto; bottom: -.85rem; transform: translateX(-50%); }
+  table { display: block; overflow-x: auto; }
+}
+@media print {
+  @page { size: A4; margin: 14mm; }
+  body { background: #fff; font-size: 9pt; }
+  .shell { display: block; }
+  .side { display: none; }
+  main { padding: 0; }
+  .hero { padding: 0 0 10mm; }
+  h1 { font-size: 31pt; }
+  .orientation { grid-template-columns: repeat(5,1fr); margin-bottom: 10mm; box-shadow: none; }
+  .orientation article { min-height: 0; padding: 3mm; }
+  .content > h2 { break-after: avoid; margin-top: 10mm; font-size: 21pt; }
+  pre, table, .orientation, .sequence { break-inside: avoid; }
+  pre { color: #000; background: #f3f3f3; border-color: #ccc; white-space: pre-wrap; }
+  .sequence div { color: #000; background: #eef1ef; border: 1px solid #bbb; }
+  .sequence small { color: #333; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="side" aria-label="Plan navigation">
+  <div class="brand"><span class="mark">L</span><span>Launchpad</span></div>
+  <div class="state">Draft implementation plan</div>
+  <nav><a href="#context">Context</a>
+<a href="#definition-of-done">Definition of done</a>
+<a href="#current-facts-that-shape-implementation">Current facts</a>
+<a href="#phase-0-establish-one-current-truth">Phase 0 · Truth</a>
+<a href="#phase-1-make-scheduled-discovery-finish-and-retain-its-work">Phase 1 · Discovery</a>
+<a href="#phase-2-close-lp-009-and-improve-employer-direct-diversity">Phase 2 · LP-009</a>
+<a href="#phase-3-make-reports-shortfalls-and-canary-evidence-executable">Phase 3 · Evidence</a>
+<a href="#phase-4-reconcile-credentials-and-prove-one-live-row">Phase 4 · Live row</a>
+<a href="#phase-5-make-resume-and-sync-commands-work-against-live-v5">Phase 5 · Application</a>
+<a href="#phase-6-create-clean-immutable-candidate">Phase 6 · Release</a>
+<a href="#phase-7-seven-date-immutable-canary">Phase 7 · Canary</a>
+<a href="#phase-8-promote-live-morning-schedule-and-prove-rollback">Phase 8 · Promotion</a>
+<a href="#phase-9-close-lp-010-and-lp-011-without-blocking-useful-production">Phase 9 · Sources</a>
+<a href="#verification-matrix">Verification</a>
+<a href="#risks-and-controls">Risks</a></nav>
+  <div class="side-note">Goal: working morning queue, not more local-only completion. Publication and implementation remain separately approval-gated.</div>
+</aside>
+<main>
+<header class="hero">
+  <p class="eyebrow">Full production implementation · 2026-08-31</p>
+  <h1>Make Launchpad produce jobs worth applying to.</h1>
+  <p class="hero-copy">Finish scheduled discovery, deliver at least five qualified employer-linked roles on normal inventory days, prove one real application loop, then promote one immutable morning release with rollback.</p>
+  <div class="hero-meta"><span>Status: draft</span><span>Profile: morning / normal / pune</span><span>Boundary: no auto-apply</span><span>Target: immutable live-v5 operation</span></div>
+</header>
+<section class="orientation" aria-label="Plan orientation">
+  <article><span>Destination</span><h2>Jobs every morning</h2><p>Qualified employer-linked roles in Applications v5, ready for human review.</p></article>
+  <article><span>Change</span><h2>Fix scheduled path</h2><p>Retain partial work, recycle source time, diversify companies, wire live commands and evidence.</p></article>
+  <article><span>Sequence</span><h2>Yield before promotion</h2><p>Discovery, direct Pune source, reports, live pilot, application proof, canary, schedule.</p></article>
+  <article><span>Primary risk</span><h2>More code, zero jobs</h2><p>Each phase exits only with measured operational evidence, never tests alone.</p></article>
+  <article><span>Completion proof</span><h2>Same release, seven dates</h2><p>Five roles or honest shortfall, live delivery, real PDF, manual sync, first scheduled run, rollback.</p></article>
+</section>
+<div class="callout"><strong>Success target</strong>At least five fresh, eligible, employer-linked roles on normal inventory days. Lower counts count only with complete machine accounting and retained manual inventory confirmation.</div>
+<div class="sequence" role="img" aria-label="Implementation sequence">
+  <div><b>1 · Useful yield</b><small>Scheduled discovery completes and retains work.</small></div>
+  <div><b>2 · Live proof</b><small>Journal reconciled, one row written and replayed.</small></div>
+  <div><b>3 · Application</b><small>Truthful PDF, manual submit, idempotent sync.</small></div>
+  <div><b>4 · Canary</b><small>One immutable release across seven valid dates.</small></div>
+  <div><b>5 · Promotion</b><small>Live morning schedule, first run, rollback.</small></div>
+</div>
+<p class="caption">Textual equivalent: stabilize scheduled discovery, reconcile live state, prove one application, validate one immutable release for seven dates, then install and roll back the live morning schedule.</p>
+<article class="content"><h2 id="launchpad-full-production-implementation-plan">Launchpad full
+production implementation plan</h2>
+<p>Status: Draft. Last updated: 2026-08-31.</p>
+<h3 id="context">Context</h3>
+<p>Launchpad has substantial local implementation and a passing test
+suite, but it is not producing a dependable morning queue. Scheduled
+Normal/Pune runs remain partial, recent scheduled runs produced zero
+shortlist rows, live v5 state is ambiguous, resume and sync code lack
+live entrypoints, canary evidence generation is unwired, and installed
+launchd agents point at a mutable dirty checkout.</p>
+<p>This plan changes the objective from "more locally complete code" to
+one working daily loop:</p>
+<pre class="text"><code>fresh jobs
+-&gt; strict eligibility and freshness gates
+-&gt; at least 5 qualified roles on normal inventory days
+-&gt; Applications v5 delivery
+-&gt; user-selected truthful resume
+-&gt; manual application
+-&gt; idempotent sync
+-&gt; immutable scheduled operation with rollback</code></pre>
+<p>Passing tests remains necessary but no longer counts as completion.
+Each phase ends with retained operational evidence.</p>
+<h3 id="definition-of-done">Definition of done</h3>
+<p>Initial production profile:</p>
+<pre class="text"><code>morning / normal / pune / production / live-v5</code></pre>
+<p>Launchpad is fully working when one immutable release:</p>
+<ol type="1">
+<li>Produces at least 5 fresh, eligible, employer-linked roles on normal
+inventory days.</li>
+<li>Treats 0-4 roles as a valid market shortfall only when machine
+accounting is complete and Onkar confirms retained inventory.</li>
+<li>Writes selected rows to Applications and Companies v5 with verified
+relations and idempotent replay.</li>
+<li>Builds a truthful one-page PDF only after Onkar checks
+<code>Make Resume</code>.</li>
+<li>Records an application only after Onkar submits manually and checks
+<code>Applied?</code>.</li>
+<li>Runs successfully on seven distinct valid UTC dates with one
+revision, config, profile, and matching report pairs.</li>
+<li>Runs from an immutable scheduled checkout and has retained rollback
+proof.</li>
+</ol>
+<p>Hard boundaries remain unchanged:</p>
+<ul>
+<li>Never auto-apply.</li>
+<li>Never send email, DM, referral request, or LinkedIn action.</li>
+<li>Never write <code>Make Resume</code> or <code>Applied?</code>.</li>
+<li>Never invent freshness, eligibility, experience, salary, contact, or
+resume evidence.</li>
+<li>Never fall back to v3/v4.</li>
+<li>Keep <code>maximumPerCompany = 2</code>.</li>
+</ul>
+<h3 id="current-facts-that-shape-implementation">Current facts that
+shape implementation</h3>
+<ul>
+<li>Local gates pass: 768/768 tests, validation, six safety checks, and
+diff checks.</li>
+<li>Scheduled morning runs from 2026-08-24 through 2026-08-31 remained
+partial and produced no useful shortlist.</li>
+<li>Best manual shadow produced 18 ready/scored rows and 3 selected
+rows, but scheduled-path behavior differs by roughly 40x in fetched
+count.</li>
+<li>Static source allocations strand unused time instead of returning it
+to later sources.</li>
+<li>Source cancellation can discard observations already collected by
+adapters.</li>
+<li>Portal original-listing resolution is sequential and can consume the
+entire source budget.</li>
+<li>Workday DETAIL enrichment has no signal/deadline and is disabled
+whenever discovery is partial.</li>
+<li>Ready inventory is concentrated in too few companies, so the company
+cap correctly limits selection.</li>
+<li>Existing reports use conflicting count vocabularies. The 4,818
+versus 6,696 shadow totals must be classified, not hand-reconciled.</li>
+<li>External journal contains 20 <code>committed</code> entries dated
+2026-07-25, while status documents claim no successful live write
+exists.</li>
+<li>Current canary log has 51 records and zero valid dates.</li>
+<li>Canary report generator exists but runtime does not call it.</li>
+<li>Resume queue and application sync implementations exist, but only
+fixture rehearsal constructs a compatible gateway.</li>
+<li>Installed launchd agents use the mutable source checkout and omit
+live-write flags.</li>
+</ul>
+<h3 id="ownership">Ownership</h3>
+<table>
+<thead>
+<tr>
+<th>Owner</th>
+<th>Work</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Engineer</td>
+<td>Code, config, tests, CLI, reports, release and schedule tooling</td>
+</tr>
+<tr>
+<td>Operator</td>
+<td>No-write shadows, journal audit, preflight, live pilot, evidence
+retention, canary operation</td>
+</tr>
+<tr>
+<td>Onkar</td>
+<td>Credential rotation, Notion sharing, live approvals, inventory
+confirmation, checkboxes, resume review, manual application</td>
+</tr>
+<tr>
+<td>Reviewer</td>
+<td>Diff review, clean candidate approval, promotion and rollback
+approval</td>
+</tr>
+</tbody>
+</table>
+<h3 id="phase-0-establish-one-current-truth">Phase 0: establish one
+current truth</h3>
+<p>This phase can run in parallel with Phase 1 engineering. Live writes
+cannot start until it completes.</p>
+<h4 id="01-reconcile-retained-notion-journal-state">0.1 Reconcile
+retained Notion journal state</h4>
+<p>Add a read-only journal audit command around existing transaction and
+gateway code:</p>
+<pre class="text"><code>node crawler/cli.mjs audit-v5-journal \
+  --credential-file ABS_PATH \
+  --journal ABS_PATH \
+  --receipt ABS_PATH</code></pre>
+<p>For every historical committed page ID:</p>
+<ol type="1">
+<li>Read journal metadata without printing credential values.</li>
+<li>Fetch recorded page read-only from declared v5 scope.</li>
+<li>Classify entry as retained live page, synthetic artifact, stale test
+artifact, malformed record, or unresolved.</li>
+<li>Record target, state, page existence, relation state, and redacted
+evidence in an external 0600 receipt.</li>
+<li>Never delete journal rows to unblock retry.</li>
+<li>Block Phase 4 pilot while any relevant entry remains
+unresolved.</li>
+</ol>
+<p>Critical files:</p>
+<ul>
+<li><code>notion-v5/transaction.mjs</code></li>
+<li><code>notion-v5/gateway.mjs</code></li>
+<li><code>crawler/cli.mjs</code></li>
+<li><code>tests/notion-v5/gateway.test.mjs</code></li>
+<li><code>tests/notion-v5/transaction.test.mjs</code></li>
+</ul>
+<h4 id="02-normalize-status-authority">0.2 Normalize status
+authority</h4>
+<p>After evidence exists, update current authority files together:</p>
+<ul>
+<li><code>docs/STATUS.md</code></li>
+<li><code>docs/SYSTEM-REFERENCE.md</code></li>
+<li><code>docs/plans/launchpad-daily-production-adoption.md</code></li>
+<li><code>config/launchpad-v5.commands.json</code></li>
+<li><code>crawler/operator.mjs</code> help output</li>
+</ul>
+<p>Correct stale test counts, command flags, scheduler state, receipt
+counts, journal claims, and Phase A claims. Add validation that command
+manifest and CLI help expose every live-sensitive flag.</p>
+<h4 id="phase-0-acceptance">Phase 0 acceptance</h4>
+<ul>
+<li>Every historical committed journal entry has a retained
+classification.</li>
+<li>No pending or verified recovery entry is hidden or deleted.</li>
+<li>Status docs agree with journal receipt and current CLI.</li>
+<li>Command manifest, help output, and safety checks agree.</li>
+<li>Live pilot remains blocked if journal state is ambiguous.</li>
+</ul>
+<h3
+id="phase-1-make-scheduled-discovery-finish-and-retain-its-work">Phase
+1: make scheduled discovery finish and retain its work</h3>
+<p>Goal: scheduled-path no-write runs complete instead of returning
+partial with zero shortlist.</p>
+<h4 id="11-recycle-unused-source-time">1.1 Recycle unused source
+time</h4>
+<p>Refactor <code>planSourceBudgets()</code> and source execution so
+later sources receive actual unused time while minimum start allocations
+remain protected.</p>
+<p>Use current runtime deadline as truth:</p>
+<pre class="text"><code>remaining = actual discovery time remaining
+reserve = later source count * minimumSourceStartAllocationMs
+current allowance = min(configured cap, remaining - reserve)</code></pre>
+<p>Do not subtract a source's full planned allocation before knowing
+actual consumption. Preserve deterministic planner output for
+inspection, then calculate runtime allowance immediately before each
+source starts.</p>
+<p>Add telemetry:</p>
+<ul>
+<li><code>initialPlannedAllocationMs</code></li>
+<li><code>runtimeAllowanceMs</code></li>
+<li><code>actualDurationMs</code></li>
+<li><code>unusedMs</code></li>
+<li><code>recycledMs</code></li>
+<li><code>laterSourceReserveMs</code></li>
+<li><code>capHit</code></li>
+</ul>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/deadline.mjs</code></li>
+<li><code>crawler/run.mjs</code></li>
+<li><code>tests/crawler/source-budgeting.test.mjs</code></li>
+</ul>
+<h4 id="12-retain-partial-source-observations">1.2 Retain partial source
+observations</h4>
+<p>Add optional checkpoint support to <code>fetchSource()</code>:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode js"><code class="sourceCode javascript"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>source<span class="op">.</span><span class="fu">fetch</span>({ <span class="op">...,</span> checkpoint })</span></code></pre></div>
+<p><code>checkpoint({ observations, cursor, manifestDelta })</code> must
+persist observations and cursor idempotently before more network work
+begins. Final source results use the same persistence path.</p>
+<p>Wire checkpointing first into sources proven to lose useful work:</p>
+<ul>
+<li>Portal discovery</li>
+<li>Enterprise ATS/Workday enumeration and hydration</li>
+</ul>
+<p>If a source hits its cap after checkpointing, status remains
+<code>truncated</code>, but retained rows stay available and accounting
+reports them. A source that ignores cancellation still fails through the
+existing final guard.</p>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/run.mjs</code></li>
+<li><code>crawler/operator.mjs</code></li>
+<li><code>crawler/ats-enterprise.mjs</code></li>
+<li><code>tests/crawler/run.test.mjs</code></li>
+<li><code>tests/crawler/operator.test.mjs</code></li>
+<li><code>tests/crawler/ats-enterprise.test.mjs</code></li>
+</ul>
+<h4 id="13-bound-and-parallelize-original-listing-resolution">1.3 Bound
+and parallelize original-listing resolution</h4>
+<p>Replace sequential resolution in portal discovery with a shared
+bounded batch built on <code>mapProviderSafe()</code>.</p>
+<p>Initial production limits:</p>
+<ul>
+<li>Target-screen candidates before network resolution.</li>
+<li>Maximum 24 candidates per portal source run.</li>
+<li>Maximum 48 resolver requests.</li>
+<li>Maximum 60 seconds or source allowance minus handoff reserve.</li>
+<li>Concurrency across providers/hosts: 3.</li>
+<li>Per destination host: 1 request at a time.</li>
+</ul>
+<p>Resolved employer URLs proceed. Unresolved portal rows remain in
+<code>VerifyQueue</code>; they never enter selection with an aggregator
+URL.</p>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/operator.mjs</code></li>
+<li><code>crawler/bounded-concurrency.mjs</code></li>
+<li><code>crawler/original-listing-resolver.mjs</code></li>
+<li><code>tests/crawler/operator.test.mjs</code></li>
+<li><code>tests/job-pull/portal-adapters.test.mjs</code></li>
+</ul>
+<h4 id="14-give-workday-detail-a-real-deadline-and-reserve">1.4 Give
+Workday DETAIL a real deadline and reserve</h4>
+<p>Extend <code>enrichWorkdayCandidates()</code> with
+<code>signal</code> and <code>deadline</code>. Pass them to DETAIL
+requests and stop starting work when no budget remains.</p>
+<p>Within enterprise source execution:</p>
+<ul>
+<li>Reserve a fixed share of source allowance for DETAIL hydration.</li>
+<li>Retain LIST observations incrementally.</li>
+<li>Hydrate Pune priority rows before broad enumeration consumes the
+source budget.</li>
+<li>Use bounded request count and existing board-fair ordering.</li>
+<li>Keep LIST-only and undated rows in <code>VerifyQueue</code>.</li>
+</ul>
+<p>For downstream enrichment after a partial crawl, use a reduced
+non-zero budget instead of <code>0</code>, bounded by remaining
+downstream time.</p>
+<p>Critical files:</p>
+<ul>
+<li><code>job-pull/workday-enrichment.mjs</code></li>
+<li><code>crawler/ats-enterprise.mjs</code></li>
+<li><code>crawler/daily-runner.mjs</code></li>
+<li><code>tests/job-pull/workday-enrichment.test.mjs</code></li>
+<li><code>tests/crawler/ats-enterprise.test.mjs</code></li>
+<li><code>tests/crawler/daily-runner.test.mjs</code></li>
+</ul>
+<h4 id="15-stop-dead-lanes-consuming-normal-morning-budget">1.5 Stop
+dead lanes consuming Normal morning budget</h4>
+<p>Update production config from measured evidence:</p>
+<ul>
+<li>Disable SearXNG while local endpoint returns empty.</li>
+<li>Disable dependent India-startup lane in Normal profile.</li>
+<li>Keep unavailable remote-ATS transport as explicit omission, not
+healthy-empty success.</li>
+<li>Keep Startup, Remote, browser-heavy portals, and midday live
+delivery disabled.</li>
+<li>Set per-source caps from retained duration data.</li>
+<li>Increase whole-run/discovery budgets only enough to cover measured
+healthy sources while preserving downstream and handoff reserves.</li>
+</ul>
+<p>Do not weaken gates or company diversity to hit volume.</p>
+<p>Critical files:</p>
+<ul>
+<li><code>config/crawler-v2.json</code></li>
+<li><code>config/crawler-v2-dev.json</code></li>
+<li><code>crawler/deadline.mjs</code></li>
+<li><code>tests/crawler/source-budgeting.test.mjs</code></li>
+<li><code>tests/crawler/discovery-profile.test.mjs</code></li>
+</ul>
+<h4 id="16-standardize-count-vocabulary">1.6 Standardize count
+vocabulary</h4>
+<p>Use one set of names in SQLite telemetry, JSON reports, Markdown
+reports, notifications, and canary evidence:</p>
+<pre class="text"><code>networkRecordsSeen
+observationsProduced
+observationsRetained
+duplicateObservations
+candidatesNormalized
+verificationQueue
+fresh
+eligible
+ready
+scored
+selected
+plannedOperations
+newlyCommitted
+alreadyCommitted
+failedDelivery
+recoveryBlocked
+surfaced</code></pre>
+<p>Classify old 4,818 and 6,696 values according to this vocabulary. Do
+not alter old evidence.</p>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/source-yield.mjs</code></li>
+<li><code>job-pull/funnel-report.mjs</code></li>
+<li><code>job-pull/mode-scoring.mjs</code></li>
+<li><code>crawler/daily-runner.mjs</code></li>
+<li>report tests under <code>tests/crawler/</code> and
+<code>tests/job-pull/</code></li>
+</ul>
+<h4 id="phase-1-acceptance">Phase 1 acceptance</h4>
+<p>Run focused tests, then full local gates:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="ex">node</span> <span class="at">--test</span> <span class="dt">\</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  tests/crawler/source-budgeting.test.mjs <span class="dt">\</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  tests/crawler/run.test.mjs <span class="dt">\</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  tests/crawler/operator.test.mjs <span class="dt">\</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  tests/crawler/ats-enterprise.test.mjs <span class="dt">\</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  tests/crawler/daily-runner.test.mjs <span class="dt">\</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  tests/job-pull/workday-enrichment.test.mjs</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="ex">npm</span> run validate</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a><span class="ex">npm</span> run safety</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="ex">npm</span> test</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="ex">node</span> crawler/cli.mjs readiness <span class="at">--run-tests</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--check</span></span></code></pre></div>
+<p>Run three scheduled-path production-config no-write shadows on
+separate dates.</p>
+<p>Pass when:</p>
+<ul>
+<li>Three consecutive runs reach terminal <code>completed</code>
+discovery/accounting state.</li>
+<li>Every enabled source completes or has a predeclared planner
+omission.</li>
+<li>No source exceeds its runtime allowance.</li>
+<li>Observation and funnel counts balance.</li>
+<li>No ready row remains unscored.</li>
+<li>Median selected count is at least 5, or any lower result has
+complete shortfall evidence.</li>
+<li>Ready pool contains at least 10 distinct companies across the three
+runs.</li>
+<li>Selected rows retain employer URL, Active liveness, verified
+freshness, accepted eligibility, finite score, and no queue
+overlap.</li>
+<li>External side-effect counters remain zero.</li>
+</ul>
+<h4 id="stop-1">STOP 1</h4>
+<p>No Notion write, credential read, schedule change, release creation,
+commit, push, or promotion.</p>
+<h3
+id="phase-2-close-lp-009-and-improve-employer-direct-diversity">Phase 2:
+close LP-009 and improve employer-direct diversity</h3>
+<p>LP-009 is mandatory because upstream company concentration prevents
+the company cap from producing five roles.</p>
+<h4 id="21-wire-existing-path-based-career-discovery">2.1 Wire existing
+path-based career discovery</h4>
+<p>Reuse <code>classifyCareerUrl()</code> and related path/static-asset
+handling from <code>crawler/career-page-discovery.mjs</code>. Replace
+full-URL hostname matching in runtime
+<code>company-careers.mjs</code>.</p>
+<p>Requirements:</p>
+<ul>
+<li>Match career/job patterns against pathname and page evidence, never
+hostname substring alone.</li>
+<li>Reject static extensions and static content types before queue
+insertion.</li>
+<li>Require verified job URL patterns, JobPosting JSON-LD, job sitemap
+evidence, or source-specific adapter evidence.</li>
+<li>Preserve robots, host spacing, page/request/deadline caps,
+original-listing evidence, and <code>VerifyQueue</code> behavior.</li>
+<li>Remove duplicate classification implementations where safe; one
+shared classifier owns URL classification.</li>
+</ul>
+<h4 id="22-activate-one-verified-pune-source">2.2 Activate one verified
+Pune source</h4>
+<p>Start with Birlasoft job sitemap or bounded Cybage adapter, whichever
+passes live no-write verification first.</p>
+<p>Acceptance:</p>
+<ul>
+<li>One source enabled in production config.</li>
+<li>Static assets cannot fill queue.</li>
+<li>At least one retained Pune employer-direct role reaches normalized
+funnel with original URL and usable date evidence.</li>
+<li>Source cannot make Normal morning run partial.</li>
+<li>Source reports explicit zero-yield or failure telemetry.</li>
+</ul>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/company-careers.mjs</code></li>
+<li><code>crawler/career-page-discovery.mjs</code></li>
+<li><code>crawler/workflow.mjs</code></li>
+<li><code>config/crawler-v2.json</code></li>
+<li><code>tests/crawler/career-page-discovery.test.mjs</code></li>
+<li>company-career tests</li>
+</ul>
+<h4 id="stop-2">STOP 2</h4>
+<p>Re-run Phase 1 shadows. Do not add Crawlee or Firecrawl yet.</p>
+<h3
+id="phase-3-make-reports-shortfalls-and-canary-evidence-executable">Phase
+3: make reports, shortfalls, and canary evidence executable</h3>
+<h4 id="31-wire-canary-report-generation">3.1 Wire canary report
+generation</h4>
+<p>Call existing <code>writeDeliveryCanaryReport()</code> from daily
+runtime after final delivery reconciliation and before canary
+validation. Evidence must be generated from machine result, not
+hand-authored.</p>
+<p>Add explicit external paths:</p>
+<ul>
+<li><code>--canary-report-root ABS_PATH</code></li>
+<li><code>--canary-log ABS_PATH</code></li>
+<li><code>--notification-log ABS_PATH</code></li>
+</ul>
+<p>Reports bind:</p>
+<ul>
+<li>Run ID</li>
+<li>Revision</li>
+<li>Code/config fingerprint</li>
+<li>Normalized profile</li>
+<li>Inventory identity</li>
+<li>Source/funnel/reconciliation counts</li>
+<li>Transaction result</li>
+<li>Markdown digest</li>
+</ul>
+<p>No report pair means degraded outcome.</p>
+<h4 id="32-add-honest-shortfall-finalization">3.2 Add honest shortfall
+finalization</h4>
+<p>Daily result states:</p>
+<pre class="text"><code>completed                  &gt;=5 selected and all gates pass
+shortfall_pending_review   0-4 selected, machine accounting complete
+completed_shortfall        pending shortfall plus retained manual inventory confirmation
+degraded                   any operational or evidence defect</code></pre>
+<p>Add a command that finalizes an existing immutable run using an
+external manual inventory evidence file. It cannot alter shortlist or
+rerun discovery.</p>
+<pre class="text"><code>node crawler/cli.mjs finalize-shortfall \
+  --run-id ID \
+  --manual-inventory-evidence ABS_PATH \
+  --canary-report-root ABS_PATH \
+  --canary-log ABS_PATH</code></pre>
+<p>A pending shortfall does not count toward promotion. A finalized
+shortfall may count only when all machine gates pass and Onkar confirms
+fewer than five valid roles existed.</p>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/canary-report.mjs</code></li>
+<li><code>crawler/delivery-canary.mjs</code></li>
+<li><code>crawler/canary-evaluator.mjs</code></li>
+<li><code>crawler/daily-runner.mjs</code></li>
+<li><code>crawler/cli.mjs</code></li>
+<li>corresponding tests</li>
+</ul>
+<h4 id="phase-3-acceptance">Phase 3 acceptance</h4>
+<ul>
+<li>Matching Markdown/JSON pair generated automatically for every
+completed live-capable run.</li>
+<li>Digest and inventory identity validate.</li>
+<li>Machine counters cannot be lowered by manual evidence.</li>
+<li>Pending shortfall never counts.</li>
+<li>Source, resolver, scorer, report, notification, or reconciliation
+defect remains degraded.</li>
+<li>Current four canary failure classes are eliminated in focused tests:
+missing evidence, degraded outcome caused by wiring, healthy-reported
+outage mismatch, undefined scorer counters.</li>
+</ul>
+<h3 id="phase-4-reconcile-credentials-and-prove-one-live-row">Phase 4:
+reconcile credentials and prove one live row</h3>
+<p>Phase 4 starts only after Phase 0 journal audit and Phase 1/2
+no-write acceptance.</p>
+<h4 id="41-human-setup">4.1 Human setup</h4>
+<p>Onkar:</p>
+<ol type="1">
+<li>Rotates exposed Notion credential and does not reuse old value.</li>
+<li>Stores new token in a 0600 file outside repository.</li>
+<li>Shares all five v5 databases with integration.</li>
+<li>Approves read-only preflight.</li>
+<li>Reviews preflight receipt.</li>
+<li>Separately approves one-row write.</li>
+</ol>
+<h4 id="42-add-explicit-preflight-command">4.2 Add explicit preflight
+command</h4>
+<p>Expose gateway-owned preflight without a write:</p>
+<pre class="text"><code>node crawler/cli.mjs live-preflight \
+  --credential-file ABS_PATH \
+  --journal ABS_PATH \
+  --receipt ABS_PATH</code></pre>
+<p>Preflight validates manifest, relations, credential ownership/mode,
+journal path, target access, and blocking recovery state. Receipt stays
+outside repo and contains no secret.</p>
+<h4 id="43-run-one-row-write-and-exact-replay">4.3 Run one-row write and
+exact replay</h4>
+<pre class="text"><code>node crawler/cli.mjs daily morning \
+  --env production \
+  --mode normal \
+  --location-preset pune \
+  --shortlist-limit 1 \
+  --execute-writes \
+  --credential-file ABS_PATH \
+  --journal ABS_PATH \
+  --canary-report-root ABS_PATH \
+  --canary-log ABS_PATH \
+  --notification-log ABS_PATH \
+  --run-id ID</code></pre>
+<p>Replay exact run identity and operation key.</p>
+<p>Acceptance:</p>
+<ul>
+<li>One Applications v5 row exists.</li>
+<li>Company relation verifies by read-back.</li>
+<li>Employer URL, score, freshness, tier, source, Run ID, and relaxation
+evidence match report.</li>
+<li>Create payload omits user-owned fields rather than setting
+them.</li>
+<li>Replay creates zero pages and reports
+<code>alreadyCommitted</code>/<code>replayed</code>.</li>
+<li>Replay does not refresh cooldown or increment surfacing.</li>
+<li>Journal has no requested pending/verified entry.</li>
+<li>Pilot does not count toward seven-date streak.</li>
+</ul>
+<h4 id="stop-3">STOP 3</h4>
+<p>Do not check user-owned fields automatically. Do not promote or
+install schedule.</p>
+<h3
+id="phase-5-make-resume-and-sync-commands-work-against-live-v5">Phase 5:
+make resume and sync commands work against live v5</h3>
+<h4 id="51-add-live-gateway-command-entrypoints">5.1 Add live gateway
+command entrypoints</h4>
+<p>Create guarded CLI entrypoints for existing implementations:</p>
+<pre class="text"><code>node launchpad-v5.mjs make-applications \
+  --credential-file ABS_PATH \
+  --journal ABS_PATH
+
+node launchpad-v5.mjs sync \
+  --credential-file ABS_PATH \
+  --journal ABS_PATH</code></pre>
+<p>Reuse:</p>
+<ul>
+<li><code>processMakeResumeQueue()</code></li>
+<li><code>createLocalResumeBuilder()</code></li>
+<li><code>verifyResumeArtifact()</code></li>
+<li><code>syncAppliedApplications()</code></li>
+<li>existing scoped gateway and journal reservations</li>
+</ul>
+<p>Both commands must query only v5 stores and print redacted
+receipts.</p>
+<h4 id="52-prove-one-real-resume">5.2 Prove one real resume</h4>
+<p>Onkar checks <code>Make Resume</code> on pilot row. Resume workflow
+creates:</p>
+<ul>
+<li><code>.tex</code></li>
+<li><code>.matrix.md</code></li>
+<li><code>.provenance.md</code></li>
+<li>one-page <code>.pdf</code></li>
+</ul>
+<p>Pass <code>node tests/resume/verify.mjs</code>, frozen template
+checks, provenance checks, one-page check, and page-fill gate. Command
+may update only <code>resumeState</code>.</p>
+<h4 id="53-prove-manual-application-sync">5.3 Prove manual application
+sync</h4>
+<p>Onkar reviews PDF, submits manually, then checks
+<code>Applied?</code>.</p>
+<p>Run <code>/sync</code> twice.</p>
+<p>Acceptance:</p>
+<ul>
+<li>First sync updates derived application state and creates one
+deterministic Activity row.</li>
+<li>Second sync is noop.</li>
+<li>Applied timestamp remains stable.</li>
+<li>Opportunity becomes suppressed from resurfacing.</li>
+<li>Neither command writes <code>Make Resume</code> or
+<code>Applied?</code>.</li>
+<li>No application, email, or message is sent by Launchpad.</li>
+</ul>
+<h4 id="stop-4">STOP 4</h4>
+<p>No schedule or promotion change.</p>
+<h3 id="phase-6-create-clean-immutable-candidate">Phase 6: create clean
+immutable candidate</h3>
+<h4 id="61-review-and-commit-only-after-explicit-approval">6.1 Review
+and commit only after explicit approval</h4>
+<p>Before commit:</p>
+<ul>
+<li>Review all dirty paths and separate unrelated user work.</li>
+<li>Update canonical status and runbooks.</li>
+<li>Run full local gates.</li>
+<li>Obtain explicit commit approval.</li>
+</ul>
+<h4 id="62-prepare-content-addressed-checkout">6.2 Prepare
+content-addressed checkout</h4>
+<p>Reuse <code>crawler/release-manager.mjs</code>:</p>
+<ul>
+<li>Require exact clean revision.</li>
+<li>Create detached checkout outside source repo.</li>
+<li>Run <code>npm ci --ignore-scripts</code>.</li>
+<li>Run full validation from release checkout.</li>
+<li>Bind revision, lockfile, config fingerprint, manifest fingerprint,
+source registry, and normalized profile.</li>
+<li>Initial installed profile contains only
+<code>morning / normal / pune</code>.</li>
+</ul>
+<p>Prepare schedule specs but do not install them.</p>
+<h4 id="phase-6-acceptance">Phase 6 acceptance</h4>
+<ul>
+<li>Source checkout clean and exact revision retained.</li>
+<li>Release checkout clean and content-addressed.</li>
+<li>Validation passes inside release checkout.</li>
+<li>Release receipt candidate records all fingerprints.</li>
+<li>No plist points at mutable source tree in proposed output.</li>
+</ul>
+<h4 id="stop-5">STOP 5</h4>
+<p>Candidate exists. Existing schedule remains unchanged until
+seven-date proof and separate approval.</p>
+<h3 id="phase-7-seven-date-immutable-canary">Phase 7: seven-date
+immutable canary</h3>
+<p>Run manually from same immutable release on seven distinct valid UTC
+dates.</p>
+<p>Each date uses identical:</p>
+<ul>
+<li>Revision</li>
+<li>Lockfile/install</li>
+<li>Production config fingerprint</li>
+<li>Source registry</li>
+<li>Normalized profile</li>
+<li>Manifest</li>
+<li>Journal identity</li>
+<li>Report schema</li>
+</ul>
+<p>Each date must produce either:</p>
+<ul>
+<li><code>completed</code> with at least 5 qualified roles, or</li>
+<li><code>completed_shortfall</code> with retained manual inventory
+proof.</li>
+</ul>
+<p>Retain per date:</p>
+<ul>
+<li>Markdown and JSON report pair</li>
+<li>Source manifests and budget telemetry</li>
+<li>Observation accounting</li>
+<li>Resolver accounting</li>
+<li>Workday DETAIL accounting</li>
+<li>Funnel and company-cap exclusions</li>
+<li>Selected/planned/delivered key reconciliation</li>
+<li>Transaction and ledger result</li>
+<li>Notification receipt</li>
+<li>Inventory identity</li>
+<li>Manual inventory evidence where needed</li>
+<li>Clean revision/config fingerprint</li>
+</ul>
+<p>Any degraded or pending-shortfall date does not count. Revision or
+config change restarts streak.</p>
+<h4 id="stop-6">STOP 6</h4>
+<p>Report seven-date evidence. Promotion still needs separate
+approval.</p>
+<h3 id="phase-8-promote-live-morning-schedule-and-prove-rollback">Phase
+8: promote live morning schedule and prove rollback</h3>
+<h4 id="81-extend-immutable-schedule-specification">8.1 Extend immutable
+schedule specification</h4>
+<p>Extend <code>buildAgentPlist()</code> and release manager with
+explicit live-delivery options.</p>
+<p>Morning plist includes paths, never secret values:</p>
+<pre class="text"><code>--execute-writes
+--credential-file ABS_PATH
+--journal ABS_PATH
+--canary-report-root ABS_PATH
+--canary-log ABS_PATH
+--notification-log ABS_PATH</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Only morning Normal/Pune agent receives live flags.</li>
+<li>Midday live agent is absent.</li>
+<li>Working directory and CLI path point at immutable release.</li>
+<li>Logs and state live outside release checkout.</li>
+<li>Release receipt records argument fingerprint and delivery mode.</li>
+<li>Dry run prints complete plist and bootstrap plan without changing OS
+state.</li>
+</ul>
+<p>Critical files:</p>
+<ul>
+<li><code>crawler/install-schedule.mjs</code></li>
+<li><code>crawler/release-manager.mjs</code></li>
+<li><code>crawler/cli.mjs</code></li>
+<li><code>crawler/schedule-health.mjs</code></li>
+<li>schedule/release tests</li>
+</ul>
+<h4 id="82-promotion-and-first-scheduled-run">8.2 Promotion and first
+scheduled run</h4>
+<p>Run promotion dry run. Review generated agents. Remove dry-run only
+after explicit approval.</p>
+<p>Observe first scheduled run and verify:</p>
+<ul>
+<li>Immutable path and expected revision</li>
+<li>Completed outcome or finalized shortfall</li>
+<li>Live v5 delivery</li>
+<li>Report pair</li>
+<li>Notification receipt</li>
+<li>No journal recovery</li>
+<li>User-owned values unchanged</li>
+</ul>
+<h4 id="83-rollback-drill">8.3 Rollback drill</h4>
+<p>Dry-run rollback, then execute after approval. Verify previous
+no-write schedule boots and runs. Restore live release through normal
+promotion path. Retain promotion, rollback,
+<code>launchctl print</code>, and first-run receipts.</p>
+<h4 id="phase-8-acceptance">Phase 8 acceptance</h4>
+<ul>
+<li>Installed morning agent points only at immutable checkout.</li>
+<li>First scheduled live run succeeds.</li>
+<li>Rollback restores previous recorded schedule.</li>
+<li>Re-promotion restores candidate release.</li>
+<li>Current release receipt, installed plist, and schedule-health report
+agree.</li>
+</ul>
+<h3
+id="phase-9-close-lp-010-and-lp-011-without-blocking-useful-production">Phase
+9: close LP-010 and LP-011 without blocking useful production</h3>
+<p>These tickets come after initial working production. They must not
+delay jobs.</p>
+<h4 id="91-lp-010-crawlee-at-custom-career-seam">9.1 LP-010: Crawlee at
+custom-career seam</h4>
+<p>After LP-009 no-write evidence, implement one default-off
+source-specific HTTP-first Crawlee worker.</p>
+<p>Requirements:</p>
+<ul>
+<li>Exists only behind custom-career adapter seam.</li>
+<li>Direct ATS adapters remain unchanged.</li>
+<li>Browser fallback host-allowlisted.</li>
+<li>Deadline, page, request, memory, and concurrency limits
+enforced.</li>
+<li>Selector/schema failures produce explicit telemetry.</li>
+<li>Output uses existing observation shape and original-listing
+gates.</li>
+<li>Default Normal morning profile keeps it off until benchmark proves
+net useful yield.</li>
+</ul>
+<p>Promote LP-010 source only if it recovers employer-direct roles
+without making scheduled path partial.</p>
+<h4 id="92-lp-011-firecrawl-hard-page-rescue">9.2 LP-011: Firecrawl
+hard-page rescue</h4>
+<p>First retain measured pages where direct HTTP and bounded Crawlee
+both fail. If no measured need exists, keep LP-011 blocked and record
+evidence rather than adding unused paid infrastructure.</p>
+<p>If triggered:</p>
+<ul>
+<li>Default off.</li>
+<li>Public unauthenticated pages only.</li>
+<li>Host allowlist and daily page/credit ceiling.</li>
+<li>Structured extraction validated against fetched page evidence.</li>
+<li>Every result passes original-listing resolution.</li>
+<li>Circuit breaker handles credits, rate limits, malformed extraction,
+and provider outage.</li>
+<li>Failure never blocks healthy primary sources.</li>
+</ul>
+<h3 id="parallel-work-and-dependencies">Parallel work and
+dependencies</h3>
+<p>Safe parallel work:</p>
+<ul>
+<li>Phase 0 journal audit command and Phase 1 discovery fixes.</li>
+<li>Budget recycling, portal resolver batching, and Workday deadline
+work in separate bounded changes.</li>
+<li>Command/help/manifest synchronization alongside focused tests.</li>
+<li>Phase 2 career-source work after shared classifier contract is
+settled.</li>
+</ul>
+<p>Must remain sequential:</p>
+<pre class="text"><code>scheduled-path discovery acceptance
+-&gt; journal reconciliation
+-&gt; live preflight
+-&gt; one-row write/replay
+-&gt; resume proof
+-&gt; manual application/sync
+-&gt; clean immutable candidate
+-&gt; seven valid dates
+-&gt; live schedule promotion
+-&gt; rollback drill</code></pre>
+<p>LP-010 follows LP-009. LP-011 follows measured LP-010/direct failure
+evidence.</p>
+<h3 id="verification-matrix">Verification matrix</h3>
+<h4 id="local-code">Local code</h4>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">npm</span> run validate</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="ex">npm</span> run safety</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="ex">npm</span> test</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="ex">node</span> crawler/cli.mjs readiness <span class="at">--run-tests</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--check</span></span></code></pre></div>
+<h4 id="discovery-behavior">Discovery behavior</h4>
+<ul>
+<li>Three scheduled-path production no-write runs.</li>
+<li>No lost observations.</li>
+<li>No unaccounted source.</li>
+<li>No ready unscored row.</li>
+<li>Median selected count at least 5 or retained valid shortfall.</li>
+<li>At least 10 distinct ready companies across validation window.</li>
+</ul>
+<h4 id="live-pilot">Live pilot</h4>
+<ul>
+<li>Scoped preflight receipt.</li>
+<li>One row and Company relation.</li>
+<li>Exact replay with zero duplicates.</li>
+<li>User-owned fields untouched.</li>
+<li>Journal and cooldown reconciliation.</li>
+</ul>
+<h4 id="application-flow">Application flow</h4>
+<ul>
+<li>Verified four-file resume artifact set.</li>
+<li>One manual application.</li>
+<li>Two sync runs, second noop.</li>
+<li>Applied opportunity suppressed.</li>
+</ul>
+<h4 id="promotion">Promotion</h4>
+<ul>
+<li>Clean immutable revision.</li>
+<li>Seven valid UTC dates.</li>
+<li>Installed immutable morning schedule.</li>
+<li>First scheduled live run.</li>
+<li>Rollback and restoration receipts.</li>
+</ul>
+<h3 id="risks-and-controls">Risks and controls</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Control</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>More code, still no jobs</td>
+<td>Phase 1 exits only on scheduled-path yield evidence</td>
+</tr>
+<tr>
+<td>Volume pressure weakens quality</td>
+<td>Keep all gates and company cap; valid shortfall records market
+reality</td>
+</tr>
+<tr>
+<td>Partial source loses useful rows</td>
+<td>Optional durable checkpoints plus balanced observation
+accounting</td>
+</tr>
+<tr>
+<td>One source consumes run</td>
+<td>Runtime allowance, later-source reserve, request and resolver
+caps</td>
+</tr>
+<tr>
+<td>Live state duplicates historical rows</td>
+<td>Journal audit before pilot; exact replay proof</td>
+</tr>
+<tr>
+<td>Manual evidence overrules machine failure</td>
+<td>Machine counters can only invalidate, never be lowered</td>
+</tr>
+<tr>
+<td>Dirty checkout reaches schedule</td>
+<td>Promotion requires clean content-addressed release</td>
+</tr>
+<tr>
+<td>Added source tools widen failure area</td>
+<td>LP-010/011 default off and evidence-gated</td>
+</tr>
+<tr>
+<td>User-owned fields mutate</td>
+<td>Payload omission tests plus live read-back before/after</td>
+</tr>
+<tr>
+<td>Seven-day streak becomes ceremony</td>
+<td>Every day must contain real delivery/report/inventory evidence</td>
+</tr>
+</tbody>
+</table>
+<h3 id="recommended-execution-order">Recommended execution order</h3>
+<ol type="1">
+<li>Phase 0 journal/status audit and Phase 1 discovery fixes.</li>
+<li>Phase 2 LP-009 employer-direct Pune source.</li>
+<li>Phase 3 automatic reports and valid shortfall flow.</li>
+<li>Three scheduled-path no-write acceptance runs.</li>
+<li>Phase 4 credential setup, preflight, one-row pilot, replay.</li>
+<li>Phase 5 live resume and application sync proof.</li>
+<li>Phase 6 clean immutable candidate.</li>
+<li>Phase 7 seven-date canary.</li>
+<li>Phase 8 schedule promotion and rollback.</li>
+<li>Phase 9 LP-010 and evidence-gated LP-011.</li>
+</ol>
+<p>Fastest useful milestone is end of Phase 1/2: a retained local
+morning shortlist with at least five qualified employer-linked roles.
+First real v5 milestone is end of Phase 4. Full production completion is
+end of Phase 8.</p>
+</article>
+<footer><p>Launchpad full production implementation plan · Draft · 2026-08-31</p><p>Canonical source: <code>docs/plans/launchpad-full-production-implementation.md</code>. Publication and implementation require separate approval.</p></footer>
+</main>
+</div>
+</body>
+</html>

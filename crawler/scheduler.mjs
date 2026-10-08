@@ -22,9 +22,15 @@ function normalizeSchedule(schedule) {
   return value;
 }
 
-/** Return the stable daily identity used by both local schedule windows. */
-export function dailyRunIdentity({ schedule, at = new Date() } = {}) {
-  return `${normalizeSchedule(schedule)}-${dateInIndia(at)}`;
+function normalizeProfilePart(value, fallback, label) {
+  const normalized = text(value || fallback).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!normalized) throw new RangeError(`${label} must be non-empty`);
+  return normalized;
+}
+
+/** Return the stable profile-scoped daily identity used by scheduled runs. */
+export function dailyRunIdentity({ schedule, mode = 'normal', locationPreset = 'india', at = new Date() } = {}) {
+  return `daily-${normalizeSchedule(schedule)}-${normalizeProfilePart(mode, 'normal', 'mode')}-${normalizeProfilePart(locationPreset, 'india', 'locationPreset')}-${dateInIndia(at)}`;
 }
 
 export const deterministicDailyRunId = dailyRunIdentity;
@@ -33,7 +39,8 @@ function runDate(run) {
   if (!run) return null;
   if (run.runDate) return text(run.runDate).slice(0, 10);
   if (run.date) return text(run.date).slice(0, 10);
-  const match = text(run.runId).match(/(?:morning|midday)[-.](\d{4}-\d{2}-\d{2})$/i);
+  const match = text(run.runId).match(/(?:morning|midday)(?:[-.][a-z0-9]+){0,2}[-.](\d{4}-\d{2}-\d{2})$/i)
+    || text(run.runId).match(/(?:morning|midday)[-.](\d{4}-\d{2}-\d{2})$/i);
   return match?.[1] || (run.startedAt ? dateInIndia(run.startedAt) : null);
 }
 
@@ -46,7 +53,13 @@ function runDate(run) {
 export function classifyScheduleRun({ schedule, now = new Date(), lastRun = null, state = {} } = {}) {
   const normalizedSchedule = normalizeSchedule(schedule);
   const today = dateInIndia(now);
-  const identity = dailyRunIdentity({ schedule: normalizedSchedule, at: now });
+  const profile = state.profile && typeof state.profile === 'object' ? state.profile : {};
+  const identity = dailyRunIdentity({
+    schedule: normalizedSchedule,
+    mode: profile.mode ?? state.mode ?? 'normal',
+    locationPreset: profile.locationPreset ?? state.locationPreset ?? 'india',
+    at: now,
+  });
   const prior = lastRun && typeof lastRun === 'object' ? lastRun : {};
   const priorDate = runDate(prior);
   const priorStatus = text(prior.status).toLowerCase();
@@ -139,6 +152,15 @@ export function buildScheduleHealth({ lastRun = null, durationMs = 0, sourceFail
     runId: lastRun?.runId || classification.runId,
     status: classification.status,
     state: classification.status,
+    health: lastRun?.status === 'partial'
+      ? 'partial/resumable'
+      : lastRun?.status === 'failed'
+        ? 'failed'
+        : lastRun?.status === 'running'
+          ? 'active'
+          : lastRun?.status === 'completed' || lastRun?.status === 'completed_with_failures'
+            ? 'completed'
+            : classification.status,
     durationMs: number(durationMs),
     sourceFailures: Array.isArray(sourceFailures) ? sourceFailures.length : number(sourceFailures),
     counts: normalizedCounts,

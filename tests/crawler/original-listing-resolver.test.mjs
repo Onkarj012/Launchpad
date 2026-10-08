@@ -8,6 +8,7 @@ import {
   isShortlistEligibleFromResolution,
   normalizeOriginalListingResolverBudget,
 } from '../../crawler/original-listing-resolver.mjs';
+import { createHostSerializedRunner } from '../../crawler/bounded-concurrency.mjs';
 
 const jsonLdPage = (posting) => ({
   status: 200,
@@ -23,6 +24,39 @@ const observation = (url, extra = {}) => ({
   discoveryUrl: url,
   title: 'AI Engineer',
   ...extra,
+});
+
+test('matching ATS JSON-LD organization cannot prove an unnamed client employer', async () => {
+  const url = 'https://www.careers-page.com/leading-edge/job/937YX54Y';
+  for (const description of [
+    'Our client is looking for a talented Software Developer. 2+ years of professional software development experience.',
+    'We are recruiting on behalf of our client for a Software Developer.',
+    'We are hiring for a client. Build backend software.',
+  ]) {
+    const resolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+      hiringOrganization: { name: 'Leading Edge', sameAs: 'https://www.leadingedge.plus' },
+      title: 'Software Developer', description, employmentType: 'FULL_TIME',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, datePosted: '2026-10-06',
+    }) });
+    const result = await resolver(observation(url, { company: 'Leading Edge', title: 'Software Developer' }));
+    assert.equal(result.status, 'verification');
+    assert.equal(result.evidence.resolution.reason, 'destination-hiring-employer-unverified');
+    assert.equal(result.originalApplicationUrl, null);
+    assert.equal(result.applicationResolution.status, 'Needs Verification');
+    assert.equal(isShortlistEligibleFromResolution(result), false);
+  }
+});
+
+test('named employers can describe client work and share the corrected experience parser', async () => {
+  const url = 'https://boards.greenhouse.io/acme/jobs/123';
+  const resolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    hiringOrganization: { name: 'Acme' }, title: 'Software Developer',
+    description: 'Build software for our clients. Minimum two year(s) of experience is required Educational Qualification : 15 years full time education.',
+    employmentType: 'FULL_TIME',
+  }) });
+  const result = await resolver(observation(url, { company: 'Acme' }));
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.patch.experience.minYears, 2);
 });
 
 test('classifies supported ATS hosts with stable provider names', () => {
@@ -425,4 +459,122 @@ test('resolver forwards and enforces redirect, host, request, byte, signal, and 
   const aborted = createOriginalListingResolver({ signal: controller.signal, transport: async () => { called = true; } });
   assert.equal((await aborted(observation('https://boards.greenhouse.io/acme/jobs/1'))).evidence.resolution.reason, 'aborted');
   assert.equal(called, false);
+});
+
+test('resolver claims an invocation shared request budget synchronously across concurrent candidates', async () => {
+  let used = 0;
+  const shared = {
+    maxRequests: 2,
+    claim() {
+      if (used >= 2) return false;
+      used += 1;
+      return true;
+    },
+  };
+  const calls = [];
+  const resolve = createOriginalListingResolver({
+    maxRequests: 8,
+    requestBudget: shared,
+    transport: async (url) => {
+      calls.push(url);
+      return { status: 200, body: '<script type="application/ld+json">{"@type":"JobPosting","title":"AI Engineer","description":"Pune role","datePosted":"2026-08-30"}</script>' };
+    },
+  });
+  const results = await Promise.all([
+    resolve(observation('https://boards.greenhouse.io/acme/jobs/1')),
+    resolve(observation('https://boards.greenhouse.io/acme/jobs/2')),
+    resolve(observation('https://boards.greenhouse.io/acme/jobs/3')),
+  ]);
+  assert.equal(used, 2);
+  assert.equal(calls.length, 2);
+  assert.equal(results.filter((result) => result.status === 'resolved').length, 2);
+  assert.equal(results.filter((result) => result.evidence.resolution.reason === 'request-budget-exhausted').length, 1);
+});
+
+test('resolver accepts a function-valued injected deadline without using wall-clock math', async () => {
+  let remaining = 20;
+  let calls = 0;
+  const resolve = createOriginalListingResolver({
+    deadline: { remainingMs: () => remaining },
+    transport: async () => {
+      calls += 1;
+      remaining = 0;
+      return jsonLdPage({ title: 'AI Engineer', description: 'Pune role', datePosted: '2026-08-30' });
+    },
+  });
+  const first = await resolve(observation('https://boards.greenhouse.io/acme/jobs/1'));
+  const second = await resolve(observation('https://boards.greenhouse.io/acme/jobs/2'));
+  assert.equal(calls, 1);
+  assert.equal(first.status, 'resolved');
+  assert.equal(second.evidence.resolution.reason, 'deadline-exceeded');
+});
+
+test('aggregate request budget counts every redirect transport and stops later requests', async () => {
+  const shared = { maxRequests: 48, used: 0, claim() { if (this.used >= this.maxRequests) return false; this.used += 1; return true; } };
+  const calls = [];
+  const resolve = createOriginalListingResolver({ maxRedirects: 2, sharedRequestBudget: shared, hostLimiter: createHostSerializedRunner(), transport: async (url) => {
+    calls.push(url);
+    if (url.includes('indeed.com')) {
+      const id = new URL(url).searchParams.get('jk');
+      return { status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` } };
+    }
+    return jsonLdPage({ title: 'AI Engineer', description: 'Pune role', datePosted: '2026-08-30' });
+  } });
+
+  const results = await Promise.all(Array.from({ length: 25 }, (_, index) => resolve(observation(`https://www.indeed.com/viewjob?jk=aggregate-${index}`))));
+  assert.equal(shared.used, 48);
+  assert.equal(calls.length, 48);
+  assert.equal(results.filter((result) => result.status === 'resolved').length, 23);
+  assert.equal(results.filter((result) => result.evidence.resolution.reason === 'request-budget-exhausted').length, 1);
+});
+
+test('different discovery hosts serialize requests after converging on one destination host', async () => {
+  const destination = 'https://boards.greenhouse.io/acme/jobs/shared-host';
+  const releases = [];
+  let active = 0;
+  let maximum = 0;
+  const resolve = createOriginalListingResolver({
+    hostLimiter: createHostSerializedRunner(),
+    transport: async (url) => {
+      if (url !== destination) return { status: 302, headers: { location: destination } };
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolveRelease) => releases.push(resolveRelease));
+      active -= 1;
+      return jsonLdPage({ title: 'AI Engineer', description: 'Pune role', datePosted: '2026-08-30' });
+    },
+  });
+  const first = resolve(observation('https://www.indeed.com/viewjob?jk=shared-1'));
+  const second = resolve(observation('https://www.glassdoor.com/job-listing/shared-2'));
+  await new Promise((done) => setImmediate(done));
+  assert.equal(maximum, 1);
+  releases.shift()?.();
+  await new Promise((done) => setImmediate(done));
+  releases.shift()?.();
+  await Promise.all([first, second]);
+  assert.equal(maximum, 1);
+});
+
+test('resolver deadline aborts transport before releasing a same-host lock', async () => {
+  let active = 0;
+  let maximum = 0;
+  let aborted = 0;
+  const resolve = createOriginalListingResolver({
+    hostLimiter: createHostSerializedRunner(),
+    deadline: { deadlineMs: Date.now() + 15 },
+    transport: async (_url, options) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((_, reject) => {
+        options.signal.addEventListener('abort', () => { active -= 1; aborted += 1; reject(options.signal.reason); }, { once: true });
+      });
+    },
+  });
+  const results = await Promise.all([
+    resolve(observation('https://boards.greenhouse.io/acme/jobs/timeout-1')),
+    resolve(observation('https://boards.greenhouse.io/acme/jobs/timeout-2')),
+  ]);
+  assert.equal(aborted, 1);
+  assert.equal(maximum, 1);
+  assert.ok(results.every((result) => result.evidence.resolution.reason === 'deadline-exceeded'));
 });

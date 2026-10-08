@@ -179,3 +179,33 @@ test('warm source deadline omits boards without starting more requests', async (
   assert.equal(result.manifest.deadline.enabled, true);
   assert.ok(result.manifest.boardsOmitted >= 1 || result.manifest.deadline.exhausted);
 });
+
+// Detail evidence must replace a summary-only unknown-experience record.
+test('Greenhouse missing-JD rows fetch bounded identity-matched details and fail closed', async () => {
+  const requests = [];
+  const job = { id: 8230093, title: 'Java Backend Developer', absolute_url: 'https://job-boards.greenhouse.io/capco/jobs/8230093', location: { name: 'Pune, India' }, first_published: '2026-10-05' };
+  const run = (detail, maxDetailRequests = 1) => fetchWarmAts({ boards: [{ provider: 'greenhouse', slug: 'capco', company: 'Capco' }],
+    runAt: '2026-10-06T06:00:00Z', maxDetailRequests,
+    transport: async (url) => { requests.push(url); return { status: 200, body: url.includes('?') ? { jobs: [job] } : detail }; } });
+  const good = await run({ ...job, content: '<p>Required 5+ years of Java experience.</p>' });
+  assert.match(good.observations[0].description, /5\+ years/);
+  assert.equal(good.observations[0].experience.minYears, 5);
+  assert.equal(good.manifest.detailRequests, 1);
+  const mismatch = await run({ ...job, id: 999, content: '0-1 years' });
+  assert.equal(mismatch.observations[0].liveness.status, 'Not Verified');
+  assert.equal(mismatch.observations[0].description, null);
+  const limited = await run({ ...job, content: '0-1 years' }, 0);
+  assert.equal(limited.manifest.detailRequests, 0);
+  assert.equal(limited.observations[0].liveness.status, 'Not Verified');
+});
+
+test('warm ATS sorts trusted provider dates before the per-board row cap', async () => {
+  const jobs = Array.from({ length: 100 }, (_, index) => ({ id: index, title: 'AI Engineer',
+    absolute_url: `https://job-boards.greenhouse.io/capco/jobs/${index}`, location: { name: 'Pune, India' },
+    content: 'Full-time engineering role. 0-1 years.', first_published: '2026-08-01' }));
+  jobs.push({ ...jobs[0], id: 8255708, absolute_url: 'https://job-boards.greenhouse.io/capco/jobs/8255708', first_published: '2026-10-05' });
+  const result = await fetchWarmAts({ boards: [{ provider: 'greenhouse', slug: 'capco', company: 'Capco' }], maxJobsPerBoard: 100,
+    transport: async () => ({ status: 200, body: { jobs } }) });
+  assert.equal(result.observations.length, 100);
+  assert.equal(result.observations[0].jobId, '8255708');
+});
