@@ -8,6 +8,7 @@ import { ENTRY_BUILDERS, WARM_ATS } from '../job-pull/warm-set.mjs';
 
 export const BOARD_REGISTRY_SCHEMA = 'BoardRegistryV1';
 export const DEFAULT_BOARD_REGISTRY_PATH = 'config/board-registry.json';
+export const REGISTRY_SEED_TIERS = Object.freeze(['pune-gcc-captive', 'pune-product', 'india-ai-devtools', 'services-major']);
 
 export const SCHEDULE_LANES = Object.freeze(['atsWarm', 'atsBatch1', 'atsBatch2', 'enterprise']);
 export const SOURCE_PLAN_TIERS = Object.freeze(['daily-core', 'targeted-enterprise', 'exploration', 'opportunistic']);
@@ -551,6 +552,7 @@ export function normalizeRegistryBoard(raw = {}) {
     indiaRelevant: raw.indiaRelevant === true,
     puneRelevant: raw.puneRelevant === true,
     startupTagged: raw.startupTagged === true,
+    ...(REGISTRY_SEED_TIERS.includes(raw.registryTier) ? { registryTier: raw.registryTier } : {}),
     enabled,
     activationState,
     probeStatus: clean(raw.probeStatus) || (enabled ? 'verified' : 'proposed'),
