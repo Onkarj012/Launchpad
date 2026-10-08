@@ -40,7 +40,9 @@
 
 ### Work mode & location
 - **Onsite / hybrid:** Pune-wide commute is acceptable — Pune, Pimpri-Chinchwad/PCMC, Hinjawadi/Hinjewadi, Wakad, Baner, Kharadi, Magarpatta, Viman Nagar, Talawade, and nearby Pune tech corridors.
-- **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. Timezone must be compatible with IST or left unspecified; US-hours-only and overnight-only overlap → drop.
+- **Remote:** must explicitly permit India or APAC/Asia-Pacific. Context-free `worldwide`/`global` tokens are not India eligibility. Bare `Remote` or US/Canada/EU/UK/LATAM-only → drop. US or EU hours and overnight-only overlap are allowed with the label `Night hours (IST)`.
+- **Shifts:** night and rotating shifts are allowed for Pune onsite/hybrid and remote roles with the label `Night hours (IST)`. A label never rejects a role.
+- **Notice:** listings asking for immediate joiners or a notice of 30 days or less are allowed with the label `Notice risk`. A label never rejects a role.
 
 ### Employment type & must-haves
 - Full-time engineering roles or explicitly paid/stipended engineering internships.

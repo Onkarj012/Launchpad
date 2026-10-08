@@ -178,7 +178,7 @@ test('Bare remote and country/citizenship/payroll restrictions go to Needs Verif
   assert.equal(candidate({ location: 'Remote', description: 'Work remotely anywhere within Europe. Full-time role.' }).remoteEligibilityDecision.status, 'Not Eligible');
 });
 
-test('Timezone overlap is real: IST/flexible accepted, overnight US hours rejected, unspecified left open', () => {
+test('Timezone overlap accepts IST, flexible and unspecified hours and labels overnight US hours', () => {
   const stable = candidate({ location: 'Remote - APAC', timezoneOverlap: { status: 'flexible', minimumHours: 6, evidence: 'any schedule accepted' }, employment: { type: 'contract', evidence: 'Long-term full-time contractor with regular salary via India payroll' } });
   const unstable = candidate({ location: 'Remote - India', employment: { type: 'contract', evidence: 'contract role, stability not stated' } });
   const overnight = classifyRemoteTimezone({ timezoneOverlap: { status: 'overnight', minimumHours: 0, evidence: 'must overlap EST business hours overnight' } });
@@ -186,10 +186,26 @@ test('Timezone overlap is real: IST/flexible accepted, overnight US hours reject
   assert.equal(stable.timezoneDecision.accepted, true);
   assert.equal(stable.remoteEmploymentDecision.category, 'Stable Contractor');
   assert.equal(unstable.remoteEmploymentDecision.status, 'Needs Verification');
-  assert.equal(overnight.accepted, false);
-  assert.equal(overnight.code, 'REMOTE_TZ_INCOMPATIBLE');
+  assert.equal(overnight.accepted, true);
+  assert.equal(overnight.code, 'REMOTE_TZ_NIGHT_HOURS');
+  assert.deepEqual(overnight.labels, ['Night hours (IST)']);
   assert.equal(ist.accepted, true);
   assert.equal(ist.code, 'REMOTE_TZ_IST');
+});
+
+test('Remote shortlist keeps India-eligible US and EU hours with night-hours evidence', async () => {
+  const run = await runRemoteMode({ clock: () => REMOTE_NOW, runId: 'remote-night-hours', sourceFunctions: {
+    himalayas: () => ({ records: [
+      remoteJob(1, { description: 'Full-time AI role, remote from India, 0-1 years. US business hours only.', timezoneOverlap: { status: 'overnight', minimumHours: 0, evidence: 'Must overlap EST business hours' } }),
+      remoteJob(2, { description: 'Full-time AI role, remote from India, 0-1 years. EU hours only.', timezoneEvidence: 'Required overlap with CET working hours' }),
+    ] }),
+  } });
+  assert.equal(run.shortlist.length, 2);
+  for (const selected of run.shortlist) {
+    assert.equal(selected.timezoneDecision.accepted, true);
+    assert.deepEqual(selected.timezoneDecision.labels, ['Night hours (IST)']);
+    assert.deepEqual(selected.eligibility.labels, ['Night hours (IST)']);
+  }
 });
 
 test('Gigs, commission-only, temporary, project-only, and unpredictable freelance roles are rejected', () => {
