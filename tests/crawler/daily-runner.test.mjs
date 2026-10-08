@@ -1586,3 +1586,30 @@ test('local report shows each hiring event date and deadline in IST without inve
   assert.match(report, /Held item 4: date must be a valid/);
   assert.doesNotMatch(report, /Undated Drive/);
 });
+
+test('local report shows per-mode target counts, cross-mode Strict count, verification, and shortfalls', () => {
+  const role = (id, company, selectionTier = 'Strict') => ({ id, company, title: `${id} Engineer`, selectionTier });
+  const normalRole = role('normal-1', 'Pune Labs');
+  const startupRole = role('startup-1', 'Startup Labs', 'Fallback');
+  const remoteRole = role('remote-1', 'Remote Labs');
+  const result = {
+    run: { startedAt: '2026-10-07T20:00:00.000Z' },
+    modes: {
+      normal: { results: [normalRole], shortlist: [normalRole] },
+      startup: { results: [startupRole], shortlist: [startupRole] },
+      remote: { results: [remoteRole], shortlist: [remoteRole, role('unverified-1', 'Unknown Labs', 'Fallback')] },
+    },
+  };
+
+  const report = renderLocalLeadReport(result, { now: '2026-10-07T20:00:00.000Z' });
+
+  assert.match(report, /## Per-mode daily targets \(IST 2026-10-08\)/);
+  assert.match(report, /\| Pune \(normal\) \| 1\/10 \| 1\/6 \| 1\/1 \| 9 roles, 5 employers \|/);
+  assert.match(report, /\| Startup \| 1\/5 \| 1\/4 \| 1\/1 \| 4 roles, 3 employers \|/);
+  assert.match(report, /\| Remote \| 2\/5 \| 2\/4 \| 1\/2 \| 3 roles, 2 employers \|/);
+  assert.match(report, /Strict across modes: 2, target 2/);
+  assert.match(report, /Verified shortlisted roles: 3\/4/);
+  assert.match(report, /9 roles, 5 employers/);
+  assert.match(report, /4 roles, 3 employers/);
+  assert.match(report, /3 roles, 2 employers/);
+});
