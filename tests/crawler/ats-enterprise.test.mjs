@@ -374,6 +374,37 @@ test('Workday DETAIL hydration populates JD, location, requisition ID, experienc
   assert.equal(workdayDetailUrl(listUrl, '/job/Pune-India-Office/Associate-Software-Engineer_R15032'), detailUrl);
 });
 
+test('Workday DETAIL timeType "Full time" verifies employment unless the JD describes a contract role', async () => {
+  const listUrl = 'https://barclays.wd3.myworkdayjobs.com/wday/cxs/barclays/External_Career_Site_Barclays/jobs';
+  const run = async (jobDescription, timeType) => {
+    const transport = async (url, options) => {
+      if (options?.detail || (options?.method === 'GET' && url.includes('/job/'))) {
+        return { status: 200, headers: {}, body: JSON.stringify({ jobPostingInfo: {
+          title: 'AI Developer', jobDescription, timeType, location: 'Pune, Gera Commerzone SEZ',
+          jobReqId: 'JR-0000052472', canApply: true, posted: true, startDate: '2026-10-07',
+          externalUrl: 'https://barclays.wd3.myworkdayjobs.com/External_Career_Site_Barclays/job/Pune-Gera-Commerzone-SEZ/AI-Developer_JR-0000052472',
+        } }) };
+      }
+      return { status: 200, headers: {}, body: JSON.stringify({ total: 1, jobPostings: [{
+        title: 'AI Developer', externalPath: '/job/Pune-Gera-Commerzone-SEZ/AI-Developer_JR-0000052472',
+        locationsText: 'Pune, Gera Commerzone SEZ', postedOn: 'Posted Today', bulletFields: ['JR-0000052472'],
+      }] }) };
+    };
+    const result = await discoverEnterpriseAts({ boards: [{ provider: 'workday', company: 'Barclays', url: listUrl }], transport, runAt, maxPages: 1, ...WORKDAY_DETAIL_OPTS });
+    return result.observations[0];
+  };
+
+  const fullTime = await run('<p>Build AI services in Python.</p>', 'Full time');
+  assert.equal(fullTime.employment.type, 'full-time');
+  assert.equal(fullTime.employment.evidence, 'workday timeType: Full time');
+
+  const contract = await run('<p>This is a contract role for six months.</p>', 'Full time');
+  assert.notEqual(contract.employment?.type, 'full-time');
+
+  const partTime = await run('<p>Build AI services in Python.</p>', 'Part time');
+  assert.notEqual(partTime.employment?.type, 'full-time');
+});
+
 test('Workday requisition ID is preferred as primary identity over company-title-location fallback', async () => {
   const listUrl = 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Careers/jobs';
   const transport = async (url, options) => {

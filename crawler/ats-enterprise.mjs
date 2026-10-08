@@ -320,6 +320,12 @@ function extractWorkdayDetail(payload) {
   );
   const experienceFromText = extractExperienceYears(description || experienceEvidence || '') || null;
   const experience = experienceFromText || (experienceEvidence ? { minYears: null, maxYears: null, evidence: experienceEvidence } : null);
+  const timeType = clean(info.timeType);
+  // timeType states hours only, so a JD that describes a contract or temporary role keeps employment unverified.
+  const contractWording = /\b(?:contract(?:ual)?|temporary|fixed[\s-]term|freelance)\s+(?:role|position|basis|employment|engagement|hire)\b/i.test(description || '');
+  const employment = timeType && /^full[\s-]?time$/i.test(timeType) && !contractWording
+    ? { type: 'full-time', paid: null, evidence: `workday timeType: ${timeType}` }
+    : null;
   const closed = info.closed === true || info.isClosed === true || info.posted === false || info.canApply === false
     || /closed|expired|filled|withdrawn|removed/i.test(String(info.status ?? info.jobStatus ?? ''));
   const live = !closed && (info.posted === true || info.canApply === true || Boolean(description || info.title));
@@ -334,6 +340,7 @@ function extractWorkdayDetail(payload) {
     requisitionId: requisitionId == null ? null : String(requisitionId),
     applicationUrl,
     experience,
+    employment,
     liveness: closed
       ? { status: 'Expired', evidence: 'workday-detail-closed' }
       : live
@@ -375,6 +382,7 @@ function applyWorkdayDetail(candidate, detail, { runAt, detailUrl }) {
     source: candidate.source,
     sourceKind: candidate.sourceKind || 'ats-direct',
     experience,
+    ...(detail.employment && !candidate.employment?.type ? { employment: detail.employment } : {}),
     liveness: { ...detail.liveness, checkedAt: runAt },
     evidence: {
       ...candidate.evidence,
