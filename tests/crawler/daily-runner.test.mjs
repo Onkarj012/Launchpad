@@ -1757,6 +1757,41 @@ test('daily HTML report writes locally with three mode lists, scorer evidence, l
   assert.match(html, /Other modes: Pune, Remote/);
   assert.equal((html.match(/Pune Startup/g) ?? []).length, 2, 'the role is listed once in full results and once in its shortlist');
   for (const count of ['Fetched: 9', 'Eligible: 6', 'Passed gates: 5', 'Ready: 4', 'Scored: 3', 'Shortlisted: 1', 'Employers represented: 1', 'Strict: 1']) assert.ok(html.includes(count), count);
+  assert.match(html, /Per-mode daily targets/);
+  assert.match(html, /<th>Roles \/ target<\/th>/);
+});
+
+test('daily HTML report keeps Stretch and EOR roles separate and shows source yield and drift', () => {
+  const report = renderLocalDailyHtmlReport({
+    runAt: NOW,
+    modes: {
+      normal: { results: [], shortlist: [] },
+      startup: { results: [], shortlist: [] },
+      remote: { results: [], shortlist: [] },
+      eorContract: { results: [{ title: 'EOR AI Engineer', company: 'Global Employer' }], shortlist: [{ title: 'EOR AI Engineer', company: 'Global Employer', labels: ['EOR'] }] },
+    },
+    stretch: [{ title: 'Stretch Backend Engineer', company: 'Startup' }],
+    sourceYield: { sources: [{ sourceId: 'greenhouse:acme', provider: 'greenhouse', board: 'acme', applicationReady: 2 }] },
+    sourceTelemetry: {
+      'ats-warm': { requests: 4, detail: { telemetry: { requests: 4 }, sources: [{ provider: 'greenhouse', board: 'acme', requests: 4 }] } },
+      'portal-linkedin-jobs': { status: 'failed', error: 'HTTP 429' },
+      glassdoor: { status: 'failed', error: 'HTTP 403' },
+      'ats-batch-1': { status: 'failed', failed: 1, detail: { failed: 1 } },
+    },
+    scorerVariance: [{ role: 'AI Engineer at Acme', previous: 72, current: 67 }],
+  });
+
+  assert.match(report, /<section[^>]*data-section="stretch"[^>]*><h2>Stretch/);
+  assert.match(report, /Stretch Backend Engineer/);
+  assert.match(report, /<section[^>]*data-mode="eorContract"[^>]*>[\s\S]*EOR AI Engineer/);
+  assert.match(report, /Source yield per request/);
+  assert.match(report, /greenhouse:acme/);
+  assert.match(report, /2 application-ready roles \/ 4 requests/);
+  assert.match(report, /Drift signals/);
+  assert.match(report, /LinkedIn.*429/);
+  assert.match(report, /Glassdoor.*403/);
+  assert.match(report, /ats-batch-1.*board failure/i);
+  assert.match(report, /72.*67/);
 });
 
 test('local report CLI writes HTML when given a local .html output path', () => {
