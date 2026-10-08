@@ -555,7 +555,7 @@ export function normalizeRegistryBoard(raw = {}) {
     activationState,
     probeStatus: clean(raw.probeStatus) || (enabled ? 'verified' : 'proposed'),
     probedAt: clean(raw.probedAt),
-    probe: raw.probe && typeof raw.probe === 'object' ? { ...raw.probe } : null,
+    probe: raw.probe && typeof raw.probe === 'object' && !Array.isArray(raw.probe) ? { ...raw.probe } : null,
     evidenceRef: clean(raw.evidenceRef),
     notes: clean(raw.notes) || clean(raw.reason),
     scheduleLane: clean(raw.scheduleLane) || PROVIDER_LANES[provider] || null,

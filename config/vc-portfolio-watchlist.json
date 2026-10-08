@@ -1,6 +1,6 @@
 {
   "schemaVersion": "VcPortfolioWatchlistV1",
-  "generatedAt": "2026-07-24",
+  "generatedAt": "2026-10-08",
   "purpose": "Prioritization/seeding only. Never scraped for job data directly; used to seed which employer career/ATS pages get checked. See docs/research/job-board-source-audit-2026-07-23.md.",
   "funds": [
     {
@@ -80,6 +80,33 @@
         { "name": "Loop" },
         { "name": "Urban Company" }
       ]
+    },
+    {
+      "fund": "Together Fund",
+      "indiaFocused": true,
+      "sourceUrl": "https://www.together.fund/",
+      "verifiedAt": "2026-10-08",
+      "verificationMethod": "Public portfolio lists Composio; the fund states a US-India focus. Employer careers redirects to the Ashby board. Board jobs have not been probed.",
+      "companies": [
+        {
+          "name": "Composio",
+          "board": {
+            "provider": "ashby",
+            "slug": "composio",
+            "url": "https://jobs.ashbyhq.com/composio",
+            "sourceUrl": "https://composio.dev/careers",
+            "verifiedAt": "2026-10-08"
+          }
+        }
+      ]
+    },
+    {
+      "fund": "Nexus Venture Partners",
+      "indiaFocused": true,
+      "sourceUrl": "https://www.nexusvp.com/companies",
+      "verifiedAt": "2026-10-08",
+      "verificationMethod": "Public portfolio explicitly lists India for CrelioHealth and India and U.S. for Druva. Employer boards remain search seeds until probed.",
+      "companies": [{ "name": "CrelioHealth" }, { "name": "Druva" }]
     },
     {
       "fund": "Antler",
