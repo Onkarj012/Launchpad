@@ -10,6 +10,39 @@ import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
 const html = (value) => String(value ?? 'Not Verified').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
+// Read request counts from source telemetry without inferring missing requests.
+function sourceRequests(source) {
+  const details = source.detail ?? source;
+  const candidates = [source.requests, details.requests, details.telemetry?.requests];
+  return candidates.find(Number.isFinite) ?? null;
+}
+
+// Render only drift signals supported by retained run evidence.
+function dailyDriftSignals(result) {
+  const signals = [];
+  const telemetry = result.sourceTelemetry ?? {};
+  const textFor = (source) => JSON.stringify(source).toLowerCase();
+  for (const [id, source] of Object.entries(telemetry)) {
+    const evidence = textFor(source);
+    if (/linkedin/.test(id.toLowerCase()) && /429|rate.limit/.test(evidence)) signals.push(`LinkedIn 429: ${id}`);
+    if (/glassdoor/.test(id.toLowerCase()) && /403|forbidden/.test(evidence)) signals.push(`Glassdoor 403: ${id}`);
+    const failedBoards = Number(source.boardsFailed ?? source.failed ?? source.detail?.boardsFailed ?? source.detail?.failed ?? source.detail?.telemetry?.boardsFailed ?? source.detail?.telemetry?.failed ?? source.detail?.failures?.length ?? 0);
+    if (failedBoards > 0) signals.push(`${id}: ${failedBoards} board failure${failedBoards === 1 ? '' : 's'}`);
+  }
+  for (const [id, endState] of Object.entries(result.sourceEndStates ?? {})) {
+    const evidence = `${endState.state ?? ''} ${endState.reason ?? ''}`.toLowerCase();
+    if (/linkedin/.test(id.toLowerCase()) && /429|rate.limit/.test(evidence)) signals.push(`LinkedIn 429: ${id}`);
+    if (/glassdoor/.test(id.toLowerCase()) && /403|forbidden/.test(evidence)) signals.push(`Glassdoor 403: ${id}`);
+    if (/failed|http_[45]|transport/.test(evidence) && !/linkedin|glassdoor/.test(id.toLowerCase())) signals.push(`${id}: board failure`);
+  }
+  for (const entry of result.scorerVariance ?? result.scoring?.variance ?? []) {
+    const previous = entry.previous ?? entry.previousScore;
+    const current = entry.current ?? entry.currentScore;
+    if (Number.isFinite(previous) && Number.isFinite(current)) signals.push(`Scorer variance: ${entry.role ?? entry.title ?? 'Role'} ${previous} to ${current}`);
+  }
+  return [...new Set(signals)];
+}
+
 // Display timezone-backed timestamps in IST and preserve date-only precision.
 function eventDate(value) {
   if (value == null) return 'Not Verified';
@@ -117,6 +150,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   ];
   const modes = [...targetModes, ['eorContract', 'EOR / Contract']];
   const modeRuns = result.modes ?? {};
+  const telemetry = result.sourceTelemetry ?? {};
   const uniqueResults = new Map(modes.flatMap(([mode]) => (modeRuns[mode]?.results ?? []).map((role) => [role.canonicalUrl ?? role.url, role])));
   const allShortlists = targetModes.flatMap(([mode]) => modeRuns[mode]?.shortlist ?? (result.mode === mode ? result.shortlist ?? [] : []));
   const uniqueShortlist = [...new Map(allShortlists.map((role) => [role.canonicalUrl ?? role.url, role])).values()];
@@ -135,6 +169,9 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     ['Employers represented', employers.size],
     ['Strict', strictCount],
   ];
+  const htmlTargetModes = [
+    ['normal', 'Pune', 10, 6], ['startup', 'Startup', 5, 4], ['remote', 'Remote', 5, 4],
+  ];
   const roleCard = (role, isShortlist) => {
     const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
     const rawApplyUrl = role.originalApplicationUrl ?? null;
@@ -147,7 +184,25 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
     return `<section data-mode="${mode}"><h2>${label}</h2><h3>Full results</h3>${(run.results ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}<h3>Shortlist</h3>${(run.shortlist ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
   }).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(now)}</p><section><h2>Funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${sections}</body></html>`;
+  const targetRows = htmlTargetModes.map(([mode, label, roleTarget, employerTarget]) => {
+    const shortlist = modeRuns[mode]?.shortlist ?? [];
+    const verified = shortlist.filter((role) => (modeRuns[mode]?.results ?? []).some((candidate) => (candidate.canonicalUrl ?? candidate.url) === (role.canonicalUrl ?? role.url))).length;
+    const employerCount = new Set(shortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean)).size;
+    return `<tr><td>${label}</td><td>${shortlist.length}/${roleTarget}</td><td>${employerCount}/${employerTarget}</td><td>${verified}/${shortlist.length}</td><td>${Math.max(0, roleTarget - shortlist.length)} roles, ${Math.max(0, employerTarget - employerCount)} employers</td></tr>`;
+  }).join('');
+  const targets = `<section data-section="targets"><h2>Per-mode daily targets</h2><table><thead><tr><th>Mode</th><th>Roles / target</th><th>Employers / target</th><th>Verified shortlisted</th><th>Shortfall</th></tr></thead><tbody>${targetRows}</tbody></table></section>`;
+  const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
+  const yieldRows = (result.sourceYield?.sources ?? []).map((row) => {
+    const matchingTelemetry = Object.entries(telemetry).find(([id, source]) => id === row.sourceId || `${row.provider}:${row.board}` === row.sourceId || source.detail?.sources?.some((entry) => `${entry.provider}:${entry.board}` === row.sourceId));
+    const boardTelemetry = matchingTelemetry?.[1].detail?.sources?.find((entry) => `${entry.provider}:${entry.board}` === row.sourceId);
+    const requests = boardTelemetry ? sourceRequests(boardTelemetry) : matchingTelemetry ? sourceRequests(matchingTelemetry[1]) : null;
+    const rate = requests == null ? 'Not Verified' : `${row.applicationReady ?? 0} application-ready roles / ${requests} requests`;
+    return `<tr><td>${html(row.sourceId)}</td><td>${row.fetched ?? 0}</td><td>${row.applicationReady ?? 0}</td><td>${requests ?? 'Not Verified'}</td><td>${rate}</td></tr>`;
+  }).join('');
+  const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
+  const driftSignals = dailyDriftSignals(result);
+  const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(now)}</p><section><h2>Funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${targets}${sections}${stretch}${sourceYield}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.
