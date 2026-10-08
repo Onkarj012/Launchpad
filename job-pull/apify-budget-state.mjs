@@ -72,10 +72,11 @@ export function recordApifyRun(state, nowIso, estimatedCostUsd = 0, { estimatedI
   const key = monthKey(nowIso);
   const usage = state.months[key] ?? { runs: 0, spendUsd: 0, estimatedSpendUsd: 0, actualSpendUsd: 0, estimatedItems: 0, actualItems: 0, actualCostKnownRuns: 0 };
   const estimated = Number(estimatedCostUsd) || 0;
-  const actualKnown = Number.isFinite(Number(actualCostUsd));
+  const actualKnown = actualCostUsd != null && Number.isFinite(Number(actualCostUsd));
+  const actual = actualKnown ? Number(actualCostUsd) : estimated;
   state.months[key] = {
     runs: usage.runs + 1,
-    spendUsd: usage.spendUsd + estimated,
+    spendUsd: usage.spendUsd + actual,
     estimatedSpendUsd: (Number(usage.estimatedSpendUsd) || 0) + estimated,
     actualSpendUsd: (Number(usage.actualSpendUsd) || 0) + (actualKnown ? Number(actualCostUsd) : 0),
     estimatedItems: (Number(usage.estimatedItems) || 0) + (Number(estimatedItems) || 0),

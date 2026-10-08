@@ -36,6 +36,8 @@ export const API_BASE = 'https://api.apify.com/v2';
 export const DEFAULT_POLL_INTERVAL_MS = 10_000;
 export const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000;
 export const DEFAULT_MAX_RETURNED_ITEMS = 250;
+const MAX_RESCUE_MONTHLY_BUDGET_USD = 15;
+const MAX_RESCUE_RUN_COST_USD = 1;
 const NATIVE_REMOTE_LABELS = new Set(['himalayas', 'remotive', 'we-work-remotely']);
 
 function parseValue(args, name, fallback = null) {
@@ -144,6 +146,12 @@ export function validateConfig(config) {
   }
   const returnedCap = Number(config.rescue?.maxReturnedItemsPerProfile ?? DEFAULT_MAX_RETURNED_ITEMS);
   if (!Number.isInteger(returnedCap) || returnedCap < 1) throw new RunError('rescue.maxReturnedItemsPerProfile must be a positive integer', 'config');
+  const monthlyBudgetUsd = Number(config.rescue?.monthlyBudgetUsd ?? MAX_RESCUE_MONTHLY_BUDGET_USD);
+  if (!Number.isFinite(monthlyBudgetUsd) || monthlyBudgetUsd <= 0 || monthlyBudgetUsd > MAX_RESCUE_MONTHLY_BUDGET_USD) throw new RunError('rescue.monthlyBudgetUsd must be between 0 and 15', 'config');
+  const maxRunCostUsd = Number(config.rescue?.maxRunCostUsd ?? MAX_RESCUE_RUN_COST_USD);
+  if (!Number.isFinite(maxRunCostUsd) || maxRunCostUsd <= 0 || maxRunCostUsd > MAX_RESCUE_RUN_COST_USD) throw new RunError('rescue.maxRunCostUsd must be between 0 and 1', 'config');
+  const maxRunsPerMonth = Number(config.rescue?.maxRunsPerMonth ?? 15);
+  if (!Number.isInteger(maxRunsPerMonth) || maxRunsPerMonth < 1 || maxRunsPerMonth > 15) throw new RunError('rescue.maxRunsPerMonth must be an integer between 1 and 15', 'config');
   const profiles = new Set();
   config.actors.forEach((actor, index) => {
     if (!actor || typeof actor !== 'object') throw new RunError(`actors[${index}] must be an object`, 'config');
@@ -286,8 +294,13 @@ export async function runActor(actor, token, fetchImpl = fetch, {
   clock = () => Date.now(),
   maxReturnedItems = DEFAULT_MAX_RETURNED_ITEMS,
   datasetOffset = 0,
+  maxTotalChargeUsd = 1,
 } = {}) {
-  const startRes = await fetchImpl(`${API_BASE}/acts/${encodeURIComponent(actor.id)}/runs?token=${encodeURIComponent(token)}`, {
+  const chargeLimit = Math.min(Number(maxTotalChargeUsd) || MAX_RESCUE_RUN_COST_USD, MAX_RESCUE_RUN_COST_USD);
+  const startUrl = new URL(`${API_BASE}/acts/${encodeURIComponent(actor.id)}/runs`);
+  startUrl.searchParams.set('token', token);
+  startUrl.searchParams.set('maxTotalChargeUsd', String(chargeLimit));
+  const startRes = await fetchImpl(startUrl.toString(), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(actor.input || {}),
@@ -396,13 +409,14 @@ export async function pullAll(config, token, {
       log(`  ! ${key}: APIFY_TOKEN is not set`);
       continue;
     }
-    const estimatedCostUsd = Number(actor.estimatedCostUsd) || 0;
+    const maxRunCostUsd = Number(config.rescue?.maxRunCostUsd ?? MAX_RESCUE_RUN_COST_USD);
+    const estimatedCostUsd = Number(actor.estimatedCostUsd) || maxRunCostUsd;
     const nowIso = new Date(clockMillis(clock)).toISOString();
     const blockReason = budgetBlockReason({
       state: budgetState, nowIso, estimatedCostUsd,
-      monthlyBudgetUsd: config.rescue?.monthlyBudgetUsd ?? Infinity,
-      maxRunsPerMonth: config.rescue?.maxRunsPerMonth ?? Infinity,
-      maxRunCostUsd: config.rescue?.maxRunCostUsd ?? Infinity,
+      monthlyBudgetUsd: config.rescue?.monthlyBudgetUsd ?? MAX_RESCUE_MONTHLY_BUDGET_USD,
+      maxRunsPerMonth: config.rescue?.maxRunsPerMonth ?? 15,
+      maxRunCostUsd,
     });
     if (blockReason) {
       const blocked = actorTelemetry(actor, { status: 'unavailable', failureReason: blockReason });
@@ -421,6 +435,7 @@ export async function pullAll(config, token, {
         clock,
         maxReturnedItems: config.rescue?.maxReturnedItemsPerProfile ?? DEFAULT_MAX_RETURNED_ITEMS,
         datasetOffset,
+        maxTotalChargeUsd: maxRunCostUsd,
       });
       const items = actorResult.items;
       const mapped = [];

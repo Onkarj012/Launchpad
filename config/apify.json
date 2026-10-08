@@ -5,9 +5,9 @@
     "defaultEnabled": false,
     "maxProfilesPerRun": 3,
     "runTimeoutSeconds": 600,
-    "monthlyBudgetUsd": 5,
-    "maxRunsPerMonth": 6,
-    "maxRunCostUsd": 0.75,
+    "monthlyBudgetUsd": 15,
+    "maxRunsPerMonth": 15,
+    "maxRunCostUsd": 1,
     "maxReturnedItemsPerProfile": 250
   },
   "actors": [

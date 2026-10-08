@@ -216,6 +216,67 @@ test('Apify budget gate allows usage under all caps and reports each cap indepen
   assert.equal(budgetBlockReason({ state: { months: { '2026-08': { runs: 2, spendUsd: 1 } } }, nowIso, estimatedCostUsd: 0.76, ...limits }), 'RUN_COST_CAP_EXCEEDED');
 });
 
+test('rescue config sets the ticket run and monthly spend caps', () => {
+  assert.equal(CONFIG.rescue.maxRunCostUsd, 1);
+  assert.equal(CONFIG.rescue.monthlyBudgetUsd, 15);
+  assert.throws(() => validateConfig({ ...CONFIG, rescue: { ...CONFIG.rescue, maxRunCostUsd: 1.01 } }), RunError);
+  assert.throws(() => validateConfig({ ...CONFIG, rescue: { ...CONFIG.rescue, monthlyBudgetUsd: 15.01 } }), RunError);
+});
+
+test('each Apify actor run sends the hard charge limit to Apify', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (options?.method === 'POST') return response({ data: { id: 'run-cap', status: 'SUCCEEDED', defaultDatasetId: 'dataset-cap' } });
+    return response([]);
+  };
+  const config = {
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 15, maxRunsPerMonth: 15, maxRunCostUsd: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+
+  await pullAll(config, 'token-fixture', {
+    profile: 'demo', fetchImpl, pollIntervalMs: 0, clock: () => '2026-08-04T00:00:00.000Z',
+    seenCache: emptyApifySeenCache(), budgetState: emptyApifyBudgetState(),
+  });
+
+  assert.equal(new URL(calls[0].url).searchParams.get('maxTotalChargeUsd'), '1');
+});
+
+test('monthly budget blocks a rescue run that would exceed fifteen dollars', async () => {
+  let calls = 0;
+  const budgetState = { ...emptyApifyBudgetState(), months: { '2026-08': { runs: 14, spendUsd: 14.5 } } };
+  const result = await pullAll({
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 15, maxRunsPerMonth: 15, maxRunCostUsd: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 1, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  }, 'token-fixture', {
+    profile: 'demo', fetchImpl: async () => { calls += 1; throw new Error('budget must block before Apify'); },
+    clock: () => '2026-08-04T00:00:00.000Z', seenCache: emptyApifySeenCache(), budgetState,
+  });
+
+  assert.equal(calls, 0);
+  assert.equal(result.summary.demo.failureReason, 'MONTHLY_BUDGET_CAP_EXCEEDED');
+});
+
+test('monthly spend uses reported Apify cost when available', async () => {
+  const budgetState = emptyApifyBudgetState();
+  await pullAll({
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 15, maxRunsPerMonth: 15, maxRunCostUsd: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 1, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  }, 'token-fixture', {
+    profile: 'demo', fetchImpl: async (url, options) => {
+      if (options?.method === 'POST') return response({ data: { id: 'run-cost', status: 'RUNNING' } });
+      if (url.includes('/actor-runs/')) return response({ data: { id: 'run-cost', status: 'SUCCEEDED', defaultDatasetId: 'dataset-cost', costUsd: 0.4 } });
+      return response([]);
+    },
+    pollIntervalMs: 0, clock: () => '2026-08-04T00:00:00.000Z',
+    seenCache: emptyApifySeenCache(), budgetState,
+  });
+
+  assert.equal(budgetState.months['2026-08'].spendUsd, 0.4);
+  assert.equal(budgetState.months['2026-08'].estimatedSpendUsd, 1);
+});
+
 test('pullAll blocks an actor at the monthly run cap without calling Apify', async () => {
   let calls = 0;
   const budgetState = { ...emptyApifyBudgetState(), months: { '2026-08': { runs: 6, spendUsd: 0 } } };
