@@ -489,6 +489,7 @@ function verificationResolution(observation, error, reason = 'resolver-error') {
 export function createCrawlerRunResolver({ config, transport, runAt, signal = null, deadline = null, requestBudget = null, hostLimiter = null }) {
   const resolver = createOriginalListingResolver({
     transport,
+    config,
     runAt,
     signal,
     deadline,

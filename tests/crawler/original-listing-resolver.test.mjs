@@ -109,6 +109,85 @@ test('direct ATS URL resolves immediately with provider fingerprint', async () =
   assert.ok(result.telemetry.budget.maxRequests >= 1);
 });
 
+test('portal leads cross-match the registry board by employer, title, location, and requisition', async () => {
+  const boardUrl = 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true';
+  const detailUrl = 'https://boards.greenhouse.io/acme/jobs/123';
+  const requests = [];
+  const resolve = createOriginalListingResolver({
+    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true }] } },
+    transport: async (url) => {
+      requests.push(url);
+      if (url === boardUrl) return { status: 200, body: { jobs: [
+        { id: 122, title: 'AI Engineer', absolute_url: 'https://boards.greenhouse.io/acme/jobs/122', location: { name: 'Bengaluru, India' } },
+        { id: 123, title: 'AI Engineer', absolute_url: detailUrl, location: { name: 'Pune, India' } },
+      ] } };
+      return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' }, identifier: { value: '123' },
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI services.' });
+    },
+  });
+  const result = await resolve(observation('https://www.linkedin.com/jobs/view/456', {
+    provider: 'linkedin-jobs', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune', requisitionId: '123',
+  }));
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.originalApplicationUrl, detailUrl);
+  assert.deepEqual(requests, [boardUrl, detailUrl]);
+  assert.deepEqual(result.telemetry.crossMatch, {
+    attempted: true, boardRequests: 1, verifiedRoutes: 1, resolverRequests: 2, verifiedRoutesPerRequest: 0.5, budgetRaised: false,
+  });
+  assert.equal(result.telemetry.budget.maxRequests, 8);
+});
+
+test('portal cross-match misses and identity mismatches stay in verification', async (t) => {
+  const boardUrl = 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true';
+  for (const scenario of [
+    { name: 'no title match', row: { id: 123, title: 'Backend Engineer', absolute_url: 'https://boards.greenhouse.io/acme/jobs/123', location: { name: 'Pune, India' } } },
+    { name: 'no location match', row: { id: 123, title: 'AI Engineer', absolute_url: 'https://boards.greenhouse.io/acme/jobs/123', location: { name: 'Bengaluru, India' } } },
+    { name: 'requisition mismatch', row: { id: 124, title: 'AI Engineer', absolute_url: 'https://boards.greenhouse.io/acme/jobs/124', location: { name: 'Pune, India' } } },
+  ]) await t.test(scenario.name, async () => {
+    const requests = [];
+    const resolve = createOriginalListingResolver({
+      config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true }] } },
+      transport: async (url) => {
+        requests.push(url);
+        return { status: 200, body: { jobs: [scenario.row] } };
+      },
+    });
+    const result = await resolve(observation('https://www.glassdoor.com/job-listing/ai-engineer', {
+      provider: 'glassdoor', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune', requisitionId: '123',
+    }));
+    assert.equal(result.status, 'verification');
+    assert.equal(result.applicationResolution.status, 'Needs Verification');
+    assert.equal(result.originalApplicationUrl, null);
+    assert.deepEqual(requests, [boardUrl]);
+  });
+});
+
+test('Workday cross-match searches with the portal title and records a verified route measurement', async () => {
+  const listUrl = 'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/jobs';
+  const detailUrl = 'https://acme.wd3.myworkdayjobs.com/External/job/Pune/AI-Engineer_JR123';
+  const requests = [];
+  const resolve = createOriginalListingResolver({
+    config: { boardRegistry: { boards: [{ provider: 'workday', tenant: 'acme', instance: 'wd3', site: 'External', company: 'Acme Labs', enabled: true }] } },
+    transport: async (url, options) => {
+      requests.push({ url, options });
+      if (url === listUrl) return { status: 200, body: { jobPostings: [
+        { title: 'AI Engineer', jobReqId: 'JR123', location: { descriptor: 'Pune, India' }, externalPath: '/job/Pune/AI-Engineer_JR123' },
+      ] } };
+      return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' },
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI services.' });
+    },
+  });
+  const result = await resolve(observation('https://www.wellfound.com/jobs/456', {
+    provider: 'wellfound', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune',
+  }));
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.originalApplicationUrl, detailUrl);
+  assert.equal(requests[0].url, listUrl);
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(JSON.parse(requests[0].options.body).searchText, 'AI Engineer');
+  assert.equal(result.telemetry.crossMatch.verifiedRoutesPerRequest, 0.5);
+});
+
 test('follows a safe redirect from an aggregator to an ATS detail page', async () => {
   const calls = [];
   const discoveryUrl = 'https://www.indeed.com/viewjob?jk=abc';
