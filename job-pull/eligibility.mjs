@@ -237,10 +237,11 @@ function seniorRoleRequirement(candidate) {
   return body.match(/\b(?:we\s+(?:are\s+)?(?:seeking|hiring|looking for)|(?:this|the)\s+(?:position|role)\s+(?:is|requires)|(?:seeking|hiring|looking for))\s+(?:an?\s+)?(?:(?:experienced|highly skilled|skilled|talented)\s+)?((?:senior|sr\.?|staff|principal|lead)\s+(?:(?:java|python|software|backend|full[ -]?stack|ai|ml|data|machine learning)\s+){0,3}(?:engineer|developer|scientist))\b/i)?.[0] || null;
 }
 
+// Classify required experience while retaining numeric evidence for selection.
 export function classifyExperience(candidate, policy) {
-  const seniorRequirement = seniorRoleRequirement(candidate);
-  if (seniorRequirement) return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_SENIOR_ROLE_REQUIREMENT', evidence: seniorRequirement, minYears: null, maxYears: null };
   const parsed = parsedExperience(candidate);
+  const seniorRequirement = seniorRoleRequirement(candidate);
+  if (seniorRequirement) return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_SENIOR_ROLE_REQUIREMENT', evidence: seniorRequirement, minYears: parsed.min, maxYears: parsed.max };
   if (parsed.min != null && parsed.min >= policy.experience.hardRejectMinimumYears) {
     return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS', evidence: parsed.evidence, minYears: parsed.min, maxYears: parsed.max };
   }
@@ -336,6 +337,7 @@ export function classifyLiveness(candidate) {
   return { pass: true, code: 'LIVENESS_NOT_VERIFIED', evidence: value.evidence || 'Not Verified' };
 }
 
+// Apply eligibility gates and expose evidence needed by mode selection.
 export function classifyCandidate(candidate, policy) {
   const geo = classifyGeo(candidate, policy);
   const employment = classifyEmployment(candidate, policy);
@@ -358,6 +360,7 @@ export function classifyCandidate(candidate, policy) {
     strict,
     relaxed,
     tier: strict ? 'strict' : relaxed ? 'relaxed' : null,
+    hardMinimumExactly3Years: experience.minYears === 3,
     roleFamily,
     workMode: geo.mode,
     geo,

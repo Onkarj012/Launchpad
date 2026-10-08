@@ -203,9 +203,11 @@ export function hiringEmployerConflict(description) {
   return recruiting ? { reason: 'destination-hiring-employer-unverified', evidence: recruiting[0] } : null;
 }
 
+// Normalize explicit experience text without promoting preferred years.
 function parseExperienceString(value) {
   const text = nonEmptyString(value);
   if (!text) return { minYears: null, maxYears: null, evidence: null };
+  if (PREFERENCE_RE.test(text)) return extractExperienceYears(text) || { minYears: null, maxYears: null, evidence: text };
   const range = text.match(/(\d+(?:\.\d+)?)\s*(?:[-–—]|to)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)/i);
   if (range) return { minYears: Number(range[1]), maxYears: Number(range[2]), evidence: text };
   const plus = text.match(/(\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)/i);
@@ -215,6 +217,7 @@ function parseExperienceString(value) {
   return { minYears: null, maxYears: null, evidence: text };
 }
 
+// Preserve supplied experience evidence and distinguish hard requirements from preferences.
 function normalizeExperience(raw) {
   const value = raw?.experience;
   if (typeof value === 'string') return parseExperienceString(value);
@@ -224,6 +227,7 @@ function normalizeExperience(raw) {
       maxYears: finiteYears(value.maxYears ?? value.maximumYears ?? value.max),
       evidence: preserveText(value.evidence),
     };
+    if (explicit.evidence && PREFERENCE_RE.test(explicit.evidence)) return parseExperienceString(explicit.evidence);
     if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return explicit;
     return extractExperienceYears(raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body) || explicit;
   }
@@ -232,6 +236,7 @@ function normalizeExperience(raw) {
     maxYears: finiteYears(raw?.maxYears ?? raw?.maximumYears ?? raw?.experienceMaxYears),
     evidence: preserveText(raw?.experienceEvidence),
   };
+  if (explicit.evidence && PREFERENCE_RE.test(explicit.evidence)) return parseExperienceString(explicit.evidence);
   if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return explicit;
   return extractExperienceYears(raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body)
     || { minYears: null, maxYears: null, evidence: null };
