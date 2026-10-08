@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { candidateDedupKey, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { loadConfig, loadConversionPlan } from '../job-pull/config.mjs';
 import { classifyCandidate } from '../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../job-pull/freshness.mjs';
@@ -37,6 +37,30 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   }
   const lines = ['# Local lead handoff', '', `Observed at ${now}. Public evidence only. No scores, applications, outreach or store delivery.`, '',
     `Strict ready: ${buckets.strictReady.length}. Shortage fallback ready: ${buckets.fallbackReady.length}. Needs verification: ${buckets.verification.length}. Rejected: ${buckets.rejected.length}.`, ''];
+  if (result.modes && typeof result.modes === 'object') {
+    const targets = { normal: { label: 'Pune (normal)', roleTarget: 10, employerTarget: 6 }, startup: { label: 'Startup', roleTarget: 5, employerTarget: 4 }, remote: { label: 'Remote', roleTarget: 5, employerTarget: 4 } };
+    const modeRows = Object.entries(targets).map(([mode, target]) => {
+      const selection = result.modes[mode] ?? {};
+      const shortlist = Array.isArray(selection.shortlist) ? selection.shortlist : [];
+      const verifiedKeys = new Set((selection.results ?? []).map(candidateDedupKey));
+      const verified = shortlist.filter((candidate) => verifiedKeys.has(candidateDedupKey(candidate))).length;
+      const employers = new Set(shortlist.map((candidate) => String(candidate.company ?? '').trim().toLowerCase()).filter(Boolean)).size;
+      return { ...target, shortlist, verified, employers };
+    });
+    const strictCount = modeRows.flatMap(({ shortlist }) => shortlist).filter((candidate) => candidate.selectionTier === 'Strict').length;
+    const allShortlists = modeRows.flatMap(({ shortlist }) => shortlist);
+    const verifiedCount = modeRows.reduce((count, mode) => count + mode.verified, 0);
+    lines.push(`## Per-mode daily targets (IST ${eventDate(now).slice(0, 10)})`, '',
+      '| Mode | Roles / target | Employers / target | Verified shortlisted | Shortfall |',
+      '| --- | ---: | ---: | ---: | --- |');
+    for (const mode of modeRows) {
+      const missingRoles = Math.max(0, mode.roleTarget - mode.shortlist.length);
+      const employerShortfall = Math.max(0, mode.employerTarget - mode.employers);
+      const shortfall = missingRoles || employerShortfall ? `${missingRoles} roles, ${employerShortfall} employers` : 'None';
+      lines.push(`| ${mode.label} | ${mode.shortlist.length}/${mode.roleTarget} | ${mode.employers}/${mode.employerTarget} | ${mode.verified}/${mode.shortlist.length} | ${shortfall} |`);
+    }
+    lines.push('', `Strict across modes: ${strictCount}, target 2.`, `Verified shortlisted roles: ${verifiedCount}/${allShortlists.length}.`, '');
+  }
   const table = (name, rows) => {
     lines.push(`## ${name}`, '');
     if (!rows.length) { lines.push('None.', ''); return; }
