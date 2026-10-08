@@ -4,7 +4,7 @@
 
 **Blocked by:** 09, 10, 13, 15
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Stretch section shows only Stretch roles
 - [ ] EOR/Contract section shows only lane roles
