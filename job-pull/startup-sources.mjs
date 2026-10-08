@@ -5,6 +5,7 @@ const ATS_PROVIDERS = new Set(['greenhouse', 'lever', 'ashby', 'workday', 'worka
 
 export const STARTUP_SOURCE_LANES = Object.freeze([
   { id: 'startup-employer-boards', kind: 'startup-employer-board', category: 'direct-company', priority: 100 },
+  { id: 'startup-company-careers', kind: 'startup-career-search', category: 'direct-company', priority: 92 },
   { id: 'vc-portfolio-boards', kind: 'vc-portfolio', category: 'vc-portfolio', priority: 95 },
   { id: 'yc', kind: 'yc-startup-board', category: 'startup-board', priority: 90 },
   { id: 'wellfound', kind: 'wellfound', category: 'startup-board', priority: 80 },

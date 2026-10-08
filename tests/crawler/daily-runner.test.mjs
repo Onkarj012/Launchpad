@@ -570,6 +570,45 @@ test('unconfigured unified crawler lanes remain optional without degrading an ot
   }
 });
 
+test('daily startup company careers source feeds Startup mode and reports a terminal state', async () => {
+  const { config } = testConfig();
+  config.sources.startup = { companyCareers: [{ company: 'Career Lane Startup', websiteUrl: 'https://startupcareers.example.test/' }] };
+  const calls = [];
+  const result = await runDailyNormal(runOptions(config, async (url) => {
+    calls.push(url);
+    if (url.endsWith('/robots.txt')) return { status: 200, body: 'User-agent: *\nAllow: /' };
+    if (url === 'https://startupcareers.example.test/') return {
+      status: 200,
+      body: `<script type="application/ld+json">${JSON.stringify({
+        '@type': 'JobPosting', title: 'AI Engineer', datePosted: NOW,
+        description: 'Full-time AI Engineer role in Pune for 0-1 years using Python.',
+        hiringOrganization: { name: 'Career Lane Startup' },
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        sameAs: 'https://startupcareers.example.test/jobs/ai-engineer',
+      })}</script>`,
+    };
+    if (url === 'https://startupcareers.example.test/sitemap.xml') return { status: 404, body: '' };
+    throw new Error(`unexpected career request: ${url}`);
+  }, {
+    scorer: async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) }),
+  }));
+
+  assert.ok(calls.length >= 2);
+  assert.equal(result.outcome.fatal, false, JSON.stringify(result.outcome));
+  assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'startup-company-careers').status, 'ok');
+  assert.deepEqual(result.modes.startup.results.map(({ company, primaryMode, otherModes }) => [company, primaryMode, otherModes]), [['Career Lane Startup', 'startup', ['normal']]]);
+});
+
+test('empty startup company careers source has a reason in the daily run', async () => {
+  const { config } = testConfig();
+  config.sources.startup = { companyCareers: [] };
+  const result = await runDailyNormal(runOptions(config, fakeTransport({})));
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'startup-company-careers');
+
+  assert.equal(manifest.status, 'empty');
+  assert.equal(manifest.reason, 'no-company-career-sites-configured');
+});
+
 test('a failing optional crawler lane reports its failure while another lane still delivers', async () => {
   const { config } = testConfig();
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {

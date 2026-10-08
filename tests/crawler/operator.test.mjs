@@ -633,6 +633,55 @@ test('startup-mode buildSourcePlans wires yc and vc-portfolio-boards lanes with 
   assert.notEqual(vcManifest.status, 'unavailable');
 });
 
+test('startup daily source plan crawls configured company career pages and returns Startup roles', async () => {
+  const requests = [];
+  const transport = async (url) => {
+    requests.push(url);
+    if (url.endsWith('/robots.txt')) return { status: 200, body: 'User-agent: *\nAllow: /' };
+    if (url === 'https://careers.example.test/') return {
+      status: 200,
+      body: `<script type="application/ld+json">${JSON.stringify({
+        '@type': 'JobPosting',
+        title: 'AI Engineer',
+        datePosted: '2026-07-23',
+        description: 'Full-time AI Engineer role in Pune for 0-1 years using Python.',
+        hiringOrganization: { name: 'Career Site Startup' },
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        sameAs: 'https://careers.example.test/jobs/ai-engineer',
+      })}</script>`,
+    };
+    if (url === 'https://careers.example.test/sitemap.xml') return { status: 404, body: '' };
+    throw new Error(`unexpected career request: ${url}`);
+  };
+  const plans = buildSourcePlans({
+    config: { sources: { startup: { companyCareers: [{ company: 'Career Site Startup', websiteUrl: 'https://careers.example.test/' }] } } },
+    transport,
+    runAt: '2026-07-24T10:00:00.000Z',
+    schedule: 'morning',
+    profile: { mode: 'startup' },
+  });
+
+  const result = await plans.find(({ id }) => id === 'startup-mode').fetch({});
+  const lane = result.manifest.telemetry.lanes.find(({ sourceId }) => sourceId === 'startup-company-careers');
+
+  assert.ok(requests.length >= 2);
+  assert.equal(lane.status, 'ok');
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].startupLaneId, 'startup-company-careers');
+  assert.equal(result.observations[0].company, 'Career Site Startup');
+
+  const emptyPlans = buildSourcePlans({
+    config: { sources: { startup: { companyCareers: [] } } },
+    transport,
+    runAt: '2026-07-24T10:00:00.000Z',
+    schedule: 'morning',
+    profile: { mode: 'normal' },
+  });
+  const emptyResult = await emptyPlans.find(({ id }) => id === 'startup-company-careers').fetch({});
+  assert.equal(emptyResult.manifest.status, 'empty');
+  assert.equal(emptyResult.manifest.reason, 'no-company-career-sites-configured');
+});
+
 test('india-startup lane requests include ATS-domain, role-family, geography, and entry-level dimensions', () => {
   const requests = buildIndiaStartupLaneRequests({
     indiaStartup: {
