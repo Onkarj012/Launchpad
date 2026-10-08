@@ -1,6 +1,6 @@
 {
   "schemaVersion": "BoardRegistryV1",
-  "updatedAt": "2026-07-24T12:00:00.000Z",
+  "updatedAt": "2026-10-08T00:00:00.000Z",
   "boards": [
     {
       "id": "ashby:anyscale",
@@ -9766,6 +9766,703 @@
       },
       "migratedFrom": [
         "reverse-warm-set"
+      ]
+    },
+    {
+      "id": "greenhouse:airbnb",
+      "provider": "greenhouse",
+      "boardKey": "airbnb",
+      "slug": "airbnb",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Airbnb",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/airbnb/jobs (HTTP 200; 8 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:cloudflare",
+      "provider": "greenhouse",
+      "boardKey": "cloudflare",
+      "slug": "cloudflare",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Cloudflare",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs (HTTP 200; 1 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:coinbase",
+      "provider": "greenhouse",
+      "boardKey": "coinbase",
+      "slug": "coinbase",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Coinbase",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/coinbase/jobs (HTTP 200; 9 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:databricks",
+      "provider": "greenhouse",
+      "boardKey": "databricks",
+      "slug": "databricks",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Databricks",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/databricks/jobs (HTTP 200; 95 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:datadog",
+      "provider": "greenhouse",
+      "boardKey": "datadog",
+      "slug": "datadog",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Datadog",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/datadog/jobs (HTTP 200; 9 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:elastic",
+      "provider": "greenhouse",
+      "boardKey": "elastic",
+      "slug": "elastic",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Elastic",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/elastic/jobs (HTTP 200; 16 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:figma",
+      "provider": "greenhouse",
+      "boardKey": "figma",
+      "slug": "figma",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Figma",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/figma/jobs (HTTP 200; 1 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:mixpanel",
+      "provider": "greenhouse",
+      "boardKey": "mixpanel",
+      "slug": "mixpanel",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Mixpanel",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/mixpanel/jobs (HTTP 200; 4 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:mongodb",
+      "provider": "greenhouse",
+      "boardKey": "mongodb",
+      "slug": "mongodb",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "MongoDB",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs (HTTP 200; 81 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:okta",
+      "provider": "greenhouse",
+      "boardKey": "okta",
+      "slug": "okta",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Okta",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/okta/jobs (HTTP 200; 120 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:roblox",
+      "provider": "greenhouse",
+      "boardKey": "roblox",
+      "slug": "roblox",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Roblox",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/roblox/jobs (HTTP 200; 10 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:rubrik",
+      "provider": "greenhouse",
+      "boardKey": "rubrik",
+      "slug": "rubrik",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Rubrik",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/rubrik/jobs (HTTP 200; 34 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:salesloft",
+      "provider": "greenhouse",
+      "boardKey": "salesloft",
+      "slug": "salesloft",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Salesloft",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/salesloft/jobs (HTTP 200; 1 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:samsara",
+      "provider": "greenhouse",
+      "boardKey": "samsara",
+      "slug": "samsara",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Samsara",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/samsara/jobs (HTTP 200; 6 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:stripe",
+      "provider": "greenhouse",
+      "boardKey": "stripe",
+      "slug": "stripe",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Stripe",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/stripe/jobs (HTTP 200; 44 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "greenhouse:twilio",
+      "provider": "greenhouse",
+      "boardKey": "twilio",
+      "slug": "twilio",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "Twilio",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://boards-api.greenhouse.io/v1/boards/twilio/jobs (HTTP 200; 14 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
+      ]
+    },
+    {
+      "id": "lever:fampay",
+      "provider": "lever",
+      "boardKey": "fampay",
+      "slug": "fampay",
+      "board": null,
+      "tenant": null,
+      "instance": null,
+      "site": null,
+      "company": "FamPay",
+      "url": null,
+      "endpoint": null,
+      "country": null,
+      "indiaFirst": true,
+      "indiaRelevant": false,
+      "puneRelevant": false,
+      "startupTagged": false,
+      "enabled": true,
+      "activationState": "enabled",
+      "probeStatus": "verified",
+      "probedAt": "2026-10-08",
+      "evidenceRef": "https://api.lever.co/v0/postings/fampay?mode=json (HTTP 200; 16 India-located postings)",
+      "notes": null,
+      "scheduleLane": "atsWarm",
+      "capabilities": {
+        "listingEnumeration": true,
+        "detailRetrieval": true,
+        "dateEvidence": true,
+        "liveness": true,
+        "applicationUrl": true
+      },
+      "health": {
+        "lastSuccessfulFetchAt": null,
+        "recentFreshEligibleYield": 0,
+        "recentReadyRoleYield": 0,
+        "repeatedFailureCount": 0
+      },
+      "migratedFrom": [
+        "crawler-v2:atsWarm"
       ]
     }
   ]
