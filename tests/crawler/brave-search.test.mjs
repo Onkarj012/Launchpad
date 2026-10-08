@@ -91,6 +91,31 @@ test('returns serialization-friendly receipts and manifest telemetry', async () 
   assert.equal(buildBraveQueries({ queries: ['x', 'x'] }).length, 1);
 });
 
+test('empty web search states whether budget, engines, requests, or results prevented discovery', async () => {
+  const cases = [
+    { reason: 'query-budget-zero', dailyBudget: 0, response: searxng(results) },
+    { reason: 'no-queries', roles: [], response: searxng(results) },
+    { reason: 'search-interrupted', deadline: { remainingMs: () => 0 }, response: searxng(results) },
+    { reason: 'search-engines-degraded', response: searxng([], [['brave', 'timeout']]) },
+    { reason: 'malformed-search-response', response: { status: 200, body: { error: 'invalid query' } } },
+    { reason: 'search-request-failed', response: { status: 403, body: {} } },
+    { reason: 'search-request-failed', response: { status: 429, body: {} } },
+    { reason: 'no-usable-result-urls', response: searxng([{ title: 'AI Engineer', url: 'invalid' }]) },
+    { reason: 'no-search-results', response: searxng([]) },
+  ];
+  for (const { reason, response, roles, ...options } of cases) {
+    const result = await discoverBraveSearch({
+      provider: 'searxng',
+      ...(roles ? { roles } : { queries: ['"AI Engineer" Pune fresher jobs'] }),
+      transport: async () => response,
+      ...options,
+    });
+    assert.equal(result.observations.length, 0, reason);
+    assert.equal(result.manifest.reason, reason);
+    assert.equal(result.manifest.telemetry.emptyReason, reason);
+  }
+});
+
 test('marks an empty SearXNG response degraded and exposes the source status', async () => {
   const result = await discoverBraveSearch({
     provider: 'searxng',

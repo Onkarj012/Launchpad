@@ -379,7 +379,7 @@ function searxngTransport(endpoint, baseTransport) {
     url.searchParams.set('format', 'json');
     const response = await requestWithDeadline(baseTransport, url.toString(), { headers: { Accept: 'application/json' }, ...options }, { signal: options.signal ?? null, deadline: options.deadline ?? null });
     const body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-    const payload = { results: body?.results ?? [] };
+    const payload = { results: body?.results };
     if (Array.isArray(body?.unresponsive_engines)) payload.unresponsive_engines = body.unresponsive_engines;
     return { ...response, body: payload };
   };

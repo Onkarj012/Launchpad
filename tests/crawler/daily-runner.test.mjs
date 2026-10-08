@@ -883,6 +883,59 @@ test('missing or malformed snapshots supply no history and do not fail the run',
   }
 });
 
+test('web discovery returns fixture leads after a partial first-query engine outage', async () => {
+  const { config } = testConfig();
+  config.sources.searxng = {
+    enabled: true,
+    endpoint: 'http://127.0.0.1:8080',
+    dailyBudget: 2,
+    perQueryResultCap: 10,
+    queries: ['"AI Engineer" Pune fresher jobs', '"Backend Engineer" Python Pune graduate jobs'],
+  };
+  const result = await runDailyNormal(runOptions(config, async (url) => {
+    const query = new URL(url).searchParams.get('q');
+    return {
+      status: 200,
+      body: JSON.stringify(query === config.sources.searxng.queries[0]
+        ? { results: [], unresponsive_engines: [['brave', 'timeout']] }
+        : { results: [{
+          title: 'Backend Engineer - Acme',
+          url: 'https://jobs.lever.co/acme/backend-1',
+          content: 'Full-time Backend Engineer in Pune, India, for 0-1 years building Python systems.',
+        }], unresponsive_engines: [] }),
+    };
+  }));
+
+  const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery');
+  assert.equal(manifest.fetched, 1);
+  assert.equal(manifest.telemetry.queryDiagnostics[1].status, 'success');
+  assert.equal(manifest.telemetry.sources['searxng-search'].detail.telemetry.budgetUsed, 2);
+  assert.equal(result.shortlist.length, 0, 'search snippets do not establish readiness');
+});
+
+test('empty web-discovery daily manifests explain budget, outage, and no-hit outcomes', async () => {
+  const cases = [
+    { reason: 'query-budget-zero', dailyBudget: 0, body: { results: [] } },
+    { reason: 'search-engines-degraded', dailyBudget: 1, body: { results: [], unresponsive_engines: [['brave', 'timeout']] } },
+    { reason: 'malformed-search-response', dailyBudget: 1, body: { error: 'invalid query' } },
+    { reason: 'no-search-results', dailyBudget: 1, body: { results: [], unresponsive_engines: [] } },
+  ];
+  for (const { reason, dailyBudget, body } of cases) {
+    const { config } = testConfig();
+    config.sources.searxng = {
+      enabled: true,
+      endpoint: 'http://127.0.0.1:8080',
+      dailyBudget,
+      queries: ['"AI Engineer" Pune fresher jobs'],
+    };
+    const result = await runDailyNormal(runOptions(config, async () => ({ status: 200, body: JSON.stringify(body) })));
+    const manifest = result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery');
+    assert.equal(manifest.status, 'empty');
+    assert.equal(manifest.reason, reason);
+    assert.deepEqual(manifest.telemetry.emptyReasons, [{ sourceId: 'searxng-search', reason }]);
+  }
+});
+
 test('unified daily run reports SearXNG health per query in the web-discovery lane', async () => {
   const { config } = testConfig();
   config.sources.searxng = {
