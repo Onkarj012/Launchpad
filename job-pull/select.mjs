@@ -167,7 +167,7 @@ export function selectCandidates(entries, config) {
       ...entry.candidate,
       eligibility: entry.eligibility,
       freshness: entry.freshness,
-      selectionTier: entry.tier === 'strict' ? 'Strict' : 'Fallback',
+      selectionTier: entry.tier,
       freshnessWindow: entry.window,
       roleFamily: entry.family,
       companyKey: entry.company,

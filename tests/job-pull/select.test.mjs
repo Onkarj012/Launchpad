@@ -34,9 +34,9 @@ test('selection is strict-Hot, strict-Active, strict-Backfill, then relaxed fres
   assert.equal(result.strictSelected, 15);
   assert.equal(result.relaxedSelected, 5);
   assert.equal(result.strictShortfall, 0);
-  assert.equal(result.selected.slice(0, 5).every((candidate) => candidate.selectionTier === 'Strict' && candidate.freshnessWindow === 'Hot'), true);
-  assert.equal(result.selected.slice(0, 15).every((candidate) => candidate.selectionTier === 'Strict'), true);
-  assert.equal(result.selected[15].selectionTier, 'Fallback');
+  assert.equal(result.selected.slice(0, 5).every((candidate) => candidate.selectionTier === 'strict' && candidate.freshnessWindow === 'Hot'), true);
+  assert.equal(result.selected.slice(0, 15).every((candidate) => candidate.selectionTier === 'strict'), true);
+  assert.equal(result.selected[15].selectionTier, 'relaxed');
   assert.equal(result.selected[15].freshnessWindow, 'Hot');
 });
 
