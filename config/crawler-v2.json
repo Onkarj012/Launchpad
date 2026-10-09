@@ -745,7 +745,88 @@
       "maxDurationMs": 60000
     },
     "startup": {
-      "companyCareers": [],
+      "companyCareers": [
+        {
+          "company": "Truein",
+          "websiteUrl": "https://truein.com/careers"
+        },
+        {
+          "company": "CrelioHealth",
+          "websiteUrl": "https://creliohealth.com/careers/"
+        },
+        {
+          "company": "AgroStar",
+          "websiteUrl": "https://corporate.agrostar.in/join-us"
+        },
+        {
+          "company": "Easebuzz",
+          "websiteUrl": "https://easebuzz.in/careers/"
+        },
+        {
+          "company": "The Machine Learning Company",
+          "websiteUrl": "https://careers.tmlc.in/"
+        },
+        {
+          "company": "Frep",
+          "websiteUrl": "https://www.frep.ai/careers"
+        },
+        {
+          "company": "StoreStory",
+          "websiteUrl": "https://storestory.in/careers"
+        },
+        {
+          "company": "Orvera AI",
+          "websiteUrl": "https://orvera.ai/careers"
+        },
+        {
+          "company": "Globalion Technology Solutions",
+          "websiteUrl": "https://www.globalion.in/careers/"
+        },
+        {
+          "company": "AdElement",
+          "websiteUrl": "https://tyroo.adelement.com/company/jobs"
+        },
+        {
+          "company": "XBT Ventures",
+          "websiteUrl": "https://www.xbtventures.com/careers"
+        },
+        {
+          "company": "Vizuara AI Labs",
+          "websiteUrl": "https://openings.vizuara.ai/"
+        },
+        {
+          "company": "Sigmoid AI Solutions",
+          "websiteUrl": "https://sigmoidai.co.in/careers"
+        },
+        {
+          "company": "Sarvatra Technologies",
+          "websiteUrl": "https://sarvatra.tech/careers/"
+        },
+        {
+          "company": "Hushh",
+          "websiteUrl": "https://careers.hushh.ai/"
+        },
+        {
+          "company": "RadialBrain",
+          "websiteUrl": "https://www.radialbrain.com/careers/"
+        },
+        {
+          "company": "VIVA360",
+          "websiteUrl": "https://viva360.ai/careers"
+        },
+        {
+          "company": "GammaMoney",
+          "websiteUrl": "https://www.gammamoney.in/careers"
+        },
+        {
+          "company": "LOOP",
+          "websiteUrl": "https://loopindia.ai/careers"
+        },
+        {
+          "company": "BrowserStack",
+          "websiteUrl": "https://www.browserstack.com/careers"
+        }
+      ],
       "fixtures": {},
       "laneInputs": {}
     },
