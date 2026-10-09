@@ -104,6 +104,16 @@ function hasAlias(text, aliases) {
   });
 }
 
+// Match a Pune location using complete aliases and the area's location context.
+export function isPuneMetroLocation(location, policy) {
+  return String(location || '').split(/[;|/\n]|\s+or\s+/i).some((option) => {
+    if (hasAlias(option, EXCLUDED_PUNE_AREAS)) return false;
+    const aliases = policy.geo.puneMetroAliases.filter((alias) => !AMBIGUOUS_PUNE_AREAS.includes(alias.toLowerCase().trim())
+      || PUNE_LOCATION_CONTEXT_PATTERN.test(option));
+    return hasAlias(option, aliases);
+  });
+}
+
 function isIndiaCompatibleRegion(value, policy) {
   const normalized = value.toLowerCase().replace(/[^a-z]+/g, ' ').trim();
   if (/^(?:india|indian|pune)\b/.test(normalized)) return true;
@@ -183,14 +193,7 @@ export function classifyGeo(candidate, policy) {
   if (workMode.mode === 'remote') return { ...remoteScopeStatus(geoText, location, policy, candidate.remoteEligibility), mode: 'remote' };
   if (workMode.mode === 'hybrid' || workMode.mode === 'onsite') {
     // Explicit separators mark alternate offices; commas also occur inside addresses.
-    const options = location.split(/[;|/\n]|\s+or\s+/i);
-    const hasPuneOption = options.some((option) => {
-      if (hasAlias(option, EXCLUDED_PUNE_AREAS)) return false;
-      const aliases = policy.geo.puneMetroAliases.filter((alias) => !AMBIGUOUS_PUNE_AREAS.includes(alias.toLowerCase().trim())
-        || PUNE_LOCATION_CONTEXT_PATTERN.test(option));
-      return hasAlias(option, aliases);
-    });
-    if (hasPuneOption) {
+    if (isPuneMetroLocation(location, policy)) {
       return { pass: true, code: 'GEO_PUNE_METRO', evidence: location, mode: workMode.mode };
     }
     return { pass: false, code: workMode.mode === 'hybrid' ? 'GEO_HYBRID_NOT_PUNE' : 'GEO_ONSITE_NOT_PUNE', evidence: location || null, mode: workMode.mode };

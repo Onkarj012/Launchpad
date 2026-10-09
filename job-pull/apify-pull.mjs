@@ -295,6 +295,7 @@ export async function runActor(actor, token, fetchImpl = fetch, {
   maxReturnedItems = DEFAULT_MAX_RETURNED_ITEMS,
   datasetOffset = 0,
   maxTotalChargeUsd = 1,
+  onRunStarted = () => {},
 } = {}) {
   const chargeLimit = Math.min(Number(maxTotalChargeUsd) || MAX_RESCUE_RUN_COST_USD, MAX_RESCUE_RUN_COST_USD);
   const startUrl = new URL(`${API_BASE}/acts/${encodeURIComponent(actor.id)}/runs`);
@@ -309,6 +310,7 @@ export async function runActor(actor, token, fetchImpl = fetch, {
   const startBody = await jsonResponse(startRes, 'actor run');
   const runId = startBody?.data?.id;
   if (!runId) throw new RunError('actor run response schema drift: missing data.id', 'schema-drift');
+  onRunStarted(runId);
 
   const startedAt = clockMillis(clock);
   const deadline = startedAt + runTimeoutMs;
@@ -425,6 +427,7 @@ export async function pullAll(config, token, {
       continue;
     }
     const startedAt = clockMillis(clock);
+    let budgetRunRecorded = false;
     try {
       const retrieval = budgetState.retrieval?.[actor.profile] ?? { nextOffset: 0 };
       const datasetOffset = Math.max(0, Number(retrieval.nextOffset) || 0);
@@ -436,6 +439,10 @@ export async function pullAll(config, token, {
         maxReturnedItems: config.rescue?.maxReturnedItemsPerProfile ?? DEFAULT_MAX_RETURNED_ITEMS,
         datasetOffset,
         maxTotalChargeUsd: maxRunCostUsd,
+        onRunStarted: () => {
+          recordApifyRun(budgetState, nowIso, estimatedCostUsd, { estimatedItems: expectedItems(actor) || 0 });
+          budgetRunRecorded = true;
+        },
       });
       const items = actorResult.items;
       const mapped = [];
@@ -465,11 +472,16 @@ export async function pullAll(config, token, {
         failureReason: degraded ? 'partial-failure' : null,
       });
       records.push(...mapped);
-      recordApifyRun(budgetState, nowIso, estimatedCostUsd, {
-        estimatedItems: expectedItems(actor) || 0,
-        actualItems: items.length,
-        actualCostUsd: actorResult.actualCostUsd,
-      });
+      if (budgetRunRecorded) {
+        const month = budgetState.months[nowIso.slice(0, 7)];
+        const actualCostKnown = actorResult.actualCostUsd != null && Number.isFinite(Number(actorResult.actualCostUsd));
+        if (actualCostKnown) {
+          month.spendUsd += Number(actorResult.actualCostUsd) - estimatedCostUsd;
+          month.actualSpendUsd += Number(actorResult.actualCostUsd);
+          month.actualCostKnownRuns += 1;
+        }
+        month.actualItems += items.length;
+      }
       budgetState.retrieval = budgetState.retrieval || {};
       budgetState.retrieval[actor.profile] = {
         nextOffset: datasetOffset + items.length,

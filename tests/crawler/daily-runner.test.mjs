@@ -7,12 +7,13 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, retainDailyPhaseTargetRun, runDailyNormal as runDailyNormalActual } from '../../crawler/daily-runner.mjs';
+import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, retainDailyPhaseTargetRun, runDailyNormal as runDailyNormalActual, selectDailyModes } from '../../crawler/daily-runner.mjs';
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
 import { openCrawlerStore } from '../../crawler/run.mjs';
 import { candidateDedupKey } from '../../job-pull/candidate.mjs';
+import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
@@ -140,6 +141,51 @@ test('stretch list keeps up to three exactly-three-year AI roles scoring 80+ fro
   assert.deepEqual(secondRun.stretch, []);
   assert.equal(result.modes.normal.results.length + result.modes.startup.results.length + result.modes.remote.results.length, 0);
   assert.equal(result.modes.normal.shortlist.length + result.modes.startup.shortlist.length + result.modes.remote.shortlist.length, 0);
+});
+
+test('daily mode selection excludes EOR Stretch roles and keeps selected Stretch keys out of every mode', () => {
+  const makeEntry = (company, lane = null) => {
+    const candidate = {
+      canonicalUrl: `https://jobs.example.test/${company.toLowerCase().replaceAll(' ', '-')}`,
+      company, title: 'AI Engineer', location: 'Remote - India', matchScore: 85, responseLikelihood: 15, scoreOrigin: 'explicit-scored-input',
+      roleFamily: 'ai-llm-agentic', employment: { type: 'full-time' },
+      experience: { minYears: 3, maxYears: 3, evidence: '3 years required' },
+    };
+    return {
+      candidate,
+      eligibility: {
+        eligible: true, strict: true, tier: 'strict', roleFamily: 'ai-llm-agentic', hardMinimumExactly3Years: true,
+        geo: { mode: 'remote', code: 'GEO_REMOTE_INDIA_COMPATIBLE' },
+        employment: { lane, labels: lane === 'eor-contract' ? ['EOR'] : [] },
+      },
+      freshness: { eligible: true, ageHours: 1, window: 'Hot' },
+      readiness: { ready: true, evidence: {} },
+    };
+  };
+  const entries = [makeEntry('Stretch Remote'), makeEntry('Stretch EOR', 'eor-contract')];
+  const result = selectDailyModes(entries, {
+    config: loadJobPullConfig(), maximum: 20, maximumPerCompany: 2, previousDailyCandidates: [],
+  }, 'normal', { remaining: 3, otherKeys: [] });
+
+  assert.deepEqual(result.stretch.map((role) => role.company), ['Stretch Remote']);
+  assert.equal(result.modes.remote.results.some((role) => role.company === 'Stretch Remote'), false);
+  assert.deepEqual(result.modes.eorContract.results.map((role) => role.company), ['Stretch EOR']);
+  assert.equal(['normal', 'startup', 'remote'].some((mode) => result.modes[mode].results.some((role) => role.company === 'Stretch EOR')), false);
+});
+
+test('remote area names cannot route into Pune mode through partial alias matches', async () => {
+  const { config } = testConfig();
+  const roles = [
+    rawPortalJob(1841, { company: 'Sussex Remote', location: 'Remote - Sussex', workMode: 'remote', description: 'Remote worldwide. Full-time AI Engineer for 0-1 years.' }),
+    rawPortalJob(1842, { company: 'Maanchester Remote', location: 'Remote - Maanchester', workMode: 'remote', description: 'Remote worldwide. Full-time AI Engineer for 0-1 years.' }),
+  ];
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: roles, manifest: { status: 'ok' } } },
+  }));
+
+  assert.equal(result.outcome.fatal, false);
+  assert.deepEqual(result.modes.normal.results, []);
+  assert.deepEqual(result.modes.remote.results.map((role) => role.company), ['Sussex Remote', 'Maanchester Remote']);
 });
 
 function greenhouseJob(id, companySlug, overrides = {}) {
