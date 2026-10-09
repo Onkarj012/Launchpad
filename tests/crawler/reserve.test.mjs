@@ -67,6 +67,17 @@ test('shortfall is exact and does not manufacture a full reserve', () => {
   assert.ok(result.shortfall.reasons.includes('PREFERRED_RESERVE_SHORTFALL'));
 });
 
+test('reserve keeps Backfill as freshness evidence and labels the selection tier Fallback', () => {
+  const result = selectDailyReserve([
+    base('strict-fresh'),
+    base('older', { freshness: { eligible: true, ageHours: 24 * 8, window: 'Backfill' } }),
+  ]);
+  const older = result.reserve.find((item) => item.candidate.canonicalUrl.endsWith('/older'));
+
+  assert.equal(older.selectionTier, 'Fallback');
+  assert.equal(older.freshnessTier, 'backfill-7-14d');
+});
+
 test('stale and undated roles are suppressed even when they would fill the target', () => {
   const result = selectDailyReserve([
     base('fresh'),

@@ -101,6 +101,18 @@ test('selection ranks Hot by fit before Active and fallback', () => {
   assert.equal(result.familyCounts['adjacent-engineering'], 5);
 });
 
+test('fresh relaxed selections use Fallback and keep their Hot freshness class', () => {
+  const candidate = scoredFixture(raw(6, { experience: { minYears: null, maxYears: null, evidence: null } }), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });
+  const result = selectNormalApplications([{
+    candidate,
+    eligibility: { eligible: true, strict: false, relaxations: ['experience-not-stated'] },
+    freshness: { eligible: true, ageHours: 24, window: 'Hot' },
+  }], { minimum: 1, preferred: 1, maximum: 1, maximumPerCompany: 2 });
+
+  assert.equal(result.selected[0].selectionTier, 'Fallback');
+  assert.equal(result.selected[0].freshnessWindow, 'Hot');
+});
+
 test('normal selection keeps unscored ready candidates out of the waterfall', () => {
   const scored = scoredFixture(raw(1), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });
   const unscored = scoredFixture(raw(2, { matchScore: undefined }), { runAt: NOW, source: 'fixture', sourceKind: 'ats-direct', currentFeedIsLive: true });

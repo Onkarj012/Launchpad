@@ -214,7 +214,7 @@ export async function runStartupMode({
         .filter((record, index, records) => records.findIndex((item) => item.dedupKey === record.dedupKey) === index);
       return {
         schemaVersion: STARTUP_MODE_SCHEMA_VERSION, runId, runAt, mode: 'startup', results: selection.results, shortlist: selection.selected,
-        scoredReady, scorePendingReady, backfill: selection.selected.filter((candidate) => candidate.selectionTier === 'Backfill'),
+        scoredReady, scorePendingReady, fallback: selection.selected.filter((candidate) => candidate.selectionTier === 'Fallback'),
         verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, scoringQueue: selection.scoringQueue, reconciliation,
         outcome: { status: 'partial', fatal: false, degraded: true, errors: [{ stage: 'recovery', name: 'PartialRun', message: 'source coverage or downstream scoring budget ended before completion' }] },

@@ -74,7 +74,7 @@ export function selectNormalApplications(entries, { minimum = 10, preferred = 12
   function resultFor(entry) {
     const candidate = entry.candidate;
     const strict = entry.waterfallBand.startsWith('strict-');
-    const selectionTier = strict ? 'Strict' : 'Backfill';
+    const selectionTier = strict ? 'Strict' : 'Fallback';
     const matchScore = scoreState(entry).score;
     return {
       ...candidate, matchScore, score: matchScore,
