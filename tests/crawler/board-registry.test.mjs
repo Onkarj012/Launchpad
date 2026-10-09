@@ -489,6 +489,16 @@ test('registry seed retains one verified India probe for each added Ashby employ
   }
 });
 
+test('next-phase seed adds at least 25 probed employers and retains verified structured career pages', () => {
+  const registry = loadBoardRegistry('config/board-registry.json');
+  const employers = new Set(registry.boards.filter((board) => board.probeStatus === 'verified').map((board) => board.company.toLowerCase()));
+  const careerPages = registry.boards.filter((board) => board.provider === 'custom'
+    && board.careerPageUrl && board.probe?.jobPostingJsonLd === true);
+
+  assert.ok(employers.size >= 275);
+  assert.ok(careerPages.length >= 2);
+});
+
 test('production registry includes all four employer tiers', () => {
   const registry = loadBoardRegistry('config/board-registry.json');
   const tiers = new Set(registry.boards.map((board) => board.registryTier).filter(Boolean));
