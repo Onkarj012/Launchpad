@@ -580,7 +580,7 @@ export async function crawlWorkflow({
     sourceEndStates,
     rejectionCounts: { ...(selection.excluded || {}) },
     rejectionReasons: Object.keys(selection.excluded || {}).sort(),
-    backfill: selection.reserve.filter((candidate) => candidate.selectionTier === 'Backfill'),
+    fallback: selection.reserve.filter((candidate) => candidate.selectionTier === 'Fallback'),
     verificationQueue: jsonSafe(verificationQueue),
     scoredReady: selection.reserve.filter((candidate) => Number.isFinite(Number(candidate.matchScore)) && Number(candidate.matchScore) >= 0 && Number(candidate.matchScore) <= 100),
     scorePendingReady: selection.reserve.filter((candidate) => !Number.isFinite(Number(candidate.matchScore)) || Number(candidate.matchScore) < 0 || Number(candidate.matchScore) > 100),

@@ -91,7 +91,7 @@ test('generic selector uses the same strict-first diversity boundary', () => {
     ...Array.from({ length: 20 }, (_, i) => entry(i + 10, { strict: false, score: 99 }))];
   const result = selectCandidates(entries, loadConfig());
   assert.equal(result.strictSelected, 10);
-  assert.equal(result.selected.slice(0, 10).every((row) => row.selectionTier === 'strict'), true);
+  assert.equal(result.selected.slice(0, 10).every((row) => row.selectionTier === 'Strict'), true);
 });
 
 test('IST daily allocation is cumulative across schedules/modes and retry-safe', () => {

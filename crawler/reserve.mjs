@@ -107,7 +107,7 @@ export function selectDailyReserve(entries = [], options = {}) {
     ...item.entry,
     candidate: item.candidate,
     freshnessTier: item.tier,
-    selectionTier: item.tier.startsWith('strict-') ? 'Strict' : item.tier === 'backfill-7-14d' ? 'Backfill' : 'Reserve',
+    selectionTier: item.tier.startsWith('strict-') ? 'Strict' : 'Fallback',
     newToMe: true,
   }));
   const shortlist = reserve.slice(0, limits.minimum);

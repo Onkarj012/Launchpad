@@ -195,7 +195,7 @@ export function createManifestTemplate() {
     targets: Object.fromEntries(V5_STORE_KEYS.map((key) => [key, { name: V5_STORE_NAMES[key], databaseId: `PLACEHOLDER_${key.toUpperCase()}_V5_DATABASE`, dataSourceId: `PLACEHOLDER_${key.toUpperCase()}_V5_DATA_SOURCE` }])),
     expectedPropertyContracts: expectedContracts(),
     relations: expectedRelationInventory({ targets: Object.fromEntries(V5_STORE_KEYS.map((key) => [key, { dataSourceId: `PLACEHOLDER_${key.toUpperCase()}_V5_DATA_SOURCE` }])) }),
-    viewNames: ['Ready', 'Backfill', 'Internship', 'Startup', 'Remote', 'Verification', 'Resume', 'Applied', 'Outreach', 'Follow-up', 'Pipeline', 'Archive'],
+    viewNames: ['Ready', 'Fallback', 'Internship', 'Startup', 'Remote', 'Verification', 'Resume', 'Applied', 'Outreach', 'Follow-up', 'Pipeline', 'Archive'],
     legacyAuditGaps: [...LEGACY_NOTION_AUDIT_GAPS],
   };
 }

@@ -1734,7 +1734,7 @@ test('daily HTML report writes locally with three mode lists, scorer evidence, l
   const result = {
     runAt: NOW,
     modes: {
-      normal: { results: [], shortlist: [] },
+      normal: { results: [{ title: 'Fallback AI Engineer', company: 'Other', selectionTier: 'Fallback' }], shortlist: [] },
       startup: { results: [shared], shortlist: [shared] },
       remote: { results: [], shortlist: [] },
     },
@@ -1751,6 +1751,7 @@ test('daily HTML report writes locally with three mode lists, scorer evidence, l
   assert.match(html, /Full results/);
   assert.match(html, /Shortlist/);
   assert.match(html, /Python and LLM work match the role requirements\./);
+  assert.match(html, /Selection tier: Fallback/);
   assert.match(html, /Night hours \(IST\)/);
   assert.match(html, /Notice risk/);
   assert.match(html, /https:\/\/company\.example\.test\/careers\/1/);

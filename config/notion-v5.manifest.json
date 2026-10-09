@@ -15,7 +15,7 @@
     "activity": ["name", "application", "outreach", "eventType", "eventAt", "dueAt", "idempotencyKey", "actionState", "notes"],
     "referrals": ["name", "application", "person", "personUrl", "channel", "status", "requestedAt", "outcome", "duplicateKey", "evidence"]
   },
-  "viewNames": ["Ready", "Backfill", "Internship", "Startup", "Remote", "Verification", "Resume", "Applied", "Outreach", "Follow-up", "Pipeline", "Archive"],
+  "viewNames": ["Ready", "Fallback", "Internship", "Startup", "Remote", "Verification", "Resume", "Applied", "Outreach", "Follow-up", "Pipeline", "Archive"],
   "legacyAuditGaps": ["v3_database_page_ids_not_recorded", "v3_companies_and_outreach_data_source_ids_not_recorded", "v4_companies_database_page_id_not_recorded", "v4_outreach_database_page_id_not_recorded"],
   "provisionedAt": "2026-07-23",
   "connectorIdentity": {
@@ -81,13 +81,13 @@
           { "property": "Status", "operator": "equals", "value": "Ready", "configured": false, "omissionReason": "omitted conservatively" }
         ]
       },
-      "Backfill": {
+      "Fallback": {
         "id": "3a55c2b5-d1b0-81d6-a8a2-000caa99617d",
         "type": "table",
         "sort": { "property": "Name", "direction": "ascending" },
         "filterCoverage": "exact",
         "filters": [
-          { "property": "Selection Tier", "operator": "equals", "value": "Backfill", "configured": true }
+          { "property": "Selection Tier", "operator": "equals", "value": "Fallback", "configured": true }
         ]
       },
       "Internship": {

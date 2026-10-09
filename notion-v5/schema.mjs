@@ -38,7 +38,7 @@ export const V5_SCHEMA = Object.freeze({
         makeResume: field('Make Resume', 'checkbox'), applied: field('Applied?', 'checkbox'),
         appliedAt: field('Applied At', 'date'), resumeState: field('Resume State', 'select', { options: ['Not Started', 'Building', 'Ready', 'Failed', 'Stale'] }),
         outreachState: field('Outreach State', 'select'), nextAction: field('Next Action', 'select'), employmentCategory: field('Employment Category', 'select'),
-        selectionTier: field('Selection Tier', 'select', { options: ['Strict', 'Backfill'] }), relaxation: field('Relaxation', 'multi_select'),
+        selectionTier: field('Selection Tier', 'select', { options: ['Strict', 'Fallback'] }), relaxation: field('Relaxation', 'multi_select'),
         roleFamily: field('Role Family', 'select'), companyStage: field('Company Stage', 'select'), workMode: field('Work Mode', 'select'),
         location: field('Location', 'rich_text'), matchScore: field('Match Score', 'number'), conversionScore: field('Conversion Score', 'number'),
         responseLikelihood: field('Response Likelihood', 'number'), source: field('Source', 'select'), provider: field('Provider', 'select'),
@@ -92,7 +92,7 @@ export const V5_SCHEMA = Object.freeze({
 
 export const V5_VIEW_DEFINITIONS = Object.freeze([
   { name: 'Ready', store: 'applications', filter: { all: [{ property: 'applicationReady', checkbox: { equals: true } }, { property: 'status', select: { equals: 'Ready' } }] } },
-  { name: 'Backfill', store: 'applications', filter: { property: 'selectionTier', select: { equals: 'Backfill' } } },
+  { name: 'Fallback', store: 'applications', filter: { property: 'selectionTier', select: { equals: 'Fallback' } } },
   { name: 'Internship', store: 'applications', filter: { property: 'employmentCategory', select: { equals: 'Internship' } } },
   { name: 'Startup', store: 'applications', filter: { property: 'companyStage', select: { equals: 'Startup' } } },
   { name: 'Remote', store: 'applications', filter: { property: 'workMode', select: { equals: 'Remote' } } },

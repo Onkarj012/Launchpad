@@ -511,5 +511,6 @@ test('smoke fails closed on pending or verified journal entries', async () => {
 
 test('view definitions cover the required names and filters', () => {
   assert.equal(validateViewDefinitions().valid, true);
-  assert.deepEqual(V5_VIEW_DEFINITIONS.map((view) => view.name), ['Ready', 'Backfill', 'Internship', 'Startup', 'Remote', 'Verification', 'Resume', 'Applied', 'Outreach', 'Follow-up', 'Pipeline', 'Archive']);
+  assert.deepEqual(V5_SCHEMA.stores.applications.properties.selectionTier.options, ['Strict', 'Fallback']);
+  assert.deepEqual(V5_VIEW_DEFINITIONS.map((view) => view.name), ['Ready', 'Fallback', 'Internship', 'Startup', 'Remote', 'Verification', 'Resume', 'Applied', 'Outreach', 'Follow-up', 'Pipeline', 'Archive']);
 });
