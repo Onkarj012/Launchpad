@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launchpad next phase: build report, 9 October 2026</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1d1b; --muted: #6b6a64; --line: #e4e1d8; --card: #ffffff;
+    --red: #b42318; --red-bg: #fdecea; --amber: #a15c07; --amber-bg: #fdf3e2;
+    --green: #1f7a3f; --green-bg: #e8f5ec; --blue: #1d4ed8; --blue-bg: #e8eefc; --code: #f1efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --fg: #ecebe6; --muted: #a09e96; --line: #2e2d2a; --card: #1c1c1a;
+      --red: #f2867c; --red-bg: #3a1d1a; --amber: #f0b459; --amber-bg: #352a17;
+      --green: #7fcf98; --green-bg: #18301f; --blue: #9db7f5; --blue-bg: #1a2440; --code: #262522;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 56px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p, li { max-width: 72ch; }
+  .meta { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  nav { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; font-size: 14px; }
+  nav ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 32px; }
+  nav a { color: var(--blue); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  code { font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 20px 0; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 24px; line-height: 1.2; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .callout { border-radius: 10px; padding: 14px 18px; margin: 16px 0; border: 1px solid transparent; }
+  .callout.red { background: var(--red-bg); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+  .callout.amber { background: var(--amber-bg); border-color: color-mix(in srgb, var(--amber) 30%, transparent); }
+  .callout p { margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0 8px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { white-space: nowrap; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .t-red { color: var(--red); background: var(--red-bg); }
+  .t-amber { color: var(--amber); background: var(--amber-bg); }
+  .t-green { color: var(--green); background: var(--green-bg); }
+  .t-blue { color: var(--blue); background: var(--blue-bg); }
+  ol.q li { margin-bottom: 8px; }
+  .wrap { overflow-x: auto; }
+  @media (max-width: 640px) {
+    main { padding: 28px 16px 64px; }
+    nav ol { columns: 1; }
+    td:first-child { white-space: normal; }
+  }
+  @media print {
+    body { background: #fff; color: #000; }
+    nav { display: none; }
+    h2 { break-before: auto; }
+    table, .callout { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Launchpad next phase: build report</h1>
+  <p class="meta">9 October 2026, IST · Branch <code>fix/pipeline-yield</code> · Covers the work from commit <code>9846da8</code> to <code>2680c50</code> · Spec: <code>docs/spec/launchpad-next-phase-verified-yield.md</code></p>
+
+  <nav aria-label="Contents">
+    <ol>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#live">What today's scheduled runs show</a></li>
+      <li><a href="#features">Features added</a></li>
+      <li><a href="#fixes">Fixes made</a></li>
+      <li><a href="#problems">Problems</a></li>
+      <li><a href="#checks">Checks run and not run</a></li>
+      <li><a href="#questions">Questions for the grilling</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="summary">Summary</h2>
+  <p>The code for 30 of the 32 tickets is built, merged into <code>fix/pipeline-yield</code>, and passes every local check. None of it is proven against real job sources yet. Two scheduled runs this morning and midday used this branch on the production config. Both produced zero shortlisted roles.</p>
+  <div class="stats">
+    <div class="stat"><b>30 / 32</b><span>tickets done</span></div>
+    <div class="stat"><b>1063 / 1063</b><span>tests passing</span></div>
+    <div class="stat"><b>87</b><span>commits, not pushed</span></div>
+    <div class="stat"><b>128</b><span>files changed</span></div>
+    <div class="stat"><b>280</b><span>checked employers in registry</span></div>
+    <div class="stat"><b>0</b><span>roles shortlisted by today's real runs</span></div>
+  </div>
+  <p>Ticket 25 (hand-label sampled rejects) is Onkar's. Ticket 26 (fix the false rejects it proves) waits on it. The spec says the one PR opens after that gate audit, so no PR exists yet.</p>
+
+  <h2 id="live">What today's scheduled runs show</h2>
+  <div class="callout red">
+    <p><b>Two launchd jobs from July are loaded and still run every day.</b> <code>com.launchpad.crawler.morning</code> runs at 04:30 and <code>com.launchpad.crawler.midday</code> at 12:30. Both run <code>cli.mjs daily … --env production --mode normal --location-preset pune</code> from the main checkout, so they run whatever branch is checked out. Today that was this branch, partly mid-merge. They do not pass <code>--execute-writes</code>, so they plan Notion writes but do not make them.</p>
+  </div>
+  <div class="wrap">
+  <table>
+    <thead><tr><th>Run</th><th>Fetched</th><th>Dated</th><th>Eligible</th><th>Scored</th><th>Ready</th><th>Selected</th><th>Verification queue</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr><td>Morning, 04:30 IST</td><td>1,361</td><td>1,261</td><td>1</td><td>0</td><td>0</td><td>0</td><td>12</td><td>partial, degraded</td></tr>
+      <tr><td>Midday, 12:30 IST</td><td>1,370</td><td>1,224</td><td>24</td><td>0</td><td>0</td><td>0</td><td>37</td><td>partial, degraded</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Both runs stopped early with "source coverage or downstream scoring budget ended before completion". On 8 October a run fetched about 5,000 jobs and shortlisted 4. Today's runs fetched about 1,360.</p>
+  <p>Source end states in the midday run:</p>
+  <ul>
+    <li><b>ok:</b> reverse ATS warm, expanded ATS, Instahyre, Wellfound.</li>
+    <li><b>degraded:</b> LinkedIn, Glassdoor.</li>
+    <li><b>empty:</b> tracked ATS, structured career pages.</li>
+    <li><b>unavailable:</b> Naukri, Foundit, Hirist, Cutshort, Peerlist, Indeed, native remote feeds, startup company careers, web discovery, connector inbox.</li>
+  </ul>
+  <p>I don't know which commits each run used. The branch was changing during the day. I have not diagnosed why scoring never started.</p>
+
+  <h2 id="features">Features added</h2>
+  <p>Grouped by area, with ticket numbers. Every item is local-verified only: tests pass, nothing has run against live sources with retained evidence.</p>
+
+  <h3>Eligibility rules</h3>
+  <table>
+    <thead><tr><th>Ticket</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>01</td><td>Pune area names (Kalyani Nagar, Hadapsar, Yerwada and others) count as Pune. "Sus" and "Maan" need Maharashtra, MH or a 411/412 pin. Chakan, Talegaon, Ranjangaon and Shikrapur are rejected. Multi-city listings with a separate Pune option pass.</td></tr>
+      <tr><td>02</td><td>Roles carry <b>labels</b> beside reject reasons. A label never rejects. <code>Night hours (IST)</code> for remote US/EU hours and onsite night or rotating shifts. <code>Notice risk</code> for immediate joiners or notice of 30 days or less.</td></tr>
+      <tr><td>03</td><td>Worldwide, anywhere and global remote roles pass when there is no country limit and no foreign work authorization. They get <code>Remote: worldwide, no country limit</code>.</td></tr>
+      <tr><td>04</td><td>Lower pay floor from the spec. Undisclosed pay stays <code>Not Verified</code>. Internships need the stated stipend bar and a PPO path. The drop list (unpaid, equity-only, bonded and others) is enforced.</td></tr>
+      <tr><td>05</td><td>Current employer excluded (<code>COMPANY_EXCLUDED</code>). Eight IT services majors pass only for AI or product engineering titles (<code>SERVICES_MAJOR_GENERIC_ROLE</code>).</td></tr>
+      <tr><td>06</td><td>"Preferred" years no longer count as a hard minimum. The result flags a hard minimum of exactly 3 years.</td></tr>
+      <tr><td>07</td><td>EOR and long-term contract classes, labelled <code>EOR</code> and <code>Contract</code>. Contracts missing a required term are dropped. Unknown terms go to verification.</td></tr>
+    </tbody>
+  </table>
+  <p><code>master_prompt.md</code> changed in the same commits as the rules above.</p>
+
+  <h3>Selection and modes</h3>
+  <table>
+    <thead><tr><th>Ticket</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>08</td><td>One crawl feeds Pune, Startup and Remote. Each role gets one primary mode (Startup, then Pune, then Remote) and tags for the others. Two-per-company cap inside each mode.</td></tr>
+      <tr><td>09</td><td>Stretch list: up to 3 a day, exactly 3 years, core family, score 80+, startup or remote. Never counted toward targets.</td></tr>
+      <tr><td>10</td><td>EOR/Contract lane with its own results and shortlist, kept out of full-time shortlists and targets.</td></tr>
+      <tr><td>11</td><td>Per-mode daily target check (Pune 10/6, Startup 5/4, Remote 5/4, 2 Strict across modes) in the run report.</td></tr>
+      <tr><td>12</td><td>Startup company-careers lane wired into the daily run.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Daily report</h3>
+  <table>
+    <thead><tr><th>Ticket</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>13</td><td>Local HTML report: three mode sections with results and shortlists, why-it-fits, labels, employer apply link, mode tags, funnel counts.</td></tr>
+      <tr><td>14</td><td>Stretch and EOR/Contract sections, yield per source per request (<code>Not Verified</code> when the request count is missing), drift signals, per-mode targets table.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Sources and supply</h3>
+  <table>
+    <thead><tr><th>Ticket</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>15</td><td>Every source ends <code>ok</code>, <code>empty</code> with a reason, or <code>disabled</code>. One LinkedIn guest pass per run, paused until midnight IST after a 429, no retry of the same page.</td></tr>
+      <tr><td>16</td><td>Web discovery root cause fixed: a missing engine list was treated as "every engine failed", so one slow query skipped the rest.</td></tr>
+      <tr><td>17</td><td>Registry boards carry <code>puneRelevant</code>, <code>indiaRelevant</code> and a probe record from one public request. Pune boards are fetched first. US-only boards with no India yield for 7 days pause.</td></tr>
+      <tr><td>18</td><td>Registry seeded across four tiers. Now 280 checked employers.</td></tr>
+      <tr><td>19</td><td>Career-page lane fed from registry employers with no supported ATS and recorded JobPosting JSON-LD.</td></tr>
+      <tr><td>20</td><td>Portal leads cross-matched to the employer's own board by employer, title, location and requisition. No match stays in verification.</td></tr>
+      <tr><td>21</td><td>Visible external apply links on Instahyre and Wellfound count as employer routes. No login, no private endpoints.</td></tr>
+      <tr><td>22</td><td>Hiring-post inbox: a local markdown file of pasted posts becomes leads for the resolver.</td></tr>
+      <tr><td>23</td><td>Apify rescue runs only on request, with a $1 per run and $15 per month cap.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Avenues, outreach and running</h3>
+  <table>
+    <thead><tr><th>Ticket</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>24</td><td>Written diagnosis of why 8 October had no Strict roles (no code).</td></tr>
+      <tr><td>27</td><td>Hacker News "Who is hiring" filter and YC Work at a Startup India and remote filters, as one-week trials.</td></tr>
+      <tr><td>28</td><td>India VC watchlist and a weekly funded-startup intake into the registry.</td></tr>
+      <tr><td>29</td><td>Hiring challenges and off-campus drives tracked as dated items.</td></tr>
+      <tr><td>30</td><td>Referral map from a LinkedIn connections CSV and a hand-written list. Draft notes only.</td></tr>
+      <tr><td>31</td><td>Founder and hiring-manager outreach drafts (LinkedIn and email). Email only to published addresses. Never sent.</td></tr>
+      <tr><td>32</td><td>Shadow-week schedule config at 07:45 and 13:15 IST on an isolated config, no Notion writes. Prepared, not installed. Remove with <code>sh scripts/remove-shadow-week-schedule.sh</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Added after the tickets</h3>
+  <ul>
+    <li><b>Daily run writes the HTML report.</b> The daily CLI now writes it to <code>.local/launchpad-crawler/reports/</code>. Before this, the writer existed but nothing called it.</li>
+    <li><b>5-of-7 day rollup.</b> Each IST day's result per mode is saved locally. The report shows days met out of the last 7 and whether 5 of 7 is met. Days with no run count as not met.</li>
+    <li><b>Selection tier renamed.</b> The shortage tier is now <code>Fallback</code>. <code>Backfill</code> means only the 8 to 14 day freshness class. The Notion v5 schema and view changed to match.</li>
+    <li><b>More supply.</b> 30 more checked registry employers (250 to 280), 2 career pages with JobPosting JSON-LD, 20 startup careers sites.</li>
+  </ul>
+
+  <h2 id="fixes">Fixes made</h2>
+  <table>
+    <thead><tr><th>Where found</th><th>Problem</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td>Merge, ticket 12</td><td>3 startup-mode tests broke.</td><td>Tests updated. Ticket 12 added an eighth lane, and the old tests counted seven by position. No production code changed.</td></tr>
+      <tr><td>Merge, ticket 20</td><td>14 LinkedIn tests broke: request counts changed.</td><td>With no registry match, the normal LinkedIn detail lookup runs as before.</td></tr>
+      <tr><td>Merge, ticket 18</td><td>Registry had 246 employers, below the 250 floor.</td><td>4 more checked, then 30 more later.</td></tr>
+      <tr><td>Merge, ticket 19</td><td>2 daily-runner tests broke.</td><td>With no registry configured, the career-page lane reports <code>unavailable</code> and keeps its reason out of web discovery.</td></tr>
+      <tr><td>Two-axis review</td><td>The daily run never wrote the HTML report.</td><td>Daily CLI writes it.</td></tr>
+      <tr><td>Two-axis review</td><td>Missing one-line function comments. Mode labels repeated in three places.</td><td>Comments added. One shared mode-label map.</td></tr>
+      <tr><td>Codex review</td><td>Stretch roles could also appear in mode lists. EOR/Contract roles could enter Stretch.</td><td>Both kept in their own lists, with regression tests.</td></tr>
+      <tr><td>Codex review</td><td>Mode routing matched "Sussex" and "Maanchester" as Pune.</td><td>Routing uses the eligibility Pune matcher.</td></tr>
+      <tr><td>Codex review</td><td>Failed Apify runs did not count toward the monthly caps.</td><td>Counted once Apify returns a run ID. Reconciled to real cost on success.</td></tr>
+      <tr><td>My report</td><td>Outreach skill copy in <code>.claude/skills/</code> differed. Validate and 2 tests failed.</td><td>Copied. Both pass.</td></tr>
+      <tr><td>My report</td><td><code>js-yaml</code> high-severity advisory.</td><td>Bumped to 4.3.2. <code>npm audit</code> shows 0.</td></tr>
+      <tr><td>My report</td><td><code>Backfill</code> meant two things.</td><td>Tier renamed to <code>Fallback</code>. One wrong edit by the worker (generic selector) reverted.</td></tr>
+      <tr><td>My report</td><td>Ticket 16 root cause was only in a separate report.</td><td>Written into the ticket.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="problems">Problems</h2>
+  <p>Ordered by how much they matter. <span class="tag t-red">Blocking</span> stops the phase target. <span class="tag t-amber">Risk</span> can cause harm or wrong results. <span class="tag t-blue">Gap</span> is missing or unproven. <span class="tag t-green">Housekeeping</span> is minor.</p>
+  <div class="wrap">
+  <table>
+    <thead><tr><th>Level</th><th>Problem</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag t-red">Blocking</span></td><td>Zero yield in real runs</td><td>Today's two scheduled runs selected 0 roles. Scoring never ran. Both stopped early on a source or scoring budget. Fetch volume fell from about 5,000 to about 1,360. Not diagnosed.</td></tr>
+      <tr><td><span class="tag t-red">Blocking</span></td><td>Nothing is live-verified</td><td>No new feature has run against live sources with retained evidence. Readiness reports <code>codeComplete: true</code> and <code>operationallyVerified: false</code>.</td></tr>
+      <tr><td><span class="tag t-red">Blocking</span></td><td>Gate audit not done</td><td>Ticket 25 is a hand task for Onkar. Ticket 26 and the PR wait on it.</td></tr>
+      <tr><td><span class="tag t-amber">Risk</span></td><td>Old launchd jobs run this branch</td><td>The July morning and midday jobs are loaded. They run whatever branch is checked out, on the production config, with only Pune mode. They don't write to Notion. The shadow week would be a separate, third pair of jobs.</td></tr>
+      <tr><td><span class="tag t-amber">Risk</span></td><td>Exposed auth token</td><td>A worker printed an <code>ANTHROPIC_AUTH_TOKEN</code> value into a local log. I redacted it. It is in no commit. Needs rotation.</td></tr>
+      <tr><td><span class="tag t-amber">Risk</span></td><td>Tests write into the real reports folder</td><td>CLI tests in <code>tests/crawler/discovery-profile.test.mjs</code> use the dev config, so <code>npm test</code> writes <code>command-daily-*.html</code> into <code>.local/launchpad-crawler/reports/</code>. Found while writing this report. Not fixed.</td></tr>
+      <tr><td><span class="tag t-amber">Risk</span></td><td>Notion v5 schema changed</td><td>The <code>Selection Tier</code> options are now <code>Strict</code> and <code>Fallback</code>, and the view is renamed. If a v5 database already exists in Notion with <code>Backfill</code>, the two disagree.</td></tr>
+      <tr><td><span class="tag t-amber">Risk</span></td><td>Questionable registry entry</td><td>At least one seeded board, <code>greenhouse:monzoreferrals</code>, is a UK referral board with no Pune or India relevance. I haven't checked the rest for quality.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>Career-page lane is thin</td><td>Only 2 of the 15 targeted employers publish JobPosting JSON-LD and were recorded.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>Startup careers sites unproven</td><td>20 sites added. The worker read each page, but its tool didn't show HTTP status codes. No crawl has run against them. The midday run still showed the lane as <code>unavailable</code>.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>Several sources unavailable</td><td>Web discovery needs a running local SearXNG. Naukri, Foundit and Hirist need the on-request Apify rescue. Cutshort, Peerlist, Indeed and native remote feeds also ended <code>unavailable</code>.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>HN and YC trial clock started</td><td>Both trials have <code>trialStartDate</code> 8 October, and no run has used them yet. The one-week trial window is passing unused.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>Inputs only Onkar can give</td><td>Referral map needs the LinkedIn connections CSV export and a hand-written list. Hiring-post inbox needs pasted posts. Outreach email drafts need contacts published on company team pages.</td></tr>
+      <tr><td><span class="tag t-amber">Risk</span></td><td>Deadlines missing from HTML report</td><td>Challenge and drive deadlines (ticket 29) appear only in the Markdown report. The HTML report, now the daily output, does not show them. Found while writing this report.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>Flaky test not found</td><td>Nine likely files ran 15 times alone and 15 times in parallel with no failure. Nothing changed.</td></tr>
+      <tr><td><span class="tag t-blue">Gap</span></td><td>Deferred spec decisions</td><td>TheirStack enable or delete, the tracker choice (Notion v5 or local page), and whether to lower targets after week one. All wait on measured yield.</td></tr>
+      <tr><td><span class="tag t-green">Housekeeping</span></td><td>Codex finding not taken</td><td>Codex flagged the local SearXNG as a private endpoint. I skipped it because it is the project's own search service.</td></tr>
+      <tr><td><span class="tag t-green">Housekeeping</span></td><td>Apify run cap</td><td>A monthly run cap existed before (6). Ticket 23 raised it to 15. The spec names only the dollar caps.</td></tr>
+      <tr><td><span class="tag t-green">Housekeeping</span></td><td>Docs out of date</td><td><code>docs/STATUS.md</code> doesn't describe this work. <code>AGENTS.md</code> still says 725 tests; there are 1063.</td></tr>
+      <tr><td><span class="tag t-green">Housekeeping</span></td><td>Large logs</td><td>The scheduled-job logs are 461 MB (morning) and 94 MB (midday) and keep growing.</td></tr>
+      <tr><td><span class="tag t-green">Housekeeping</span></td><td>Leftover branches</td><td>51 local <code>dco/*</code> branches. The ones from this session are all merged.</td></tr>
+      <tr><td><span class="tag t-green">Housekeeping</span></td><td>Commit attribution</td><td>Wave-1 commits carry a Haiku co-author line. That was correct at the time.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2 id="checks">Checks run and not run</h2>
+  <ul>
+    <li><b>Passed:</b> <code>npm test</code> 1063/1063, <code>npm run validate</code>, <code>npm run safety</code>, <code>git diff --check</code>, <code>npm audit</code> (0 vulnerabilities).</li>
+    <li><b>Readiness:</b> <code>node crawler/cli.mjs readiness --run-tests</code> exits 1. All six local check groups pass. Only operational verification fails, because there is no live evidence.</li>
+    <li><b>Reviews:</b> one two-axis review (standards and spec) and one adversarial Codex review on <code>gpt-5.6-luna</code>.</li>
+    <li><b>Never run:</b> a bounded live crawl in all three modes, a live Notion call, <code>npm run rehearse</code>, the shadow week, or any crawl of the new startup sites. The registry and site probes were one public request each and are evidence, not tests.</li>
+  </ul>
+
+  <h2 id="questions">Questions for the grilling</h2>
+  <ol class="q">
+    <li>Why did today's runs fetch about 1,360 jobs and score nothing? Should diagnosing that come before anything else?</li>
+    <li>Should the two July launchd jobs keep running this branch on the production config, be paused, or be replaced by the shadow-week schedule?</li>
+    <li>When should the bounded live runs in all three modes start, and who runs them each morning?</li>
+    <li>When will ticket 25's hand-labelling happen, and how many reason codes need it?</li>
+    <li>Does a v5 database already exist in Notion with the old <code>Backfill</code> option?</li>
+    <li>Should the HN and YC trial dates move to the first real run?</li>
+    <li>Should I check the registry for entries like <code>monzoreferrals</code> and remove them?</li>
+    <li>Should the test that writes into the real reports folder be fixed now?</li>
+    <li>Keep the 15-runs-a-month Apify cap, or rely on the dollar caps alone?</li>
+    <li>Is local SearXNG meant to run every day? If so, who starts it?</li>
+    <li>When will the LinkedIn connections export and the first hiring posts be provided?</li>
+    <li>Should <code>docs/STATUS.md</code> and <code>AGENTS.md</code> be updated now or after shadow week?</li>
+    <li>Should the merged <code>dco/*</code> branches be deleted?</li>
+    <li>Has the exposed token been rotated?</li>
+  </ol>
+</main>
+</body>
+</html>
