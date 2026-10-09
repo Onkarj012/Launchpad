@@ -82,6 +82,71 @@ export function retainDailyShortlist(budgetPath, runAt, runId, shortlist) {
   });
 }
 
+const PHASE_TARGET_MODES = Object.freeze({
+  normal: Object.freeze({ roles: 10, employers: 6 }),
+  startup: Object.freeze({ roles: 5, employers: 4 }),
+  remote: Object.freeze({ roles: 5, employers: 4 }),
+});
+
+// Keep the phase target history beside the other daily run state.
+export function dailyPhaseTargetRollupPath(databasePath) {
+  return `${databasePath || '.local/launchpad-crawler/crawler.sqlite'}.phase-target-rollup.json`;
+}
+
+// Convert a timestamp to its calendar date in India.
+function istDate(value) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+}
+
+// Return a rolling seven-day window ending on the supplied IST date.
+function phaseTargetWindow(state, endDate) {
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  const dates = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(end.getTime() - index * 86_400_000).toISOString().slice(0, 10);
+    return { date, runs: state.days[date] ?? {} };
+  });
+  const days = dates.map(({ date, runs }) => {
+    const modes = {};
+    for (const mode of Object.keys(PHASE_TARGET_MODES)) {
+      const summaries = Object.values(runs).map((run) => run.modes?.[mode]).filter(Boolean);
+      const best = [...summaries].sort((left, right) => Number(right.met) - Number(left.met) || right.roles - left.roles || right.employers - left.employers || right.strict - left.strict)[0];
+      modes[mode] = best ? { ...best, met: summaries.some((summary) => summary.met) } : null;
+    }
+    return { date, status: Object.keys(runs).length ? 'run' : 'no run', modes };
+  });
+  const modes = Object.fromEntries(Object.entries(PHASE_TARGET_MODES).map(([mode]) => {
+    const daysMet = days.filter((day) => day.modes[mode]?.met).length;
+    return [mode, { daysMet, phaseTargetMet: daysMet >= 5 }];
+  }));
+  return { endDate, days, modes };
+}
+
+// Retain one run's per-mode counts and return the current seven-day phase status.
+export function retainDailyPhaseTargetRun(statePath, runAt, runId, modeResults) {
+  return withOpportunityLedgerLock(statePath, () => {
+    const date = istDate(runAt);
+    const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { schemaVersion: 'DailyPhaseTargetRollupV1', days: {} };
+    if (state.schemaVersion !== 'DailyPhaseTargetRollupV1' || !state.days || typeof state.days !== 'object' || Array.isArray(state.days)) throw new Error('invalid daily phase target rollup');
+    const modes = {};
+    for (const [mode, target] of Object.entries(PHASE_TARGET_MODES)) {
+      const shortlist = modeResults?.[mode]?.shortlist ?? [];
+      const employers = new Set(shortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
+      const strict = shortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
+      const roles = shortlist.length;
+      modes[mode] = { roles, employers: employers.size, strict, met: roles >= target.roles && employers.size >= target.employers };
+    }
+    const priorRuns = state.days[date] ?? {};
+    state.days[date] = { ...priorRuns, [runId]: { modes } };
+    const cutoff = new Date(`${date}T00:00:00.000Z`).getTime() - 6 * 86_400_000;
+    for (const savedDate of Object.keys(state.days)) if (new Date(`${savedDate}T00:00:00.000Z`).getTime() < cutoff) delete state.days[savedDate];
+    mkdirSync(path.dirname(statePath), { recursive: true });
+    const temporary = `${statePath}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`);
+    renameSync(temporary, statePath);
+    return phaseTargetWindow(state, date);
+  });
+}
+
 // Read the remaining Stretch capacity for one IST day.
 function dailyStretchBudget(budgetPath, runAt, runId) {
   const { date, state } = dailyShortlistBudget(budgetPath, runAt, runId);
@@ -1024,6 +1089,7 @@ async function runDailyNormalImpl({
   }
   result.dailyShortlistBudget = retainDailyShortlist(dailyBudgetPath, runAt, effectiveRunId, result.shortlist);
   result.dailyStretchBudget = retainDailyStretch(dailyBudgetPath, runAt, effectiveRunId, result.stretch);
+  result.phaseTargetRollup = retainDailyPhaseTargetRun(dailyPhaseTargetRollupPath(config.databasePath), runAt, effectiveRunId, result.modes);
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
   const codeConfigVersion = computeCanaryVersion({ config });
   const discoveryProfile = {

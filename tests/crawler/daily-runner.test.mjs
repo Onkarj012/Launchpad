@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, runDailyNormal as runDailyNormalActual } from '../../crawler/daily-runner.mjs';
+import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, retainDailyPhaseTargetRun, runDailyNormal as runDailyNormalActual } from '../../crawler/daily-runner.mjs';
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
@@ -1593,6 +1593,8 @@ test('daily mode dispatch selects Startup and Remote with mode-specific run iden
       : { candidates: [], manifest: { status: 'empty' } }])),
   }));
   assert.equal(startup.mode, 'startup');
+  assert.equal(startup.phaseTargetRollup.days[0].date, '2026-07-24');
+  assert.equal(startup.phaseTargetRollup.days[0].modes.startup.roles, startup.modes.startup.shortlist.length);
   assert.match(startup.runId, /morning-startup/);
   assert.equal(startup.shortlist[0].company, 'Startup Dispatch Co');
   assert.deepEqual(startup.deliveryCanary.discoveryProfile, { schedule: 'morning', mode: 'startup', locationPreset: 'india' });
@@ -1722,6 +1724,38 @@ test('local report shows per-mode target counts, cross-mode Strict count, verifi
   assert.match(report, /3 roles, 2 employers/);
 });
 
+test('daily phase target rollup retains per-mode runs by IST date and reports seven consecutive days', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'phase-target-rollup-'));
+  const statePath = path.join(root, 'crawler.sqlite.phase-target-rollup.json');
+  const modes = (normalRoles) => ({
+    normal: { shortlist: Array.from({ length: normalRoles }, (_, index) => ({ company: `Pune ${index}`, selectionTier: index === 0 ? 'Strict' : 'Fallback' })) },
+    startup: { shortlist: [] },
+    remote: { shortlist: [] },
+  });
+  retainDailyPhaseTargetRun(statePath, '2026-10-07T05:00:00.000Z', 'run-1', modes(10));
+  const rollup = retainDailyPhaseTargetRun(statePath, '2026-10-08T05:00:00.000Z', 'run-2', modes(8));
+  const sameDayBest = retainDailyPhaseTargetRun(statePath, '2026-10-08T06:00:00.000Z', 'run-3', modes(10));
+
+  assert.equal(sameDayBest.days[0].date, '2026-10-08');
+  assert.equal(sameDayBest.days[0].modes.normal.met, true);
+  assert.equal(sameDayBest.days[0].modes.normal.roles, 10);
+  assert.equal(sameDayBest.days[0].modes.normal.employers, 10);
+  assert.equal(sameDayBest.days[0].modes.normal.strict, 1);
+  assert.equal(sameDayBest.modes.normal.daysMet, 2);
+  assert.equal(sameDayBest.modes.normal.phaseTargetMet, false);
+  assert.equal(sameDayBest.days[2].status, 'no run');
+  assert.equal(rollup.days[0].date, '2026-10-08');
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).schemaVersion, 'DailyPhaseTargetRollupV1');
+
+  const phaseMetPath = path.join(root, 'five-days.json');
+  for (let day = 1; day <= 5; day += 1) {
+    retainDailyPhaseTargetRun(phaseMetPath, `2026-10-${String(day).padStart(2, '0')}T05:00:00.000Z`, `met-${day}`, modes(10));
+  }
+  const fiveOfSeven = retainDailyPhaseTargetRun(phaseMetPath, '2026-10-05T06:00:00.000Z', 'also-met', modes(10));
+  assert.equal(fiveOfSeven.modes.normal.daysMet, 5);
+  assert.equal(fiveOfSeven.modes.normal.phaseTargetMet, true);
+});
+
 test('daily HTML report writes locally with three mode lists, scorer evidence, labels, employer links, deduped mode tags, and funnel counts', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'daily-html-report-'));
   const output = path.join(root, 'daily.html');
@@ -1760,6 +1794,27 @@ test('daily HTML report writes locally with three mode lists, scorer evidence, l
   for (const count of ['Fetched: 9', 'Eligible: 6', 'Passed gates: 5', 'Ready: 4', 'Scored: 3', 'Shortlisted: 1', 'Employers represented: 1', 'Strict: 1']) assert.ok(html.includes(count), count);
   assert.match(html, /Per-mode daily targets/);
   assert.match(html, /<th>Roles \/ target<\/th>/);
+});
+
+test('daily HTML report shows phase target status and explicit no-run days per mode', () => {
+  const report = renderLocalDailyHtmlReport({
+    runAt: '2026-10-08T06:00:00.000Z',
+    phaseTargetRollup: {
+      days: [{ date: '2026-10-08', status: 'run', modes: { normal: { roles: 10, employers: 6, strict: 2, met: true }, startup: { roles: 0, employers: 0, strict: 0, met: false }, remote: { roles: 0, employers: 0, strict: 0, met: false } } }, { date: '2026-10-07', status: 'no run', modes: {} }],
+      modes: { normal: { daysMet: 1, phaseTargetMet: false }, startup: { daysMet: 0, phaseTargetMet: false }, remote: { daysMet: 0, phaseTargetMet: false } },
+    },
+    modes: { normal: { results: [], shortlist: [] }, startup: { results: [], shortlist: [] }, remote: { results: [], shortlist: [] } },
+  });
+
+  assert.match(report, /5 of 7 consecutive IST days/);
+  assert.match(report, /Pune.*1\/7.*Phase target not met/);
+  assert.match(report, /Startup.*0\/7.*Phase target not met/);
+  assert.match(report, /2026-10-07.*no run/);
+  assert.match(report, /Roles 10, employers 6, Strict 2/);
+  assert.match(renderLocalDailyHtmlReport({
+    phaseTargetRollup: { days: [], modes: { normal: { daysMet: 5, phaseTargetMet: true }, startup: { daysMet: 0, phaseTargetMet: false }, remote: { daysMet: 0, phaseTargetMet: false } } },
+    modes: {},
+  }), /Pune.*5\/7.*Phase target met/);
 });
 
 test('daily HTML report keeps Stretch and EOR roles separate and shows source yield and drift', () => {

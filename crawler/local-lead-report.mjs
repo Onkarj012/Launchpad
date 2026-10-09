@@ -196,6 +196,20 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     return `<tr><td>${label}</td><td>${shortlist.length}/${roleTarget}</td><td>${employerCount}/${employerTarget}</td><td>${verified}/${shortlist.length}</td><td>${Math.max(0, roleTarget - shortlist.length)} roles, ${Math.max(0, employerTarget - employerCount)} employers</td></tr>`;
   }).join('');
   const targets = `<section data-section="targets"><h2>Per-mode daily targets</h2><table><thead><tr><th>Mode</th><th>Roles / target</th><th>Employers / target</th><th>Verified shortlisted</th><th>Shortfall</th></tr></thead><tbody>${targetRows}</tbody></table></section>`;
+  const phaseRollup = result.phaseTargetRollup;
+  const phaseSummaryRows = Object.entries(MODE_LABELS).map(([mode, config]) => {
+    const summary = phaseRollup?.modes?.[mode];
+    const status = summary?.phaseTargetMet ? 'Phase target met' : 'Phase target not met';
+    return `<tr><td>${config.label}</td><td>${summary?.daysMet ?? 0}/7</td><td>${status}</td></tr>`;
+  }).join('');
+  const phaseDayRows = (phaseRollup?.days ?? []).map((day) => {
+    const cells = Object.keys(MODE_LABELS).map((mode) => {
+      const counts = day.modes?.[mode];
+      return `<td>${counts ? `Roles ${counts.roles}, employers ${counts.employers}, Strict ${counts.strict}${counts.met ? ', target met' : ', target not met'}` : 'no run'}</td>`;
+    }).join('');
+    return `<tr><td>${html(day.date)}</td>${cells}</tr>`;
+  }).join('');
+  const phaseTargets = phaseRollup ? `<section data-section="phase-target-rollup"><h2>Phase target, 5 of 7 consecutive IST days</h2><p>Seven-day window ending ${html(phaseRollup.endDate)}.</p><table><thead><tr><th>Mode</th><th>Days met / 7</th><th>Phase status</th></tr></thead><tbody>${phaseSummaryRows}</tbody></table><table><thead><tr><th>IST date</th><th>Pune</th><th>Startup</th><th>Remote</th></tr></thead><tbody>${phaseDayRows}</tbody></table></section>` : '';
   const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
   const yieldRows = (result.sourceYield?.sources ?? []).map((row) => {
     const matchingTelemetry = Object.entries(telemetry).find(([id, source]) => id === row.sourceId || `${row.provider}:${row.board}` === row.sourceId || source.detail?.sources?.some((entry) => `${entry.provider}:${entry.board}` === row.sourceId));
@@ -207,7 +221,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
   const driftSignals = dailyDriftSignals(result);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(now)}</p><section><h2>Funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${targets}${sections}${stretch}${sourceYield}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(now)}</p><section><h2>Funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${targets}${phaseTargets}${sections}${stretch}${sourceYield}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.
