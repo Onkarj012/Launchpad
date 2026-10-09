@@ -277,6 +277,76 @@ test('monthly spend uses reported Apify cost when available', async () => {
   assert.equal(budgetState.months['2026-08'].estimatedSpendUsd, 1);
 });
 
+test('failed and timed out runs with run IDs consume monthly budget, while runs without IDs do not', async () => {
+  const config = {
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 15, maxRunsPerMonth: 15, maxRunCostUsd: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 0.8, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+  const nowIso = '2026-08-04T00:00:00.000Z';
+  const failedBudget = emptyApifyBudgetState();
+  const failed = await pullAll(config, 'token-fixture', {
+    profile: 'demo', fetchImpl: async (url, options) => options?.method === 'POST'
+      ? response({ data: { id: 'failed-run', status: 'RUNNING' } })
+      : response({ data: { id: 'failed-run', status: 'FAILED' } }),
+    pollIntervalMs: 0, clock: () => nowIso, seenCache: emptyApifySeenCache(), budgetState: failedBudget,
+  });
+  assert.equal(failed.summary.demo.status, 'failed');
+  assert.equal(failedBudget.months['2026-08'].runs, 1);
+  assert.equal(failedBudget.months['2026-08'].spendUsd, 0.8);
+
+  let clock = Date.parse(nowIso);
+  const timedOutBudget = emptyApifyBudgetState();
+  const timedOut = await pullAll(config, 'token-fixture', {
+    profile: 'demo', fetchImpl: async (url, options) => options?.method === 'POST'
+      ? response({ data: { id: 'timed-out-run', status: 'RUNNING' } })
+      : response({ data: { id: 'timed-out-run', status: 'RUNNING' } }),
+    pollIntervalMs: 0, runTimeoutMs: 1, clock: () => ++clock, seenCache: emptyApifySeenCache(), budgetState: timedOutBudget,
+  });
+  assert.equal(timedOut.summary.demo.failureReason, 'timeout');
+  assert.equal(timedOutBudget.months['2026-08'].runs, 1);
+  assert.equal(timedOutBudget.months['2026-08'].spendUsd, 0.8);
+
+  const noIdBudget = emptyApifyBudgetState();
+  await pullAll(config, 'token-fixture', {
+    profile: 'demo', fetchImpl: async () => response({ data: { status: 'FAILED' } }),
+    clock: () => nowIso, seenCache: emptyApifySeenCache(), budgetState: noIdBudget,
+  });
+  assert.equal(noIdBudget.months['2026-08'], undefined);
+});
+
+test('failed Apify run usage still blocks the next run cap check', async () => {
+  let calls = 0;
+  const budgetState = emptyApifyBudgetState();
+  const config = {
+    rescue: { maxProfilesPerRun: 1, runTimeoutSeconds: 1, monthlyBudgetUsd: 15, maxRunsPerMonth: 1, maxRunCostUsd: 1 },
+    actors: [{ profile: 'demo', id: 'demo~actor', label: 'demo', estimatedCostUsd: 1, fieldMap: { url: 'url', company: 'company', title: 'title' } }],
+  };
+  await pullAll(config, 'token-fixture', {
+    profile: 'demo', fetchImpl: async (url, options) => {
+      calls += 1;
+      return options?.method === 'POST'
+        ? response({ data: { id: 'capped-failure', status: 'RUNNING' } })
+        : response({ data: { id: 'capped-failure', status: 'FAILED' } });
+    },
+    pollIntervalMs: 0, clock: () => '2026-08-04T00:00:00.000Z', seenCache: emptyApifySeenCache(), budgetState,
+  });
+  const next = await pullAll(config, 'token-fixture', {
+    profile: 'demo', fetchImpl: async () => { calls += 1; throw new Error('run cap must block before Apify'); },
+    clock: () => '2026-08-04T00:00:00.000Z', seenCache: emptyApifySeenCache(), budgetState,
+  });
+  const costLimited = await pullAll({
+    rescue: { ...config.rescue, maxRunsPerMonth: 15, monthlyBudgetUsd: 1 },
+    actors: [{ ...config.actors[0], estimatedCostUsd: 0.5 }],
+  }, 'token-fixture', {
+    profile: 'demo', fetchImpl: async () => { calls += 1; throw new Error('dollar cap must block before Apify'); },
+    clock: () => '2026-08-04T00:00:00.000Z', seenCache: emptyApifySeenCache(), budgetState,
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(next.summary.demo.failureReason, 'MONTHLY_RUN_CAP_EXCEEDED');
+  assert.equal(costLimited.summary.demo.failureReason, 'MONTHLY_BUDGET_CAP_EXCEEDED');
+});
+
 test('pullAll blocks an actor at the monthly run cap without calling Apify', async () => {
   let calls = 0;
   const budgetState = { ...emptyApifyBudgetState(), months: { '2026-08': { runs: 6, spendUsd: 0 } } };

@@ -27,6 +27,7 @@ import { computeCanaryVersion } from './canary-evaluator.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { buildDeliveryReconciliation } from '../job-pull/mode-scoring.mjs';
 import { selectNormalApplications } from '../job-pull/normal-selection.mjs';
+import { isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { readHiringEvents } from './hiring-events.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
@@ -649,7 +650,7 @@ export const DAILY_MODE_RUNNERS = Object.freeze({
 });
 
 // Route a verified pool once, keeping uncapped results beside each mode's shortlist.
-function selectDailyModes(entries, options, selectedMode, stretchBudget) {
+export function selectDailyModes(entries, options, selectedMode, stretchBudget) {
   const pools = { normal: [], startup: [], remote: [], eorContract: [] };
   const stretch = entries
     .filter((entry) => {
@@ -661,6 +662,7 @@ function selectDailyModes(entries, options, selectedMode, stretchBudget) {
         || /\bback[- ]?end\b/i.test(candidate.title || '');
       const listedAsStartupOrRemote = hasStartupEvidence(candidate) || entry.eligibility?.geo?.mode === 'remote';
       return entry.eligibility?.hardMinimumExactly3Years === true
+        && entry.eligibility?.employment?.lane !== 'eor-contract'
         && coreFamily
         && Number.isFinite(score) && score >= 80
         && listedAsStartupOrRemote
@@ -670,16 +672,18 @@ function selectDailyModes(entries, options, selectedMode, stretchBudget) {
       || String(left.candidate.canonicalUrl || '').localeCompare(String(right.candidate.canonicalUrl || '')))
     .slice(0, stretchBudget.remaining)
     .map((entry) => entry.candidate);
+  const stretchKeys = new Set(stretch.map(candidateDedupKey));
   for (const entry of entries) {
     const candidate = entry.candidate;
     if (entry.eligibility?.employment?.lane === 'eor-contract') {
       pools.eorContract.push({ ...entry, candidate: { ...candidate, eligibility: entry.eligibility, labels: entry.eligibility.labels, primaryMode: 'eor-contract', otherModes: [] } });
       continue;
     }
+    if (stretchKeys.has(candidateDedupKey(candidate))) continue;
     const fits = [];
     if (hasStartupEvidence(candidate) || STARTUP_LANE_IDS.has(candidate.startupLaneId)) fits.push('startup');
     const pune = entry.eligibility?.geo?.code === 'GEO_PUNE_METRO'
-      || (entry.eligibility?.geo?.mode === 'remote' && options.config.geo.puneMetroAliases.some((alias) => String(candidate.location || '').toLowerCase().includes(alias.toLowerCase())));
+      || (entry.eligibility?.geo?.mode === 'remote' && isPuneMetroLocation(candidate.location, options.config));
     if (pune) fits.push('normal');
     if (entry.eligibility?.geo?.mode === 'remote') fits.push('remote');
     if (!fits.length) continue;
