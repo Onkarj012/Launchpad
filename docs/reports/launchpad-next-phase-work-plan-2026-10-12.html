@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launchpad next phase: work still to do, 12 October 2026</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1d1b; --muted: #6b6a64; --line: #e4e1d8; --card: #ffffff;
+    --red: #b42318; --red-bg: #fdecea; --amber: #a15c07; --amber-bg: #fdf3e2;
+    --green: #1f7a3f; --green-bg: #e8f5ec; --blue: #1d4ed8; --blue-bg: #e8eefc; --code: #f1efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --fg: #ecebe6; --muted: #a09e96; --line: #2e2d2a; --card: #1c1c1a;
+      --red: #f2867c; --red-bg: #3a1d1a; --amber: #f0b459; --amber-bg: #352a17;
+      --green: #7fcf98; --green-bg: #18301f; --blue: #9db7f5; --blue-bg: #1a2440; --code: #262522;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 52px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+  p, li { max-width: 72ch; }
+  .meta { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  nav { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; font-size: 14px; }
+  nav ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 32px; }
+  nav a { color: var(--blue); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  code { font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .callout { border-radius: 10px; padding: 14px 18px; margin: 16px 0; border: 1px solid transparent; }
+  .callout.red { background: var(--red-bg); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+  .callout p { margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0 8px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); }
+  tr:last-child td { border-bottom: 0; }
+  td.n { white-space: nowrap; color: var(--muted); }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .t-red { color: var(--red); background: var(--red-bg); }
+  .t-amber { color: var(--amber); background: var(--amber-bg); }
+  .t-green { color: var(--green); background: var(--green-bg); }
+  .t-blue { color: var(--blue); background: var(--blue-bg); }
+  .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0; font-size: 14px; }
+  .flow span.step { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .flow span.arrow { color: var(--muted); }
+  .wrap { overflow-x: auto; }
+  @media (max-width: 640px) { main { padding: 28px 16px 64px; } nav ol { columns: 1; } }
+  @media print { body { background: #fff; color: #000; } nav { display: none; } table, .callout { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Launchpad next phase: work still to do</h1>
+  <p class="meta">12 October 2026, IST · Branch <code>fix/pipeline-yield</code> at <code>9b18bf0</code> · Follows the build report of 9 October · Spec: <code>docs/spec/launchpad-next-phase-verified-yield.md</code></p>
+
+  <nav aria-label="Contents">
+    <ol>
+      <li><a href="#now">Where things stand today</a></li>
+      <li><a href="#order">Order of work</a></li>
+      <li><a href="#p1">1. Stop the zero-yield runs</a></li>
+      <li><a href="#p2">2. Fix the small known bugs</a></li>
+      <li><a href="#p3">3. Bounded live runs</a></li>
+      <li><a href="#p4">4. Gate audit and the PR</a></li>
+      <li><a href="#p5">5. Close supply gaps</a></li>
+      <li><a href="#p6">6. Shadow week and after</a></li>
+      <li><a href="#p7">7. Housekeeping</a></li>
+      <li><a href="#decisions">Decisions for the grilling</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="now">Where things stand today</h2>
+  <p>The code is built and passes every local check. It does not produce roles yet. The two July launchd jobs still run this branch twice a day on the production config, Pune mode only, with no Notion writes. I read the latest two runs:</p>
+  <div class="wrap">
+  <table>
+    <thead><tr><th>Run</th><th>Fetched</th><th>Eligible</th><th>Scored</th><th>Selected</th><th>What stands out</th></tr></thead>
+    <tbody>
+      <tr><td>11 Oct, midday</td><td>2,774</td><td>14</td><td>0</td><td>0</td><td>43 leads waiting in verification. The scorer never ran.</td></tr>
+      <tr><td>12 Oct, morning</td><td>0</td><td>0</td><td>0</td><td>0</td><td>The startup careers lane <code>failed</code>. Five other lanes ended <code>empty</code> with reason <code>deadline-before-source</code>: the run's time budget ran out before they started.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>My guess is that the 20 startup careers sites added on 9 October use up the run's time budget. That is a guess, not a finding. The scorer shows <code>attempted: 0</code> in both runs, which is a separate problem. I did not read the 10 October runs or the 11 October morning run.</p>
+  <div class="callout red"><p><b>Until step 1 is done, every scheduled run is wasted.</b> Nothing else on this page helps while the daily run returns zero.</p></div>
+
+  <h2 id="order">Order of work</h2>
+  <div class="flow">
+    <span class="step">1. Stop zero yield</span><span class="arrow">→</span>
+    <span class="step">2. Small bugs</span><span class="arrow">→</span>
+    <span class="step">3. Bounded live runs</span><span class="arrow">→</span>
+    <span class="step">4. Gate audit + PR</span><span class="arrow">→</span>
+    <span class="step">6. Shadow week</span>
+  </div>
+  <p>Step 5 (supply gaps) runs beside steps 3 and 4. Step 7 can happen any time. Each step lists who does it: <span class="tag t-blue">Claude</span> work I can do, <span class="tag t-amber">Onkar</span> work only you can do, <span class="tag t-red">Decision</span> a call you need to make first.</p>
+
+  <h2 id="p1">1. Stop the zero-yield runs</h2>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">1.1</td><td>Decide what the two July launchd jobs do while this is fixed: keep running, pause, or be replaced later by the shadow-week jobs.</td><td><span class="tag t-red">Decision</span></td><td>You've chosen. If pause, I give you the one <code>launchctl</code> command to run.</td></tr>
+      <tr><td class="n">1.2</td><td>Find what uses up the run's time budget. Check the startup careers lane first. Then find why it ended <code>failed</code>.</td><td><span class="tag t-blue">Claude</span></td><td>The cause is written down with run evidence, and the fix has a regression test. A morning run on the dev config gets past every lane.</td></tr>
+      <tr><td class="n">1.3</td><td>Find why the scorer never runs (<code>attempted: 0</code>, <code>required: false</code>). It may be config, a missing environment value under launchd, or the early stop.</td><td><span class="tag t-blue">Claude</span></td><td>A dev run scores its ready roles, or the report states the exact reason it can't.</td></tr>
+      <tr><td class="n">1.4</td><td>Find why fetch volume fell from about 5,000 on 8 October to between 0 and 2,800.</td><td><span class="tag t-blue">Claude</span></td><td>Per-source fetch counts for 8 October and today, side by side, with each drop explained.</td></tr>
+      <tr><td class="n">1.5</td><td>Rotate the <code>ANTHROPIC_AUTH_TOKEN</code> that leaked into a local log.</td><td><span class="tag t-amber">Onkar</span></td><td>The old token no longer works.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="p2">2. Fix the small known bugs</h2>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">2.1</td><td>Stop <code>npm test</code> writing <code>command-daily-*.html</code> into the real <code>.local/launchpad-crawler/reports/</code> folder. The tests should use a temp folder.</td><td><span class="tag t-blue">Claude</span></td><td>A full test run leaves that folder unchanged.</td></tr>
+      <tr><td class="n">2.2</td><td>Show hiring-challenge and drive deadlines in the HTML daily report. They only show in the Markdown report today.</td><td><span class="tag t-blue">Claude</span></td><td>A test shows a deadline in the HTML output.</td></tr>
+      <tr><td class="n">2.3</td><td>Sweep the registry for boards with no Pune or India relevance, like <code>greenhouse:monzoreferrals</code>. Remove them, or keep them flagged as not relevant.</td><td><span class="tag t-blue">Claude</span></td><td>Every board's relevance flags match its probe record, and the list of removed boards is recorded.</td></tr>
+      <tr><td class="n">2.4</td><td>Check whether a Notion v5 database already uses <code>Backfill</code> as a <code>Selection Tier</code> option.</td><td><span class="tag t-amber">Onkar</span></td><td>You've said yes or no. If yes, the existing database gets renamed before any live write.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="p3">3. Bounded live runs</h2>
+  <p>The spec calls for hand-run mornings from day 3 of the build. None have happened. These runs are the first real evidence for the phase target.</p>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">3.1</td><td>Run one bounded morning run in all three modes on the isolated shadow-week config. No Notion writes.</td><td><span class="tag t-blue">Claude</span></td><td>An HTML report exists with per-mode results, shortlists, per-source yield and drift signals. The run evidence is kept.</td></tr>
+      <tr><td class="n">3.2</td><td>Read the first report. Say whether each mode hits its target, and which sources produced ready roles.</td><td><span class="tag t-blue">Claude</span></td><td>A short dated note in <code>docs/reports/</code>.</td></tr>
+      <tr><td class="n">3.3</td><td>Run it again each morning until shadow week starts. Shortlist by hand from the report.</td><td><span class="tag t-blue">Claude</span> runs it · <span class="tag t-amber">Onkar</span> picks roles</td><td>You have real roles to apply to.</td></tr>
+      <tr><td class="n">3.4</td><td>Move the Hacker News and YC trial start dates to the first real run. Today they say 8 October, so their one-week windows are passing unused.</td><td><span class="tag t-red">Decision</span> then <span class="tag t-blue">Claude</span></td><td>Each trial ends with a 7-day yield and a keep-or-drop call.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="p4">4. Gate audit and the PR</h2>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">4.1</td><td>Build the sample sheet for ticket 25: 100 random rejects for each main reason code, each with a link and its listing text. Real-run data from step 3 makes this sample current.</td><td><span class="tag t-blue">Claude</span></td><td>One local file per reason code, ready to label.</td></tr>
+      <tr><td class="n">4.2</td><td>Label each sample right or wrong (ticket 25).</td><td><span class="tag t-amber">Onkar</span></td><td>Every sample labelled, with a false-reject rate per code.</td></tr>
+      <tr><td class="n">4.3</td><td>Fix only the proven false rejects, each with a regression test built from the real listing (ticket 26).</td><td><span class="tag t-blue">Claude</span></td><td>Every fix traces to a labelled sample.</td></tr>
+      <tr><td class="n">4.4</td><td>Push <code>fix/pipeline-yield</code> and open the one PR, as the spec requires.</td><td><span class="tag t-red">Decision</span> then <span class="tag t-blue">Claude</span></td><td>The PR is open and linked to this thread.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="p5">5. Close supply gaps</h2>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">5.1</td><td>Find more employers whose careers pages publish JobPosting JSON-LD. Only 2 of the 15 targeted are recorded.</td><td><span class="tag t-blue">Claude</span></td><td>At least 15 recorded, each checked with one public request.</td></tr>
+      <tr><td class="n">5.2</td><td>Confirm the 20 startup careers sites return roles in a real run. Remove any that fail or produce nothing.</td><td><span class="tag t-blue">Claude</span></td><td>A per-site yield table from the step 3 runs.</td></tr>
+      <tr><td class="n">5.3</td><td>Decide each <code>unavailable</code> source: local SearXNG for web discovery, the on-request Apify rescue for Naukri, Foundit and Hirist, and Cutshort, Peerlist, Indeed and native remote feeds.</td><td><span class="tag t-red">Decision</span></td><td>Every source is <code>ok</code>, <code>empty</code> with a reason, or <code>disabled</code> by decision.</td></tr>
+      <tr><td class="n">5.4</td><td>Supply the inputs only you have: your LinkedIn connections CSV export, a hand-written contact list, and pasted hiring posts in the inbox file.</td><td><span class="tag t-amber">Onkar</span></td><td>The referral map and hiring-post inbox have real input.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="p6">6. Shadow week and after</h2>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">6.1</td><td>Install the shadow-week schedule (07:45 and 13:15 IST, isolated config, no Notion writes). Only after step 1 works and you say go.</td><td><span class="tag t-red">Decision</span> then <span class="tag t-blue">Claude</span></td><td>Seven IST days of runs kept, with the 5-of-7 rollup showing in the report.</td></tr>
+      <tr><td class="n">6.2</td><td>Note what you miss from Notion during the week.</td><td><span class="tag t-amber">Onkar</span></td><td>A short list at the end of the week.</td></tr>
+      <tr><td class="n">6.3</td><td>Remove the schedule after day 7 with <code>sh scripts/remove-shadow-week-schedule.sh</code>. It does not stop on its own.</td><td><span class="tag t-amber">Onkar</span> or <span class="tag t-blue">Claude</span></td><td><code>launchctl list</code> shows no shadow-week job.</td></tr>
+      <tr><td class="n">6.4</td><td>Make the three decisions the spec defers to after shadow week: keep Notion v5 or build a local tracker, enable or delete TheirStack, and whether to lower the mode targets.</td><td><span class="tag t-red">Decision</span></td><td>Each decision recorded with the yield numbers behind it.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="p7">7. Housekeeping</h2>
+  <table>
+    <thead><tr><th>#</th><th>Task</th><th>Who</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">7.1</td><td>Update <code>docs/STATUS.md</code> for this work, and the test count in <code>AGENTS.md</code> (it says 725; there are 1063).</td><td><span class="tag t-blue">Claude</span></td><td>Both match the branch.</td></tr>
+      <tr><td class="n">7.2</td><td>Add log rotation for the scheduled jobs. The morning log is now 520 MB.</td><td><span class="tag t-blue">Claude</span></td><td>Logs stay under a set size.</td></tr>
+      <tr><td class="n">7.3</td><td>Delete the merged <code>dco/*</code> branches (51 local).</td><td><span class="tag t-red">Decision</span></td><td>Only unmerged branches remain.</td></tr>
+      <tr><td class="n">7.4</td><td>Decide whether the 15-runs-a-month Apify cap stays next to the $1 and $15 caps.</td><td><span class="tag t-red">Decision</span></td><td>Config matches the decision.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="decisions">Decisions for the grilling</h2>
+  <ol>
+    <li>What happens to the July launchd jobs right now (1.1)?</li>
+    <li>When does ticket 25's labelling happen, and does it wait for real-run data (4.1, 4.2)?</li>
+    <li>Move the HN and YC trial dates to the first real run (3.4)?</li>
+    <li>For each unavailable source: enable, run on request, or disable (5.3)?</li>
+    <li>When do the LinkedIn export and first hiring posts arrive (5.4)?</li>
+    <li>Does a Notion v5 database already exist with <code>Backfill</code> (2.4)?</li>
+    <li>When to push and open the PR (4.4)?</li>
+    <li>Shadow week: start date, and who removes the schedule after day 7 (6.1, 6.3)?</li>
+    <li>Delete merged branches? Keep the Apify run cap (7.3, 7.4)?</li>
+  </ol>
+</main>
+</body>
+</html>
