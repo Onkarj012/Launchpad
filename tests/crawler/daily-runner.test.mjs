@@ -58,7 +58,6 @@ test('primary mode follows Startup then Pune then Remote regardless of requested
 });
 
 test('each mode keeps full results and caps one employer at two without using another modes company capacity', async () => {
-  const { config } = testConfig();
   const roles = ['normal', 'startup', 'remote'].flatMap((mode, modeIndex) => [0, 1, 2].map((index) => rawPortalJob(1820 + modeIndex * 3 + index, {
     company: 'Shared Employer', provider: 'greenhouse', jobId: String(1820 + modeIndex * 3 + index),
     ...(mode === 'startup' ? { companyStage: 'Startup', startupStageEvidenceRef: 'https://portfolio.example.test/shared-employer' } : {}),
@@ -66,6 +65,7 @@ test('each mode keeps full results and caps one employer at two without using an
   })));
   const sourceFixtures = { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: roles, manifest: { status: 'ok' } } };
   for (const mode of ['normal', 'startup', 'remote']) {
+    const { config } = testConfig();
     const result = await runDailyNormal(runOptions(config, fakeTransport({}), { mode, runId: `mode-cap-${mode}`, sourceFixtures }));
     assert.equal(result.outcome.fatal, false);
     assert.equal(result.modes[mode].results.length, 3);
@@ -1757,49 +1757,52 @@ test('local report shows per-mode target counts, cross-mode Strict count, verifi
     },
   };
 
+  result.dailyShortlistBudget = { date: '2026-10-08', selectedToday: 3, strictSelected: 2, remaining: 17, cumulativeCandidates: [
+    { key: 'normal-1', company: 'Pune Labs', tier: 'Strict', primaryMode: 'normal' },
+    { key: 'startup-1', company: 'Startup Labs', tier: 'Fallback', primaryMode: 'startup' },
+    { key: 'remote-1', company: 'Remote Labs', tier: 'Strict', primaryMode: 'remote' },
+  ] };
   const report = renderLocalLeadReport(result, { now: '2026-10-07T20:00:00.000Z' });
 
   assert.match(report, /## Per-mode daily targets \(IST 2026-10-08\)/);
-  assert.match(report, /\| Pune \(normal\) \| 1\/10 \| 1\/6 \| 1\/1 \| 9 roles, 5 employers \|/);
-  assert.match(report, /\| Startup \| 1\/5 \| 1\/4 \| 1\/1 \| 4 roles, 3 employers \|/);
-  assert.match(report, /\| Remote \| 2\/5 \| 2\/4 \| 1\/2 \| 3 roles, 2 employers \|/);
-  assert.match(report, /Strict across modes: 2, target 2/);
-  assert.match(report, /Verified shortlisted roles: 3\/4/);
+  assert.match(report, /\| Pune \(normal\) \| 1\/10 \| 1\/6 \| 1 \| 9 roles, 5 employers \|/);
+  assert.match(report, /\| Startup \| 1\/5 \| 1\/4 \| 0 \| 4 roles, 3 employers \|/);
+  assert.match(report, /\| Remote \| 1\/5 \| 1\/4 \| 1 \| 4 roles, 3 employers \|/);
+  assert.match(report, /Cumulative Strict across modes today: 2, phase target 2/);
+  assert.match(report, /Cumulative all-mode roles today: 3\/20/);
   assert.match(report, /9 roles, 5 employers/);
   assert.match(report, /4 roles, 3 employers/);
-  assert.match(report, /3 roles, 2 employers/);
 });
 
-test('daily phase target rollup retains per-mode runs by IST date and reports seven consecutive days', () => {
+test('daily phase targets accumulate unique same-day jobs and require two Strict across modes', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'phase-target-rollup-'));
-  const statePath = path.join(root, 'crawler.sqlite.phase-target-rollup.json');
-  const modes = (normalRoles) => ({
-    normal: { shortlist: Array.from({ length: normalRoles }, (_, index) => ({ company: `Pune ${index}`, selectionTier: index === 0 ? 'Strict' : 'Fallback' })) },
-    startup: { shortlist: [] },
-    remote: { shortlist: [] },
-  });
-  retainDailyPhaseTargetRun(statePath, '2026-10-07T05:00:00.000Z', 'run-1', modes(10));
-  const rollup = retainDailyPhaseTargetRun(statePath, '2026-10-08T05:00:00.000Z', 'run-2', modes(8));
-  const sameDayBest = retainDailyPhaseTargetRun(statePath, '2026-10-08T06:00:00.000Z', 'run-3', modes(10));
+  const statePath = path.join(root, 'rollup.json');
+  const role = (index, tier = 'Fallback') => ({ canonicalUrl: `https://jobs.example.test/${index}`, company: `Employer ${index}`, selectionTier: tier, applicationReady: true });
+  const modes = (roles) => ({ normal: { shortlist: roles }, startup: { shortlist: [] }, remote: { shortlist: [] } });
+  const history = { verified: true, status: 'loaded', scope: 'fixture' };
+  retainDailyPhaseTargetRun(statePath, '2026-10-07T18:29:00Z', 'morning', modes(Array.from({ length: 6 }, (_, i) => role(i, i === 0 ? 'Strict' : 'Fallback'))), history);
+  const cumulative = retainDailyPhaseTargetRun(statePath, '2026-10-07T18:29:30Z', 'midday', modes(Array.from({ length: 5 }, (_, i) => role(i + 5, i === 1 ? 'Strict' : 'Fallback'))), history);
+  assert.equal(cumulative.days[0].date, '2026-10-07');
+  assert.equal(cumulative.days[0].modes.normal.roles, 10);
+  assert.equal(cumulative.days[0].modes.normal.employers, 10);
+  assert.equal(cumulative.days[0].strict, 2);
+  assert.equal(cumulative.days[0].modes.normal.met, true);
+  const retry = retainDailyPhaseTargetRun(statePath, '2026-10-07T18:29:40Z', 'midday', modes([]), history);
+  assert.equal(retry.days[0].modes.normal.roles, 10);
+  const next = retainDailyPhaseTargetRun(statePath, '2026-10-07T18:30:00Z', 'next-day', modes([role(10)]), history);
+  assert.equal(next.days[0].date, '2026-10-08');
+  assert.equal(next.days[0].modes.normal.roles, 1);
+  assert.equal(next.days[2].status, 'no run');
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).schemaVersion, 'DailyPhaseTargetRollupV2');
 
-  assert.equal(sameDayBest.days[0].date, '2026-10-08');
-  assert.equal(sameDayBest.days[0].modes.normal.met, true);
-  assert.equal(sameDayBest.days[0].modes.normal.roles, 10);
-  assert.equal(sameDayBest.days[0].modes.normal.employers, 10);
-  assert.equal(sameDayBest.days[0].modes.normal.strict, 1);
-  assert.equal(sameDayBest.modes.normal.daysMet, 2);
-  assert.equal(sameDayBest.modes.normal.phaseTargetMet, false);
-  assert.equal(sameDayBest.days[2].status, 'no run');
-  assert.equal(rollup.days[0].date, '2026-10-08');
-  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).schemaVersion, 'DailyPhaseTargetRollupV1');
-
-  const phaseMetPath = path.join(root, 'five-days.json');
+  const phasePath = path.join(root, 'five-days.json');
   for (let day = 1; day <= 5; day += 1) {
-    retainDailyPhaseTargetRun(phaseMetPath, `2026-10-${String(day).padStart(2, '0')}T05:00:00.000Z`, `met-${day}`, modes(10));
+    retainDailyPhaseTargetRun(phasePath, `2026-10-${String(day).padStart(2, '0')}T05:00:00Z`, `run-${day}`, modes(Array.from({ length: 10 }, (_, i) => role(i, i < 2 ? 'Strict' : 'Fallback'))), history);
   }
-  const fiveOfSeven = retainDailyPhaseTargetRun(phaseMetPath, '2026-10-05T06:00:00.000Z', 'also-met', modes(10));
+  const fiveOfSeven = retainDailyPhaseTargetRun(phasePath, '2026-10-07T05:00:00Z', 'empty', modes([]), history);
   assert.equal(fiveOfSeven.modes.normal.daysMet, 5);
   assert.equal(fiveOfSeven.modes.normal.phaseTargetMet, true);
+  assert.equal(fiveOfSeven.phaseTargetMet, false);
 });
 
 test('daily HTML report writes locally with three mode lists, scorer evidence, labels, employer links, deduped mode tags, and funnel counts', () => {

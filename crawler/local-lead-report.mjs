@@ -17,6 +17,57 @@ const MODE_LABELS = Object.freeze({
   remote: Object.freeze({ label: 'Remote', roleTarget: 5, employerTarget: 4 }),
 });
 
+// Exclude separate lanes and unresolved rows from the full-time daily target units.
+function countsTowardTarget(role) {
+  const labels = [...(role.labels ?? []), ...(role.eligibility?.labels ?? [])];
+  return role.selectionTier !== 'Stretch' && role.tier !== 'Stretch'
+    && role.freshness?.window !== 'VerifyQueue' && role.freshnessTier !== 'VerifyQueue'
+    && role.eligibility?.employment?.lane !== 'eor-contract'
+    && !/^(EOR|Contract)$/i.test(role.employmentCategory ?? '')
+    && !labels.some((label) => /^(EOR|Contract)$/i.test(label));
+}
+
+// Count retained role identities once across modes without collapsing missing URLs.
+function uniqueRoles(roles) {
+  return [...new Map(roles.map((role) => [role.key ?? candidateDedupKey(role), role])).values()];
+}
+
+// Keep this-run delivery and retained all-mode IST-day allocations in separate units.
+function dailyReportUnits(result, now) {
+  const budget = result.dailyShortlistBudget;
+  const date = budget?.date ?? eventDate(now).slice(0, 10);
+  const day = result.phaseTargetRollup?.days?.find((entry) => entry.date === date);
+  const runRoles = uniqueRoles(Object.keys(MODE_LABELS).flatMap((mode) =>
+    (result.modes?.[mode]?.shortlist ?? (result.mode === mode ? result.shortlist ?? [] : [])).filter(countsTowardTarget)));
+  const cumulative = Array.isArray(budget?.cumulativeCandidates) ? uniqueRoles(budget.cumulativeCandidates.filter(countsTowardTarget)) : null;
+  const modes = Object.entries(MODE_LABELS).map(([mode, config]) => {
+    const roles = cumulative?.filter((role) => role.primaryMode === mode);
+    const retained = day?.modes?.[mode];
+    return { mode, ...config,
+      roles: retained?.roles ?? roles?.length ?? null,
+      employers: retained?.employers ?? (roles ? new Set(roles.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean)).size : null),
+      strict: retained?.strict ?? (roles ? roles.filter((role) => String(role.tier ?? role.selectionTier ?? '').toLowerCase() === 'strict').length : null),
+    };
+  });
+  return { date, modes, runRoles, cumulative,
+    focus: MODE_LABELS[result.mode]?.label ?? 'Not Verified',
+    focusCount: Array.isArray(result.shortlist) ? result.shortlist.filter(countsTowardTarget).length : null,
+    selectedToday: budget?.selectedToday ?? cumulative?.length ?? null,
+    strictToday: budget?.strictSelected ?? day?.strict ?? (cumulative ? cumulative.filter((role) => String(role.tier ?? role.selectionTier ?? '').toLowerCase() === 'strict').length : null),
+    remaining: budget?.remaining ?? null,
+    historyVerified: day?.historyVerified,
+    separate: { stretch: result.stretch?.length ?? 0, eorContract: result.modes?.eorContract?.shortlist?.length ?? 0, verification: result.verificationQueue?.length ?? 0 },
+  };
+}
+
+// Display a target shortfall only when its retained count is known.
+function targetShortfall(mode) {
+  if (mode.roles === null || mode.employers === null) return 'Not Verified';
+  const roles = Math.max(0, mode.roleTarget - mode.roles);
+  const employers = Math.max(0, mode.employerTarget - mode.employers);
+  return roles || employers ? `${roles} roles, ${employers} employers` : 'None';
+}
+
 // Read request counts from source telemetry without inferring missing requests.
 function sourceRequests(source) {
   const details = source.detail ?? source;
@@ -36,11 +87,12 @@ function dailyDriftSignals(result) {
     const failedBoards = Number(source.boardsFailed ?? source.failed ?? source.detail?.boardsFailed ?? source.detail?.failed ?? source.detail?.telemetry?.boardsFailed ?? source.detail?.telemetry?.failed ?? source.detail?.failures?.length ?? 0);
     if (failedBoards > 0) signals.push(`${id}: ${failedBoards} board failure${failedBoards === 1 ? '' : 's'}`);
   }
-  for (const [id, endState] of Object.entries(result.sourceEndStates ?? {})) {
+  for (const [id, endState] of Object.entries(result.sourceEndStates ?? result.terminalEnvelope?.sourceEndStates ?? {})) {
     const evidence = `${endState.state ?? ''} ${endState.reason ?? ''}`.toLowerCase();
     if (/linkedin/.test(id.toLowerCase()) && /429|rate.limit/.test(evidence)) signals.push(`LinkedIn 429: ${id}`);
     if (/glassdoor/.test(id.toLowerCase()) && /403|forbidden/.test(evidence)) signals.push(`Glassdoor 403: ${id}`);
     if (/failed|http_[45]|transport/.test(evidence) && !/linkedin|glassdoor/.test(id.toLowerCase())) signals.push(`${id}: board failure`);
+    if (['interrupted', 'truncated', 'degraded'].includes(endState.state)) signals.push(`${id}: ${endState.state}, ${endState.reason ?? 'Not Verified'}`);
   }
   for (const entry of result.scorerVariance ?? result.scoring?.variance ?? []) {
     const previous = entry.previous ?? entry.previousScore;
@@ -79,28 +131,22 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const lines = ['# Local lead handoff', '', `Observed at ${now}. Public evidence only. No scores, applications, outreach or store delivery.`, '',
     `Strict ready: ${buckets.strictReady.length}. Shortage fallback ready: ${buckets.fallbackReady.length}. Needs verification: ${buckets.verification.length}. Rejected: ${buckets.rejected.length}.`, ''];
   if (result.modes && typeof result.modes === 'object') {
-    const targets = { normal: { label: 'Pune (normal)', roleTarget: 10, employerTarget: 6 }, startup: { label: 'Startup', roleTarget: 5, employerTarget: 4 }, remote: { label: 'Remote', roleTarget: 5, employerTarget: 4 } };
-    const modeRows = Object.entries(targets).map(([mode, target]) => {
-      const selection = result.modes[mode] ?? {};
-      const shortlist = Array.isArray(selection.shortlist) ? selection.shortlist : [];
-      const verifiedKeys = new Set((selection.results ?? []).map(candidateDedupKey));
-      const verified = shortlist.filter((candidate) => verifiedKeys.has(candidateDedupKey(candidate))).length;
-      const employers = new Set(shortlist.map((candidate) => String(candidate.company ?? '').trim().toLowerCase()).filter(Boolean)).size;
-      return { ...target, shortlist, verified, employers };
-    });
-    const strictCount = modeRows.flatMap(({ shortlist }) => shortlist).filter((candidate) => candidate.selectionTier === 'Strict').length;
-    const allShortlists = modeRows.flatMap(({ shortlist }) => shortlist);
-    const verifiedCount = modeRows.reduce((count, mode) => count + mode.verified, 0);
-    lines.push(`## Per-mode daily targets (IST ${eventDate(now).slice(0, 10)})`, '',
-      '| Mode | Roles / target | Employers / target | Verified shortlisted | Shortfall |',
+    const units = dailyReportUnits(result, now);
+    lines.push('## This-run allocation and focus delivery', '',
+      `Requested-mode delivery focus: ${units.focus}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles.`,
+      `This-run all-mode allocation: ${units.runRoles.length} roles.`, '',
+      `## Per-mode daily targets (IST ${units.date})`, '',
+      'Counts are cumulative completed allocations across modes and schedules for this IST day.', '',
+      '| Mode | Roles / target | Employers / target | Strict | Shortfall |',
       '| --- | ---: | ---: | ---: | --- |');
-    for (const mode of modeRows) {
-      const missingRoles = Math.max(0, mode.roleTarget - mode.shortlist.length);
-      const employerShortfall = Math.max(0, mode.employerTarget - mode.employers);
-      const shortfall = missingRoles || employerShortfall ? `${missingRoles} roles, ${employerShortfall} employers` : 'None';
-      lines.push(`| ${mode.label} | ${mode.shortlist.length}/${mode.roleTarget} | ${mode.employers}/${mode.employerTarget} | ${mode.verified}/${mode.shortlist.length} | ${shortfall} |`);
+    for (const mode of units.modes) {
+      lines.push(`| ${mode.mode === 'normal' ? 'Pune (normal)' : mode.label} | ${mode.roles ?? 'Not Verified'}/${mode.roleTarget} | ${mode.employers ?? 'Not Verified'}/${mode.employerTarget} | ${mode.strict ?? 'Not Verified'} | ${targetShortfall(mode)} |`);
     }
-    lines.push('', `Strict across modes: ${strictCount}, target 2.`, `Verified shortlisted roles: ${verifiedCount}/${allShortlists.length}.`, '');
+    lines.push('', `Cumulative all-mode roles today: ${units.selectedToday ?? 'Not Verified'}/20 maximum. Remaining daily capacity: ${units.remaining ?? 'Not Verified'}.`,
+      `Cumulative Strict across modes today: ${units.strictToday ?? 'Not Verified'}, phase target 2.`,
+      `Historical suppression evidence: ${units.historyVerified === true ? 'Verified' : 'Not Verified'}.`, '',
+      '## Separate lanes outside daily role targets', '',
+      `This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.`, '');
   }
   const table = (name, rows) => {
     lines.push(`## ${name}`, '');
@@ -145,6 +191,9 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     lines.push(`- ${cell(id)}: ${cell(source.status)} / ${cell(source.detail?.status ?? source.manifest?.status)}; fetched ${source.fetched ?? 0}; detail/resolver GETs ${telemetry.resolutionRequests ?? 0}/${telemetry.maxRequests ?? 'unknown'}; candidate cap ${telemetry.maxCandidates ?? 'unknown'}; truncated ${Boolean(source.truncated || telemetry.truncated)}.`);
     for (const error of [...new Set([source.error, ...(source.detail?.errors ?? []), ...(source.manifest?.errors ?? [])].filter(Boolean))]) lines.push(`  - ${cell(error)}`);
   }
+  for (const [id, endState] of Object.entries(result.sourceEndStates ?? result.terminalEnvelope?.sourceEndStates ?? {})) {
+    if (!['ok', 'empty', 'disabled'].includes(endState.state)) lines.push(`- ${cell(id)}: ${cell(endState.state)}; ${cell(endState.reason)}.`);
+  }
   if (result.error) lines.push(`- ${cell(result.error)}`);
   lines.push('');
   return lines.join('\n');
@@ -156,9 +205,9 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const modes = [...targetModes, ['eorContract', 'EOR / Contract']];
   const modeRuns = result.modes ?? {};
   const telemetry = result.sourceTelemetry ?? {};
-  const uniqueResults = new Map(modes.flatMap(([mode]) => (modeRuns[mode]?.results ?? []).map((role) => [role.canonicalUrl ?? role.url, role])));
-  const allShortlists = targetModes.flatMap(([mode]) => modeRuns[mode]?.shortlist ?? (result.mode === mode ? result.shortlist ?? [] : []));
-  const uniqueShortlist = [...new Map(allShortlists.map((role) => [role.canonicalUrl ?? role.url, role])).values()];
+  const uniqueResults = uniqueRoles(targetModes.flatMap(([mode]) => modeRuns[mode]?.results ?? []));
+  const units = dailyReportUnits(result, now);
+  const uniqueShortlist = units.runRoles;
   const lifecycle = result.funnel?.lifecycle ?? {};
   const counts = result.counts ?? {};
   // Choose the first available count without inferring missing values.
@@ -166,7 +215,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const strictCount = uniqueShortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
   const employers = new Set(uniqueShortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
   const funnel = [
-    ['Fetched', readCount(counts.fetched, lifecycle.fetched, uniqueResults.size)],
+    ['Fetched', readCount(counts.fetched, lifecycle.fetched, uniqueResults.length)],
     ['Eligible', readCount(counts.eligible, lifecycle.eligible)],
     ['Passed gates', readCount(counts.gatePassing, lifecycle.gatePassing, lifecycle.eligible)],
     ['Ready', readCount(counts.ready, lifecycle.ready)],
@@ -175,7 +224,6 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     ['Employers represented', employers.size],
     ['Strict', strictCount],
   ];
-  const htmlTargetModes = Object.entries(MODE_LABELS).map(([mode, config]) => [mode, config.label, config.roleTarget, config.employerTarget]);
   // Render one role card with its evidence, labels, and employer apply link.
   const roleCard = (role, isShortlist) => {
     const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
@@ -189,13 +237,10 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
     return `<section data-mode="${mode}"><h2>${label}</h2><h3>Full results</h3>${(run.results ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}<h3>Shortlist</h3>${(run.shortlist ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
   }).join('');
-  const targetRows = htmlTargetModes.map(([mode, label, roleTarget, employerTarget]) => {
-    const shortlist = modeRuns[mode]?.shortlist ?? [];
-    const verified = shortlist.filter((role) => (modeRuns[mode]?.results ?? []).some((candidate) => (candidate.canonicalUrl ?? candidate.url) === (role.canonicalUrl ?? role.url))).length;
-    const employerCount = new Set(shortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean)).size;
-    return `<tr><td>${label}</td><td>${shortlist.length}/${roleTarget}</td><td>${employerCount}/${employerTarget}</td><td>${verified}/${shortlist.length}</td><td>${Math.max(0, roleTarget - shortlist.length)} roles, ${Math.max(0, employerTarget - employerCount)} employers</td></tr>`;
+  const targetRows = units.modes.map((mode) => {
+    return `<tr><td>${mode.label}</td><td>${mode.roles ?? 'Not Verified'}/${mode.roleTarget}</td><td>${mode.employers ?? 'Not Verified'}/${mode.employerTarget}</td><td>${mode.strict ?? 'Not Verified'}</td><td>${targetShortfall(mode)}</td></tr>`;
   }).join('');
-  const targets = `<section data-section="targets"><h2>Per-mode daily targets</h2><table><thead><tr><th>Mode</th><th>Roles / target</th><th>Employers / target</th><th>Verified shortlisted</th><th>Shortfall</th></tr></thead><tbody>${targetRows}</tbody></table></section>`;
+  const targets = `<section data-section="targets"><h2>Per-mode daily targets</h2><p>Cumulative completed allocations across modes and schedules for IST ${html(units.date)}.</p><p>Cumulative all-mode roles today: ${units.selectedToday ?? 'Not Verified'}/20 maximum. Remaining daily capacity: ${units.remaining ?? 'Not Verified'}. Cumulative Strict across modes today: ${units.strictToday ?? 'Not Verified'}, phase target 2.</p><p>Historical suppression evidence: ${units.historyVerified === true ? 'Verified' : 'Not Verified'}.</p><table><thead><tr><th>Mode</th><th>Roles / target</th><th>Employers / target</th><th>Strict</th><th>Shortfall</th></tr></thead><tbody>${targetRows}</tbody></table></section>`;
   const phaseRollup = result.phaseTargetRollup;
   const phaseSummaryRows = Object.entries(MODE_LABELS).map(([mode, config]) => {
     const summary = phaseRollup?.modes?.[mode];
@@ -207,10 +252,13 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
       const counts = day.modes?.[mode];
       return `<td>${counts ? `Roles ${counts.roles}, employers ${counts.employers}, Strict ${counts.strict}${counts.met ? ', target met' : ', target not met'}` : 'no run'}</td>`;
     }).join('');
-    return `<tr><td>${html(day.date)}</td>${cells}</tr>`;
+    return `<tr><td>${html(day.date)}</td>${cells}<td>${day.strict ?? 'Not Verified'}</td><td>${day.historyVerified === true ? 'Verified' : 'Not Verified'}</td></tr>`;
   }).join('');
-  const phaseTargets = phaseRollup ? `<section data-section="phase-target-rollup"><h2>Phase target, 5 of 7 consecutive IST days</h2><p>Seven-day window ending ${html(phaseRollup.endDate)}.</p><table><thead><tr><th>Mode</th><th>Days met / 7</th><th>Phase status</th></tr></thead><tbody>${phaseSummaryRows}</tbody></table><table><thead><tr><th>IST date</th><th>Pune</th><th>Startup</th><th>Remote</th></tr></thead><tbody>${phaseDayRows}</tbody></table></section>` : '';
+  const phaseTargets = phaseRollup ? `<section data-section="phase-target-rollup"><h2>Phase target, 5 of 7 consecutive IST days</h2><p>Seven-day window ending ${html(phaseRollup.endDate)}. Each day's counts combine completed allocations. Target attainment requires two Strict roles across modes and verified historical suppression evidence.</p><table><thead><tr><th>Mode</th><th>Days met / 7</th><th>Phase status</th></tr></thead><tbody>${phaseSummaryRows}</tbody></table><table><thead><tr><th>IST date</th><th>Pune</th><th>Startup</th><th>Remote</th><th>Strict across modes</th><th>Historical suppression evidence</th></tr></thead><tbody>${phaseDayRows}</tbody></table></section>` : '';
   const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
+  const separate = `<section data-section="separate-lanes"><h2>Separate lanes outside daily role targets</h2><p>This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.</p></section>`;
+  const verification = `<section data-section="verification"><h2>VerifyQueue</h2><p>These roles do not count toward daily targets.</p>${(result.verificationQueue ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}</section>`;
+  const sourceFailures = `<section data-section="source-failures"><h2>Source end states</h2>${Object.entries(result.sourceEndStates ?? result.terminalEnvelope?.sourceEndStates ?? {}).map(([id, source]) => `<p>${html(id)}: ${html(source.state)}${source.reason ? `, ${html(source.reason)}` : ''}</p>`).join('') || '<p>Not Verified</p>'}</section>`;
   const yieldRows = (result.sourceYield?.sources ?? []).map((row) => {
     const matchingTelemetry = Object.entries(telemetry).find(([id, source]) => id === row.sourceId || `${row.provider}:${row.board}` === row.sourceId || source.detail?.sources?.some((entry) => `${entry.provider}:${entry.board}` === row.sourceId));
     const boardTelemetry = matchingTelemetry?.[1].detail?.sources?.find((entry) => `${entry.provider}:${entry.board}` === row.sourceId);
@@ -221,7 +269,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
   const driftSignals = dailyDriftSignals(result);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(now)}</p><section><h2>Funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${targets}${phaseTargets}${sections}${stretch}${sourceYield}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p><section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${sourceYield}${sourceFailures}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.

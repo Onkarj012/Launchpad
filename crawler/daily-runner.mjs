@@ -19,14 +19,15 @@ import { buildSourceEndStates } from './source-yield.mjs';
 import { runStartupMode } from '../job-pull/startup-mode.mjs';
 import { runRemoteMode } from '../job-pull/remote-mode.mjs';
 import { candidateDedupKey } from '../job-pull/candidate.mjs';
-import { readOpportunityLedger, recordSurfaced, repairMissingSurfaced, withOpportunityLedgerLock } from '../job-pull/opportunity-ledger.mjs';
+import { readOpportunityLedger, validateOpportunityLedger, OPPORTUNITY_COLUMNS, recordSurfaced, repairMissingSurfaced, withOpportunityLedgerLock } from '../job-pull/opportunity-ledger.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { computeDeliveryInventoryIdentity, prepareDeliveryCanary } from './delivery-canary.mjs';
 import { computeCanaryVersion } from './canary-evaluator.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import { buildDeliveryReconciliation } from '../job-pull/mode-scoring.mjs';
-import { selectNormalApplications } from '../job-pull/normal-selection.mjs';
+import { selectNormalApplications, WATERFALL } from '../job-pull/normal-selection.mjs';
+import { pickDailyEntries } from '../job-pull/select.mjs';
 import { isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { readHiringEvents } from './hiring-events.mjs';
 
@@ -40,14 +41,14 @@ export function dailyShortlistBudget(budgetPath, runAt, runId) {
   const allocations = new Map();
   for (const records of Object.values(runs)) for (const record of records) {
     const previous = allocations.get(record.key);
-    if (previous && ['company', 'family', 'tier'].some((field) => previous[field] !== record[field])) throw new Error('conflicting daily shortlist allocation');
+    if (previous && ['company', 'family', 'tier', 'primaryMode'].some((field) => previous[field] !== record[field])) throw new Error('conflicting daily shortlist allocation');
     allocations.set(record.key, record);
   }
   const previous = [...new Map(Object.entries(runs).filter(([id]) => id !== runId).flatMap(([, records]) => records).map((record) => [record.key, record])).values()];
   const otherKeys = new Set(previous.map((record) => record.key));
   const used = new Set(Object.values(runs).flat().map((record) => record.key)).size;
   if (used > 20) throw new Error('daily shortlist ceiling already exceeded');
-  return { date, state, used, remaining: 20 - otherKeys.size, otherKeys: [...otherKeys], previousCandidates: previous.map((record) => ({ company: record.company, roleFamily: record.family, primaryMode: record.primaryMode ?? 'normal' })) };
+  return { date, state, used, remaining: 20 - otherKeys.size, otherKeys: [...otherKeys], previousCandidates: previous.map((record) => ({ company: record.company, roleFamily: record.family, selectionTier: record.tier, primaryMode: record.primaryMode ?? 'normal' })) };
 }
 
 // Retain completed local plans under a lock; partial and failed runs consume no capacity.
@@ -56,7 +57,12 @@ export function retainDailyShortlist(budgetPath, runAt, runId, shortlist) {
     const budget = dailyShortlistBudget(budgetPath, runAt, runId);
     const existing = budget.state.days[budget.date]?.[runId] || [];
     const byKey = new Map(existing.map((record) => [record.key, record]));
-    for (const candidate of shortlist) byKey.set(candidateDedupKey(candidate), { key: candidateDedupKey(candidate), company: candidate.company || '', family: candidate.roleFamily || 'adjacent-engineering', tier: candidate.selectionTier || candidate.eligibility?.tier || 'Not Verified', primaryMode: candidate.primaryMode ?? 'normal' });
+    for (const candidate of shortlist) {
+      const record = { key: candidateDedupKey(candidate), company: candidate.company || '', family: candidate.roleFamily || 'adjacent-engineering', tier: candidate.selectionTier || candidate.eligibility?.tier || 'Not Verified', primaryMode: candidate.primaryMode ?? 'normal' };
+      const previous = byKey.get(record.key);
+      if (previous && ['company', 'family', 'tier', 'primaryMode'].some((field) => previous[field] !== record[field])) throw new Error('conflicting daily shortlist retry');
+      byKey.set(record.key, record);
+    }
     const records = [...byKey.values()];
     const keys = records.map((record) => record.key);
     if (new Set([...budget.otherKeys, ...keys]).size > 20 || keys.some((key) => budget.otherKeys.includes(key))) throw new Error('daily shortlist capacity changed before completion');
@@ -78,7 +84,7 @@ export function retainDailyShortlist(budgetPath, runAt, runId, shortlist) {
     return { date: budget.date, minimum: 10, preferred: 12, maximum: 20, selectedToday,
       strictSelected, strictShortfall: Math.max(0, 10 - strictSelected), shortfall: Math.max(0, 10 - selectedToday),
       preferredShortfall: Math.max(0, 12 - selectedToday), previouslyAllocated: budget.used,
-      selected: shortlist.length, remaining: 20 - selectedToday, path: budgetPath };
+      selected: shortlist.length, remaining: 20 - selectedToday, path: budgetPath, cumulativeCandidates: [...dailyRecords.values()] };
 
   });
 }
@@ -99,47 +105,123 @@ function istDate(value) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 }
 
-// Return a rolling seven-day window ending on the supplied IST date.
+// Require dated snapshot and validated ledger evidence before phase acceptance.
+export function dailyHistoryEvidence(snapshot, ledgerPath, injectedHistory = false, runAt = new Date().toISOString()) {
+  const generatedAt = Date.parse(snapshot.generatedAt);
+  let ledger;
+  let validLedgerRows = false;
+  try {
+    ledger = validateOpportunityLedger(ledgerPath);
+    const retained = readOpportunityLedger(ledgerPath);
+    const lines = retained.missing ? [] : readFileSync(retained.path, 'utf8').split('\n').map((line) => line.replace(/\r$/, ''));
+    const header = lines[0];
+    const completeRows = lines.slice(1).filter((line) => line.trim()).every((line) => {
+      const values = line.split('\t');
+      return values.length === OPPORTUNITY_COLUMNS.length && ['none', 'applied', 'contacted', 'interviewing', 'rejected'].includes(values[8]);
+    });
+    validLedgerRows = header === OPPORTUNITY_COLUMNS.join('\t') && completeRows && retained.rows.every((row) =>
+      [row.first_surfaced_at, row.last_surfaced_at].every((value) => Number.isFinite(Date.parse(value)))
+      && Number.isInteger(Number(row.times_surfaced)) && Number(row.times_surfaced) >= 1
+      && (row.action_state === 'none' || Number.isFinite(Date.parse(row.action_at))));
+  } catch { return { verified: false, status: 'malformed opportunity history' }; }
+  const verified = !injectedHistory && snapshot.status === 'loaded' && Number.isFinite(generatedAt)
+    && generatedAt <= Date.parse(runAt) && ledger.valid && !ledger.missing && validLedgerRows
+    && snapshot.rows.every((row) => row && typeof row === 'object'
+      && (typeof row.canonical_url === 'string' && row.canonical_url.trim()
+        || typeof row.canonicalUrl === 'string' && row.canonicalUrl.trim()
+        || row.provider && (row.provider_job_id || row.providerJobId)));
+  return { verified, status: injectedHistory ? 'injected history, completeness not verified'
+    : snapshot.status !== 'loaded' ? snapshot.status : !Number.isFinite(generatedAt) || generatedAt > Date.parse(runAt) ? 'snapshot date not verified'
+      : ledger.missing ? 'opportunity history missing' : !verified ? 'history malformed' : 'loaded local history',
+    scope: 'configured local files, no live completeness proof' };
+}
+
+// Normalize employers consistently for daily diversity and target counts.
+function employerKey(company) {
+  return String(company ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+// Retain only identity-bearing verified rows in the three target lanes.
+function phaseTargetRecords(modeResults) {
+  const records = new Map();
+  for (const mode of ['startup', 'normal', 'remote']) {
+    for (const role of modeResults?.[mode]?.shortlist ?? []) {
+      if (role.applicationReady !== true || !['Strict', 'Fallback'].includes(role.selectionTier)
+        || !employerKey(role.company) || role.eligibility?.employment?.lane === 'eor-contract'
+        || !role.canonicalUrl && !role.originalApplicationUrl && !role.providerJobId) continue;
+      const key = candidateDedupKey(role);
+      if (!records.has(key)) records.set(key, { key, company: role.company, tier: role.selectionTier, primaryMode: mode });
+    }
+  }
+  return [...records.values()];
+}
+
+// Return cumulative unique-job evidence for seven consecutive IST calendar dates.
 function phaseTargetWindow(state, endDate) {
   const end = new Date(`${endDate}T00:00:00.000Z`);
-  const dates = Array.from({ length: 7 }, (_, index) => {
+  const days = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(end.getTime() - index * 86_400_000).toISOString().slice(0, 10);
-    return { date, runs: state.days[date] ?? {} };
-  });
-  const days = dates.map(({ date, runs }) => {
-    const modes = {};
-    for (const mode of Object.keys(PHASE_TARGET_MODES)) {
-      const summaries = Object.values(runs).map((run) => run.modes?.[mode]).filter(Boolean);
-      const best = [...summaries].sort((left, right) => Number(right.met) - Number(left.met) || right.roles - left.roles || right.employers - left.employers || right.strict - left.strict)[0];
-      modes[mode] = best ? { ...best, met: summaries.some((summary) => summary.met) } : null;
+    const runs = Object.values(state.days[date] ?? {});
+    const records = new Map();
+    let identitiesVerified = runs.length > 0;
+    for (const run of runs) {
+      if (!Array.isArray(run.records)) { identitiesVerified = false; continue; }
+      for (const record of run.records) {
+        const previous = records.get(record.key);
+        if (previous && ['company', 'tier', 'primaryMode'].some((field) => previous[field] !== record[field])) identitiesVerified = false;
+        else records.set(record.key, record);
+      }
     }
-    return { date, status: Object.keys(runs).length ? 'run' : 'no run', modes };
+    const historyVerified = runs.length > 0 && runs.every((run) => run.historyEvidence?.verified === true);
+    const strict = [...records.values()].filter((record) => record.tier === 'Strict').length;
+    const strictMet = strict >= 2;
+    const modes = Object.fromEntries(Object.entries(PHASE_TARGET_MODES).map(([mode, target]) => {
+      const selected = [...records.values()].filter((record) => record.primaryMode === mode);
+      const employers = new Set(selected.map((record) => employerKey(record.company))).size;
+      const countsMet = selected.length >= target.roles && employers >= target.employers;
+      return [mode, runs.length ? { roles: selected.length, employers,
+        strict: selected.filter((record) => record.tier === 'Strict').length, countsMet,
+        met: countsMet && strictMet && identitiesVerified && historyVerified && records.size <= 20 } : null];
+    }));
+    return { date, status: runs.length ? 'run' : 'no run', modes, selectedToday: records.size,
+      strict, strictMet, historyVerified, identitiesVerified,
+      evidenceStatus: !runs.length ? 'no run' : !identitiesVerified ? 'unique identities not verified' : !historyVerified ? 'history not verified' : 'verified local counts' };
   });
-  const modes = Object.fromEntries(Object.entries(PHASE_TARGET_MODES).map(([mode]) => {
+  const modes = Object.fromEntries(Object.keys(PHASE_TARGET_MODES).map((mode) => {
     const daysMet = days.filter((day) => day.modes[mode]?.met).length;
     return [mode, { daysMet, phaseTargetMet: daysMet >= 5 }];
   }));
-  return { endDate, days, modes };
+  return { endDate, days, modes, phaseTargetMet: Object.values(modes).every((mode) => mode.phaseTargetMet), scope: 'retained local allocations only' };
 }
 
-// Retain one run's per-mode counts and return the current seven-day phase status.
-export function retainDailyPhaseTargetRun(statePath, runAt, runId, modeResults) {
+// Keep identity-bearing run evidence without upgrading legacy count-only days.
+export function retainDailyPhaseTargetRun(statePath, runAt, runId, modeResults, historyEvidence = { verified: false, status: 'not verified' }) {
   return withOpportunityLedgerLock(statePath, () => {
     const date = istDate(runAt);
-    const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { schemaVersion: 'DailyPhaseTargetRollupV1', days: {} };
-    if (state.schemaVersion !== 'DailyPhaseTargetRollupV1' || !state.days || typeof state.days !== 'object' || Array.isArray(state.days)) throw new Error('invalid daily phase target rollup');
-    const modes = {};
-    for (const [mode, target] of Object.entries(PHASE_TARGET_MODES)) {
-      const shortlist = modeResults?.[mode]?.shortlist ?? [];
-      const employers = new Set(shortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
-      const strict = shortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
-      const roles = shortlist.length;
-      modes[mode] = { roles, employers: employers.size, strict, met: roles >= target.roles && employers.size >= target.employers };
+    const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { schemaVersion: 'DailyPhaseTargetRollupV2', days: {} };
+    if (!['DailyPhaseTargetRollupV1', 'DailyPhaseTargetRollupV2'].includes(state.schemaVersion) || !state.days || typeof state.days !== 'object' || Array.isArray(state.days)) throw new Error('invalid daily phase target rollup');
+    for (const runs of Object.values(state.days)) {
+      if (!runs || typeof runs !== 'object' || Array.isArray(runs)) throw new Error('invalid daily phase target day');
+      for (const run of Object.values(runs)) {
+        if (!run || typeof run !== 'object' || run.records !== undefined && (!Array.isArray(run.records)
+          || run.records.some((record) => !record || typeof record.key !== 'string' || !record.key
+            || typeof record.company !== 'string' || !employerKey(record.company) || !['Strict', 'Fallback'].includes(record.tier)
+            || !Object.hasOwn(PHASE_TARGET_MODES, record.primaryMode)))) throw new Error('invalid daily phase target records');
+      }
     }
     const priorRuns = state.days[date] ?? {};
-    state.days[date] = { ...priorRuns, [runId]: { modes } };
-    const cutoff = new Date(`${date}T00:00:00.000Z`).getTime() - 6 * 86_400_000;
-    for (const savedDate of Object.keys(state.days)) if (new Date(`${savedDate}T00:00:00.000Z`).getTime() < cutoff) delete state.days[savedDate];
+    const existing = priorRuns[runId];
+    const records = new Map((existing?.records ?? []).map((record) => [record.key, record]));
+    for (const record of phaseTargetRecords(modeResults)) {
+      const previous = records.get(record.key);
+      if (previous && ['company', 'tier', 'primaryMode'].some((field) => previous[field] !== record[field])) throw new Error('conflicting phase target retry');
+      records.set(record.key, record);
+    }
+    // A retry cannot erase an earlier missing-history or count-only limitation.
+    const evidence = existing && (!Array.isArray(existing.records) || existing.historyEvidence?.verified !== true)
+      ? { verified: false, status: 'prior run evidence not verified' } : historyEvidence;
+    state.schemaVersion = 'DailyPhaseTargetRollupV2';
+    state.days[date] = { ...priorRuns, [runId]: { ...(existing ?? {}), records: [...records.values()], historyEvidence: evidence } };
     mkdirSync(path.dirname(statePath), { recursive: true });
     const temporary = `${statePath}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`);
@@ -738,8 +820,14 @@ export function selectDailyModes(entries, options, selectedMode, stretchBudget) 
     .slice(0, stretchBudget.remaining)
     .map((entry) => entry.candidate);
   const stretchKeys = new Set(stretch.map(candidateDedupKey));
-  for (const entry of entries) {
+  const routedKeys = new Set();
+  // Duplicate observations prefer the same primary-mode order as distinct roles.
+  const priority = (entry) => hasStartupEvidence(entry.candidate) || STARTUP_LANE_IDS.has(entry.candidate.startupLaneId) ? 0 : entry.eligibility?.geo?.code === 'GEO_PUNE_METRO' || isPuneMetroLocation(entry.candidate.location, options.config) ? 1 : 2;
+  for (const entry of [...entries].sort((left, right) => priority(left) - priority(right))) {
     const candidate = entry.candidate;
+    const key = candidateDedupKey(candidate);
+    if (routedKeys.has(key)) continue;
+    routedKeys.add(key);
     if (entry.eligibility?.employment?.lane === 'eor-contract') {
       pools.eorContract.push({ ...entry, candidate: { ...candidate, eligibility: entry.eligibility, labels: entry.eligibility.labels, primaryMode: 'eor-contract', otherModes: [] } });
       continue;
@@ -755,9 +843,44 @@ export function selectDailyModes(entries, options, selectedMode, stretchBudget) 
     const [primaryMode, ...otherModes] = fits;
     pools[primaryMode].push({ ...entry, candidate: { ...candidate, primaryMode, otherModes } });
   }
-  const selections = Object.fromEntries(Object.entries(pools).map(([mode, pool]) => [mode, selectNormalApplications(pool, {
-    ...options, includeEorContract: mode === 'eorContract', previousDailyCandidates: options.previousDailyCandidates.filter((candidate) => candidate.primaryMode === mode),
+  const selections = Object.fromEntries(['startup', 'normal', 'remote'].map((mode) => [mode, selectNormalApplications(pools[mode], {
+    ...options, previousDailyCandidates: (options.previousDailyCandidates ?? []).filter((candidate) => candidate.primaryMode === mode),
   })]));
+  const allocated = { startup: [], normal: [], remote: [] };
+  const selectedKeys = new Set();
+  let remaining = Math.min(20, options.maximum ?? 20);
+  // Exhaust the shared Strict/freshness waterfall before allocating any later band.
+  for (const band of WATERFALL) {
+    const queues = Object.fromEntries(Object.entries(selections).map(([mode, selection]) => [mode,
+      selection.results.filter((candidate) => candidate.waterfallBand === band && !selectedKeys.has(candidateDedupKey(candidate))),
+    ]));
+    // Within each band reserve unmet mode targets, then assign spare capacity.
+    for (const reserveTargets of [true, false]) for (const mode of ['startup', 'normal', 'remote']) {
+      const previousCount = (options.previousDailyCandidates ?? []).filter((candidate) => candidate.primaryMode === mode).length;
+      const limit = reserveTargets ? Math.max(0, PHASE_TARGET_MODES[mode].roles - previousCount - allocated[mode].length) : remaining;
+      const picked = pickDailyEntries(queues[mode], Math.min(remaining, limit), {
+        maximumPerCompany: options.maximumPerCompany, maximumFamilyShare: options.maximumFamilyShare,
+        previousDailyCandidates: [...(options.previousDailyCandidates ?? []).filter((candidate) => candidate.primaryMode === mode), ...allocated[mode]],
+      });
+      const pickedKeys = new Set(picked.map(candidateDedupKey));
+      queues[mode] = queues[mode].filter((candidate) => !pickedKeys.has(candidateDedupKey(candidate)));
+      allocated[mode].push(...picked);
+      remaining -= picked.length;
+      for (const candidate of picked) selectedKeys.add(candidateDedupKey(candidate));
+    }
+  }
+  for (const [mode, selection] of Object.entries(selections)) {
+    selection.selected = allocated[mode];
+    selection.strictSelected = selection.selected.filter((candidate) => candidate.selectionTier === 'Strict').length;
+    selection.strictShortfall = Math.max(0, 10 - selection.strictSelected);
+    selection.shortfall = Math.max(0, selection.minimum - selection.selected.length);
+    selection.preferredShortfall = Math.max(0, selection.preferred - selection.selected.length);
+    selection.bands = selection.selected.reduce((counts, candidate) => ({ ...counts, [candidate.waterfallBand]: (counts[candidate.waterfallBand] ?? 0) + 1 }), {});
+    selection.familyCounts = selection.selected.reduce((counts, candidate) => ({ ...counts, [candidate.roleFamily]: (counts[candidate.roleFamily] ?? 0) + 1 }), {});
+    selection.diversity.selectedFamilies = Object.keys(selection.familyCounts).length;
+    selection.diversity.observedMaximumFamilyShare = selection.selected.length ? Math.max(...Object.values(selection.familyCounts)) / selection.selected.length : 0;
+  }
+  selections.eorContract = selectNormalApplications(pools.eorContract, { ...options, includeEorContract: true, previousDailyCandidates: [] });
   const shared = selectNormalApplications(entries, { ...options, maximum: 0 });
   return {
     ...selections[selectedMode],
@@ -1091,9 +1214,9 @@ async function runDailyNormalImpl({
       telemetry: { ...(result.telemetry ?? {}), terminalEnvelope: finalEnvelope, v4HistorySnapshot: v4HistoryTelemetry(v4HistorySnapshot) },
     };
   }
-  result.dailyShortlistBudget = retainDailyShortlist(dailyBudgetPath, runAt, effectiveRunId, result.shortlist);
+  result.dailyShortlistBudget = retainDailyShortlist(dailyBudgetPath, runAt, effectiveRunId, ['startup', 'normal', 'remote'].flatMap((mode) => result.modes?.[mode]?.shortlist ?? []));
   result.dailyStretchBudget = retainDailyStretch(dailyBudgetPath, runAt, effectiveRunId, result.stretch);
-  result.phaseTargetRollup = retainDailyPhaseTargetRun(dailyPhaseTargetRollupPath(config.databasePath), runAt, effectiveRunId, result.modes);
+  result.phaseTargetRollup = retainDailyPhaseTargetRun(dailyPhaseTargetRollupPath(config.databasePath), runAt, effectiveRunId, result.modes, dailyHistoryEvidence(v4HistorySnapshot, opportunityLedgerPath ?? config.opportunityLedgerPath, historicalV4Rows !== undefined || opportunityLedgerRows != null, runAt));
   const snapshotTelemetry = v4HistoryTelemetry(v4HistorySnapshot);
   const codeConfigVersion = computeCanaryVersion({ config });
   const discoveryProfile = {
