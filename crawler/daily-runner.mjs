@@ -107,7 +107,7 @@ function istDate(value) {
 
 // Require dated snapshot and validated ledger evidence before phase acceptance.
 export function dailyHistoryEvidence(snapshot, ledgerPath, injectedHistory = false, runAt = new Date().toISOString()) {
-  const generatedAt = Date.parse(snapshot.generatedAt);
+  const generatedAt = typeof snapshot.generatedAt === 'string' ? Date.parse(snapshot.generatedAt) : Number.NaN;
   let ledger;
   let validLedgerRows = false;
   try {
@@ -126,10 +126,21 @@ export function dailyHistoryEvidence(snapshot, ledgerPath, injectedHistory = fal
   } catch { return { verified: false, status: 'malformed opportunity history' }; }
   const verified = !injectedHistory && snapshot.status === 'loaded' && Number.isFinite(generatedAt)
     && generatedAt <= Date.parse(runAt) && ledger.valid && !ledger.missing && validLedgerRows
-    && snapshot.rows.every((row) => row && typeof row === 'object'
-      && (typeof row.canonical_url === 'string' && row.canonical_url.trim()
-        || typeof row.canonicalUrl === 'string' && row.canonicalUrl.trim()
-        || row.provider && (row.provider_job_id || row.providerJobId)));
+    && snapshot.rows.every((row) => {
+      if (!row || typeof row !== 'object') return false;
+      const identityFields = ['provider', 'sourceProvider', 'source_provider', 'portal', 'providerJobId', 'provider_job_id', 'jobId', 'job_id', 'externalId', 'external_id',
+        'canonicalUrl', 'canonical_url', 'originalApplicationUrl', 'original_application_url', 'applicationUrl', 'application_url', 'url', 'jdLink', 'jd_link',
+        'company', 'companyName', 'company_name', 'title', 'role', 'jobTitle', 'job_title', 'location', 'jobLocation', 'job_location',
+        'state', 'status', 'lifecycle', 'actionState', 'action_state'];
+      if (identityFields.some((field) => row[field] != null && typeof row[field] !== 'string')
+        || row.identityAliases != null && (!Array.isArray(row.identityAliases) || row.identityAliases.some((value) => typeof value !== 'string'))) return false;
+      // Match the historical index's camel-first, nonempty ID precedence.
+      const providerJobId = [row.providerJobId, row.provider_job_id].find((value) => value != null && (typeof value !== 'string' || value.trim() !== ''));
+      const canonicalUrl = [row.canonicalUrl, row.canonical_url].find((value) => value != null && (typeof value !== 'string' || value.trim() !== ''));
+      return typeof canonicalUrl === 'string' && URL.canParse(canonicalUrl) && ['http:', 'https:'].includes(new URL(canonicalUrl).protocol)
+        || typeof row.provider === 'string' && /[\p{L}\p{N}]/u.test(row.provider)
+          && typeof providerJobId === 'string' && /[\p{L}\p{N}]/u.test(providerJobId);
+    });
   return { verified, status: injectedHistory ? 'injected history, completeness not verified'
     : snapshot.status !== 'loaded' ? snapshot.status : !Number.isFinite(generatedAt) || generatedAt > Date.parse(runAt) ? 'snapshot date not verified'
       : ledger.missing ? 'opportunity history missing' : !verified ? 'history malformed' : 'loaded local history',

@@ -177,3 +177,15 @@ test('truncated raw ledger rows never gain default none action evidence', () => 
     assert.equal(dailyHistoryEvidence(snapshot, ledger).verified, false);
   }
 });
+
+test('snapshot provider identities must be usable strings before qualifying history', () => {
+  const ledger = statePath('ledger.tsv');
+  writeFileSync(ledger, `${OPPORTUNITY_COLUMNS.join('\t')}\n`);
+  const snapshot = { status: 'loaded', generatedAt: NOW, rows: [] };
+  for (const row of [{ provider: [], provider_job_id: {} }, { provider: '!!!', provider_job_id: '???' }, { provider: 'greenhouse', provider_job_id: '' }, { provider: 'greenhouse', providerJobId: '!!!', provider_job_id: '123' }, { provider: 'greenhouse', providerJobId: {}, provider_job_id: '123' }, { canonical_url: 'not a URL' }, { canonicalUrl: {}, canonical_url: 'https://jobs.example.test/123' }, { provider: 'greenhouse', providerJobId: { toString: null } }, { canonicalUrl: { toString: null } }, { provider: 'greenhouse', providerJobId: '123', canonicalUrl: { toString: null } }, { canonicalUrl: 'https://jobs.example.test/123', status: { toString: null } }, { provider: 'greenhouse', providerJobId: '123', identityAliases: {} }]) {
+    assert.equal(dailyHistoryEvidence({ ...snapshot, rows: [row] }, ledger).verified, false);
+  }
+  assert.equal(dailyHistoryEvidence({ ...snapshot, generatedAt: { toString: null } }, ledger).verified, false);
+  assert.equal(dailyHistoryEvidence({ ...snapshot, rows: [{ provider: 'greenhouse', provider_job_id: '123' }] }, ledger).verified, true);
+  assert.equal(dailyHistoryEvidence({ ...snapshot, rows: [{ provider: 'greenhouse', providerJobId: '', provider_job_id: '123' }] }, ledger).verified, true);
+});
