@@ -1,3 +1,5 @@
+import { remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
+
 // Rendered-page transport for portal lanes.
 //
 // Separate from crawler/chromium-fallback.mjs on purpose. That one wraps a base
@@ -30,6 +32,7 @@ export function createRenderedFetcher({
   timeoutMs = 45_000,
   defaultWaitMs = 6_000,
   maxPages = 40,
+  launchBrowser = async (options) => { const { chromium } = await import('playwright'); return chromium.launch(options); },
 } = {}) {
   let browserPromise = null;
   let contextPromise = null;
@@ -37,7 +40,7 @@ export function createRenderedFetcher({
   const failures = [];
 
   async function context() {
-    browserPromise ??= import('playwright').then(({ chromium }) => chromium.launch(launchOptions));
+    browserPromise ??= launchBrowser(launchOptions);
     const browser = await browserPromise;
     contextPromise ??= (async () => {
       const ctx = await browser.newContext(contextOptions);
@@ -50,36 +53,58 @@ export function createRenderedFetcher({
     return contextPromise;
   }
 
-  async function fetchRendered(url, { waitMs = defaultWaitMs, signal = null } = {}) {
-    if (signal?.aborted) throw new Error('rendered fetch aborted before start');
+  // Bound setup, navigation, waits and body reads by the same request budget.
+  async function fetchRendered(url, { waitMs = defaultWaitMs, signal = null, deadline = null, timeoutMs: requestTimeoutMs = timeoutMs } = {}) {
+    throwIfNetworkWorkDisallowed(signal, deadline);
     if (pagesUsed >= maxPages) throw new Error(`rendered page budget exhausted (${maxPages})`);
     pagesUsed += 1;
-    const ctx = await context();
-    const page = await ctx.newPage();
+    const duration = Math.min(Math.max(1, Number(requestTimeoutMs) || timeoutMs), remainingDeadlineMs(deadline));
+    const requestDeadline = { remainingMs: () => Math.min(endAt - Date.now(), remainingDeadlineMs(deadline)) };
+    const endAt = Date.now() + duration;
     try {
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-      const status = response?.status() ?? 0;
-      // A challenge or block page renders fine and parses to zero rows, which
-      // would read as an empty result set. Fail instead so the lane reports it.
-      if (status >= 400) throw new Error(`HTTP ${status}`);
-      if (waitMs > 0) await page.waitForTimeout(waitMs);
-      return await page.content();
+      return await requestWithDeadline(async (_url, { signal: requestSignal }) => {
+        let page;
+        // Closing the page interrupts Playwright operations when the parent aborts.
+        const onAbort = () => { if (page) void page.close().catch(() => {}); };
+        requestSignal.addEventListener('abort', onAbort, { once: true });
+        try {
+          const ctx = await context();
+          throwIfNetworkWorkDisallowed(requestSignal, requestDeadline);
+          page = await ctx.newPage();
+          throwIfNetworkWorkDisallowed(requestSignal, requestDeadline);
+          const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.max(1, remainingDeadlineMs(requestDeadline)) });
+          throwIfNetworkWorkDisallowed(requestSignal, requestDeadline);
+          const status = response?.status() ?? 0;
+          if (status >= 400) throw new Error(`HTTP ${status}`);
+          if (waitMs > 0) await page.waitForTimeout(Math.min(waitMs, remainingDeadlineMs(requestDeadline)));
+          throwIfNetworkWorkDisallowed(requestSignal, requestDeadline);
+          const body = await page.content();
+          throwIfNetworkWorkDisallowed(requestSignal, requestDeadline);
+          return body;
+        } finally {
+          requestSignal.removeEventListener('abort', onAbort);
+          if (page) await page.close().catch(() => {});
+        }
+      }, url, {}, { signal, deadline: requestDeadline, abortOnDeadline: true });
     } catch (error) {
       failures.push({ url, error: error?.message || String(error) });
       throw error;
-    } finally {
-      await page.close().catch(() => {});
     }
   }
 
+  // Bound shutdown while still closing a browser that finishes launching late.
   async function close() {
-    try {
-      if (contextPromise) await (await contextPromise).close().catch(() => {});
-      if (browserPromise) await (await browserPromise).close().catch(() => {});
-    } finally {
-      browserPromise = null;
-      contextPromise = null;
-    }
+    const pendingBrowser = browserPromise;
+    const pendingContext = contextPromise;
+    browserPromise = null;
+    contextPromise = null;
+    const endAt = Date.now() + 1_000;
+    await requestWithDeadline(async () => {
+      await Promise.all([
+        pendingContext?.then((ctx) => ctx.close()).catch(() => {}),
+        pendingBrowser?.then((browser) => browser.close()).catch(() => {}),
+      ]);
+    }, 'browser-close', {}, { deadline: { deadlineMs: endAt } }).catch(() => {});
   }
 
   return { fetchRendered, close, stats: () => ({ pagesUsed, maxPages, failures: [...failures] }) };

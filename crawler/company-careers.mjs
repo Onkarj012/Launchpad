@@ -1,7 +1,7 @@
 import { fetchIncrementally } from './incremental-fetch.mjs';
 import { createHostLimiter, parseRobotsTxt } from './http-policy.mjs';
 import { normalizeCandidate } from '../job-pull/candidate.mjs';
-import { requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
+import { remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 
 const CAREER_RE = /(?:career|careers|jobs|job|work[- ]?with[- ]?us|join[- ]?us|opportunit)/i;
 const BOARD_RE = /(?:greenhouse|lever|ashby|workday|workable|smartrecruiters|breezy|recruitee|boards?\.|jobs?\.)/i;
@@ -79,7 +79,25 @@ function feedEntries(body, base) {
 
 async function request(url, options) {
   throwIfNetworkWorkDisallowed(options.signal, options.deadline);
-  return fetchIncrementally({ url, transport: (requestUrl, transportOptions) => requestWithDeadline(options.transport, requestUrl, transportOptions, { signal: options.signal, deadline: options.deadline }), state: options.conditionalState?.[canonical(url)] ?? {}, robots: options.robots, userAgent: options.userAgent ?? 'Launchpad-Company-Careers/1.0', limiter: options.limiter, hostLimiterOptions: options.hostLimiterOptions, retry: options.retry, maxBytes: options.maxBytes ?? 2_000_000, timeoutMs: options.timeoutMs ?? 30_000, clock: options.clock });
+  const endAt = Date.now() + (Number(options.timeoutMs) || 30_000);
+  const requestDeadline = { remainingMs: () => Math.min(endAt - Date.now(), remainingDeadlineMs(options.deadline)) };
+  return requestWithDeadline((_url, { signal }) => fetchIncrementally({
+    url, signal,
+    transport: (requestUrl, transportOptions) => requestWithDeadline(options.transport, requestUrl,
+      { ...transportOptions, timeoutMs: options.timeoutMs ?? 30_000 },
+      { signal, deadline: requestDeadline, abortOnDeadline: true }),
+    state: options.conditionalState?.[canonical(url)] ?? {}, robots: options.robots,
+    userAgent: options.userAgent ?? 'Launchpad-Company-Careers/1.0', limiter: options.limiter,
+    hostLimiterOptions: options.hostLimiterOptions, retry: options.retry,
+    maxBytes: options.maxBytes ?? 2_000_000, timeoutMs: options.timeoutMs ?? 30_000, clock: options.clock,
+  }), url, {}, { signal: options.signal, deadline: requestDeadline, abortOnDeadline: true });
+}
+
+// Keep persisted progress small while retaining each company's stall location.
+export function companyCareerProgress(sources = []) {
+  return sources.map(({ company, rootUrl, status, currentUrl, pagesFetched, capped, error }) => ({
+    company, rootUrl, status, currentUrl, pagesFetched, capped, ...(error ? { error } : {}),
+  }));
 }
 
 function candidateFrom(node, { company, url, sourceUrl, runAt, sitemapLastmod = null, classification = 'lead', feed = null, expiryGraceDays = 30 } = {}) {
@@ -109,15 +127,29 @@ export async function discoverCompanyCareers({ companies = [], company, websiteU
   const maxPagesPerCompany = Math.max(1, Number(options.maxPagesPerCompany ?? 100));
   const addBoard = (url, companyName, sourceUrl) => { const value = canonical(url); if (!value || sameSite(value, sourceUrl) || boardSeen.has(value)) return; boardSeen.add(value); discoveredBoards.push({ url: value, company: companyName, classification: 'lead', sourceUrl, evidence: 'career-page-link' }); };
   const addObservation = (candidate) => { if (!candidate) return; if (seen.has(candidate.canonicalUrl)) { telemetry.duplicateUrls += 1; return; } seen.add(candidate.canonicalUrl); observations.push(candidate); telemetry.extracted += 1; };
+  // Retain the current company and URL before work that can stall.
+  async function progress() {
+    if (typeof options.onProgress === 'function') await options.onProgress({ observations: [...observations], sources: structuredClone(sources), telemetry: { ...telemetry } });
+  }
   for (const input of inputs) {
     try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { break; }
     const companyName = text(input.company ?? input.name) || 'Unknown Company'; const root = canonical(input.websiteUrl || input.url || input.careerUrl); if (!root) continue;
-    const manifest = { company: companyName, rootUrl: root, status: 'pending', fetched: [], discoveredCareerUrls: [], pagesFetched: 0, capped: false }; sources.push(manifest);
+    const manifest = { company: companyName, rootUrl: root, status: 'pending', currentUrl: null, fetched: [], discoveredCareerUrls: [], pagesFetched: 0, capped: false }; sources.push(manifest);
     const robotsUrl = `${new URL(root).origin}/robots.txt`;
     let effectiveRobots = robots;
     if (effectiveRobots == null) {
       telemetry.attempted += 1;
-      const robotsResult = await request(robotsUrl, { ...options, transport, conditionalState: state, robots: [], limiter });
+      manifest.currentUrl = robotsUrl;
+      await progress();
+      let robotsResult;
+      try { robotsResult = await request(robotsUrl, { ...options, signal, deadline, transport, conditionalState: state, robots: [], limiter }); }
+      catch (error) {
+        const stopped = signal?.aborted || remainingDeadlineMs(deadline) <= 0;
+        manifest.status = stopped ? 'interrupted' : 'terminal'; manifest.error = error.message; telemetry.failed++;
+        await progress();
+        if (stopped) break;
+        continue;
+      }
       if (robotsResult.state) state[robotsUrl] = robotsResult.state;
       manifest.fetched.push({ url: robotsUrl, classification: robotsResult.classification, status: robotsResult.status ?? null });
       if (['changed', 'unchanged'].includes(robotsResult.classification)) {
@@ -137,7 +169,14 @@ export async function discoverCompanyCareers({ companies = [], company, websiteU
       try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { manifest.status = 'interrupted'; break; }
       const item = queue.shift(); if (!item?.url) continue; if (item.kind === 'job' && seen.has(item.url)) { telemetry.duplicateUrls += 1; continue; }
       manifest.pagesFetched += 1;
-      telemetry.attempted += 1; const result = await request(item.url, { ...options, transport, conditionalState: state, robots: effectiveRobots, limiter });
+      telemetry.attempted += 1; manifest.currentUrl = item.url;
+      await progress();
+      let result;
+      try { result = await request(item.url, { ...options, signal, deadline, transport, conditionalState: state, robots: effectiveRobots, limiter }); }
+      catch (error) {
+        manifest.status = signal?.aborted || remainingDeadlineMs(deadline) <= 0 ? 'interrupted' : 'terminal';
+        manifest.error = error.message; telemetry.failed++; break;
+      }
       if (result.state) state[item.url] = result.state;
       manifest.fetched.push({ url: item.url, classification: result.classification, status: result.status ?? null });
       if (result.classification === 'retryable') telemetry.retryable += 1;
@@ -164,11 +203,13 @@ export async function discoverCompanyCareers({ companies = [], company, websiteU
       }
       if (item.kind === 'job' && !nodes.flatMap(jobPostingNodes).length) addObservation(candidateFrom({}, { company: companyName, url: item.url, sourceUrl: item.sourceUrl || item.url, runAt, sitemapLastmod: item.lastmod, classification: 'direct', expiryGraceDays: options.expiryGraceDays ?? 30 }));
     }
-    if (queue.length) {
+    if (queue.length && manifest.pagesFetched >= maxPagesPerCompany && manifest.status !== 'interrupted') {
       manifest.capped = true;
       manifest.status = 'capped';
       telemetry.cappedCompanies += 1;
     }
+    if (manifest.status !== 'interrupted') manifest.currentUrl = null;
+    await progress();
   }
   for (const row of observations) { if (!row.postedAt) verificationQueue.push({ company: row.company, url: row.canonicalUrl, reason: 'undated', evidence: row.evidence }); else if (row.liveness.status === 'Expired') verificationQueue.push({ company: row.company, url: row.canonicalUrl, reason: 'expired', evidence: row.evidence }); }
   return { observations, discoveredBoards, manifest: { schemaVersion: 'CompanyCareersManifestV1', runAt, sources, telemetry }, verificationQueue, conditionalState: state, telemetry };

@@ -1,3 +1,4 @@
+import { cancellationError, isDeadlineCancellation, requestWithDeadline, throwIfNetworkWorkDisallowed } from '../crawler/deadline.mjs';
 import { makeHttpCtx } from '../vendor/career-ops/providers/_http.mjs';
 import { fetchWorkdayJobDetail } from '../vendor/career-ops/providers/workday.mjs';
 import { preselectWorkdayListRow } from '../crawler/ats-enterprise.mjs';
@@ -31,7 +32,7 @@ function boardKeyOf(candidate) {
 /** Enrich Workday candidates in place with verified start dates and JD text. */
 export async function enrichWorkdayCandidates(
   candidates,
-  { now = Date.now(), ctx = makeHttpCtx(), concurrency = 4, cache = new Map(), maxRequests = 50 } = {},
+  { now = Date.now(), ctx = makeHttpCtx(), concurrency = 4, cache = new Map(), maxRequests = 50, signal = null, deadline = null, timeoutMs = 10_000 } = {},
 ) {
   if (!Array.isArray(candidates)) return candidates;
   const workdayCandidates = candidates.filter((candidate) => candidate?.provider === 'workday');
@@ -73,18 +74,26 @@ export async function enrichWorkdayCandidates(
   }
 
   await parallelEach(selected, limit, async (candidate) => {
+    const cancelled = cancellationError(signal, deadline);
+    if (cancelled) {
+      candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'skipped', reason: isDeadlineCancellation(cancelled, signal, deadline) ? 'deadline-exceeded' : 'cancelled' } };
+      return;
+    }
     const key = canonicalizeUrl(candidate.canonicalUrl ?? candidate.url) ?? candidate.url;
     let detailPromise = cache.get(key);
     if (!detailPromise) {
-      detailPromise = fetchWorkdayJobDetail(candidate.url ?? candidate.canonicalUrl, httpCtx);
+      detailPromise = fetchWorkdayJobDetail(candidate.url ?? candidate.canonicalUrl, httpCtx, { signal, deadline, timeoutMs });
+      // The cutoff can expire before the bounded waiter observes this promise.
+      detailPromise.catch(() => {});
       cache.set(key, detailPromise);
     }
 
     let detail;
     try {
-      detail = await detailPromise;
+      detail = await requestWithDeadline(() => detailPromise, key, {}, { signal, deadline });
+      throwIfNetworkWorkDisallowed(signal, deadline);
     } catch (err) {
-      candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'failed', reason: err?.constructor?.name ?? 'Error' } };
+      candidate.evidence = { ...candidate.evidence, detailHydration: { status: 'failed', reason: isDeadlineCancellation(err, signal, deadline) ? 'deadline-exceeded' : signal?.aborted ? 'cancelled' : err?.constructor?.name ?? 'Error' } };
       return;
     }
 

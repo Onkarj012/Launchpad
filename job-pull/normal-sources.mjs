@@ -213,7 +213,7 @@ function lookupFunction(functions, lane) {
  * `providerFetchers` supplies the caller-owned transport (host spacing, retry,
  * byte caps, browser rendering) that a portal adapter runs on.
  */
-export async function runNormalSourcePlan({ sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {}, runAt, runId, includeCrawlerLanes = false, signal = null } = {}) {
+export async function runNormalSourcePlan({ sourceFunctions = {}, sourceFixtures = {}, laneInputs = {}, providerFetchers = {}, runAt, runId, includeCrawlerLanes = false, signal = null, deadline = null } = {}) {
   const results = [];
   const lanes = includeCrawlerLanes ? UNIFIED_NORMAL_SOURCE_LANES : NORMAL_SOURCE_LANES;
   for (const lane of lanes) {
@@ -224,7 +224,7 @@ export async function runNormalSourcePlan({ sourceFunctions = {}, sourceFixtures
     const sourceFunction = suppliedFunction
       || (hasFixture ? () => sourceFixtures[lane.id] : null)
       || (portalTransport && portalAdapter
-        ? ({ input, signal: laneSignal }) => portalAdapter({ ...portalTransport, ...(input || {}), signal: laneSignal ?? signal })
+        ? ({ input, signal: laneSignal, deadline: laneDeadline }) => portalAdapter({ ...portalTransport, ...(input || {}), signal: laneSignal ?? signal, deadline: laneDeadline ?? deadline })
         : null);
     if (!sourceFunction) {
       results.push({ candidates: [], manifest: manifestFor(lane, {
@@ -236,7 +236,7 @@ export async function runNormalSourcePlan({ sourceFunctions = {}, sourceFixtures
       continue;
     }
     try {
-      const output = await sourceFunction({ lane, input: laneInputs[lane.id] ?? laneInputs[lane.provider], runAt, runId, signal });
+      const output = await sourceFunction({ lane, input: laneInputs[lane.id] ?? laneInputs[lane.provider], runAt, runId, signal, deadline });
       results.push(normalizeLaneOutput(lane, output, { runAt, runId }));
     } catch (error) {
       results.push({ candidates: [], manifest: manifestFor(lane, {
@@ -262,7 +262,7 @@ export const PORTAL_SOURCE_LANES = Object.freeze(
  * throwing, so losing the browser never takes LinkedIn down with it.
  */
 export async function runPortalSourcePlan({
-  providerFetchers = {}, laneInputs = {}, runAt, runId, signal = null, maxRecordsPerProvider = null,
+  providerFetchers = {}, laneInputs = {}, runAt, runId, signal = null, deadline = null, maxRecordsPerProvider = null,
 } = {}) {
   const results = [];
   for (const lane of PORTAL_SOURCE_LANES) {
@@ -282,7 +282,7 @@ export async function runPortalSourcePlan({
       const output = await adapter({
         ...transport,
         ...input,
-        signal,
+        signal, deadline,
         ...(maxRecordsPerProvider ? { maxRecords: maxRecordsPerProvider } : {}),
       });
       results.push(normalizeLaneOutput(lane, output, { runAt, runId }));

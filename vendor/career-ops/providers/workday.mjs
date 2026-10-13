@@ -11,6 +11,8 @@
 // "Posted 5 Days Ago", "Posted 30+ Days Ago"); postedAt is derived from it
 // and omitted for the unbounded "30+ Days Ago" form.
 
+import { requestWithDeadline, throwIfNetworkWorkDisallowed } from '../../../crawler/deadline.mjs';
+
 const PAGE_SIZE = 20;
 
 // Safety cap on pagination — applied regardless of what the upstream reports
@@ -67,9 +69,22 @@ function resolveMaxPages(entry) {
   return DEFAULT_MAX_PAGES;
 }
 
-function sleep(ms, ctx) {
-  if (typeof ctx?.sleep === 'function') return ctx.sleep(ms);
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Clear owned retry timers when the caller cancels.
+async function sleep(ms, ctx, signal = null) {
+  signal?.throwIfAborted();
+  if (typeof ctx?.sleep === 'function') return ctx.sleep(ms, { signal });
+  let timer;
+  let onAbort;
+  try {
+    await new Promise((resolve, reject) => {
+      timer = setTimeout(resolve, ms);
+      onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 /** Parses a `Retry-After` header value (seconds, or an HTTP-date) to ms, or null. */
@@ -93,8 +108,10 @@ async function fetchPageWithRetry(ctx, api, opts) {
   let lastErr;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      return await ctx.fetchJson(api, opts);
+      throwIfNetworkWorkDisallowed(opts.signal, opts.deadline);
+      return await requestWithDeadline((_url, options) => ctx.fetchJson(api, options), api, opts, { signal: opts.signal, deadline: opts.deadline, abortOnDeadline: true });
     } catch (err) {
+      throwIfNetworkWorkDisallowed(opts.signal, opts.deadline);
       lastErr = err;
       if (attempt === MAX_RETRIES || !isRetryableError(err)) throw err;
       const backoff = Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt, RETRY_MAX_DELAY_MS);
@@ -104,7 +121,7 @@ async function fetchPageWithRetry(ctx, api, opts) {
       // says, defeating the whole point of a bounded backoff.
       const retryAfterMs = parseRetryAfterMs(err?.retryAfter);
       const delayMs = retryAfterMs !== null ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS * 4) : (backoff + Math.random() * 250);
-      await sleep(delayMs, ctx);
+      await requestWithDeadline((_url, { signal }) => sleep(delayMs, ctx, signal), api, {}, { signal: opts.signal, deadline: opts.deadline, abortOnDeadline: true });
     }
   }
   throw lastErr;
@@ -141,10 +158,12 @@ export function resolveWorkdayDetailUrl(jobUrl) {
 }
 
 /** Fetch one Workday posting's detail payload with the provider retry policy. */
-export async function fetchWorkdayJobDetail(jobUrl, ctx) {
+export async function fetchWorkdayJobDetail(jobUrl, ctx, { signal = null, deadline = null, timeoutMs } = {}) {
+  throwIfNetworkWorkDisallowed(signal, deadline);
   const detailUrl = resolveWorkdayDetailUrl(jobUrl);
   if (!detailUrl) return { detailUrl: null, startDate: null, jobDescription: null };
   const json = await fetchPageWithRetry(ctx, detailUrl, {
+    signal, deadline, ...(timeoutMs == null ? {} : { timeoutMs }),
     method: 'GET',
     redirect: 'error',
     headers: { accept: 'application/json' },
