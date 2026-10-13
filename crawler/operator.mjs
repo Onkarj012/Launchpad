@@ -377,6 +377,25 @@ function resolverPhaseDeadline({ clock, sourceDeadline, maxDurationMs, handoffRe
   };
 }
 
+// Leave bounded detail time inside the existing source allowance before searching portals.
+function portalDiscoveryDeadline(sourceDeadline, limits) {
+  const available = Math.max(0, remainingDeadlineMs(sourceDeadline) - limits.handoffReserveMs);
+  const resolutionReserveMs = Math.min(limits.maxDurationMs, available / 2);
+  return {
+    resolutionReserveMs,
+    remainingMs: () => Math.max(0, remainingDeadlineMs(sourceDeadline) - limits.handoffReserveMs - resolutionReserveMs),
+  };
+}
+
+// Prefer leads with an enabled supported employer board without changing provider fairness.
+function portalBoardPriority(candidate, config) {
+  const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const employer = normalize(candidate.company);
+  return Boolean(employer && (config.boardRegistry?.boards ?? []).some((board) => board.enabled === true && board.probeStatus === 'verified'
+    && ['greenhouse', 'lever', 'ashby', 'workday'].includes(board.provider)
+    && normalize(board.company) === employer));
+}
+
 /**
  * Shared SearXNG search transport: wraps the base HTTP transport into the
  * `(query) => { status, body: { results, unresponsive_engines? } }` shape every
@@ -591,7 +610,7 @@ export function screenPortalCandidate(candidate, policy) {
 }
 
 // Build the scheduled source fetchers with their run-scoped policies.
-export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null, linkedInPolicy = null }) {
+export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null, linkedInPolicy = null, renderedFetcherFactory = createRenderedFetcher }) {
   transport = (linkedInPolicy ?? createLinkedInGuestPolicy({ transport, runAt, clock })).transport;
   // Project boards from the unified registry when configured; tests that inject
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
@@ -871,13 +890,26 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   if (sources.portals?.enabled) plans.push(sourcePlan('portal-discovery', 'portal-sources', 'portals', async ({ runId: sourceRunId = runAt, cursor = null, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
     const portalConfig = sources.portals ?? {};
     const portalLimits = portalResolverSettings({ sources: { portals: portalConfig } });
+    const discoveryDeadline = portalDiscoveryDeadline(sourceDeadline, portalLimits);
     const browserEnabled = portalConfig.browser?.enabled === true;
     const browserProviders = new Set(browserEnabled ? (portalConfig.browser?.providers ?? []) : []);
     const httpProviders = new Set(portalConfig.http?.providers ?? ['linkedin-jobs']);
+    const cachedGuestPass = cursor?.linkedInGuestPass ?? linkedInGuestPass;
+    let discoveryDeadlineExhausted = cachedGuestPass?.runId === sourceRunId
+      && (cursor?.discoveryDeadlineExhausted === true || cachedGuestPass.discoveryDeadlineExhausted === true);
+
+    // Record shortened search-budget failures before adapters turn them into lane errors.
+    const fetchDiscovery = async (fetcher, url, options = {}) => {
+      try {
+        return await requestWithDeadline(fetcher, url, options, { signal: sourceSignal, deadline: discoveryDeadline, abortOnDeadline: true });
+      } catch (error) {
+        if (error?.code === 'DAILY_DEADLINE_EXCEEDED' || remainingDeadlineMs(discoveryDeadline) <= 0) discoveryDeadlineExhausted = true;
+        throw error;
+      }
+    };
 
     const fetchText = async (url, options = {}) => {
-      throwIfNetworkWorkDisallowed(sourceSignal, sourceDeadline);
-      const response = await requestWithDeadline(transport, url, options, { signal: sourceSignal, deadline: sourceDeadline });
+      const response = await fetchDiscovery(transport, url, options);
       const status = Number(response.status ?? 200);
       if (status < 200 || status >= 300) {
         const error = new Error(`HTTP ${status}`);
@@ -905,16 +937,16 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
           ...(provider === 'linkedin-jobs' ? {
             guestPass: (cursor?.linkedInGuestPass ?? linkedInGuestPass)?.runId === sourceRunId
               ? JSON.parse((cursor?.linkedInGuestPass ?? linkedInGuestPass).result) : null,
-            onGuestPass: (result) => { linkedInGuestPass = { runId: sourceRunId, result: JSON.stringify(result) }; },
+            onGuestPass: (result) => { linkedInGuestPass = { runId: sourceRunId, result: JSON.stringify(result), discoveryDeadlineExhausted }; },
           } : {}),
         };
       } else if (browserProviders.has(provider)) {
-        browser ??= createRenderedFetcher({
+        browser ??= renderedFetcherFactory({
           maxPages: portalConfig.browser?.maxPagesPerRun ?? 24,
           timeoutMs: portalConfig.browser?.timeoutMs ?? 45_000,
           defaultWaitMs: portalConfig.browser?.waitMs ?? 6_000,
         });
-        providerFetchers[provider] = { fetchRendered: browser.fetchRendered };
+        providerFetchers[provider] = { fetchRendered: (url, options = {}) => fetchDiscovery(browser.fetchRendered, url, options) };
         laneInputs[provider] = { queries };
       }
     }
@@ -939,7 +971,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       .map((candidate) => retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl)) ?? candidate);
     const completedDetails = new Map(retained);
     const resolutionCursor = (nextIndex) => ({ phase: 'portal-resolution', nextIndex, maxCandidates: portalLimits.maxCandidates,
-      linkedInGuestPass,
+      linkedInGuestPass, discoveryDeadlineExhausted,
       completedDetails: [...completedDetails.values()].slice(0, portalLimits.maxCandidates) });
     const screened = candidates.map((candidate) => {
       let result = { eligible: true };
@@ -953,7 +985,11 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       && candidate.originalApplicationUrl;
     const targetCandidates = screened.filter((item) => item.eligible);
     const unresolvedTargetCandidates = targetCandidates.filter(({ candidate }) => !isAlreadyResolved(candidate));
-    const resolutionCandidates = fairPortalResolutionCandidates(unresolvedTargetCandidates, portalLimits.maxCandidates);
+    const boardCandidates = unresolvedTargetCandidates.filter(({ candidate }) => portalBoardPriority(candidate, config));
+    const otherCandidates = unresolvedTargetCandidates.filter(({ candidate }) => !portalBoardPriority(candidate, config));
+    const preferredCandidates = fairPortalResolutionCandidates(boardCandidates, portalLimits.maxCandidates);
+    const resolutionCandidates = [...preferredCandidates,
+      ...fairPortalResolutionCandidates(otherCandidates, portalLimits.maxCandidates - preferredCandidates.length)];
     const sharedRequestBudget = createSharedRequestBudget(portalLimits.maxRequests);
     const hostLimiter = createHostSerializedRunner();
     const resolverDeadline = resolverPhaseDeadline({
@@ -979,6 +1015,9 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       maxRequests: portalLimits.maxRequests,
       maxDurationMs: portalLimits.maxDurationMs,
       handoffReserveMs: portalLimits.handoffReserveMs,
+      resolutionReserveMs: discoveryDeadline.resolutionReserveMs,
+      discoveryDeadlineExhausted,
+      verificationReasonCounts: {},
       checkpointed: false,
     };
     if (typeof checkpoint === 'function') {
@@ -1016,7 +1055,8 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       const unresolved = (reason) => applyOriginalListingResolution(candidate, verificationResolution(candidate, null, reason));
       let resolution;
       if (isAlreadyResolved(candidate)) return candidate;
-      if (retained.has(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl))) return candidate;
+      const retainedReason = retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl))?.evidence?.resolution?.reason;
+      if (retainedReason && !['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded'].includes(retainedReason)) return candidate;
       if (sourceSignal?.aborted) {
         resolution = verificationResolution(candidate, null, 'aborted');
       } else if (resolverDeadline.remainingMs() <= 0) {
@@ -1072,14 +1112,16 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     for (const candidate of observations) {
       if (candidate.eligibility?.eligible === false) continue;
       if (candidate.classification === 'direct' && candidate.originalApplicationUrl) continue;
-      verificationQueue.push({ url: candidate.discoveryUrl || candidate.canonicalUrl, company: candidate.company, reason: 'original-listing', evidence: candidate.evidence });
+      const reason = candidate.evidence?.resolution?.reason || 'original-listing';
+      initialTelemetry.verificationReasonCounts[reason] = (initialTelemetry.verificationReasonCounts[reason] || 0) + 1;
+      verificationQueue.push({ url: candidate.discoveryUrl || candidate.canonicalUrl, company: candidate.company, reason: 'original-listing', resolutionReason: reason, evidence: candidate.evidence });
     }
-    const constrained = Boolean(initialTelemetry.unresolved > 0 && (
+    const constrained = Boolean(discoveryDeadlineExhausted || (initialTelemetry.unresolved > 0 && (
       initialTelemetry.skippedByCandidateCap > 0
       || initialTelemetry.requestBudgetExhausted
       || initialTelemetry.deadlineExhausted
       || sourceSignal?.aborted
-    ));
+    )));
     initialTelemetry.truncated = constrained;
     initialTelemetry.naturalTerminal = !constrained;
     const laneErrors = [...outputs.flatMap((item) => item.manifest.errors || []),
