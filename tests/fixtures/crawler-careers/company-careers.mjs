@@ -15,3 +15,41 @@ export const pages = {
 };
 
 export const responses = Object.fromEntries(Object.entries(pages).map(([url, body]) => [url, { status: 200, headers: { 'content-type': url.endsWith('.xml') || url.endsWith('.rss') ? 'application/xml' : 'text/html' }, body }]));
+
+// Synthetic fixtures mirror public career URL shapes; they are not live snapshots.
+export const employerPages = {
+  'https://jobs.birlasoft.com/': `<link rel="stylesheet" href="/static/careers.css?jobs=1">
+    <a href="/about">About</a><a href="/services/digital?career=jobs">Services</a>
+    <a href="/job/Pune-AI-Engineer/1001">AI Engineer</a><a href="/job/Pune-Backend-Engineer/1002">Backend Engineer</a>
+    <a href="/images/jobs.svg">Logo</a><a href="mailto:jobs@birlasoft.com">Contact</a>
+    <a href="https://jobs.external.io/assets/jobs.js">Asset</a>`,
+  'https://jobs.birlasoft.com/sitemap.xml': `<urlset>
+    <url><loc>/about</loc><lastmod>2026-10-12</lastmod></url>
+    <url><loc>/static/careers.css</loc></url>
+    <url><loc>/job/Pune-AI-Engineer/1001</loc><lastmod>2025-01-01</lastmod></url>
+    <url><loc>/job/Pune-Backend-Engineer/1002</loc><lastmod>2026-10-12</lastmod></url>
+    <url><loc>https://unrelated.io/jobs/invented</loc></url>
+    <url><loc>/job/marketing/1003</loc></url>
+  </urlset>`,
+  'https://jobs.birlasoft.com/job/Pune-AI-Engineer/1001': `<h1>AI Engineer</h1>
+    <span class="job-location text-muted">Pune, Maharashtra, India</span>
+    <div class="content job-description"><p>Build Python APIs and AI tools. Required experience: 0-1 years.</p></div>`,
+  'https://jobs.birlasoft.com/job/Pune-Backend-Engineer/1002': `<script type="application/ld+json">{
+    "@type":"JobPosting","title":"Backend Engineer","description":"Build Python APIs. Required experience: 0-1 years.",
+    "datePosted":"2026-10-12","dateModified":"2026-10-13","employmentType":"FULL_TIME",
+    "url":"/job/Pune-Backend-Engineer/1002","jobLocation":{"address":{"addressLocality":"Pune","addressCountry":"India"}}}</script>`,
+  'https://jobs.birlasoft.com/job/marketing/1003': `<h1>Our careers culture</h1><p>Join us to build the future.</p>`,
+  'https://www.cybage.com/': `<a href="/careers/open-positions">Careers</a>`,
+  'https://www.cybage.com/careers/open-positions': `<h1>Current openings</h1>
+    <a href="/careers/open-positions/current-openings/python-developer">Python Developer</a>`,
+  'https://www.cybage.com/careers/open-positions/current-openings/python-developer': `<nav>Location: Everywhere</nav>
+    <h1>Python Developer</h1><p><strong>Location:</strong> Pune</p>
+    <h2>Job Description</h2><p>Build backend services. Required experience: 0-1 years.</p>
+    <h2>About Cybage</h2><p>Marketing content is not the JD.</p><footer>Full time jobs worldwide</footer>`,
+  'https://www.cybage.com/sitemap.xml': `<sitemapindex><sitemap><loc>/sitemap-pages.xml</loc></sitemap></sitemapindex>`,
+  'https://www.cybage.com/sitemap-pages.xml': `<urlset>
+    <url><loc>/services/digital-transformation</loc><lastmod>2026-10-12</lastmod></url>
+    <url><loc>/industries/retail</loc></url><url><loc>/blog/ai-trends</loc></url>
+    <url><loc>/careers/open-positions/current-openings/python-developer</loc><lastmod>2026-10-12</lastmod></url>
+  </urlset>`,
+};

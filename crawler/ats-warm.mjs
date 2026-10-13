@@ -38,12 +38,17 @@ function isoDate(value) {
   return Number.isNaN(time) ? null : new Date(time).toISOString();
 }
 
+// Map public posting fields while keeping modification evidence separate.
 function mapRow(provider, row, board) {
-  if (provider === 'greenhouse') return {
-    id: row.id, title: row.title, url: row.absolute_url, location: row.location?.name,
-    description: stripHtml(row.content), postedAt: row.first_published || row.updated_at,
-    employmentType: row.employment_type,
-  };
+  if (provider === 'greenhouse') {
+    const postedAt = isoDate(row.first_published);
+    return {
+      id: row.id, title: row.title, url: row.absolute_url, location: row.location?.name,
+      description: stripHtml(row.content), postedAt,
+      employmentType: row.employment_type,
+      evidence: { postedAtSource: postedAt ? 'first_published' : null, modifiedAt: isoDate(row.updated_at) },
+    };
+  }
   if (provider === 'lever') return {
     id: row.id, title: row.text, url: row.hostedUrl, location: row.categories?.location,
     description: [row.descriptionPlain, ...(row.lists || []).flatMap((part) => [part?.text, stripHtml(part?.content)]), row.additionalPlain].filter(Boolean).join('\n'),
@@ -104,6 +109,7 @@ function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
     liveness: { status: 'Active', checkedAt: runAt, evidence: 'public-ats-feed' },
     evidence: {
       classification: 'direct', verified: true, provider: board.provider, board: board.slug, sourceUrl, startupTagged,
+      ...row.evidence,
       ...(startupStageEvidenceRef ? { startupStageEvidenceRef } : {}),
       ...(sourceGeoObservation ? { sourceGeoObservation } : {}),
     },
