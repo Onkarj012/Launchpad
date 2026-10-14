@@ -2,6 +2,8 @@ export const ORIGINAL_LISTING_RESOLVER_VERSION = 'OriginalListingResolverV1';
 import { linkedInPublicJobId, parseLinkedInJobDetail } from '../job-pull/portal-adapters/linkedin.mjs';
 import { remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
 import { candidateRequisitionKey, extractExperienceYears, hiringEmployerConflict, normalizeRequisitionId } from '../job-pull/candidate.mjs';
+import { parseStipend } from '../job-pull/stipend.mjs';
+import { parseCompensation as parseAshbyCompensation } from '../vendor/career-ops/providers/ashby.mjs';
 
 export const DEFAULT_ORIGINAL_LISTING_RESOLVER_BUDGET = Object.freeze({
   maxRedirects: 5,
@@ -154,6 +156,7 @@ function locationValue(value) {
     address?.addressRegion,
     address?.addressCountry,
     location.name,
+    location.descriptor,
   ].filter(Boolean).join(', '));
 }
 
@@ -192,8 +195,9 @@ function salaryValue(root) {
 
 function parseDate(value) {
   if (value == null || value === '') return null;
-  const parsed = Date.parse(String(value));
-  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+  const parsed = typeof value === 'number' ? value : Date.parse(String(value));
+  const date = new Date(parsed);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function firstField(root, paths) {
@@ -209,77 +213,136 @@ function normalizedIdentity(value) {
 function locationsMatch(left, right) {
   const a = normalizedIdentity(left);
   const b = normalizedIdentity(right);
-  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+  return Boolean(a && b && (a === b || ` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `)));
 }
 
-// Build a public listing feed request for a supported registry board.
+// Build only known public feed routes from the enabled board's metadata.
 function registrySearchRequest(board, title) {
-  const slug = encodeURIComponent(String(board.slug || board.board || board.boardKey || '').trim());
-  if (['greenhouse', 'lever', 'ashby'].includes(board.provider) && slug) {
-    const url = board.endpoint || (board.provider === 'greenhouse'
-      ? `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`
-      : board.provider === 'lever' ? `https://api.lever.co/v0/postings/${slug}`
-        : `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`);
-    return { url, options: { method: 'GET', redirect: 'manual' } };
-  }
-  if (board.provider === 'workday') {
-    const url = board.endpoint || (board.tenant && board.instance && board.site
-      ? `https://${board.tenant}.${board.instance}.myworkdayjobs.com/wday/cxs/${board.tenant}/${board.site}/jobs`
-      : board.url);
-    if (!url) return null;
-    return { url, options: { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ appliedFacets: {}, limit: 50, offset: 0, searchText: title }) } };
-  }
-  return null;
+  const name = String(board.slug || board.board || board.boardKey || '').trim();
+  if (!/^[a-z0-9_-]+$/i.test(name) && board.provider !== 'workday') return null;
+  const slug = encodeURIComponent(name);
+  const leverEu = [board.url, board.endpoint].some((url) => /^https:\/\/(?:jobs|api)\.eu\.lever\.co\//i.test(url || ''));
+  const url = board.provider === 'greenhouse' ? `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`
+    : board.provider === 'lever' ? `https://api.${leverEu ? 'eu.' : ''}lever.co/v0/postings/${slug}`
+      : board.provider === 'ashby' ? `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`
+        : /^[a-z0-9-]+$/i.test(board.tenant || '') && /^wd\d+$/i.test(board.instance || '') && /^[a-z0-9_-]+$/i.test(board.site || '')
+          ? `https://${board.tenant}.${board.instance}.myworkdayjobs.com/wday/cxs/${board.tenant}/${board.site}/jobs` : null;
+  if (!url) return null;
+  // Overrides cannot turn a public board lookup into a private or unrelated request.
+  if (board.endpoint && canonical(board.endpoint)?.split('?')[0] !== canonical(url).split('?')[0]) return null;
+  return { url, options: { method: board.provider === 'workday' ? 'POST' : 'GET', redirect: 'manual', credentials: 'omit',
+    headers: { accept: 'application/json', ...(board.provider === 'workday' ? { 'content-type': 'application/json' } : {}) },
+    ...(board.provider === 'workday' ? { body: JSON.stringify({ appliedFacets: {}, limit: 50, offset: 0, searchText: title }) } : {}) } };
 }
 
-// Keep a feed match on the exact employer board that supplied it.
+// Keep browser-facing application routes on the exact employer's public board.
 function registryOwnsRoute(board, value) {
   const target = classifyOriginalListingUrl(value);
   if (target.kind !== 'ats' || target.provider !== board.provider) return false;
+  const url = new URL(target.url);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) return false;
   const parts = pathSegments(target.url);
-  const boardName = String(board.slug || board.board || board.boardKey || '').toLowerCase();
-  if (['greenhouse', 'lever', 'ashby'].includes(board.provider)) return parts[0]?.toLowerCase() === boardName;
-  if (board.provider === 'workday') {
-    const expectedHost = `${board.tenant}.${board.instance}.myworkdayjobs.com`.toLowerCase();
-    return target.host === expectedHost && parts[0]?.toLowerCase() === String(board.site).toLowerCase();
-  }
-  return false;
+  if (parts.some((part) => /^(?:signup|sign-up|sign_up|register|recruiter|private|internal|login|log-in|signin|sign-in|sign_in|auth|oauth|sso)$/i.test(part))) return false;
+  const name = String(board.slug || board.board || board.boardKey || '').toLowerCase();
+  if (board.provider === 'greenhouse') return /^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(target.host)
+    && parts[0]?.toLowerCase() === name && parts[1] === 'jobs' && /^\d+$/.test(parts[2] || '') && parts.length === 3;
+  if (['lever', 'ashby'].includes(board.provider)) return (board.provider === 'lever' ? /^jobs(?:\.eu)?\.lever\.co$/ : /^jobs\.ashbyhq\.com$/).test(target.host)
+    && parts[0]?.toLowerCase() === name && Boolean(extractProviderFingerprint(value).requisitionId)
+    && (parts.length === 2 || (parts.length === 3 && /^(apply|application)$/i.test(parts[2])));
+  const offset = /^[a-z]{2}-[a-z]{2}$/i.test(parts[0] || '') ? 1 : 0;
+  return target.host === `${board.tenant}.${board.instance}.myworkdayjobs.com`.toLowerCase()
+    && parts[offset]?.toLowerCase() === String(board.site).toLowerCase() && parts[offset + 1] === 'job' && parts.length > offset + 2;
 }
 
-// Return a single listing only when the registry employer, title, location, and optional requisition agree.
-function registryListingMatch(response, board, observation) {
+// Retain all explicit matches so duplicate listings cannot silently select one job.
+function registryListingMatches(response, board, observation) {
   const rows = board.provider === 'lever' ? bodyOf(response)
-    : bodyOf(response)?.jobs ?? bodyOf(response)?.jobPostings ?? bodyOf(response)?.postings;
-  if (!Array.isArray(rows)) return null;
-  const expectedCompany = normalizedIdentity(observation.company);
-  const expectedTitle = normalizedIdentity(observation.title);
-  const expectedLocation = normalizedIdentity(observation.location);
-  const normalizeRow = (row) => {
-    if (board.provider === 'greenhouse') return { title: row.title, location: typeof row.location === 'string' ? row.location : row.location?.name, id: row.id, url: row.absolute_url };
-    if (board.provider === 'lever') return { title: row.text, location: row.categories?.location, id: row.id, url: row.hostedUrl };
-    if (board.provider === 'ashby') return { title: row.title, location: row.location, id: row.id, url: row.jobUrl || row.applyUrl };
-    const workdayBase = board.tenant && board.instance && board.site
-      ? `https://${board.tenant}.${board.instance}.myworkdayjobs.com/${board.site}` : board.url;
-    const workdayPath = row.externalPath ?? row.jobPostingInfo?.externalPath;
-    const workdayUrl = workdayBase && workdayPath
-      ? `${workdayBase.replace(/\/$/, '')}/${String(workdayPath).replace(/^\/+/, '')}` : null;
-    const url = row.url ?? row.externalUrl ?? row.applicationUrl ?? workdayUrl;
-    return { title: row.title ?? row.jobPostingInfo?.title,
-      location: row.location?.descriptor ?? row.location?.name ?? row.location ?? row.locationsText ?? row.jobPostingInfo?.jobRequisitionLocation?.descriptor,
-      id: row.jobReqId ?? row.jobPostingInfo?.jobReqId ?? extractProviderFingerprint(url).requisitionId, url };
-  };
-  const matches = rows.map(normalizeRow).filter((row) => {
-    const actualTitle = normalizedIdentity(row.title);
-    const actualLocation = normalizedIdentity(row.location);
-    const titleMatches = actualTitle === expectedTitle;
-    const locationMatches = locationsMatch(actualLocation, expectedLocation);
+    : bodyOf(response)?.jobs ?? bodyOf(response)?.jobPostings;
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row) => row && typeof row === 'object').map((row) => {
+    const url = board.provider === 'greenhouse' ? row.absolute_url
+      : board.provider === 'lever' ? row.hostedUrl
+        : board.provider === 'ashby' ? row.jobUrl || row.applyUrl
+          : typeof row.externalPath === 'string' && /^\/job\//.test(row.externalPath)
+            ? `https://${board.tenant}.${board.instance}.myworkdayjobs.com/${board.site}${row.externalPath}` : null;
+    const id = String(row.id ?? row.jobReqId ?? (board.provider === 'workday' ? row.bulletFields?.[0] : null) ?? extractProviderFingerprint(url).requisitionId ?? '');
+    return { row, url, id, title: row.title ?? row.text,
+      location: board.provider === 'lever' ? row.categories?.location
+        : row.location?.name ?? row.location?.descriptor ?? row.location ?? row.locationsText };
+  }).filter((item) => {
     const expectedReq = normalizeRequisitionId(board.provider, observation.requisitionId);
-    const actualReq = normalizeRequisitionId(board.provider, row.id);
-    return normalizedIdentity(board.company) === expectedCompany && titleMatches && locationMatches
-      && (!expectedReq || (actualReq && actualReq === expectedReq)) && registryOwnsRoute(board, row.url);
+    const actualReq = normalizeRequisitionId(board.provider, item.id);
+    const routeReq = normalizeRequisitionId(board.provider, extractProviderFingerprint(item.url).requisitionId);
+    return normalizedIdentity(board.company) === normalizedIdentity(observation.company)
+      && normalizedIdentity(item.title) === normalizedIdentity(observation.title)
+      && locationsMatch(item.location, observation.location) && registryOwnsRoute(board, item.url)
+      && actualReq && actualReq === routeReq && (!expectedReq || expectedReq === actualReq);
   });
-  return matches.length === 1 ? matches[0].url : null;
+}
+
+// Fetch public single-job JSON where available; Ashby supplies full details in its public feed.
+function registryDetailRequest(board, match) {
+  const list = registrySearchRequest(board, match.title);
+  if (board.provider === 'ashby') return null;
+  const url = new URL(list.url);
+  url.search = '';
+  if (board.provider === 'workday') {
+    const parts = pathSegments(match.url);
+    url.pathname = url.pathname.replace(/\/jobs$/, `/${parts.slice(parts.indexOf('job')).join('/')}`);
+  } else url.pathname += `/${encodeURIComponent(match.id)}`;
+  return { url: url.toString(), options: { method: 'GET', redirect: 'manual', credentials: 'omit', headers: { accept: 'application/json' } } };
+}
+
+// Require Lever's main description or section content before adding headings and boilerplate.
+function leverDescription(root) {
+  const sections = Array.isArray(root.lists) ? root.lists : [];
+  const main = first(root.descriptionPlain, root.description);
+  if (![main, ...sections.map((section) => section?.content)].some((value) => stripHtmlToText(value))) return null;
+  return [main, ...sections.flatMap((section) => [section?.text, section?.content]), first(root.additionalPlain, root.additional)].filter(Boolean).join(' ');
+}
+
+// Preserve internships and nonpermanent terms before using Workday's hours label.
+function workdayEmploymentType(root, description) {
+  const body = stripHtmlToText(description);
+  const title = stripHtmlToText(root.title);
+  if (/\b(?:intern|internship|trainee)\b/i.test(title) || /\binternship\b/i.test(body)) return 'INTERNSHIP';
+  const label = body.match(/\b(?:employment|job|engagement|role|position|worker|type)\s*(?:type)?\s*[:=-]\s*(fixed[\s-]+term|contract(?:ual|or)?|temporary|freelance)\b/i)?.[1];
+  const wording = body.match(/\bfixed[\s-]+term\b|\b(?:contract(?:ual)?|temporary|freelance)\s+(?:role|position|basis|employment|engagement|hire)\b/i)?.[0];
+  const titleType = title.match(/\b(?:fixed[\s-]+term|contract(?:ual|or)?|temporary|freelance)\b/i)?.[0];
+  const nonpermanent = titleType || label || wording;
+  if (nonpermanent) return /\btemporary\b/i.test(nonpermanent) ? 'TEMPORARY' : 'CONTRACT';
+  return root.timeType;
+}
+
+// Map provider JSON without borrowing description, employment, or dates from the portal or list summary.
+function registryDetailResponse(response, board, match) {
+  const raw = bodyOf(response);
+  const root = board.provider === 'workday' ? raw?.jobPostingInfo : raw;
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return null;
+  const id = board.provider === 'workday' ? root.jobReqId : root.id ?? (board.provider === 'ashby' ? extractProviderFingerprint(root.jobUrl || root.applyUrl).requisitionId : null);
+  if (!id || normalizeRequisitionId(board.provider, id) !== normalizeRequisitionId(board.provider, match.id)) return null;
+  const route = root.absolute_url ?? root.hostedUrl ?? root.jobUrl ?? root.externalUrl;
+  if (route && (!registryOwnsRoute(board, route) || extractProviderFingerprint(route).requisitionId !== extractProviderFingerprint(match.url).requisitionId)) return null;
+  const description = board.provider === 'lever'
+    ? leverDescription(root)
+    : board.provider === 'greenhouse' ? stripHtmlToText(stripHtmlToText(root.content))
+      : board.provider === 'workday' ? root.jobDescription : first(root.descriptionPlain, root.descriptionHtml);
+  const employer = firstField(root, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer'])
+    || firstField(raw, ['companyName', 'hiringOrganization.name']);
+  const ashbySalary = board.provider === 'ashby' && text(root.compensation?.interval) ? parseAshbyCompensation(root) : null;
+  return { ...response, details: { ...root,
+    ...(ashbySalary ? { baseSalary: { minValue: ashbySalary.min, maxValue: ashbySalary.max, currency: ashbySalary.currency, unitText: 'annual' } } : {}),
+    title: root.title ?? root.text,
+    hiringOrganization: { name: employer || board.company }, identifier: { value: String(id) },
+    description,
+    location: board.provider === 'lever' ? root.categories?.location
+      : board.provider === 'workday' ? first(root.location, root.locationsText, root.jobRequisitionLocation?.descriptor)
+        : root.location,
+    employmentType: board.provider === 'lever' ? root.categories?.commitment
+      : board.provider === 'workday' ? workdayEmploymentType(root, description) : root.employmentType,
+    datePosted: board.provider === 'greenhouse' ? root.first_published : board.provider === 'lever' ? parseDate(root.createdAt) : root.publishedAt,
+    closed: root.closed === true || root.isClosed === true || root.active === false || root.canApply === false || root.isListed === false || root.posted === false,
+  } };
 }
 
 // Match known lead identity and require a named employer on the destination.
@@ -311,7 +374,7 @@ function extractDetails(response, observation, provider) {
     body?.jobPostingInfo?.jobDescription,
   );
   const title = first(posting?.title, firstField(root, ['title', 'name', 'text']));
-  const location = locationValue(posting?.jobLocation ?? firstField(root, ['location', 'locations', 'locationsText', 'jobLocation']));
+  const location = locationValue(posting?.jobLocation ?? root?.location ?? root?.locations ?? root?.locationsText ?? root?.jobLocation);
   const employment = employmentType(posting?.employmentType ?? firstField(root, ['employmentType', 'typeOfEmployment', 'employment', 'jobType']));
   const experienceRaw = firstField(root, ['experience', 'experienceRequired', 'qualifications.experience', 'requirements.experience']);
   const plainDescription = stripHtmlToText(description || '');
@@ -555,7 +618,8 @@ function safePortalApplicationTarget(item, boundTarget = null) {
   if (item.classified.kind !== 'ats') return false;
   if (boundTarget ? item.url !== canonical(boundTarget) : item.why !== 'apply-link') return false;
   const url = new URL(item.url);
-  return url.protocol === 'https:' && !url.username && !url.password && !url.port;
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port
+    && !url.pathname.split('/').some((part) => /^(?:login|log-in|signin|sign-in|sign_in|signup|sign-up|sign_up|register|registration|auth|oauth|sso|api|graphql|internal)$/i.test(part));
 }
 
 // Keep portal Apply links on public HTTPS pages and out of authentication routes.
@@ -563,7 +627,7 @@ function safeVisiblePortalApplyTarget(item, portalUrl) {
   if (item.why !== 'apply-link' || hostOf(item.url) === hostOf(portalUrl) || AGGREGATOR_HOST.test(hostOf(item.url))) return false;
   const url = new URL(item.url);
   return url.protocol === 'https:' && !url.username && !url.password && !url.port
-    && !/\b(?:login|log-in|signin|sign-in|sign_in|auth|oauth|sso|api|graphql|internal)\b/i.test(`${url.hostname}${url.pathname}`);
+    && !/\b(?:login|log-in|signin|sign-in|sign_in|signup|sign-up|sign_up|register|registration|auth|oauth|sso|api|graphql|internal)\b/i.test(`${url.hostname}${url.pathname}`);
 }
 
 // Restrict pasted-post resolution to public employer routes without URL credentials.
@@ -591,7 +655,9 @@ function responseBytes(response) {
   const headers = response?.headers || {};
   const raw = typeof headers.get === 'function' ? headers.get('content-length') : headers['content-length'] ?? headers['Content-Length'];
   const length = Number(raw);
-  return Number.isFinite(length) ? length : 0;
+  if (raw != null && Number.isFinite(length)) return length;
+  const body = bodyOf(response);
+  return body && typeof body === 'object' ? Buffer.byteLength(JSON.stringify(body)) : 0;
 }
 
 async function boundedTransport(transport, url, options, { signal, remainingMs, deadline, hostLimiter }) {
@@ -816,6 +882,7 @@ export function createOriginalListingResolver({
     const hosts = new Set();
     let portalPatch = observation.evidence?.portalDetail?.status === 'extracted' ? observation : null;
     const fail = (reason, chain = [], extra = {}, telemetryValue = telemetry) => {
+      if (telemetryValue?.crossMatch) telemetryValue.crossMatch.resolverRequests = telemetryValue.requests;
       const result = resolutionFailure(observation, reason, chain, extra, telemetryValue);
       if (portalPatch) {
         result.portalPatch = portalPatch;
@@ -834,7 +901,6 @@ export function createOriginalListingResolver({
       return fail('invalid-or-insecure-discovery-url', [], {}, telemetry);
     }
     const retainedTargets = portalPatch?.evidence?.portalDetail?.applicationTargets ?? [];
-    if (portalPatch && !retainedTargets.length) return fail('destination-intermediary', [discoveryUrl]);
     let current = retainedTargets.find((url) => classifyOriginalListingUrl(url).kind === 'ats') ?? discoveryUrl;
     if (hiringPost) {
       const pastedText = observation.evidence?.hiringPost?.pastedText ?? '';
@@ -846,54 +912,77 @@ export function createOriginalListingResolver({
     }
     const chain = [];
     const seen = new Set();
-    const portalProviders = new Set(['linkedin', 'linkedin-jobs', 'glassdoor', 'instahyre', 'wellfound']);
+    const portalLead = classifyOriginalListingUrl(discoveryUrl).kind === 'aggregator' && !hiringPost;
+    const publicPortalLead = ['linkedin', 'linkedin-jobs', 'glassdoor', 'instahyre', 'wellfound'].includes(String(observation.provider || '').toLowerCase());
     let crossMatchBoard = null;
-    const boards = (config?.boardRegistry?.boards ?? []).filter((board) => board.enabled === true
+    let crossMatchListing = null;
+    let retainedRegistryDetail = null;
+    const boards = (config?.boardRegistry?.boards ?? []).filter((board) => board.enabled === true && board.probeStatus === 'verified'
       && ['greenhouse', 'lever', 'ashby', 'workday'].includes(board.provider)
+      && normalizedIdentity(board.company) && normalizedIdentity(board.company) !== 'not verified'
       && normalizedIdentity(board.company) === normalizedIdentity(observation.company));
-    if (portalProviders.has(String(observation.provider || '').toLowerCase()) && text(observation.company) && text(observation.title) && boards.length) {
+    if (portalLead && text(observation.company) && text(observation.title) && text(observation.location) && boards.length) {
       const matchedRoutes = [];
       let boardRequests = 0;
+      telemetry.crossMatch = { attempted: false, boardRequests: 0, verifiedRoutes: 0,
+        resolverRequests: 0, verifiedRoutesPerRequest: null, budgetRaised: false };
       for (const board of boards) {
         const request = registrySearchRequest(board, observation.title);
-        if (!request || telemetry.requests >= requestLimit) break;
+        if (!request) continue;
+        if (activeSignal?.aborted) return fail('aborted');
+        if (remainingDeadlineMs(activeDeadline) <= 0) return fail('deadline-exceeded');
+        if (telemetry.requests >= requestLimit) return fail('request-budget-exceeded');
         const host = hostOf(request.url);
         if (host && !hosts.has(host)) {
-          if (hosts.size >= hostLimit) break;
+          if (hosts.size >= hostLimit) return fail('host-budget-exceeded');
           hosts.add(host);
           telemetry.hostsFollowed = hosts.size;
         }
-        if (activeRequestBudget?.claim && !activeRequestBudget.claim()) break;
+        if (activeRequestBudget?.claim && !activeRequestBudget.claim()) {
+          const reason = sharedBudgetFailureReported ? 'resolver-bound-exhausted' : 'request-budget-exhausted';
+          sharedBudgetFailureReported = true;
+          return fail(reason);
+        }
         telemetry.requests += 1;
         boardRequests += 1;
+        telemetry.crossMatch.attempted = true;
+        telemetry.crossMatch.boardRequests = boardRequests;
+        telemetry.crossMatch.verifiedRoutesPerRequest = 0;
         try {
           const response = await boundedTransport(transport, request.url, {
             ...request.options, maxBytes: byteLimit, signal: activeSignal, deadline: activeDeadline,
             remainingMs: remainingDeadlineMs(activeDeadline), purpose: 'portal-registry-cross-match', runAt, budget: limits,
           }, { signal: activeSignal, remainingMs: remainingDeadlineMs(activeDeadline), deadline: activeDeadline, hostLimiter: activeHostLimiter });
           telemetry.bytesObserved += responseBytes(response);
-          if (Number(response?.status ?? 200) >= 200 && Number(response?.status ?? 200) < 300
-            && responseBytes(response) <= byteLimit) {
-            const url = registryListingMatch(response, board, observation);
-            if (url) matchedRoutes.push({ board, url });
-          }
-        } catch {
-          // A failed public board search leaves the portal lead in verification.
+          if (activeSignal?.aborted) return fail('aborted');
+          if (remainingDeadlineMs(activeDeadline) <= 0) return fail('deadline-exceeded');
+          if (responseBytes(response) > byteLimit || Number(response?.byteLength) > byteLimit) return fail('response-too-large');
+          const status = Number(response?.status ?? 200);
+          if (looksBlocked(response, status)) return fail('blocked', [], { httpStatus: status });
+          if (REDIRECT_STATUSES.has(status) || headersOf(response).location || (response?.redirected && canonical(response.url) !== canonical(request.url))) return fail('redirect-to-unsupported-host');
+          if (status < 200 || status >= 300) return fail(`detail-http-${status}`, [], { httpStatus: status });
+          if (looksMalformed(response, status)) return fail('malformed-response');
+          for (const match of registryListingMatches(response, board, observation)) matchedRoutes.push({ board, ...match });
+        } catch (error) {
+          const reason = activeSignal?.aborted ? 'aborted' : remainingDeadlineMs(activeDeadline) <= 0 || error?.code === 'DAILY_DEADLINE_EXCEEDED' ? 'deadline-exceeded'
+            : error?.message === 'response-too-large' ? 'response-too-large' : 'transport-error';
+          return fail(reason);
         }
       }
       const selected = matchedRoutes.length === 1 ? matchedRoutes[0] : null;
-      telemetry.crossMatch = {
-        attempted: boardRequests > 0, boardRequests, verifiedRoutes: 0,
-        resolverRequests: telemetry.requests, verifiedRoutesPerRequest: boardRequests ? 0 : null, budgetRaised: false,
-      };
+      telemetry.crossMatch.resolverRequests = telemetry.requests;
+      if (matchedRoutes.length > 1) return fail('original-listing-ambiguous');
       if (!selected && !['instahyre', 'wellfound'].includes(String(observation.provider || '').toLowerCase())) {
         return fail('original-listing-not-found', [], { crossMatch: telemetry.crossMatch }, telemetry);
       }
       if (selected) {
         crossMatchBoard = selected.board;
+        crossMatchListing = selected;
         current = canonical(selected.url);
+        if (selected.board.provider === 'ashby') retainedRegistryDetail = { status: 200, body: selected.row };
       }
     }
+    if (!crossMatchBoard && portalPatch && !retainedTargets.length) return fail('destination-intermediary', [discoveryUrl]);
     for (let hop = 0; hop <= redirectLimit; hop += 1) {
       if (hiringPost && !safeHiringPostTarget(current)) return fail('hiring-post-public-employer-route-required', [...chain, current]);
       if (activeSignal?.aborted) return fail('aborted', chain, {}, telemetry);
@@ -911,7 +1000,9 @@ export function createOriginalListingResolver({
       if (publicId && classifyOriginalListingUrl(current).kind === 'aggregator'
         && linkedInPublicJobId(current) !== publicId) return fail('portal-detail-redirect-identity-mismatch', chain);
 
-      const host = hostOf(current);
+      const detailRequest = crossMatchBoard ? registryDetailRequest(crossMatchBoard, crossMatchListing) : null;
+      const requestUrl = detailRequest?.url ?? current;
+      const host = retainedRegistryDetail ? null : hostOf(requestUrl);
       if (host && !hosts.has(host)) {
         if (hosts.size >= hostLimit) {
           return fail('host-budget-exceeded', chain, {}, telemetry);
@@ -921,7 +1012,7 @@ export function createOriginalListingResolver({
       }
 
       const cacheKey = linkedInPublicJobId(current) ? (hop === 0 ? `linkedin:${publicId}` : canonical(current)) : null;
-      const cached = cacheKey ? publicResponseCache.get(cacheKey) : null;
+      const cached = retainedRegistryDetail ? Promise.resolve(retainedRegistryDetail) : cacheKey ? publicResponseCache.get(cacheKey) : null;
       if (!cached && telemetry.requests >= requestLimit) return fail('request-budget-exceeded', chain);
       if (!cached && activeRequestBudget?.claim && !activeRequestBudget.claim()) {
         const reason = sharedBudgetFailureReported ? 'resolver-bound-exhausted' : 'request-budget-exhausted';
@@ -931,12 +1022,12 @@ export function createOriginalListingResolver({
       let response;
       try {
         if (cached) {
-          telemetry.cacheHits = (telemetry.cacheHits || 0) + 1;
+          if (!retainedRegistryDetail) telemetry.cacheHits = (telemetry.cacheHits || 0) + 1;
           response = await cached;
         } else {
           telemetry.requests += 1;
-          const pending = boundedTransport(transport, current, {
-            method: 'GET', redirect: 'manual', maxBytes: byteLimit,
+          const pending = boundedTransport(transport, requestUrl, {
+            method: 'GET', redirect: 'manual', ...detailRequest?.options, maxBytes: byteLimit,
             ...(hiringPost ? { credentials: 'omit' } : {}),
             signal: activeSignal, deadline: activeDeadline, remainingMs,
             purpose: 'original-listing-resolution', runAt, hop, budget: limits,
@@ -946,11 +1037,12 @@ export function createOriginalListingResolver({
           response = await pending;
         }
       } catch (error) {
-        const reason = activeSignal?.aborted ? 'aborted' : remainingDeadlineMs(activeDeadline) <= 0 ? 'deadline-exceeded'
+        const reason = activeSignal?.aborted ? 'aborted' : remainingDeadlineMs(activeDeadline) <= 0 || error?.code === 'DAILY_DEADLINE_EXCEEDED' ? 'deadline-exceeded'
           : error?.message === 'response-too-large' ? 'response-too-large' : 'transport-error';
         return fail(reason, chain, { error: error?.message || reason });
       }
       if (activeSignal?.aborted) return fail('aborted', chain);
+      if (crossMatchBoard && remainingDeadlineMs(activeDeadline) <= 0) return fail('deadline-exceeded', chain);
       const status = Number(response?.status ?? 200);
       if (!cached) telemetry.bytesObserved += responseBytes(response);
       if (responseBytes(response) > byteLimit || (Number.isFinite(Number(response?.byteLength)) && Number(response.byteLength) > byteLimit)) {
@@ -959,9 +1051,10 @@ export function createOriginalListingResolver({
 
       const headers = headersOf(response);
       const responseUrl = canonical(response?.url);
-      const location = canonical(headers.location, current);
-      const next = location || (response?.redirected && responseUrl && responseUrl !== current ? responseUrl : null);
+      const location = canonical(headers.location, requestUrl);
+      const next = location || (response?.redirected && responseUrl && responseUrl !== requestUrl ? responseUrl : null);
 
+      if (crossMatchBoard && (REDIRECT_STATUSES.has(status) || next)) return fail('redirect-to-unsupported-host', chain);
       if (REDIRECT_STATUSES.has(status) || next) {
         if (!next) return fail('redirect-without-location', chain, {}, telemetry);
         const target = classifyOriginalListingUrl(next);
@@ -1042,6 +1135,10 @@ export function createOriginalListingResolver({
 
       const provider = target.provider;
       const fingerprint = extractProviderFingerprint(current);
+      if (crossMatchBoard) {
+        response = registryDetailResponse(response, crossMatchBoard, crossMatchListing);
+        if (!response) return fail('destination-role-identity-mismatch', chain, { provider, fingerprint });
+      }
       const details = extractDetails(response, observation, provider);
       if (!details.verified) {
         const reason = details.reason === 'job-detail-not-found' && looksMalformed(response, status)
@@ -1049,15 +1146,29 @@ export function createOriginalListingResolver({
           : details.reason;
         return fail(reason, chain, { provider, fingerprint }, telemetry);
       }
-      if (publicId || hiringPost || crossMatchBoard) {
+      if ((crossMatchBoard || publicPortalLead) && (!details.description || details.liveness?.status !== 'Active')) {
+        return fail(!details.description ? 'job-detail-not-found' : 'destination-liveness-unverified', chain, { provider, fingerprint });
+      }
+      if (publicId || hiringPost || crossMatchBoard || publicPortalLead) {
         const identityObservation = crossMatchBoard ? { ...observation, company: crossMatchBoard.company } : observation;
         const identityFailure = terminalLinkedInIdentityFailure(response, identityObservation, provider, { allowMissingLeadIdentity: hiringPost });
         if (identityFailure) return fail(identityFailure, chain, { provider, fingerprint }, telemetry);
       }
-      if (crossMatchBoard && !locationsMatch(details.location, observation.location)) {
+      if ((crossMatchBoard && normalizedIdentity(details.title) !== normalizedIdentity(observation.title))
+        || ((crossMatchBoard || (publicPortalLead && text(observation.location))) && !locationsMatch(details.location, observation.location))) {
         return fail('destination-role-identity-mismatch', chain, { provider, fingerprint }, telemetry);
       }
       const patched = mergePatch({ ...observation, ...(portalPatch || {}), evidence: { ...observation.evidence, ...portalPatch?.evidence } }, details, current, provider, runAt, fingerprint);
+      if (crossMatchBoard || publicPortalLead) {
+        // Portal summaries cannot fill fields missing from the original employer detail.
+        patched.postedAt = details.postedAt ?? null;
+        patched.employment = details.employment ?? { type: null, paid: null, evidence: null };
+        patched.salary = details.salary ?? { minimum: null, maximum: null, currency: null, period: null, evidence: null };
+        patched.stipend = parseStipend({ description: details.description, salary: details.salary });
+      }
+      if (crossMatchBoard) {
+        patched.evidence.registryEmployer = { company: crossMatchBoard.company, probeStatus: crossMatchBoard.probeStatus, detailUrl: detailRequest?.url ?? registrySearchRequest(crossMatchBoard, observation.title).url };
+      }
       if (hiringPost) {
         const { posting, root } = detailRoot(response);
         patched.company = stripHtmlToText(firstField(posting || root, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer']));

@@ -48,11 +48,23 @@ Crawler SQLite owns crawl observations, novelty, source health, and schedule sta
 
 Workday freshness trusts a usable DETAIL `startDate` and applies the normal age classes. LIST-only `postedOn`, including bounded labels, is not trusted for selection and remains in `VerifyQueue` until detail evidence supplies a usable `startDate`.
 
+Company-careers traversal matches career paths, filters assets, and treats same-host sitemap entries as inventory to inspect. A sitemap URL alone never creates a job. Supported HTML job details require an explicit title, location, and job-description field or heading section. Missing posting dates and employment types stay unknown. Field provenance retains the detail URL and discovery source.
+
+Company-careers publication uses `JobPosting.datePosted`, RSS `pubDate`, or Atom `published`. `dateCreated`, `dateModified`, Atom `updated`, and sitemap `lastmod` remain separate evidence. A stale sitemap modification does not prove a job expired; explicit `validThrough` still does. Warm Greenhouse uses `first_published`, with `updated_at` retained only as modification evidence. Unknown posting dates remain in `VerifyQueue`.
+
+Synthetic Cybage and Birlasoft fixtures establish parser behavior only. Historical `disabledCareerSites` notes do not prove the current websites work. Both employers remain disabled pending separate bounded live verification. No live yield is claimed by these tests.
+
 Daily readiness requires `eligibility?.eligible === true`; missing eligibility is not ready. Unstated experience manual review is not a rejection after the full eligibility result passes, while all other hard failures remain enforced.
 
 `VerifyQueue` stays outside scoring and selection. The selection result records empty selected-key intersections with both `VerifyQueue` and `scoringQueue`. Backfill rows require a finite known age in the 8–14-day band.
 
 Unresolved roles do not count toward the shortlist. A missing scorer with unscored rows, or a broken scorer infrastructure path, is fatal. Bounded per-row scoring failures from a functioning in-run scorer remain queued and make the run degraded rather than silently treating those rows as scored.
+
+## Execution deadlines
+
+The configured run stays at 20 minutes, with 12 minutes for discovery, five minutes reserved for scoring, and three minutes for handoff. Company careers, ATS warm rows, rendered navigation and body reads, and Workday detail enrichment consume the operator's signal and remaining discovery budget. Scoring checks its live remaining budget before starting. Company progress checkpoints retain the company and current URL to locate a stalled request. HTTP provider timeouts cover response bodies as well as headers.
+
+Deterministic stalled transports and fake browsers establish local cancellation behavior. They do not prove the cause of a historical 15-minute stall or establish live source yield.
 
 ## v5 Notion boundary
 

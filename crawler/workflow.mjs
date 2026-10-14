@@ -1,5 +1,5 @@
 import { discoverBraveSearch } from './brave-search.mjs';
-import { discoverCompanyCareers } from './company-careers.mjs';
+import { discoverCompanyCareers, companyCareerProgress } from './company-careers.mjs';
 import { filterHistoricalCandidates } from './historical-suppression.mjs';
 import {
   canonicalizeApplicationUrl,
@@ -324,7 +324,7 @@ export async function crawlWorkflow({
       id: 'career-sites', lane: 'career-site', trustClass: 'direct',
       capabilities: { incremental: true, robots: true, sitemap: true },
       ratePolicy: careerOptions.hostLimiterOptions ?? {},
-      fetch: async ({ clock: sourceClock, signal: sourceSignal, deadline: sourceDeadline }) => {
+      fetch: async ({ clock: sourceClock, signal: sourceSignal, deadline: sourceDeadline, checkpoint }) => {
         const priorCursor = sourceCursor(priorState, 'career-sites');
         const result = await discoverCompanyCareers({
           ...careerOptions,
@@ -334,6 +334,7 @@ export async function crawlWorkflow({
           clock: sourceClock,
           signal: sourceSignal,
           deadline: sourceDeadline,
+          onProgress: checkpoint ? ({ sources: companies, telemetry }) => checkpoint({ manifestDelta: { telemetry: { ...telemetry, companies: companyCareerProgress(companies) } } }) : undefined,
           conditionalState: priorCursor?.conditionalState ?? priorCursor ?? {},
         });
         return sourceResult(result, result.telemetry);

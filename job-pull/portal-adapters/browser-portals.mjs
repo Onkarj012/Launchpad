@@ -1,3 +1,4 @@
+import { remainingDeadlineMs, throwIfNetworkWorkDisallowed } from '../../crawler/deadline.mjs';
 // Browser-backed portal adapters: Glassdoor, Instahyre, Wellfound.
 //
 // These three serve a JS shell to plain HTTP and only yield job markup once a
@@ -291,7 +292,7 @@ const PARSERS = Object.freeze({
  * A query that throws is recorded and skipped; one dead portal query never
  * fails the lane, but the error is always reported rather than swallowed.
  */
-async function fetchBrowserPortal(provider, { fetchRendered, queries = [], maxRecords = 200, now = Date.now(), signal = null } = {}) {
+async function fetchBrowserPortal(provider, { fetchRendered, queries = [], maxRecords = 200, now = Date.now(), signal = null, deadline = null } = {}) {
   if (typeof fetchRendered !== 'function') throw new Error(`${provider} requires an injected fetchRendered function`);
   if (!Array.isArray(queries) || !queries.length) throw new Error(`${provider} requires at least one configured query`);
   const parse = PARSERS[provider];
@@ -300,11 +301,12 @@ async function fetchBrowserPortal(provider, { fetchRendered, queries = [], maxRe
   const errors = [];
   let requests = 0;
   for (const query of queries) {
-    if (records.length >= maxRecords || signal?.aborted) break;
+    if (records.length >= maxRecords || signal?.aborted || remainingDeadlineMs(deadline) <= 0) break;
     const url = query.url || buildGlassdoorUrl(query);
     try {
       requests += 1;
-      const html = await fetchRendered(url, { waitMs: query.waitMs ?? 6000, signal });
+      const html = await fetchRendered(url, { waitMs: query.waitMs ?? 6000, signal, deadline });
+      throwIfNetworkWorkDisallowed(signal, deadline);
       const parsed = parse(html, { now, query });
       assertPortalPageHealth(html, { provider, records: parsed });
       pages.push({ url, returned: parsed.length });

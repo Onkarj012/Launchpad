@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const RETRYABLE_ERRORS = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
 
@@ -81,15 +83,19 @@ export function retryDelay(attempt, { baseDelayMs = 250, maxDelayMs = 10_000, ji
 export function createHostLimiter({ minSpacingMs = 1000, maxConcurrency = 1, clock = {} } = {}) {
   const hosts = new Map();
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
-  const sleep = (ms) => typeof clock.sleep === 'function' ? clock.sleep(ms) : new Promise((resolve) => setTimeout(resolve, ms));
+  const sleep = (ms, signal) => typeof clock.sleep === 'function' ? clock.sleep(ms, { signal }) : delay(ms, undefined, { signal });
   function pump(host, state) {
     if (state.pumping) return;
     state.pumping = true;
     (async () => {
       while (state.queue.length && state.active < maxConcurrency) {
         const item = state.queue.shift();
-        const wait = Math.max(0, state.lastStart + minSpacingMs - now());
-        if (wait) await sleep(wait);
+        try {
+          item.signal?.throwIfAborted();
+          const wait = Math.max(0, state.lastStart + minSpacingMs - now());
+          if (wait) await sleep(wait, item.signal);
+          item.signal?.throwIfAborted();
+        } catch (error) { item.reject(error); continue; }
         state.lastStart = now(); state.active += 1;
         Promise.resolve().then(item.task).then(item.resolve, item.reject).finally(() => { state.active -= 1; pump(host, state); });
       }
@@ -97,11 +103,11 @@ export function createHostLimiter({ minSpacingMs = 1000, maxConcurrency = 1, clo
       if (state.queue.length && state.active < maxConcurrency) pump(host, state);
     })();
   }
-  return { run(host, task) {
+  return { run(host, task, { signal } = {}) {
     const key = String(host).toLowerCase();
     const state = hosts.get(key) ?? { active: 0, lastStart: -Infinity, queue: [], pumping: false };
     hosts.set(key, state);
-    return new Promise((resolve, reject) => { state.queue.push({ task, resolve, reject }); pump(key, state); });
+    return new Promise((resolve, reject) => { state.queue.push({ task, resolve, reject, signal }); pump(key, state); });
   }, snapshot() { return new Map([...hosts].map(([host, state]) => [host, { active: state.active, queued: state.queue.length, lastStart: state.lastStart }])); } };
 }
 
