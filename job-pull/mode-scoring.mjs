@@ -84,7 +84,10 @@ export async function scorePoolInRun(candidates, scorer, { runId = null, runAt =
   if (!unscored.length) return { pool: candidates, telemetry: { attempted: 0, chunks: 0, failures: [], degraded: false, reasonCode: null } };
   let scoring;
   try {
-    scoring = await awaitParentScoringBudget(scorer(unscored, { runId, runAt, signal, remainingMs }), signal, remainingMs);
+    const budget = typeof remainingMs === 'function' ? remainingMs() : remainingMs;
+    if (signal?.aborted) throw parentScoringError('SCORER_ABORTED');
+    if (budget != null && Number.isFinite(Number(budget)) && Number(budget) <= 0) throw parentScoringError('SCORER_DEADLINE_EXCEEDED');
+    scoring = await awaitParentScoringBudget(scorer(unscored, { runId, runAt, signal, remainingMs: budget }), signal, budget);
   } catch (error) {
     return {
       pool: candidates.map((candidate) => unscored.includes(candidate) ? { ...candidate, matchScore: null, score: null, autoSuggest: false, scoringFailed: true, scoringFailureReason: error.reasonCode || error.code || 'SCORER_EXEC_FAILED' } : candidate),

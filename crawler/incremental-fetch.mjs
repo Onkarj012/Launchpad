@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { classifyRetry, createHostLimiter, decideRobots, getHeader, retryDelay, validateResponse } from './http-policy.mjs';
 
 export function canonicalUrl(value) {
@@ -37,7 +38,8 @@ export async function evaluateIncrementalResponse(response, prior = {}, { maxByt
   return { classification: prior.fingerprint === fingerprint ? 'unchanged' : 'changed', body, fingerprint, state };
 }
 
-export async function fetchIncrementally({ url, transport, state = {}, robots, userAgent = '*', limiter, hostLimiterOptions, retry = {}, maxBytes = 2_000_000, timeoutMs = 30_000, clock = {} } = {}) {
+export async function fetchIncrementally({ url, transport, state = {}, robots, userAgent = '*', limiter, hostLimiterOptions, retry = {}, maxBytes = 2_000_000, timeoutMs = 30_000, clock = {}, signal } = {}) {
+  signal?.throwIfAborted();
   const canonical = canonicalUrl(url);
   if (robots != null) {
     const decision = decideRobots(canonical, robots, userAgent);
@@ -47,23 +49,27 @@ export async function fetchIncrementally({ url, transport, state = {}, robots, u
   const hostLimiter = limiter ?? createHostLimiter({ ...hostLimiterOptions, clock });
   const host = new URL(canonical).host;
   const maxAttempts = Math.max(1, retry.maxAttempts ?? 3);
-  const sleep = (ms) => typeof clock.sleep === 'function' ? clock.sleep(ms) : new Promise((resolve) => setTimeout(resolve, ms));
+  const sleep = (ms) => typeof clock.sleep === 'function' ? clock.sleep(ms, { signal }) : delay(ms, undefined, { signal });
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    signal?.throwIfAborted();
     let response;
     try {
       response = await hostLimiter.run(host, () => {
-        const request = transport(canonical, { headers: conditionalHeaders(state), signal: undefined });
+        signal?.throwIfAborted();
+        const request = transport(canonical, { headers: conditionalHeaders(state), signal });
         if (!timeoutMs) return request;
         let timerId;
         const schedule = typeof clock.setTimeout === 'function' ? clock.setTimeout.bind(clock) : setTimeout;
         const cancel = typeof clock.clearTimeout === 'function' ? clock.clearTimeout.bind(clock) : clearTimeout;
         const timer = new Promise((_, reject) => { timerId = schedule(() => { const error = new Error('request timed out'); error.code = 'ETIMEDOUT'; reject(error); }, timeoutMs); });
         return Promise.race([request, timer]).finally(() => cancel(timerId));
-      });
+      }, { signal });
     } catch (error) {
+      signal?.throwIfAborted();
       if (classifyRetry({ error }).kind !== 'retryable' || attempt === maxAttempts) return { classification: 'terminal', reason: error.message };
       await sleep(retryDelay(attempt, retry)); continue;
     }
+    signal?.throwIfAborted();
     const classification = validateResponse(response, { maxBytes });
     if (!classification.ok) {
       if (classification.kind === 'retryable' && attempt < maxAttempts) { await sleep(retryDelay(attempt, retry)); continue; }

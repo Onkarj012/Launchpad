@@ -498,10 +498,28 @@ test('browser search shares the reserved discovery deadline and closes before HT
   });
   const result = await plans.find(({ id }) => id === 'portal-discovery').fetch({ deadline: { remainingMs: () => 120_000 } });
   assert.equal(received.deadline.remainingMs(), 57_500);
+  assert.equal(received.timeoutMs, 45_000);
   assert.equal(received.signal.aborted, false);
   assert.equal(closed, true);
   assert.equal(result.observations.length, 1);
   assert.deepEqual(result.manifest.telemetry.verificationReasonCounts, { 'original-listing-not-found': 1 });
+});
+
+test('rendered discovery clamps custom page caps and smaller source allowances', async (t) => {
+  for (const [pageCap, sourceMs, expectedTimeout] of [[8000, 120000, 8000], [45000, 20000, 7500]]) await t.test(`${pageCap}/${sourceMs}`, async () => {
+    const config = portalPlanConfig();
+    config.sources.portals.http.providers = [];
+    config.sources.portals.linkedin.enabled = false;
+    config.sources.portals.browser = { enabled: true, providers: ['instahyre'], timeoutMs: pageCap };
+    config.sources.portals.instahyre = { queries: [{ url: 'https://www.instahyre.com/search/' }] };
+    let received;
+    const plans = buildSourcePlans({ config, transport: async () => { throw new Error('unexpected HTTP search'); },
+      runAt: '2026-10-13T10:00:00.000Z', clock: { monotonicNow: () => 0 }, schedule: 'morning', profile: { mode: 'normal' },
+      renderedFetcherFactory: () => ({ fetchRendered: async (_url, options) => { received = options; return '<html>No matching jobs found</html>'; }, close: async () => {} }),
+    });
+    await plans.find(({ id }) => id === 'portal-discovery').fetch({ deadline: { remainingMs: () => sourceMs } });
+    assert.equal(received.timeoutMs, expectedTimeout);
+  });
 });
 
 test('portal resolution retries retained deadline failures and preserves fresh exhausted reasons', async () => {

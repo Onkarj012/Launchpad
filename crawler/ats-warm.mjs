@@ -1,5 +1,7 @@
 import { canonicalizeUrl, normalizedKey, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { boardIdentityKey, planBoardRotation, recordBoardHealth } from './board-registry.mjs';
+import { setImmediate as yieldRows } from 'node:timers/promises';
+import { remainingDeadlineMs } from './deadline.mjs';
 import { mapProviderSafe } from './bounded-concurrency.mjs';
 
 import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
@@ -38,12 +40,17 @@ function isoDate(value) {
   return Number.isNaN(time) ? null : new Date(time).toISOString();
 }
 
+// Map public posting fields while keeping modification evidence separate.
 function mapRow(provider, row, board) {
-  if (provider === 'greenhouse') return {
-    id: row.id, title: row.title, url: row.absolute_url, location: row.location?.name,
-    description: stripHtml(row.content), postedAt: row.first_published || row.updated_at,
-    employmentType: row.employment_type,
-  };
+  if (provider === 'greenhouse') {
+    const postedAt = isoDate(row.first_published);
+    return {
+      id: row.id, title: row.title, url: row.absolute_url, location: row.location?.name,
+      description: stripHtml(row.content), postedAt,
+      employmentType: row.employment_type,
+      evidence: { postedAtSource: postedAt ? 'first_published' : null, modifiedAt: isoDate(row.updated_at) },
+    };
+  }
   if (provider === 'lever') return {
     id: row.id, title: row.text, url: row.hostedUrl, location: row.categories?.location,
     description: [row.descriptionPlain, ...(row.lists || []).flatMap((part) => [part?.text, stripHtml(part?.content)]), row.additionalPlain].filter(Boolean).join('\n'),
@@ -104,6 +111,7 @@ function candidate(row, board, sourceUrl, runAt, sourceGeoObservation = null) {
     liveness: { status: 'Active', checkedAt: runAt, evidence: 'public-ats-feed' },
     evidence: {
       classification: 'direct', verified: true, provider: board.provider, board: board.slug, sourceUrl, startupTagged,
+      ...row.evidence,
       ...(startupStageEvidenceRef ? { startupStageEvidenceRef } : {}),
       ...(sourceGeoObservation ? { sourceGeoObservation } : {}),
     },
@@ -130,21 +138,24 @@ function clockMs(clock) {
 
 async function boundedTransport(transport, url, options, timeoutMs, parentSignal) {
   const controller = new AbortController();
-  const onAbort = () => controller.abort(parentSignal.reason);
+  let rejectAbort;
+  const cancellation = new Promise((_, reject) => { rejectAbort = reject; });
+  const onAbort = () => { controller.abort(parentSignal.reason); rejectAbort(parentSignal.reason ?? new Error('warm ATS aborted')); };
   if (parentSignal?.aborted) onAbort();
   else parentSignal?.addEventListener?.('abort', onAbort, { once: true });
   let timer;
   try {
-    const request = Promise.resolve().then(() => transport(url, { ...options, timeoutMs, signal: controller.signal }));
+    const request = Promise.resolve().then(() => { controller.signal.throwIfAborted(); return transport(url, { ...options, timeoutMs, signal: controller.signal }); });
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
         const error = new Error(`warm ATS request timed out after ${timeoutMs}ms`);
         error.code = 'ETIMEDOUT';
+        error.sourceBudgetExpired = options.sourceBudgetLimited === true;
         controller.abort(error);
         reject(error);
       }, timeoutMs);
     });
-    return await Promise.race([request, timeout]);
+    return await Promise.race([request, timeout, cancellation]);
   } finally {
     if (timer) clearTimeout(timer);
     parentSignal?.removeEventListener?.('abort', onAbort);
@@ -180,11 +191,11 @@ export async function fetchWarmAts({
   const omissions = [];
   const startedAt = clockMs(clock);
   const configuredDurationMs = Math.max(1, Number(maxDurationMs) || Infinity);
-  const parentRemainingMs = Number.isFinite(Number(deadline?.remainingMs)) ? Number(deadline.remainingMs) : Infinity;
+  const parentRemainingMs = remainingDeadlineMs(deadline, startedAt);
   const effectiveDurationMs = Math.min(configuredDurationMs, parentRemainingMs);
   const deadlineAt = Number.isFinite(effectiveDurationMs) ? startedAt + effectiveDurationMs : Infinity;
   let deadlineExhausted = false;
-  const remainingMs = () => Math.max(0, deadlineAt - clockMs(clock));
+  const remainingMs = () => Math.max(0, Math.min(deadlineAt - clockMs(clock), remainingDeadlineMs(deadline, clockMs(clock))));
   const unsupportedBoards = boards.filter((board) => !PROVIDERS.has(String(board?.provider || '').toLowerCase()));
   const warmBoards = boards.filter((board) => PROVIDERS.has(String(board?.provider || '').toLowerCase()));
   const plan = rotation.enabled === true
@@ -230,7 +241,7 @@ export async function fetchWarmAts({
     const url = endpoint({ ...board, provider });
     const boardId = board.id || board.registryId || board.rotationBoardId || boardIdentityKey(board);
     const availableMs = remainingMs();
-    if (signal?.aborted || availableMs <= 0) {
+    if (deadlineExhausted || signal?.aborted || availableMs <= 0) {
       deadlineExhausted = true;
       return { board, omitted: { boardId, provider, reason: 'source-deadline-exhausted' } };
     }
@@ -239,7 +250,7 @@ export async function fetchWarmAts({
     }
     try {
       const timeoutMs = Math.max(1, Math.min(Number(requestTimeoutMs) || 10_000, availableMs));
-      const response = await boundedTransport(transport, url, { method: 'GET', provider, board, warm: true, maxBytes: maxResponseBytes }, timeoutMs, signal);
+      const response = await boundedTransport(transport, url, { method: 'GET', provider, board, warm: true, maxBytes: maxResponseBytes, deadline: { remainingMs }, sourceBudgetLimited: availableMs <= (Number(requestTimeoutMs) || 10_000) }, timeoutMs, signal);
       const status = Number(response?.status ?? 200);
       if (status < 200 || status >= 300) {
         return { board, failure: { provider, board: board.slug, code: `HTTP_${status}` } };
@@ -250,20 +261,34 @@ export async function fetchWarmAts({
         return { board, failure: { provider, board: board.slug, code: 'MALFORMED_PAYLOAD' } };
       }
       const indiaFirst = board.indiaFirst === true;
-      const eligibleListings = indiaFirst ? listings.filter((row) => !clearlyForeign(provider, row)) : listings;
-      const foreignDiscardedAtSource = listings.length - eligibleListings.length;
       const oldFilterWouldDiscard = (raw) => {
         const location = String(sourceLocation(provider, raw)).trim();
         return indiaFirst && Boolean(location) && !INDIA_LOCATION.test(location);
       };
-      const foreignPassedThroughAtSource = indiaFirst
-        ? eligibleListings.filter((raw) => oldFilterWouldDiscard(raw)).length
-        : 0;
-      // Provider arrays may be title-sorted, so freshness must precede the row cap.
-      const newestFirst = eligibleListings.map((raw, index) => ({ raw, index, postedAt: isoDate(mapRow(provider, raw, board).postedAt) }))
-        .sort((left, right) => (right.postedAt || '').localeCompare(left.postedAt || '') || left.index - right.index);
+      let foreignDiscardedAtSource = 0;
+      let foreignPassedThroughAtSource = 0;
+      const newestFirst = [];
+      let interrupted = false;
+      const rowCap = Math.max(0, Math.floor(Number(maxJobsPerBoard)));
+      const newestOrder = (left, right) => (right.postedAt || '').localeCompare(left.postedAt || '') || left.index - right.index;
+      // Yield between batches so source timers and parent aborts can run.
+      for (let index = 0; index < listings.length; index++) {
+        if (index % 32 === 0) await yieldRows();
+        if (signal?.aborted || remainingMs() <= 0) { interrupted = true; deadlineExhausted = true; break; }
+        const raw = listings[index];
+        if (indiaFirst && clearlyForeign(provider, raw)) { foreignDiscardedAtSource++; continue; }
+        if (oldFilterWouldDiscard(raw)) foreignPassedThroughAtSource++;
+        const entry = { raw, index, postedAt: isoDate(mapRow(provider, raw, board).postedAt) };
+        // Keep only the capped newest rows so sorting cannot block cancellation.
+        let low = 0; let high = newestFirst.length;
+        while (low < high) { const middle = (low + high) >>> 1; if (newestOrder(entry, newestFirst[middle]) < 0) high = middle; else low = middle + 1; }
+        if (low < rowCap) newestFirst.splice(low, 0, entry);
+        if (newestFirst.length > rowCap) newestFirst.pop();
+      }
       const boardObservations = [];
-      for (const { raw } of newestFirst.slice(0, Math.max(0, Number(maxJobsPerBoard)))) {
+      for (const [index, { raw }] of newestFirst.entries()) {
+        if (index % 32 === 0) await yieldRows();
+        if (signal?.aborted || remainingMs() <= 0) { interrupted = true; deadlineExhausted = true; break; }
         const sourceGeoObservation = oldFilterWouldDiscard(raw) ? 'india-first-filter-bypass' : null;
         let item = candidate(mapRow(provider, raw, board), { ...board, provider }, url, runAt, sourceGeoObservation);
         if (item && provider === 'greenhouse' && !item.description
@@ -272,7 +297,7 @@ export async function fetchWarmAts({
           try {
             if (signal?.aborted || remainingMs() <= 0 || detailRequests >= maxDetailRequests) throw new Error('DETAIL_BUDGET_EXHAUSTED');
             detailRequests++;
-            const detailResponse = await boundedTransport(transport, detailUrl, { method: 'GET', provider, board, warm: true }, Math.max(1, Math.min(Number(requestTimeoutMs) || 10_000, remainingMs())), signal);
+            const detailResponse = await boundedTransport(transport, detailUrl, { method: 'GET', provider, board, warm: true, deadline: { remainingMs } }, Math.max(1, Math.min(Number(requestTimeoutMs) || 10_000, remainingMs())), signal);
             if (Number(detailResponse.status) < 200 || Number(detailResponse.status) >= 300) throw new Error(`HTTP_${detailResponse.status}`);
             const detail = typeof detailResponse.body === 'string' ? JSON.parse(detailResponse.body) : detailResponse.body;
             if (String(detail?.id) !== item.jobId || normalizedKey(detail?.title) !== normalizedKey(item.title)
@@ -290,10 +315,10 @@ export async function fetchWarmAts({
         board,
         attempted: true,
         observations: boardObservations,
-        source: { provider, board: board.slug, company: board.company, fetched: listings.length, observations: boardObservations.length, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: 'ok' },
+        source: { provider, board: board.slug, company: board.company, fetched: listings.length, observations: boardObservations.length, foreignDiscardedAtSource, foreignPassedThroughAtSource, status: interrupted ? 'interrupted' : 'ok' },
       };
     } catch (error) {
-      if (error?.code === 'ETIMEDOUT' && remainingMs() <= 0) deadlineExhausted = true;
+      if (signal?.aborted || remainingMs() <= 0 || error?.sourceBudgetExpired === true) deadlineExhausted = true;
       return { board, attempted: true, failure: { provider, board: board.slug, code: error?.code === 'ETIMEDOUT' ? 'REQUEST_TIMEOUT' : 'TRANSPORT_ERROR', message: error?.message || 'transport error' } };
     }
   });

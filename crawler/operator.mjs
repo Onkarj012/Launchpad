@@ -14,7 +14,7 @@ import {
   createOriginalListingResolver,
 } from './original-listing-resolver.mjs';
 import { discoverIndiaStartupLanes } from './india-startup-lanes.mjs';
-import { discoverCompanyCareers } from './company-careers.mjs';
+import { discoverCompanyCareers, companyCareerProgress } from './company-careers.mjs';
 import { discoverCareerPages } from './career-page-discovery.mjs';
 import { discoverTheirStack } from './theirstack.mjs';
 import { discoverYcJobs } from './yc-discovery.mjs';
@@ -417,9 +417,11 @@ function searxngTransport(endpoint, baseTransport) {
 }
 
 // Crawl configured startup career pages with the shared transport.
-async function fetchStartupCompanyCareers({ sources, transport, runAt, signal, deadline }) {
+async function fetchStartupCompanyCareers({ sources, transport, runAt, signal, deadline, checkpoint }) {
   const companyCareers = sources.startup?.companyCareers ?? [];
-  const result = await discoverCompanyCareers({ companies: companyCareers, transport, runAt, signal, deadline });
+  const result = await discoverCompanyCareers({ ...sources.careerOptions, companies: companyCareers, transport, runAt, signal, deadline,
+    onProgress: checkpoint ? ({ sources: companies, telemetry }) => checkpoint({ manifestDelta: { telemetry: { ...telemetry, companies: companyCareerProgress(companies) } } }) : undefined,
+  });
   const failed = result.manifest.sources.some(({ status }) => ['terminal', 'retryable', 'interrupted'].includes(status));
   const status = result.observations.length ? (failed ? 'degraded' : 'ok') : failed ? 'failed' : 'empty';
   return {
@@ -433,6 +435,7 @@ async function fetchStartupCompanyCareers({ sources, transport, runAt, signal, d
       ...(status === 'empty' ? { reason: companyCareers.length ? 'company-careers-search-returned-no-roles' : 'no-company-career-sites-configured' } : {}),
       fetched: result.observations.length,
       telemetry: result.telemetry,
+      companies: companyCareerProgress(result.manifest.sources),
     },
   };
 }
@@ -718,7 +721,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     return result;
   };
   const plans = [];
-  if (profile && schedule !== 'midday' && profile.mode !== 'startup' && Array.isArray(sources.startup?.companyCareers)) plans.push(sourcePlan('startup-company-careers', 'startup-sources', 'startup-company-careers', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => fetchStartupCompanyCareers({ sources, transport, runAt, signal: sourceSignal, deadline: sourceDeadline })));
+  if (profile && schedule !== 'midday' && profile.mode !== 'startup' && Array.isArray(sources.startup?.companyCareers)) plans.push(sourcePlan('startup-company-careers', 'startup-sources', 'startup-company-careers', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint } = {}) => fetchStartupCompanyCareers({ sources, transport, runAt, signal: sourceSignal, deadline: sourceDeadline, checkpoint })));
   if (plannerEnabled || sources.atsWarm?.boards?.length) plans.push(sourcePlan('ats-warm', 'ats-warm', 'ats-warm', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => rememberPlanState(planResult(
     await fetchWarmAts({ ...sources.atsWarm, boards: plannedBoards('atsWarm'), transport: probeTransport('atsWarm', sourceSignal, sourceDeadline), runAt, signal: sourceSignal, deadline: sourceDeadline }), 'atsWarm')), { maxDurationMs: sources.atsWarm?.maxDurationMs }));
   if (plannerEnabled || sources.atsBatch1?.boards?.length) plans.push(sourcePlan('ats-batch-1', 'ats-expanded', 'ats-batch-1', async ({ cursor, signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
@@ -771,10 +774,10 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       },
     }));
   }
-  if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
+  if (profile?.mode === 'startup' && schedule !== 'midday') plans.push(sourcePlan('startup-mode', 'startup-sources', 'startup', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint } = {}) => {
     const sourceFunctions = {};
     sourceFunctions['startup-company-careers'] = async () => {
-      const result = await fetchStartupCompanyCareers({ sources, transport, runAt, signal: sourceSignal, deadline: sourceDeadline });
+      const result = await fetchStartupCompanyCareers({ sources, transport, runAt, signal: sourceSignal, deadline: sourceDeadline, checkpoint });
       return { candidates: result.observations, manifest: result.manifest };
     };
     // yc and vc-portfolio-boards both need a search transport and an original-listing
@@ -946,7 +949,9 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
           timeoutMs: portalConfig.browser?.timeoutMs ?? 45_000,
           defaultWaitMs: portalConfig.browser?.waitMs ?? 6_000,
         });
-        providerFetchers[provider] = { fetchRendered: (url, options = {}) => fetchDiscovery(browser.fetchRendered, url, options) };
+        providerFetchers[provider] = { fetchRendered: (url, options = {}) => fetchDiscovery(browser.fetchRendered, url, {
+          ...options, timeoutMs: Math.min(portalConfig.browser?.timeoutMs ?? 45_000, options.timeoutMs ?? Infinity),
+        }) };
         laneInputs[provider] = { queries };
       }
     }
@@ -959,6 +964,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         runAt,
         runId: profile?.mode || 'normal',
         signal: sourceSignal,
+        deadline: sourceDeadline,
         maxRecordsPerProvider: portalConfig.maxRecordsPerProvider ?? null,
       });
     } finally {
@@ -1299,7 +1305,12 @@ export async function runCrawlerOperator({
       : config.sourcePlanner;
     const effectiveCrawlerConfig = plannerConfig ? { ...config, sourcePlanner: plannerConfig } : config;
     let pendingPlannerState = null;
-    let result = await crawlWorkflow({
+    const careerTransport = (config.sources.careerSites ?? []).length
+      ? createChromiumFallbackTransport({ baseTransport: transport, ...(config.sources.chromium ?? {}) })
+      : undefined;
+    let result;
+    try {
+      result = await crawlWorkflow({
       store,
       runId: runId ?? dailyRunIdentity({ schedule, mode, locationPreset, at: runAt }),
       schedule,
@@ -1324,9 +1335,7 @@ export async function runCrawlerOperator({
       }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},
-      careerTransport: (config.sources.careerSites ?? []).length
-        ? createChromiumFallbackTransport({ baseTransport: transport, ...(config.sources.chromium ?? {}) })
-        : undefined,
+      careerTransport,
       brave: schedule !== 'midday' && config.sources.brave?.enabled
         ? { ...config.sources.brave, queries: listBraveQueries(config.sources.brave) }
         : null,
@@ -1340,6 +1349,9 @@ export async function runCrawlerOperator({
       signal,
       deadline,
     });
+    } finally {
+      if (careerTransport) await careerTransport.close().catch(() => {});
+    }
     const completedCrawlerRun = ['completed', 'completed_with_failures'].includes(result.run?.status);
     if (pendingPlannerState && completedCrawlerRun) {
       persistSourcePlanState(store, 'ats-warm', pendingPlannerState, runAt);
