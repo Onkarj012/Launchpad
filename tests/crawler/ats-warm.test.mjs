@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchWarmAts } from '../../crawler/ats-warm.mjs';
+import { classifyFreshness } from '../../job-pull/freshness.mjs';
 
 test('fetches complete direct jobs from Greenhouse, Lever, and Ashby warm boards', async () => {
   const result = await fetchWarmAts({
@@ -12,15 +13,68 @@ test('fetches complete direct jobs from Greenhouse, Lever, and Ashby warm boards
     runAt: '2026-07-23T10:00:00.000Z',
     transport: async (url) => {
       if (url.includes('greenhouse')) return { status: 200, body: { jobs: [{ id: 1, title: 'AI Engineer', absolute_url: 'https://job-boards.greenhouse.io/acme/jobs/1', location: { name: 'Pune, India' }, content: '<p>0-2 years Python</p>', first_published: '2026-07-23' }] } };
-      if (url.includes('lever')) return { status: 200, body: [{ id: '2', text: 'Backend Engineer', hostedUrl: 'https://jobs.lever.co/beta/2', categories: { location: 'India Remote' }, descriptionPlain: 'Graduate Python role', createdAt: Date.parse('2026-07-23') }] };
-      return { status: 200, body: { jobs: [{ id: '3', title: 'ML Engineer', jobUrl: 'https://jobs.ashbyhq.com/gamma/3', location: 'Bengaluru, India', descriptionPlain: 'Entry level ML role', publishedAt: '2026-07-23' }] } };
+      if (url.includes('lever')) return { status: 200, body: [{ id: '2', text: 'Backend Engineer', hostedUrl: 'https://jobs.lever.co/beta/2', categories: { location: 'India Remote', commitment: 'Full-time' }, descriptionPlain: 'Graduate Python role', createdAt: Date.parse('2026-07-23') }] };
+      return { status: 200, body: { jobs: [{ id: '3', title: 'ML Engineer', jobUrl: 'https://jobs.ashbyhq.com/gamma/3', location: 'Bengaluru, India', descriptionPlain: 'Entry level ML role', publishedAt: '2026-07-23', employmentType: 'FullTime' }] } };
     },
   });
 
   assert.equal(result.observations.length, 3);
   assert.deepEqual(result.observations.map((row) => row.classification), ['direct', 'direct', 'direct']);
   assert.deepEqual(result.observations.map((row) => row.applicationResolution.evidence), ['public ATS posting', 'public ATS posting', 'public ATS posting']);
+  assert.deepEqual(result.observations.map((row) => row.postedAt), Array(3).fill('2026-07-23T00:00:00.000Z'));
+  assert.deepEqual(result.observations.slice(1).map((row) => row.employment.type), ['full-time', 'full-time']);
+  assert.deepEqual(result.observations.map((row) => row.evidence.provider), ['greenhouse', 'lever', 'ashby']);
   assert.equal(result.manifest.failed, 0);
+});
+
+test('Greenhouse updated-only rows retain modification evidence and stay in VerifyQueue', async () => {
+  const runAt = '2026-10-13T06:00:00.000Z';
+  const result = await fetchWarmAts({
+    boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme' }],
+    runAt,
+    transport: async () => ({ status: 200, body: { jobs: [
+      { id: 1, title: 'AI Engineer', absolute_url: 'https://job-boards.greenhouse.io/acme/jobs/1', location: { name: 'Pune, India' },
+        content: '<p>0-1 years Python</p>', employment_type: 'Full-time', updated_at: '2026-10-13T05:00:00Z' },
+      { id: 2, title: 'AI Engineer', absolute_url: 'https://job-boards.greenhouse.io/acme/jobs/2', location: { name: 'Pune, India' },
+        content: '<p>0-1 years Python</p>', employment_type: 'Full-time', first_published: 'not-a-date', updated_at: '2026-10-13T05:00:00Z' },
+    ] } }),
+  });
+
+  assert.equal(result.observations.length, 2);
+  for (const row of result.observations) {
+    assert.equal(row.postedAt, null);
+    assert.equal(row.evidence.postedAtSource, null);
+    assert.equal(row.evidence.modifiedAt, '2026-10-13T05:00:00.000Z');
+    assert.equal(row.employment.type, 'full-time');
+    const freshness = classifyFreshness(row, { now: runAt });
+    assert.equal(freshness.window, 'VerifyQueue');
+    assert.equal(freshness.eligible, false);
+  }
+});
+
+test('Greenhouse first_published wins over updated_at and retains provider provenance', async () => {
+  const runAt = '2026-10-13T06:00:00.000Z';
+  const result = await fetchWarmAts({
+    boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme' }],
+    runAt,
+    transport: async () => ({ status: 200, body: { jobs: [
+      { id: 1, title: 'AI Engineer', absolute_url: 'https://job-boards.greenhouse.io/acme/jobs/1', location: { name: 'Pune, India' },
+        content: '<p>0-1 years Python</p>', employment_type: 'Full-time', first_published: '2026-09-01T08:00:00Z', updated_at: '2026-10-13T05:00:00Z' },
+    ] } }),
+  });
+
+  const row = result.observations[0];
+  assert.equal(row.postedAt, '2026-09-01T08:00:00.000Z');
+  assert.equal(row.evidence.postedAtSource, 'first_published');
+  assert.equal(row.evidence.modifiedAt, '2026-10-13T05:00:00.000Z');
+  assert.equal(row.evidence.provider, 'greenhouse');
+  assert.equal(row.evidence.board, 'acme');
+  assert.equal(row.evidence.sourceUrl, 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true');
+  assert.equal(row.evidence.classification, 'direct');
+  assert.equal(row.provider, 'greenhouse');
+  assert.equal(row.source, row.evidence.sourceUrl);
+  assert.equal(row.employment.type, 'full-time');
+  assert.equal(classifyFreshness(row, { now: runAt }).window, 'Rejected');
 });
 
 test('startup-tagged warm boards retain stage evidence only from a nonempty board evidence reference', async () => {
