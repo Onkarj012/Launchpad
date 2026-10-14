@@ -53,6 +53,7 @@ import { REMOTIVE_FEED_URL } from '../../job-pull/remote-adapters/remotive.mjs';
 import { REMOTEOK_FEED_URL } from '../../job-pull/remote-adapters/remoteok.mjs';
 import { mapProviderSafe } from '../../crawler/bounded-concurrency.mjs';
 import { requestWithDeadline } from '../../crawler/deadline.mjs';
+import { applicationReadiness } from '../../job-pull/normal-readiness.mjs';
 
 function validTheirStackConfig(overrides = {}) {
   return {
@@ -255,17 +256,16 @@ test('run resolver uses the configured registry for portal cross-matches', async
   const detailUrl = 'https://boards.greenhouse.io/acme/jobs/123';
   const requests = [];
   const resolve = createCrawlerRunResolver({
-    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true }] } },
+    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] } },
     runAt: '2026-10-08T00:00:00.000Z',
     transport: async (url) => {
       requests.push(url);
-      if (url.includes('boards-api.greenhouse.io')) return { status: 200, body: { jobs: [
+      if (url.includes('boards-api.greenhouse.io') && !url.includes('/jobs/123')) return { status: 200, body: { jobs: [
         { id: 123, title: 'AI Engineer', absolute_url: detailUrl, location: { name: 'Pune, India' } },
       ] } };
-      return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
-        '@type': 'JobPosting', title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' },
-        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI services.',
-      })}</script>` };
+      return { status: 200, body: { id: 123, title: 'AI Engineer', absolute_url: detailUrl,
+        location: { name: 'Pune, India' }, content: '<p>Build AI services.</p>', first_published: '2026-10-08T00:00:00Z',
+      } };
     },
   });
   const result = await resolve({ canonicalUrl: 'https://www.glassdoor.com/job-listing/ai-engineer',
@@ -433,6 +433,196 @@ test('portal root terminal state distinguishes constraints from ordinary unresol
     assert.equal(result.observations[0].applicationResolution.status, 'Needs Verification');
     assert.equal(result.observations[0].shortlistEligible, false);
   });
+});
+
+test('portal discovery leaves time for employer details and retains capped verification reasons', async () => {
+  let now = 0;
+  const config = portalPlanConfig();
+  config.sources.portals.maxCandidates = 1;
+  config.boardRegistry = { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] };
+  const requests = [];
+  const transport = async (url, options) => {
+    requests.push({ url, options });
+    if (url.includes('linkedin.com')) {
+      assert.equal(options.deadline.remainingMs(), 57_500);
+      now = 57_500;
+      return { status: 200, body: linkedinCards(3).replaceAll('Company 2', 'Acme Labs') };
+    }
+    assert.ok(options.deadline.remainingMs() > 0);
+    if (url.includes('boards-api.greenhouse.io') && !url.includes('/jobs/123')) return { status: 200, body: { jobs: [{
+      id: 123, title: 'AI Engineer', absolute_url: 'https://boards.greenhouse.io/acme/jobs/123', location: { name: 'Pune, Maharashtra, India' },
+    }] } };
+    return { status: 403, body: '<html>Access denied</html>' };
+  };
+  const checkpoints = [];
+  const deadline = { remainingMs: () => 120_000 - now };
+  const plans = buildSourcePlans({ config, transport, runAt: '2026-10-13T10:00:00.000Z',
+    clock: { monotonicNow: () => now }, schedule: 'morning', profile: { mode: 'normal' },
+    resolver: createCrawlerRunResolver({ config, transport, runAt: '2026-10-13T10:00:00.000Z' }),
+  });
+  const result = await plans.find(({ id }) => id === 'portal-discovery').fetch({ deadline, checkpoint: async (value) => checkpoints.push(value) });
+  assert.equal(requests.filter(({ url }) => url.includes('linkedin.com')).length, 1);
+  assert.equal(requests.filter(({ url }) => !url.includes('linkedin.com')).length, 2);
+  assert.equal(result.manifest.telemetry.resolutionReserveMs, 57_500);
+  assert.equal(result.manifest.telemetry.resolutionRequests, 2);
+  assert.equal(result.manifest.telemetry.skippedByCandidateCap, 2);
+  assert.deepEqual(result.manifest.telemetry.verificationReasonCounts, { 'candidate-cap-exceeded': 2, blocked: 1 });
+  assert.deepEqual(checkpoints.at(-1).manifestDelta.telemetry.verificationReasonCounts, result.manifest.telemetry.verificationReasonCounts);
+  assert.equal(result.observations[2].company, 'Acme Labs');
+  assert.equal(result.observations[2].originalApplicationUrl, null);
+  assert.equal(result.verificationQueue.length, 3);
+  for (const candidate of result.observations) assert.equal(applicationReadiness(candidate, candidate.eligibility).ready, false);
+});
+
+test('browser search shares the reserved discovery deadline and closes before HTTP resolution', async () => {
+  const config = portalPlanConfig();
+  config.sources.portals.http.providers = [];
+  config.sources.portals.linkedin.enabled = false;
+  config.sources.portals.browser = { enabled: true, providers: ['instahyre'] };
+  config.sources.portals.instahyre = { queries: [{ url: 'https://www.instahyre.com/search/' }] };
+  let closed = false;
+  let received;
+  const plans = buildSourcePlans({ config, transport: async () => { throw new Error('unexpected HTTP search'); },
+    runAt: '2026-10-13T10:00:00.000Z', clock: { monotonicNow: () => 0 }, schedule: 'morning', profile: { mode: 'normal' },
+    renderedFetcherFactory: () => ({
+      fetchRendered: async (_url, options) => {
+        received = options;
+        return '<div class="employer-block"><a href="/job-123456-ai-engineer-at-acme/"></a><div class="employer-job-name" title="Acme - AI Engineer"></div><span>Job available in Pune</span></div>';
+      },
+      close: async () => { closed = true; },
+    }),
+    resolver: async () => {
+      assert.equal(closed, true);
+      return { status: 'verification', evidence: { resolution: { reason: 'original-listing-not-found' } } };
+    },
+  });
+  const result = await plans.find(({ id }) => id === 'portal-discovery').fetch({ deadline: { remainingMs: () => 120_000 } });
+  assert.equal(received.deadline.remainingMs(), 57_500);
+  assert.equal(received.timeoutMs, 45_000);
+  assert.equal(received.signal.aborted, false);
+  assert.equal(closed, true);
+  assert.equal(result.observations.length, 1);
+  assert.deepEqual(result.manifest.telemetry.verificationReasonCounts, { 'original-listing-not-found': 1 });
+});
+
+test('rendered discovery clamps custom page caps and smaller source allowances', async (t) => {
+  for (const [pageCap, sourceMs, expectedTimeout] of [[8000, 120000, 8000], [45000, 20000, 7500]]) await t.test(`${pageCap}/${sourceMs}`, async () => {
+    const config = portalPlanConfig();
+    config.sources.portals.http.providers = [];
+    config.sources.portals.linkedin.enabled = false;
+    config.sources.portals.browser = { enabled: true, providers: ['instahyre'], timeoutMs: pageCap };
+    config.sources.portals.instahyre = { queries: [{ url: 'https://www.instahyre.com/search/' }] };
+    let received;
+    const plans = buildSourcePlans({ config, transport: async () => { throw new Error('unexpected HTTP search'); },
+      runAt: '2026-10-13T10:00:00.000Z', clock: { monotonicNow: () => 0 }, schedule: 'morning', profile: { mode: 'normal' },
+      renderedFetcherFactory: () => ({ fetchRendered: async (_url, options) => { received = options; return '<html>No matching jobs found</html>'; }, close: async () => {} }),
+    });
+    await plans.find(({ id }) => id === 'portal-discovery').fetch({ deadline: { remainingMs: () => sourceMs } });
+    assert.equal(received.timeoutMs, expectedTimeout);
+  });
+});
+
+test('portal resolution retries retained deadline failures and preserves fresh exhausted reasons', async () => {
+  const config = portalPlanConfig();
+  const runAt = '2026-10-13T10:00:00.000Z';
+  const retained = { ...((await import('../../job-pull/candidate.mjs')).normalizeCandidate({
+    title: 'AI Engineer', company: 'Company 0', location: 'Pune, India', url: 'https://www.linkedin.com/jobs/view/100000', provider: 'linkedin-jobs',
+  }, { runAt })), evidence: { resolution: { reason: 'deadline-exceeded' } } };
+  let called = 0;
+  const plans = buildSourcePlans({ config, transport: async () => ({ status: 200, body: linkedinCards(1) }),
+    runAt, clock: { monotonicNow: () => 0 }, schedule: 'morning', profile: { mode: 'normal' },
+    resolver: async () => { called += 1; return { status: 'verification', evidence: { resolution: { reason: 'deadline-exceeded' } } }; },
+  });
+  const result = await plans.find(({ id }) => id === 'portal-discovery').fetch({ cursor: { completedDetails: [retained] } });
+  assert.equal(called, 1);
+  assert.deepEqual(result.manifest.telemetry.verificationReasonCounts, { 'deadline-exceeded': 1 });
+  assert.equal(result.manifest.telemetry.deadlineExhausted, true);
+  assert.equal(result.manifest.truncated, true);
+});
+
+test('portal shared request cap retains every unverified lead and its cap reason', async () => {
+  const config = portalPlanConfig();
+  config.sources.portals.maxResolverRequests = 1;
+  config.boardRegistry = { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] };
+  let detailRequests = 0;
+  const transport = async (url) => {
+    if (url.includes('linkedin.com')) return { status: 200, body: linkedinCards(2).replaceAll(/Company \d/g, 'Acme Labs') };
+    detailRequests += 1;
+    return { status: 200, body: { jobs: [{ id: 123, title: 'AI Engineer', location: { name: 'Pune, Maharashtra, India' },
+      absolute_url: 'https://boards.greenhouse.io/acme/jobs/123' }] } };
+  };
+  const plans = buildSourcePlans({ config, transport, runAt: '2026-10-13T10:00:00.000Z',
+    clock: { monotonicNow: () => 0 }, schedule: 'morning', profile: { mode: 'normal' },
+    resolver: createCrawlerRunResolver({ config, transport, runAt: '2026-10-13T10:00:00.000Z' }),
+  });
+  const result = await plans.find(({ id }) => id === 'portal-discovery').fetch();
+  assert.equal(detailRequests, 1);
+  assert.equal(result.manifest.telemetry.resolutionRequests, 1);
+  assert.equal(result.manifest.telemetry.requestBudgetExhausted, true);
+  assert.deepEqual(result.manifest.telemetry.verificationReasonCounts, { 'request-budget-exhausted': 2 });
+  assert.equal(result.verificationQueue.length, 2);
+  assert.ok(result.observations.every((candidate) => candidate.originalApplicationUrl === null));
+});
+
+test('portal discovery cutoff remains truncated even when every fetched lead resolves', async () => {
+  let now = 0;
+  const config = portalPlanConfig();
+  config.sources.portals.linkedin.queries.push({ keywords: 'Backend Engineer', location: 'Pune' });
+  const plans = buildSourcePlans({ config, transport: async () => { now = 57_500; return { status: 200, body: linkedinCards(1) }; },
+    runAt: '2026-10-13T10:00:00.000Z', clock: { monotonicNow: () => now }, schedule: 'morning', profile: { mode: 'normal' },
+    resolver: async () => ({ status: 'resolved', originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+      patch: { title: 'AI Engineer', description: 'Build Python APIs.', location: 'Pune', employment: { type: 'full-time' }, liveness: { status: 'Active' } } }),
+  });
+  const result = await plans.find(({ id }) => id === 'portal-discovery').fetch({ deadline: { remainingMs: () => 120_000 - now } });
+  assert.equal(result.manifest.telemetry.resolved, 1);
+  assert.equal(result.manifest.telemetry.unresolved, 0);
+  assert.equal(result.manifest.telemetry.discoveryDeadlineExhausted, true);
+  assert.equal(result.manifest.truncated, true);
+  assert.equal(result.manifest.naturalTerminal, false);
+});
+
+test('resumed cached guest search retains its discovery cutoff after details resolve', async () => {
+  let now = 0;
+  const config = portalPlanConfig();
+  config.sources.portals.linkedin.queries.push({ keywords: 'Backend Engineer', location: 'Pune' });
+  const runAt = '2026-10-13T10:00:00.000Z';
+  let cursor;
+  const common = { config, runAt, clock: { monotonicNow: () => now }, schedule: 'morning', profile: { mode: 'normal' } };
+  const first = buildSourcePlans({ ...common,
+    transport: async () => { now = 57_500; return { status: 200, body: linkedinCards(1) }; },
+    resolver: async () => ({ status: 'verification', telemetry: { requests: 1 }, evidence: { resolution: { reason: 'deadline-exceeded' } } }),
+  }).find(({ id }) => id === 'portal-discovery');
+  await first.fetch({ deadline: { remainingMs: () => 120_000 - now }, checkpoint: async (value) => { cursor = value.cursor; } });
+  assert.equal(cursor.discoveryDeadlineExhausted, true);
+  now = 0;
+  let searches = 0;
+  const resumed = buildSourcePlans({ ...common, transport: async () => { searches += 1; throw new Error('cached search must be reused'); },
+    resolver: async () => ({ status: 'resolved', originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+      patch: { title: 'AI Engineer', description: 'Build Python APIs.', location: 'Pune', employment: { type: 'full-time' }, liveness: { status: 'Active' } } }),
+  }).find(({ id }) => id === 'portal-discovery');
+  const result = await resumed.fetch({ cursor, deadline: { remainingMs: () => 120_000 - now } });
+  assert.equal(searches, 0);
+  assert.equal(result.manifest.telemetry.unresolved, 0);
+  assert.equal(result.manifest.telemetry.discoveryDeadlineExhausted, true);
+  assert.equal(result.manifest.truncated, true);
+  assert.equal(result.manifest.naturalTerminal, false);
+});
+
+test('all verified-board leads precede unsupported leads across provider allocation', async () => {
+  const config = portalPlanConfig();
+  config.sources.portals.maxCandidates = 2;
+  config.sources.portals.browser = { enabled: true, providers: ['instahyre'] };
+  config.sources.portals.instahyre = { queries: [{ url: 'https://www.instahyre.com/search/' }] };
+  config.boardRegistry = { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] };
+  const resolved = [];
+  const plans = buildSourcePlans({ config, transport: async () => ({ status: 200, body: linkedinCards(1) }),
+    runAt: '2026-10-13T10:00:00.000Z', clock: { monotonicNow: () => 0 }, schedule: 'morning', profile: { mode: 'normal' },
+    renderedFetcherFactory: () => ({ fetchRendered: async () => [1, 2].map((id) => `<div class="employer-block"><a href="/job-${id}-ai-engineer-at-acme/"></a><div class="employer-job-name" title="Acme Labs - AI Engineer"></div><span>Job available in Pune</span></div>`).join(''), close: async () => {} }),
+    resolver: async (candidate) => { resolved.push(candidate.company); return { status: 'verification' }; },
+  });
+  const result = await plans.find(({ id }) => id === 'portal-discovery').fetch();
+  assert.deepEqual(resolved, ['Acme Labs', 'Acme Labs']);
+  assert.equal(result.observations[0].evidence.resolution.reason, 'candidate-cap-exceeded');
 });
 
 test('mapProviderSafe preserves order, bounds global concurrency, and serializes each host', async () => {

@@ -12,6 +12,9 @@ import { normalizeConnectorEnvelope, parseHiringPostInbox } from '../../crawler/
 import { candidateDedupKey, candidateIdentityKeys, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { deduplicateCandidates } from '../../job-pull/dedup.mjs';
 import { createHostSerializedRunner } from '../../crawler/bounded-concurrency.mjs';
+import { applicationReadiness } from '../../job-pull/normal-readiness.mjs';
+import { classifyCandidate } from '../../job-pull/eligibility.mjs';
+import { loadConfig } from '../../job-pull/config.mjs';
 
 const jsonLdPage = (posting) => ({
   status: 200,
@@ -114,15 +117,16 @@ test('portal leads cross-match the registry board by employer, title, location, 
   const detailUrl = 'https://boards.greenhouse.io/acme/jobs/123';
   const requests = [];
   const resolve = createOriginalListingResolver({
-    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true }] } },
+    config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] } },
     transport: async (url) => {
       requests.push(url);
       if (url === boardUrl) return { status: 200, body: { jobs: [
         { id: 122, title: 'AI Engineer', absolute_url: 'https://boards.greenhouse.io/acme/jobs/122', location: { name: 'Bengaluru, India' } },
         { id: 123, title: 'AI Engineer', absolute_url: detailUrl, location: { name: 'Pune, India' } },
       ] } };
-      return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' }, identifier: { value: '123' },
-        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI services.' });
+      assert.equal(url, 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/123');
+      return { status: 200, body: { id: 123, title: 'AI Engineer', absolute_url: detailUrl,
+        location: { name: 'Pune, India' }, content: '<p>Build AI services.</p>' } };
     },
   });
   const result = await resolve(observation('https://www.linkedin.com/jobs/view/456', {
@@ -130,7 +134,7 @@ test('portal leads cross-match the registry board by employer, title, location, 
   }));
   assert.equal(result.status, 'resolved');
   assert.equal(result.originalApplicationUrl, detailUrl);
-  assert.deepEqual(requests, [boardUrl, detailUrl]);
+  assert.deepEqual(requests, [boardUrl, 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/123']);
   assert.deepEqual(result.telemetry.crossMatch, {
     attempted: true, boardRequests: 1, verifiedRoutes: 1, resolverRequests: 2, verifiedRoutesPerRequest: 0.5, budgetRaised: false,
   });
@@ -166,7 +170,7 @@ test('portal cross-match misses and identity mismatches stay in verification', a
   ]) await t.test(scenario.name, async () => {
     const requests = [];
     const resolve = createOriginalListingResolver({
-      config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true }] } },
+      config: { boardRegistry: { boards: [{ provider: 'greenhouse', slug: 'acme', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] } },
       transport: async (url) => {
         requests.push(url);
         return { status: 200, body: { jobs: [scenario.row] } };
@@ -187,14 +191,15 @@ test('Workday cross-match searches with the portal title and records a verified 
   const detailUrl = 'https://acme.wd3.myworkdayjobs.com/External/job/Pune/AI-Engineer_JR123';
   const requests = [];
   const resolve = createOriginalListingResolver({
-    config: { boardRegistry: { boards: [{ provider: 'workday', tenant: 'acme', instance: 'wd3', site: 'External', company: 'Acme Labs', enabled: true }] } },
+    config: { boardRegistry: { boards: [{ provider: 'workday', tenant: 'acme', instance: 'wd3', site: 'External', company: 'Acme Labs', enabled: true, probeStatus: 'verified' }] } },
     transport: async (url, options) => {
       requests.push({ url, options });
       if (url === listUrl) return { status: 200, body: { jobPostings: [
         { title: 'AI Engineer', jobReqId: 'JR123', location: { descriptor: 'Pune, India' }, externalPath: '/job/Pune/AI-Engineer_JR123' },
       ] } };
-      return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme Labs' },
-        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, description: 'Build AI services.' });
+      assert.equal(url, 'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/job/Pune/AI-Engineer_JR123');
+      return { status: 200, body: { jobPostingInfo: { title: 'AI Engineer', jobReqId: 'JR123',
+        location: 'Pune, India', timeType: 'Full time', jobDescription: '<p>Build AI services.</p>', startDate: '2026-10-12', canApply: true } } };
     },
   });
   const result = await resolve(observation('https://www.wellfound.com/jobs/456', {
@@ -863,4 +868,439 @@ test('hiring posts need only a URL and pasted text to resolve a verified employe
   assert.equal(result.title, 'AI Engineer');
   assert.equal(result.evidence.fieldSources.company, 'original-employer-detail');
   assert.equal(result.discoveryUrl, postUrl);
+});
+
+// Model public provider payloads without browser HTML or authenticated endpoints.
+function crossMatchFixture(provider) {
+  const uuid = '5ac21346-8e0c-4494-8e7a-3eb92ff77902';
+  const board = { provider, company: 'Acme Labs', enabled: true, probeStatus: 'verified',
+    ...(provider === 'workday' ? { tenant: 'acme', instance: 'wd3', site: 'External' } : { slug: 'acme' }) };
+  const title = 'AI Engineer';
+  const location = 'Pune, India';
+  const description = '<p>Full-time engineering. Build Python APIs.</p>';
+  if (provider === 'greenhouse') {
+    const applyUrl = 'https://job-boards.greenhouse.io/acme/jobs/123';
+    const row = { id: 123, title, location: { name: location }, absolute_url: applyUrl };
+    return { board, applyUrl, id: '123', row, list: { jobs: [row] },
+      listUrl: 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true',
+      detailUrl: 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/123',
+      detail: { ...row, content: description, first_published: '2026-10-12T08:00:00Z' } };
+  }
+  if (provider === 'lever') {
+    const applyUrl = `https://jobs.eu.lever.co/acme/${uuid}`;
+    board.url = 'https://jobs.eu.lever.co/acme';
+    const row = { id: uuid, text: title, categories: { location, commitment: 'Full-time' }, hostedUrl: applyUrl };
+    return { board, applyUrl, id: uuid, row, list: [row], listUrl: 'https://api.eu.lever.co/v0/postings/acme',
+      detailUrl: `https://api.eu.lever.co/v0/postings/acme/${uuid}`,
+      detail: { ...row, categories: { ...row.categories }, descriptionPlain: 'Full-time engineering. Build Python APIs.',
+        lists: [{ text: 'Requirements', content: '<li>0-1 years of experience</li>' }],
+        additionalPlain: 'Work with our product team.', createdAt: Date.parse('2026-10-12T08:00:00Z') } };
+  }
+  if (provider === 'ashby') {
+    const applyUrl = `https://jobs.ashbyhq.com/acme/${uuid}/application`;
+    // The public Ashby feed does not promise an id field.
+    const row = { title, location, jobUrl: applyUrl, isListed: true, employmentType: 'FullTime',
+      descriptionHtml: description, publishedAt: '2026-10-12T08:00:00Z' };
+    return { board, applyUrl, id: uuid, row, list: { apiVersion: '1', jobs: [row] },
+      listUrl: 'https://api.ashbyhq.com/posting-api/job-board/acme?includeCompensation=true', detailUrl: null, detail: row };
+  }
+  const applyUrl = 'https://acme.wd3.myworkdayjobs.com/External/job/Pune/AI-Engineer_JR123';
+  const row = { title, locationsText: location, postedOn: 'Posted Today', bulletFields: ['JR123'], externalPath: '/job/Pune/AI-Engineer_JR123' };
+  return { board, applyUrl, id: 'JR123', row, list: { total: 1, jobPostings: [row] },
+    listUrl: 'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/jobs',
+    detailUrl: 'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/job/Pune/AI-Engineer_JR123',
+    detail: { jobPostingInfo: { title, location, jobReqId: 'JR123', timeType: 'Full time',
+      jobDescription: description, startDate: '2026-10-12', canApply: true } } };
+}
+
+// Resolve one injected registry fixture and capture every attempted public request.
+async function resolveCrossMatch(fixture, options = {}, lead = {}) {
+  const requests = [];
+  const resolver = createOriginalListingResolver({ runAt: '2026-10-13T08:00:00Z',
+    config: { boardRegistry: { boards: [fixture.board] } },
+    transport: async (url, requestOptions) => {
+      requests.push({ url, options: requestOptions });
+      assert.ok([fixture.listUrl, fixture.detailUrl].includes(url), url);
+      return { status: 200, body: url === fixture.listUrl ? fixture.list : fixture.detail };
+    }, ...options });
+  const result = await resolver(observation('https://www.glassdoor.com/job-listing/ai-engineer', {
+    provider: 'glassdoor', company: 'Acme Labs', location: 'Pune', requisitionId: fixture.id, ...lead,
+  }));
+  return { result, requests };
+}
+
+test('public JSON cross-matches preserve employer routes and posting identities for each supported provider', async (t) => {
+  for (const provider of ['greenhouse', 'lever', 'ashby', 'workday']) await t.test(provider, async () => {
+    const fixture = crossMatchFixture(provider);
+    const { result, requests } = await resolveCrossMatch(fixture);
+    assert.equal(result.status, 'resolved', result.evidence.resolution.reason);
+    assert.equal(result.originalApplicationUrl, fixture.applyUrl);
+    assert.equal(result.patch.requisitionId, fixture.id);
+    assert.equal(result.patch.company, 'Acme Labs');
+    assert.equal(result.patch.liveness.status, 'Active');
+    assert.match(result.patch.description, /Build Python APIs/);
+    assert.equal(result.patch.evidence.fieldSources.description, 'original-employer-detail');
+    assert.equal(result.patch.evidence.registryEmployer.probeStatus, 'verified');
+    assert.equal(result.patch.postedAt, provider === 'workday' ? '2026-10-12T00:00:00.000Z' : '2026-10-12T08:00:00.000Z');
+    assert.deepEqual(requests.map((request) => request.url), [fixture.listUrl, ...(fixture.detailUrl ? [fixture.detailUrl] : [])]);
+    for (const request of requests) assert.equal(request.options.credentials, 'omit');
+    assert.equal(result.telemetry.requests, requests.length);
+    assert.equal(result.telemetry.budget.maxRequests, 8);
+    if (provider === 'lever') assert.match(result.patch.description, /Requirements 0-1 years of experience Work with our product team/);
+  });
+});
+
+test('provider detail identity, liveness, and summary-only failures stay closed', async (t) => {
+  for (const provider of ['greenhouse', 'lever', 'ashby', 'workday']) {
+    for (const failure of ['title', 'location', 'id', 'employer', 'summary', 'closed']) await t.test(`${provider} ${failure}`, async () => {
+      const fixture = crossMatchFixture(provider);
+      const detail = provider === 'workday' ? fixture.detail.jobPostingInfo : fixture.detail;
+      if (failure === 'title') detail[provider === 'lever' ? 'text' : 'title'] = 'Backend Engineer';
+      if (failure === 'location') {
+        if (provider === 'lever') detail.categories.location = 'Bengaluru, India';
+        else detail.location = provider === 'greenhouse' ? { name: 'Bengaluru, India' } : 'Bengaluru, India';
+      }
+      if (failure === 'id') {
+        if (provider === 'ashby') detail.jobUrl = detail.jobUrl.replace(fixture.id, 'aabbccdd-1234-1234-1234-aabbccddeeff');
+        else detail[provider === 'workday' ? 'jobReqId' : 'id'] = 'other';
+      }
+      if (failure === 'employer') detail.companyName = 'Other Labs';
+      if (failure === 'summary') for (const key of ['content', 'descriptionPlain', 'descriptionHtml', 'lists', 'additionalPlain', 'jobDescription']) delete detail[key];
+      if (failure === 'closed') detail.active = false;
+      const { result } = await resolveCrossMatch(fixture);
+      assert.equal(result.status, 'verification');
+      assert.equal(result.originalApplicationUrl, null);
+      assert.equal(isShortlistEligibleFromResolution(result), false);
+    });
+  }
+});
+
+test('Workday detail parsing never borrows LIST dates or infers employment from a schedule shell', async () => {
+  const fixture = crossMatchFixture('workday');
+  delete fixture.detail.jobPostingInfo.startDate;
+  delete fixture.detail.jobPostingInfo.timeType;
+  const { result } = await resolveCrossMatch(fixture);
+  assert.equal(result.patch.postedAt, null);
+  assert.equal(result.patch.employment.type, null);
+  assert.equal(result.patch.evidence.freshness.kind, 'workday-unverified');
+});
+
+test('registry search and detail preserve blocked, deadline, abort, host, byte, and request limits', async (t) => {
+  for (const phase of ['list', 'detail']) for (const reason of ['blocked', 'deadline-exceeded', 'aborted', 'response-too-large', 'transport-error']) {
+    await t.test(`${phase} ${reason}`, async () => {
+      const fixture = crossMatchFixture('greenhouse');
+      let remaining = 1000;
+      const controller = new AbortController();
+      let calls = 0;
+      const { result } = await resolveCrossMatch(fixture, {
+        maxBytes: 2000, signal: controller.signal, deadline: { remainingMs: () => remaining },
+        transport: async (url) => {
+          calls += 1;
+          if (url === (phase === 'list' ? fixture.listUrl : fixture.detailUrl)) {
+            if (reason === 'blocked') return { status: 403, body: 'Access denied' };
+            if (reason === 'deadline-exceeded') { remaining = 0; throw new Error('expired'); }
+            if (reason === 'aborted') { controller.abort(); throw new Error('aborted'); }
+            if (reason === 'response-too-large') return { status: 200, body: 'x'.repeat(2001) };
+            throw new Error('offline');
+          }
+          return { status: 200, body: fixture.list };
+        },
+      });
+      assert.equal(result.evidence.resolution.reason, reason);
+      assert.equal(calls, phase === 'list' ? 1 : 2);
+    });
+  }
+  for (const [options, reason, calls] of [
+    [{ maxRequests: 0 }, 'request-budget-exceeded', 0],
+    [{ maxRequests: 1 }, 'request-budget-exceeded', 1],
+    [{ maxHosts: 0 }, 'host-budget-exceeded', 0],
+    [{ sharedRequestBudget: { claim: () => false } }, 'request-budget-exhausted', 0],
+  ]) await t.test(reason, async () => {
+    const { result, requests } = await resolveCrossMatch(crossMatchFixture('greenhouse'), options);
+    assert.equal(result.evidence.resolution.reason, reason);
+    assert.equal(requests.length, calls);
+  });
+});
+
+test('disabled, warm, unverified, unsafe, and ambiguous boards cannot establish an employer match', async (t) => {
+  for (const change of [{ enabled: false }, { probeStatus: 'warm' }, { probeStatus: undefined },
+    { endpoint: 'https://api.lever.co/v1/private' }]) await t.test(JSON.stringify(change), async () => {
+    const fixture = crossMatchFixture('greenhouse');
+    Object.assign(fixture.board, change);
+    let calls = 0;
+    const { result } = await resolveCrossMatch(fixture, { transport: async () => { calls += 1; return { status: 403 }; } });
+    assert.equal(result.status, 'verification');
+    assert.ok(calls <= 1);
+  });
+  const fixture = crossMatchFixture('greenhouse');
+  fixture.list.jobs.push({ ...fixture.row });
+  const { result, requests } = await resolveCrossMatch(fixture);
+  assert.equal(result.status, 'verification');
+  assert.equal(requests.length, 1);
+});
+
+
+test('summary-only feeds and expired or unlisted details never prove JD readiness', async (t) => {
+  for (const provider of ['greenhouse', 'lever', 'ashby', 'workday']) await t.test(provider, async () => {
+    const fixture = crossMatchFixture(provider);
+    const detail = provider === 'workday' ? fixture.detail.jobPostingInfo : fixture.detail;
+    for (const key of ['content', 'descriptionPlain', 'descriptionHtml', 'lists', 'additionalPlain', 'jobDescription']) delete detail[key];
+    fixture.row.summary = 'Full-time engineering. Build Python APIs.';
+    const { result } = await resolveCrossMatch(fixture, {}, { description: 'Portal description must not hydrate the JD.' });
+    assert.equal(result.status, 'verification');
+    assert.equal(result.originalApplicationUrl, null);
+  });
+  for (const [provider, field, value] of [['workday', 'canApply', false], ['ashby', 'isListed', false], ['greenhouse', 'validThrough', '2000-01-01']]) {
+    const fixture = crossMatchFixture(provider);
+    (provider === 'workday' ? fixture.detail.jobPostingInfo : fixture.detail)[field] = value;
+    const { result } = await resolveCrossMatch(fixture);
+    assert.equal(result.status, 'verification');
+  }
+});
+
+test('cross-match checks deadlines after successful transport and does not fetch another page', async (t) => {
+  for (const phase of ['list', 'detail']) await t.test(phase, async () => {
+    const fixture = crossMatchFixture('greenhouse');
+    let remaining = 1000;
+    let calls = 0;
+    const { result } = await resolveCrossMatch(fixture, { deadline: { remainingMs: () => remaining }, transport: async (url) => {
+      calls += 1;
+      if (url === (phase === 'list' ? fixture.listUrl : fixture.detailUrl)) remaining = 0;
+      return { status: 200, body: url === fixture.listUrl ? fixture.list : fixture.detail };
+    } });
+    assert.equal(result.evidence.resolution.reason, 'deadline-exceeded');
+    assert.equal(calls, phase === 'list' ? 1 : 2);
+  });
+});
+
+test('registry routes reject private redirects, conflicting boards, and substring-only locations', async (t) => {
+  for (const phase of ['list', 'detail']) await t.test(`${phase} redirect`, async () => {
+    const fixture = crossMatchFixture('greenhouse');
+    let calls = 0;
+    const { result } = await resolveCrossMatch(fixture, { transport: async (url) => {
+      calls += 1;
+      return url === (phase === 'list' ? fixture.listUrl : fixture.detailUrl)
+        ? { status: 302, headers: { location: 'https://boards.greenhouse.io/users/sign_up' } }
+        : { status: 200, body: fixture.list };
+    } });
+    assert.equal(result.evidence.resolution.reason, 'redirect-to-unsupported-host');
+    assert.equal(calls, phase === 'list' ? 1 : 2);
+  });
+  const fixture = crossMatchFixture('greenhouse');
+  fixture.detail.absolute_url = 'https://job-boards.greenhouse.io/other/jobs/123';
+  assert.equal((await resolveCrossMatch(fixture)).result.status, 'verification');
+  fixture.row.location.name = 'Puneri, India';
+  assert.equal((await resolveCrossMatch(fixture)).requests.length, 1);
+});
+
+test('shared request budgets cover registry search and detail without replay', async () => {
+  const fixture = crossMatchFixture('greenhouse');
+  const shared = { used: 0, claim() { if (this.used >= 1) return false; this.used += 1; return true; } };
+  const { result, requests } = await resolveCrossMatch(fixture, { sharedRequestBudget: shared });
+  assert.equal(result.evidence.resolution.reason, 'request-budget-exhausted');
+  assert.equal(requests.length, 1);
+  assert.equal(shared.used, 1);
+  assert.equal(result.telemetry.crossMatch.resolverRequests, 1);
+});
+
+
+test('Workday explicit list requisitions must agree with the browser route', async () => {
+  const fixture = crossMatchFixture('workday');
+  fixture.row.bulletFields = ['JR999'];
+  const { result, requests } = await resolveCrossMatch(fixture);
+  assert.equal(result.status, 'verification');
+  assert.equal(requests.length, 1);
+});
+
+test('registry board searches share the original host and request caps', async (t) => {
+  const greenhouse = crossMatchFixture('greenhouse');
+  const lever = crossMatchFixture('lever');
+  for (const [limits, reason] of [[{ maxHosts: 1 }, 'host-budget-exceeded'], [{ maxRequests: 1 }, 'request-budget-exceeded']]) {
+    await t.test(reason, async () => {
+      let calls = 0;
+      const { result } = await resolveCrossMatch(greenhouse, { ...limits,
+        config: { boardRegistry: { boards: [greenhouse.board, lever.board] } },
+        transport: async (url) => { calls += 1; assert.equal(url, greenhouse.listUrl); return { status: 200, body: greenhouse.list }; },
+      });
+      assert.equal(result.evidence.resolution.reason, reason);
+      assert.equal(calls, 1);
+      assert.equal(result.telemetry.crossMatch.boardRequests, 1);
+      assert.equal(result.telemetry.crossMatch.resolverRequests, 1);
+    });
+  }
+});
+
+test('retained portal details still try verified boards before a missing application target', async () => {
+  const fixture = crossMatchFixture('greenhouse');
+  const { result, requests } = await resolveCrossMatch(fixture, {}, {
+    provider: 'linkedin-jobs', evidence: { portalDetail: { status: 'extracted', applicationTargets: [] } },
+  });
+  assert.equal(result.status, 'resolved');
+  assert.equal(requests.length, 2);
+});
+
+// Keep portal fields separate when the employer leaves employment, date, or compensation unknown.
+test('cross-matches clear portal-only readiness fields omitted by employer details', async () => {
+  const fixture = crossMatchFixture('greenhouse');
+  delete fixture.detail.first_published;
+  fixture.detail.content = '<p>Build Python APIs.</p>';
+  const { result } = await resolveCrossMatch(fixture, {}, {
+    postedAt: '2026-10-12T08:00:00Z', employment: { type: 'full-time', evidence: 'portal card' },
+    salary: { minimum: 800000, currency: 'INR', period: 'annual', evidence: 'portal card' },
+  });
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.patch.postedAt, null);
+  assert.equal(result.patch.employment.type, null);
+  assert.equal(result.patch.salary.minimum, null);
+  assert.equal(applicationReadiness(result.patch, { eligible: true }).ready, false);
+});
+
+test('Workday nonpermanent evidence survives full-time hours through eligibility and readiness', async (t) => {
+  for (const wording of ['fixed-term role for three months', 'Employment type: Fixed Term', 'three-month fixed-term contract', 'temporary position', 'contractual employment', 'freelance engagement', 'Employment type: Contractual', 'Employment type: Freelance', 'Job type: Contract', 'Type: Temporary']) await t.test(wording, async () => {
+    const fixture = crossMatchFixture('workday');
+    fixture.detail.jobPostingInfo.jobDescription = `<p>This is a ${wording}. Full-time hours. Duration: three months. Build Python APIs. 0-1 years of experience.</p>`;
+    const { result } = await resolveCrossMatch(fixture);
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.patch.employment.type, /temporary/i.test(wording) ? 'temporary' : 'contract');
+    const candidate = applyOriginalListingResolution(normalizeCandidate({ company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+      url: 'https://www.glassdoor.com/job-listing/ai-engineer', provider: 'glassdoor' }, { runAt: '2026-10-13T08:00:00Z' }), result);
+    const eligibility = classifyCandidate(candidate, loadConfig());
+    const readiness = applicationReadiness(candidate, eligibility);
+    assert.notEqual(eligibility.employment.code, 'EMPLOYMENT_FULL_TIME');
+    assert.equal(readiness.ready, false);
+    assert.ok(readiness.reasons.includes('EMPLOYMENT_NOT_VERIFIED'));
+  });
+});
+
+test('Workday nonpermanent title labels cannot be overridden by full-time hours', async (t) => {
+  for (const label of ['Freelance', 'Contractual', 'Fixed Term', 'Contract', 'Temporary']) await t.test(label, async () => {
+    const fixture = crossMatchFixture('workday');
+    const title = `AI Engineer (${label})`;
+    fixture.row.title = fixture.detail.jobPostingInfo.title = title;
+    fixture.detail.jobPostingInfo.jobDescription = '<p>Full-time hours. Duration: three months. Build Python APIs. 0-1 years of experience.</p>';
+    const { result } = await resolveCrossMatch(fixture, {}, { title });
+    assert.equal(result.patch.employment.type, label === 'Temporary' ? 'temporary' : 'contract');
+    const candidate = applyOriginalListingResolution(normalizeCandidate({ company: 'Acme Labs', title, location: 'Pune, India',
+      url: 'https://www.glassdoor.com/job-listing/ai-engineer', provider: 'glassdoor' }), result);
+    const eligibility = classifyCandidate(candidate, loadConfig());
+    assert.notEqual(eligibility.employment.code, 'EMPLOYMENT_FULL_TIME');
+    assert.equal(applicationReadiness(candidate, eligibility).ready, false);
+  });
+});
+
+test('fixed-term Workday internships and trainees retain the qualifying stipend and PPO lane', async (t) => {
+  for (const title of ['AI Engineering Intern', 'AI Engineering Trainee']) await t.test(title, async () => {
+    const fixture = crossMatchFixture('workday');
+    fixture.row.title = fixture.detail.jobPostingInfo.title = title;
+    fixture.detail.jobPostingInfo.jobDescription = '<p>Paid fixed-term role. Full-time hours for three months. Stipend: INR 40,000 per month. PPO based on performance. Build Python APIs.</p>';
+    const { result } = await resolveCrossMatch(fixture, {}, { title });
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.patch.employment.type, 'internship');
+    const candidate = applyOriginalListingResolution(normalizeCandidate({ company: 'Acme Labs', title, location: 'Pune, India',
+      url: 'https://www.glassdoor.com/job-listing/ai-engineering-intern', provider: 'glassdoor' }, { runAt: '2026-10-13T08:00:00Z' }), result);
+    const eligibility = classifyCandidate(candidate, loadConfig());
+    assert.equal(eligibility.employment.code, 'EMPLOYMENT_PAID_INTERNSHIP');
+    assert.equal(eligibility.eligible, true);
+    assert.equal(applicationReadiness(candidate, eligibility).ready, true);
+  });
+});
+
+test('portal stipend evidence cannot fill a missing employer internship stipend', async () => {
+  const fixture = crossMatchFixture('workday');
+  fixture.row.title = fixture.detail.jobPostingInfo.title = 'AI Engineering Intern';
+  fixture.detail.jobPostingInfo.jobDescription = '<p>Paid fixed-term internship. PPO based on performance. Build Python APIs.</p>';
+  const { result } = await resolveCrossMatch(fixture, {}, { title: 'AI Engineering Intern',
+    stipend: { amount: 50000, currency: 'INR', period: 'month', verified: true, evidence: 'portal card' } });
+  assert.equal(result.patch.stipend.amount, null);
+  const candidate = applyOriginalListingResolution(normalizeCandidate({ title: 'AI Engineering Intern', company: 'Acme Labs', location: 'Pune, India',
+    url: 'https://www.glassdoor.com/job-listing/ai-engineering-intern', provider: 'glassdoor',
+    stipend: { amount: 50000, currency: 'INR', period: 'month' } }), result);
+  const eligibility = classifyCandidate(candidate, loadConfig());
+  assert.equal(eligibility.employment.code, 'INTERNSHIP_PAY_NOT_EXPLICIT');
+  assert.equal(applicationReadiness(candidate, eligibility).ready, false);
+});
+
+test('unposted Workday details remain closed even when the JD survives', async () => {
+  const fixture = crossMatchFixture('workday');
+  fixture.detail.jobPostingInfo.posted = false;
+  const { result } = await resolveCrossMatch(fixture);
+  assert.equal(result.status, 'verification');
+  assert.equal(result.originalApplicationUrl, null);
+  assert.equal(result.evidence.resolution.reason, 'destination-liveness-unverified');
+});
+
+test('public Workday title slugs can name internal tools, private cloud and authentication platforms', async (t) => {
+  for (const slug of ['AI-Engineer-Internal-Tools', 'AI-Engineer-Private-Cloud', 'Software-Engineer-SSO-Platform', 'Software-Engineer-OAuth']) await t.test(slug, async () => {
+    const fixture = crossMatchFixture('workday');
+    fixture.list.jobPostings[0].externalPath = `/job/Pune/${slug}_JR123`;
+    fixture.detailUrl = `https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/job/Pune/${slug}_JR123`;
+    const { result } = await resolveCrossMatch(fixture);
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.originalApplicationUrl, `https://acme.wd3.myworkdayjobs.com/External/job/Pune/${slug}_JR123`);
+  });
+});
+
+test('visible portal fallback rejects conflicting employer details and signup routes', async (t) => {
+  for (const provider of ['instahyre', 'wellfound']) await t.test(provider, async () => {
+    const portalUrl = provider === 'instahyre' ? 'https://www.instahyre.com/job-123-ai-engineer-at-acme' : 'https://wellfound.com/jobs/123-acme-ai-engineer';
+    for (const destination of ['https://other.com/application/1', 'https://acme.com/signup/application/1']) {
+      const calls = [];
+      const resolve = createOriginalListingResolver({ transport: async (url) => {
+        calls.push(url);
+        if (url === portalUrl) return { status: 200, body: `<a href="${destination}">Apply on company website</a>` };
+        return jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Other' }, description: 'Build Python APIs.' });
+      } });
+      const result = await resolve(observation(portalUrl, { provider, company: 'Acme', location: 'Pune' }));
+      assert.equal(result.status, 'verification');
+      assert.equal(result.originalApplicationUrl, null);
+      assert.equal(calls.length, destination.includes('signup') ? 1 : 2);
+    }
+  });
+});
+
+test('Lever headings and equal-opportunity footer cannot establish a missing JD', async () => {
+  const fixture = crossMatchFixture('lever');
+  delete fixture.detail.descriptionPlain;
+  fixture.detail.lists = [{ text: 'Requirements', content: '<p></p>' }];
+  fixture.detail.additionalPlain = 'We are an equal opportunity employer.';
+  const { result } = await resolveCrossMatch(fixture);
+  assert.equal(result.status, 'verification');
+  assert.equal(result.originalApplicationUrl, null);
+  assert.equal(result.evidence.resolution.reason, 'job-detail-not-found');
+});
+
+test('Ashby disclosed compensation intervals reach the existing salary floor', async (t) => {
+  for (const [interval, minimum, maximum, annualMinimum, expectedCode] of [
+    ['1 YEAR', 300000, 400000, 300000, 'SALARY_BELOW_FLOOR'],
+    ['1 MONTH', 25000, 30000, 300000, 'SALARY_BELOW_FLOOR'],
+    ['1 YEAR', 600000, 700000, 600000, 'SALARY_FLOOR_MET'],
+  ]) await t.test(interval + minimum, async () => {
+    const fixture = crossMatchFixture('ashby');
+    fixture.row.compensation = { interval, minValue: minimum, maxValue: maximum, currency: 'INR' };
+    const { result } = await resolveCrossMatch(fixture);
+    assert.equal(result.patch.salary.minimum, annualMinimum);
+    assert.equal(result.patch.salary.period, 'annual');
+    const candidate = applyOriginalListingResolution(normalizeCandidate({ title: 'AI Engineer', company: 'Acme Labs', location: 'Pune, India',
+      url: 'https://www.glassdoor.com/job-listing/ai-engineer', provider: 'glassdoor' }), result);
+    const eligibility = classifyCandidate(candidate, { ...loadConfig(), salaryFloorLpa: 5.5 });
+    assert.equal(eligibility.salary.code, expectedCode);
+    if (minimum < 600000) assert.equal(applicationReadiness(candidate, eligibility).ready, false);
+  });
+});
+
+test('visible portal fallback cannot use portal-only or conflicting geography', async (t) => {
+  for (const provider of ['instahyre', 'wellfound']) for (const location of [null, 'Bengaluru, India', 'Pune, India']) await t.test(`${provider} ${location}`, async () => {
+    const portalUrl = provider === 'instahyre' ? 'https://www.instahyre.com/job-123-ai-engineer-at-acme' : 'https://wellfound.com/jobs/123-acme-ai-engineer';
+    const destination = 'https://acme.com/careers/jobs/123';
+    const resolve = createOriginalListingResolver({ transport: async (url) => url === portalUrl
+      ? { status: 200, body: `<a href="${destination}">Apply on company website</a>` }
+      : jsonLdPage({ title: 'AI Engineer', hiringOrganization: { name: 'Acme' }, description: 'Full-time engineering. Build Python APIs.', employmentType: 'FULL_TIME',
+        ...(location ? { jobLocation: { address: { addressLocality: location } } } : {}) }) });
+    const result = await resolve(observation(portalUrl, { provider, company: 'Acme', location: 'Pune' }));
+    assert.equal(result.status, location === 'Pune, India' ? 'resolved' : 'verification');
+    if (location !== 'Pune, India') {
+      assert.equal(result.originalApplicationUrl, null);
+      assert.equal(result.evidence.resolution.reason, 'destination-role-identity-mismatch');
+    }
+  });
 });
