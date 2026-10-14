@@ -299,7 +299,7 @@ test('matched LinkedIn redirect and ApplyAction destinations resolve with employ
       if (target === url) return route === 'redirect'
         ? { status: 302, headers: { location: ats } }
         : { status: 200, body: page({ ...posting, potentialAction: { '@type': 'ApplyAction', target: ats } }) };
-      return { status: 200, body: page({ '@type': 'JobPosting', title: 'Software Engineer – NLP/LLM Reasoning', hiringOrganization: { name: 'Woodfrog' }, description: 'Matched employer JD' }) };
+      return { status: 200, body: page({ '@type': 'JobPosting', title: 'Software Engineer – NLP/LLM Reasoning', hiringOrganization: { name: 'Woodfrog' }, description: 'Matched employer JD', jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } } }) };
     } });
     const result = await resolver(lead);
     const applied = applyOriginalListingResolution(normalizeCandidate(lead), result);
@@ -319,7 +319,7 @@ test('LinkedIn role identity may use an explicit requisition but never infer it 
   for (const [requisitionId, expected] of [['REQ-123', 'resolved'], ['REQ-456', 'verification'], [null, 'verification']]) {
     const resolver = createOriginalListingResolver({ transport: async (target) => target === url
       ? { status: 302, headers: { location: ats } }
-      : { status: 200, body: page({ '@type': 'JobPosting', title: 'Alternate title', hiringOrganization: { name: lead.company }, identifier: { value: 'REQ-123' }, description: 'Employer JD' }) } });
+      : { status: 200, body: page({ '@type': 'JobPosting', title: 'Alternate title', hiringOrganization: { name: lead.company }, identifier: { value: 'REQ-123' }, description: 'Employer JD', jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } } }) } });
     const result = await resolver({ ...lead, requisitionId });
     assert.equal(result.status, expected);
     if (expected === 'verification') assert.equal(result.originalApplicationUrl, null);
