@@ -60,6 +60,12 @@ Daily readiness requires `eligibility?.eligible === true`; missing eligibility i
 
 Unresolved roles do not count toward the shortlist. A missing scorer with unscored rows, or a broken scorer infrastructure path, is fatal. Bounded per-row scoring failures from a functioning in-run scorer remain queued and make the run degraded rather than silently treating those rows as scored.
 
+## Execution deadlines
+
+The configured run stays at 20 minutes, with 12 minutes for discovery, five minutes reserved for scoring, and three minutes for handoff. Company careers, ATS warm rows, rendered navigation and body reads, and Workday detail enrichment consume the operator's signal and remaining discovery budget. Scoring checks its live remaining budget before starting. Company progress checkpoints retain the company and current URL to locate a stalled request. HTTP provider timeouts cover response bodies as well as headers.
+
+Deterministic stalled transports and fake browsers establish local cancellation behavior. They do not prove the cause of a historical 15-minute stall or establish live source yield.
+
 ## v5 Notion boundary
 
 The repository-owned gateway is `notion-v5/gateway.mjs`, scoped by `config/notion-v5.manifest.json` to Applications, Companies, Outreach, Activity, and Referrals v5. The working-tree validator requires exactly ten directed reciprocal relation entries across five relation pairs.

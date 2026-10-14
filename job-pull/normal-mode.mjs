@@ -187,7 +187,7 @@ export async function runNormalMode({
   executeGateway = false, config = null, conversionPlan = null, ledgerRows = null, opportunityLedgerRows = null,
   opportunityLedgerPath = null,
   historicalV4Rows = [], includeCrawlerLanes = false, enrichmentBudget = 50, scores, scorer, dailyExcludedKeys = [], previousDailyCandidates = [], scoringSignal = null, scoringRemainingMs = null, commitSurfaced = false, partial = false,
-  shortlistLimit = null,
+  shortlistLimit = null, signal = null, deadline = null,
   selectApplications = selectNormalApplications,
 } = {}) {
   if (String(mode).toLowerCase() !== 'normal') throw new NormalModeError(`Issue03 runner only supports normal mode, received ${mode}`, 'mode');
@@ -195,9 +195,9 @@ export async function runNormalMode({
   const runId = suppliedRunId || `normal-${runAt}`;
   let sourceResults = [];
   try {
-    sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes });
+    sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes, signal, deadline });
     sourceResults = applyScores(sourceResults, scores);
-    await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates), { maxRequests: enrichmentBudget });
+    await enrichWorkdayCandidates(sourceResults.flatMap((source) => source.candidates), { maxRequests: enrichmentBudget, signal: signal ?? scoringSignal, deadline });
     const sourceManifests = sourceResults.map(({ manifest }) => manifest);
     const baseConfig = config || loadConfig();
     const baseConversionPlan = conversionPlan || loadConversionPlan();
