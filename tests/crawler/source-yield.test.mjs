@@ -1,11 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSourceYieldReport, buildAvenueTrialReport } from '../../crawler/source-yield.mjs';
+import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates } from '../../crawler/source-yield.mjs';
 import { runCrawlerOperator } from '../../crawler/operator.mjs';
 import { main } from '../../crawler/cli.mjs';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+test('nonzero fetched counts never turn source failures or incomplete scans into healthy outcomes', () => {
+  const states = buildSourceEndStates({
+    failed: { status: 'failed', fetched: 3, error: 'HTTP 503' },
+    nestedFailed: { status: 'succeeded', fetched: 3, detail: { status: 'failed', errors: ['board failed'] } },
+    interrupted: { status: 'interrupted', fetched: 3 },
+    truncated: { status: 'succeeded', fetched: 3, detail: { telemetry: { truncated: true } } },
+    partial: { status: 'succeeded', fetched: 3, detail: { naturalTerminal: false } },
+    degraded: { status: 'degraded', fetched: 3 },
+    boardFailed: { status: 'succeeded', fetched: 3, detail: { sources: [{ status: 'failed', fetched: 1 }] } },
+    portal: { status: 'succeeded', fetched: 3, detail: { telemetry: { lanes: [{ sourceId: 'portal-failed', status: 'failed', fetched: 3, reasonCode: 'PORTAL_FAILED' }] } } },
+    healthy: { status: 'succeeded', fetched: 3, detail: { status: 'ok', naturalTerminal: true } },
+    empty: { status: 'succeeded', fetched: 0 },
+  });
+  assert.deepEqual(states.failed, { state: 'failed', reason: 'HTTP 503' });
+  assert.deepEqual(states.nestedFailed, { state: 'failed', reason: 'board failed' });
+  assert.equal(states.interrupted.state, 'interrupted');
+  assert.equal(states.truncated.state, 'truncated');
+  assert.equal(states.partial.state, 'truncated');
+  assert.equal(states.degraded.state, 'degraded');
+  assert.equal(states.boardFailed.state, 'failed');
+  assert.equal(states.portal.state, 'failed');
+  assert.deepEqual(states['portal-failed'], { state: 'failed', reason: 'PORTAL_FAILED' });
+  assert.deepEqual(states.healthy, { state: 'ok' });
+  assert.deepEqual(states.empty, { state: 'empty', reason: 'no-records-returned' });
+});
+
+test('seven-day trial evidence excludes nested failure and truncation despite successful outer status', () => {
+  for (const detail of [
+    { status: 'failed' },
+    { telemetry: { truncated: true } },
+    { interrupted: true },
+  ]) {
+    const runs = Array.from({ length: 7 }, (_, index) => ({
+      runId: `run-${index}`, runAt: `2026-10-${String(index + 8).padStart(2, '0')}T06:00:00.000Z`,
+      sourceTelemetry: { 'hn-discovery': { status: 'ok', fetched: 2, detail: {
+        naturalTerminal: true, ...detail, telemetry: { requests: 2, fetched: 2, ...detail.telemetry },
+      } } }, sourceYield: { sources: [{ provider: 'hn-discovery', applicationReady: 1 }] },
+    }));
+    const report = buildAvenueTrialReport(runs, { trialStartDate: '2026-10-08' });
+    assert.equal(report.sources[0].daysObserved, 0);
+    assert.equal(report.sources[0].decision, 'insufficient-evidence');
+  }
+});
 
 test('reports the requested per-board quality funnel without auto-pausing', () => {
   const record = {

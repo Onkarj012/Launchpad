@@ -45,7 +45,7 @@ test('configured portal providers report the explicit disable decision when thei
   } finally { store.close(); }
 });
 
-test('empty source outcomes explain failures, zero results, missing configuration and unavailable portal transports', async () => {
+test('source outcomes distinguish failures from empty results and missing configuration', async () => {
   const store = openCrawlerStore(':memory:');
   try {
     const result = await crawlWorkflow({ store, runId: 'source-empty-reasons', config: {
@@ -57,7 +57,7 @@ test('empty source outcomes explain failures, zero results, missing configuratio
         { sourceId: 'portal-wellfound', status: 'unavailable', reasonCode: 'PORTAL_TRANSPORT_UNAVAILABLE' },
       ] } } }) },
     ] });
-    assert.deepEqual(result.sourceEndStates.failed, { state: 'empty', reason: 'HTTP 503' });
+    assert.deepEqual(result.sourceEndStates.failed, { state: 'failed', reason: 'HTTP 503' });
     assert.deepEqual(result.sourceEndStates.zero, { state: 'empty', reason: 'no-records-returned' });
     assert.equal(result.sourceEndStates['career-sites'].reason, 'no-career-sites-configured');
     assert.equal(result.sourceEndStates['searxng-search'].reason, 'source-not-planned');

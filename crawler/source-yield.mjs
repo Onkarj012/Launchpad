@@ -6,6 +6,25 @@ const SOURCE_IDS = {
   brave: 'brave-search', careerSites: 'career-sites', commercialRescue: 'commercial-rescue', trackedAts: 'tracked-ats',
 };
 
+// Preserve explicit failure and incomplete-scan evidence even when records were fetched.
+function sourceHealth(value) {
+  const detail = value.detail ?? value.manifest ?? value;
+  const telemetry = detail.telemetry ?? {};
+  const evidence = [value, detail, telemetry];
+  const statuses = evidence.flatMap((entry) => [entry.status, entry.scanStatus]).filter(Boolean);
+  const childFailure = [...(detail.sources ?? []), ...(telemetry.lanes ?? [])].map(sourceHealth).find((health) => health && health.state !== 'disabled');
+  const reason = detail.reason ?? detail.reasonCode ?? value.error ?? detail.error ?? detail.errors?.[0] ?? childFailure?.reason;
+  if (statuses.includes('disabled')) return { state: 'disabled', reason: reason ?? 'disabled-by-decision' };
+  if (statuses.some((status) => ['failed', 'unavailable', 'completed_with_failures'].includes(status))
+    || evidence.some((entry) => entry.error || entry.errors?.length || entry.failures?.length || number(entry.boardsFailed ?? entry.failed) > 0)) {
+    return { state: 'failed', reason: reason ?? 'source-failed' };
+  }
+  if (statuses.includes('interrupted') || evidence.some((entry) => entry.interrupted === true)) return { state: 'interrupted', reason: reason ?? 'source-interrupted' };
+  if (statuses.some((status) => ['truncated', 'checkpointed'].includes(status)) || evidence.some((entry) => entry.truncated === true || entry.naturalTerminal === false)) return { state: 'truncated', reason: reason ?? 'source-truncated' };
+  if (statuses.some((status) => ['degraded', 'partial', 'incomplete'].includes(status))) return { state: 'degraded', reason: reason ?? 'source-degraded' };
+  return childFailure ?? null;
+}
+
 // Report source outcomes separately from the execution states used by recovery.
 export function buildSourceEndStates(sourceTelemetry = {}, sources = {}) {
   const states = {};
@@ -15,10 +34,9 @@ export function buildSourceEndStates(sourceTelemetry = {}, sources = {}) {
     const reason = detail.reason ?? detail.reasonCode ?? value.error ?? detail.errors?.[0]
       ?? (['succeeded', 'ok', 'empty', 'degraded'].includes(value.status) ? 'no-records-returned'
         : value.status ? `source-${value.status}` : 'no-records-returned');
-    states[id] = detail.status === 'disabled'
-      ? { state: 'disabled', reason: detail.reason ?? 'disabled-by-decision' }
-      : number(value.fetched ?? detail.fetched ?? value.observations) > 0
-        ? { state: 'ok' } : { state: 'empty', reason };
+    states[id] = sourceHealth(value)
+      ?? (number(value.fetched ?? detail.fetched ?? value.observations) > 0
+        ? { state: 'ok' } : { state: 'empty', reason });
     for (const lane of detail.telemetry?.lanes ?? []) add(lane.sourceId, lane);
   };
   for (const [id, value] of Object.entries(sourceTelemetry)) add(id, value);
@@ -79,6 +97,7 @@ export function buildAvenueTrialReport(runs = [], { trialStartDate } = {}) {
       row.leads += number(telemetry.extracted);
       row.verification += number(telemetry.unresolved);
       const healthy = ['ok', 'empty', 'succeeded'].includes(source.status)
+        && sourceHealth(source) === null
         && (source.naturalTerminal ?? detail.naturalTerminal) === true
         && !source.truncated && !detail.truncated
         && Number.isFinite(telemetry.requests) && Array.isArray(yields);
