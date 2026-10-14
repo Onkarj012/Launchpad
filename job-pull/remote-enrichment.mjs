@@ -1,3 +1,6 @@
+import { loadConfig } from './config.mjs';
+import { classifyCandidate, foreignGlobalScopeEvidence, isExemptForeignRequirement } from './eligibility.mjs';
+
 const INDIA = /\bindia\b|\bindian\b/i;
 const APAC = /\bapac\b|asia[ -]?pacific/i;
 const REMOTE = /\bremote\b|work[ -]?from[ -]?home|distributed|anywhere/i;
@@ -24,24 +27,41 @@ function combinedText(candidate) {
     .map(evidenceValue).filter(Boolean).join(' · ');
 }
 
-function exclusionEvidence(candidate, combined) {
+function exclusionEvidence(candidate, combined, policy) {
   const remote = candidate.remoteEvidence || {};
   for (const value of [combined, remote.citizenship, remote.country, remote.workAuthorization, remote.payroll]) {
     const candidateText = evidenceValue(value);
     if (INDIA_EXCLUSION.test(candidateText)) return { code: 'REMOTE_INDIA_EXCLUDED', evidence: candidateText };
-    const match = candidateText.match(COUNTRY_RESTRICTION);
+    const match = [...candidateText.matchAll(new RegExp(COUNTRY_RESTRICTION.source, 'gi'))]
+      .find((entry) => !isExemptForeignRequirement(candidateText, entry, policy));
     if (match) return { code: 'REMOTE_COUNTRY_CITIZENSHIP_AUTH_PAYROLL_RESTRICTED', evidence: match[0] };
   }
   return null;
 }
 
+// Preserve remote evidence exclusions and use the shared policy for global scope.
 export function classifyRemoteEligibility(candidate) {
   const remote = candidate.remoteEvidence || {};
   const combined = combinedText(candidate);
-  const excluded = exclusionEvidence(candidate, combined);
+  const policy = loadConfig();
+  const excluded = exclusionEvidence(candidate, combined, policy);
   if (excluded) return { eligible: false, status: 'Not Eligible', classification: null, code: excluded.code, evidence: excluded.evidence, reasons: [excluded.code] };
   if (candidate.remoteEligibility?.status === 'Not Eligible') {
     return { eligible: false, status: 'Not Eligible', classification: null, code: 'REMOTE_PROVIDER_MARKED_INELIGIBLE', evidence: candidate.remoteEligibility.evidence || null, reasons: ['REMOTE_PROVIDER_MARKED_INELIGIBLE'] };
+  }
+
+  // This adapter annotation records an empty restriction list, not a country qualifier.
+  const scopeClaims = [remote.scope, remote.country].map(evidenceValue).filter(Boolean)
+    .map((scope) => `Remote ${scope.replace(/\s*\(Himalayas locationRestrictions: empty\)\s*$/i, '')}`);
+  const qualifiedScope = foreignGlobalScopeEvidence(combined, policy);
+  if (qualifiedScope) {
+    const code = 'REMOTE_COUNTRY_CITIZENSHIP_AUTH_PAYROLL_RESTRICTED';
+    return { eligible: false, status: 'Not Eligible', classification: null, code, evidence: qualifiedScope, reasons: [code] };
+  }
+  const shared = classifyCandidate({ ...candidate, remoteEligibility: null, description: [combined, ...scopeClaims].join(' ') }, policy);
+  if (shared.geo.code === 'GEO_REMOTE_REGION_RESTRICTED') {
+    const code = 'REMOTE_COUNTRY_CITIZENSHIP_AUTH_PAYROLL_RESTRICTED';
+    return { eligible: false, status: 'Not Eligible', classification: null, code, evidence: shared.geo.evidence, reasons: [code] };
   }
 
   const scopeEvidence = [candidate.location, candidate.workMode, remote.scope, remote.country, remote.workAuthorization, remote.payroll, candidate.remoteEligibility?.evidence]
@@ -58,6 +78,9 @@ export function classifyRemoteEligibility(candidate) {
   if (hasApac) return { eligible: true, status: 'India Eligible', classification: 'apac', code: 'REMOTE_APAC', evidence: remote.scope || combined, reasons: [] };
   if (explicitIndia) return { eligible: true, status: 'India Eligible', classification: 'india', code: 'REMOTE_INDIA', evidence: remote.scope || candidate.location || combined, reasons: [] };
   if (hasEor) return { eligible: false, status: 'Needs Verification', classification: 'stable-eor', code: 'REMOTE_EOR_INDIA_AVAILABILITY_UNPROVEN', evidence: remote.payroll || combined, reasons: ['REMOTE_EOR_INDIA_AVAILABILITY_UNPROVEN'] };
+  if (shared.geo.pass && shared.geo.mode === 'remote' && shared.labels.includes('Remote: worldwide, no country limit')) {
+    return { eligible: true, status: 'India Eligible', classification: 'worldwide', code: 'REMOTE_WORLDWIDE', evidence: shared.geo.evidence, reasons: [] };
+  }
   if (REMOTE.test(combined)) return { eligible: false, status: 'Needs Verification', classification: null, code: 'REMOTE_SCOPE_AMBIGUOUS', evidence: remote.scope || candidate.location || combined, reasons: ['REMOTE_SCOPE_AMBIGUOUS'] };
   return { eligible: false, status: 'Needs Verification', classification: null, code: 'REMOTE_ELIGIBILITY_NOT_VERIFIED', evidence: null, reasons: ['REMOTE_ELIGIBILITY_NOT_VERIFIED'] };
 }
@@ -103,6 +126,7 @@ export function classifyRemoteTimezone(candidate) {
   return { accepted: true, code: 'REMOTE_TZ_UNSPECIFIED', evidence: evidence || null };
 }
 
+// Attach remote readiness and preserve the classifier's verified eligibility status.
 export function enrichRemoteCandidate(candidate) {
   const eligibility = classifyRemoteEligibility(candidate);
   const employment = classifyRemoteEmployment(candidate);
@@ -110,7 +134,7 @@ export function enrichRemoteCandidate(candidate) {
   const remoteReady = eligibility.eligible && employment.eligible && timezone.accepted;
   return {
     ...candidate,
-    remoteEligibility: { status: eligibility.status === 'Eligible' ? 'India Eligible' : eligibility.status === 'Not Eligible' ? 'Not Eligible' : 'Not Verified', evidence: eligibility.evidence || candidate.remoteEligibility?.evidence || null },
+    remoteEligibility: { status: eligibility.eligible ? 'India Eligible' : eligibility.status === 'Not Eligible' ? 'Not Eligible' : 'Not Verified', evidence: eligibility.evidence || candidate.remoteEligibility?.evidence || null },
     remoteEligibilityDecision: eligibility,
     remoteEmploymentDecision: employment,
     remoteEmploymentCategory: employment.category,

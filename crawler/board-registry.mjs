@@ -119,7 +119,7 @@ function rotateRanked(values, cursor, compare) {
     if (!group || compare(group[0], item) !== 0) groups.push([item]);
     else group.push(item);
   }
-  return groups.flatMap((group) => rotate(group, cursor));
+  return groups.flatMap((group) => rotate(group, typeof cursor === 'function' ? cursor(group) : cursor));
 }
 
 // Prefer newer registry evidence over a saved rotation observation.
@@ -143,7 +143,9 @@ export function boardPauseReason(board, state = {}, runAt = new Date().toISOStri
 
 // Keep verified Pune supply ahead of rotation within each relevance group.
 function puneFirst(left, right) {
-  return Number(right.puneRelevant === true) - Number(left.puneRelevant === true);
+  return Number(right.puneRelevant === true) - Number(left.puneRelevant === true)
+    || Number(right.indiaRelevant === true || right.indiaFirst === true) - Number(left.indiaRelevant === true || left.indiaFirst === true)
+    || Number(right.probeStatus === 'verified') - Number(left.probeStatus === 'verified');
 }
 
 export function planBoardRotation({ boards = [], maxBoards = boards.length, providerQuotas = {}, state = {}, runAt = new Date().toISOString(), seenBoardIds = [] } = {}) {
@@ -167,20 +169,28 @@ export function planBoardRotation({ boards = [], maxBoards = boards.length, prov
   const selected = [];
   const selectedIds = new Set();
   const providerCursors = { ...(state.providerCursors || {}) };
-  for (const board of rotateRanked(eligible, state.cursor, puneFirst).filter((entry) => entry.puneRelevant === true)) {
+  const rotationGroups = new Map();
+  // Advance each geographic peer group by the boards it actually selected.
+  const groupCursor = (pool) => (group) => {
+    const key = `${pool}:${group.map((board) => board.rotationBoardId).sort().join(',')}`;
+    const cursor = Math.max(0, Number(state.rankGroupCursors?.[key]) || 0);
+    rotationGroups.set(key, { group, cursor });
+    return cursor;
+  };
+  for (const board of rotateRanked(eligible, groupCursor('all'), puneFirst).filter((entry) => entry.puneRelevant === true)) {
     if (selected.length >= cap) break;
     selected.push(board); selectedIds.add(board.rotationBoardId);
   }
   for (const [provider, rawQuota] of Object.entries(providerQuotas)) {
     const quota = Math.max(0, Math.min(cap - selected.length, Number(rawQuota) || 0));
     const family = eligible.filter((board) => String(board.provider).toLowerCase() === String(provider).toLowerCase());
-    for (const board of rotateRanked(family, providerCursors[provider], puneFirst)) {
+    for (const board of rotateRanked(family, groupCursor(provider), puneFirst)) {
       if (selected.length >= cap || selected.filter((item) => item.provider === board.provider).length >= quota) break;
       if (!selectedIds.has(board.rotationBoardId)) { selected.push(board); selectedIds.add(board.rotationBoardId); }
     }
     providerCursors[provider] = family.length ? (Number(providerCursors[provider] || 0) + quota) % family.length : 0;
   }
-  for (const board of rotateRanked(eligible, state.cursor, puneFirst)) {
+  for (const board of rotateRanked(eligible, groupCursor('all'), puneFirst)) {
     if (selected.length >= cap) break;
     if (!selectedIds.has(board.rotationBoardId)) { selected.push(board); selectedIds.add(board.rotationBoardId); }
   }
@@ -205,6 +215,11 @@ export function planBoardRotation({ boards = [], maxBoards = boards.length, prov
     state: {
       cursor: eligible.length ? (Number(state.cursor || 0) + Math.max(1, cap)) % eligible.length : 0,
       providerCursors,
+      rankGroupCursors: { ...state.rankGroupCursors, ...Object.fromEntries([...rotationGroups].map(([key, { group, cursor }]) => {
+        // Fallback picks can leave gaps, so keep the next unvisited peer at the cursor.
+        const nextUnselected = rotate(group, cursor).findIndex((board) => !selectedIds.has(board.rotationBoardId));
+        return [key, (cursor + (nextUnselected < 0 ? group.length : nextUnselected)) % group.length];
+      })) },
       lastAttemptByBoard: Object.fromEntries(selected.map((board) => [board.rotationBoardId, runAt])),
       ...(state.boardPlanState ? { boardPlanState: state.boardPlanState } : {}),
     },
@@ -352,12 +367,21 @@ export function planBoundedSources({
   const trackedAtsItems = all.filter((item) => item.sourceLane === 'atsWarm');
   const trackedAtsCursor = Math.max(0, Number(state?.trackedAts?.rotation?.cursor ?? state?.rotation?.trackedAtsCursor ?? 0) || 0);
   const explorationCursor = Math.max(0, Number(state?.explorationCursor ?? state?.rotation?.explorationCursor ?? 0) || 0);
-  const orderedPriority = rotateRanked(priority, trackedAtsCursor, compareRank);
-  const orderedExploration = rotateRanked(exploration, explorationCursor, compareRank);
+  const rotationGroups = new Map();
+  // Each equally ranked pool advances only for its own completed selections.
+  const groupCursor = (pool) => (group) => {
+    const key = `${pool}:${group.map((item) => item.board.boardId).sort().join(',')}`;
+    const cursor = Math.max(0, Number(state.rankGroupCursors?.[key]) || 0);
+    rotationGroups.set(key, { group, cursor });
+    return cursor;
+  };
+  const orderedPriority = rotateRanked(priority, groupCursor('priority'), compareRank);
+  const orderedExploration = rotateRanked(exploration, groupCursor('exploration'), compareRank);
+  const puneItems = all.filter((candidate) => candidate.board.puneRelevant === true);
   const selected = [];
   const selectedIds = new Set();
   // Pune supply gets the first bounded slots even when other boards need continuation.
-  for (const item of all.filter((candidate) => candidate.board.puneRelevant === true).sort(compare)) {
+  for (const item of rotateRanked(puneItems, groupCursor('pune'), compareRank)) {
     if (selected.length >= cap) break;
     selected.push(item); selectedIds.add(item.board.boardId);
   }
@@ -403,7 +427,6 @@ export function planBoundedSources({
     });
   }
   decisions.sort((left, right) => String(left.boardId).localeCompare(String(right.boardId)) || left.action.localeCompare(right.action));
-  const prioritySelectedCount = selected.filter((item) => (item.board.planTier === 'daily-core' || item.board.planTier === 'targeted-enterprise') && !item.hasContinuation).length;
   const explorationSelectedCount = selected.filter((item) => !item.hasContinuation && (item.board.planTier === 'exploration' || item.board.planTier === 'opportunistic')).length;
   const trackedAtsSelectedCount = selected.filter((item) => item.sourceLane === 'atsWarm' && !item.hasContinuation).length;
   const nextTrackedAtsCursor = trackedAtsItems.length ? (trackedAtsCursor + trackedAtsSelectedCount) % trackedAtsItems.length : 0;
@@ -436,6 +459,8 @@ export function planBoundedSources({
   };
   const nextState = {
     schemaVersion: 'BoundedBoardPlanStateV1', updatedAt: runAt,
+    rankGroupCursors: { ...state.rankGroupCursors, ...Object.fromEntries([...rotationGroups].map(([key, { group, cursor }]) => [key,
+      (cursor + group.filter((item) => selectedIds.has(item.board.boardId) && !item.hasContinuation).length) % group.length])) },
     trackedAts: {
       rotation: { cursor: nextTrackedAtsCursor },
       coverage: trackedAtsCoverage,
@@ -912,7 +937,38 @@ export function projectLaneBoards(registry, lane, { enabledOnly = true, location
 function withLocationFlags(board, entry) {
   if (entry.indiaRelevant) board.indiaRelevant = true;
   if (entry.puneRelevant) board.puneRelevant = true;
+  if (entry.indiaFirst) board.indiaFirst = true;
+  if (entry.probeStatus) board.probeStatus = entry.probeStatus;
   return board;
+}
+
+// Project unsupported ATS employers only when retained metadata proves JobPosting support.
+export function projectCareerPageBoards(registry, { locationPreset = 'pune' } = {}) {
+  return (registry?.boards ?? []).filter((board) => board.enabled !== false
+    && !['disabled', 'proposed', 'rejected'].includes(board.activationState)
+    && !PROVIDER_LANES[String(board.provider || '').toLowerCase()]
+    && typeof board.careerPageUrl === 'string' && board.careerPageUrl.trim()
+    && board.probe?.jobPostingJsonLd === true)
+    .sort((left, right) => boardLocationRank(left, locationPreset) - boardLocationRank(right, locationPreset))
+    .map((board) => ({ boardId: board.id || boardIdentityKey(board), company: board.company, websiteUrl: board.careerPageUrl }));
+}
+
+// Describe configured ownership without claiming requests, liveness, or current yield.
+export function registrySourceCoverage(registry, { schedule = 'morning' } = {}) {
+  const careerIds = new Set(projectCareerPageBoards(registry).map((board) => board.boardId));
+  const sourceIds = { atsWarm: 'ats-warm', atsBatch1: 'ats-batch-1', atsBatch2: 'ats-batch-2', enterprise: 'ats-enterprise' };
+  return (registry?.boards ?? []).map((board) => {
+    const boardId = board.id || boardIdentityKey(board);
+    const disabled = board.enabled === false || ['disabled', 'proposed', 'rejected'].includes(board.activationState);
+    const atsLane = PROVIDER_LANES[String(board.provider || '').toLowerCase()];
+    const sourceId = disabled ? null : atsLane && atsLane === board.scheduleLane ? sourceIds[atsLane] || null
+      : careerIds.has(boardId) ? 'structured-career-pages' : null;
+    const excluded = schedule === 'midday' && ['ats-batch-2', 'ats-enterprise'].includes(sourceId);
+    return { boardId, probeStatus: board.probeStatus ?? null, sourceId,
+      state: disabled ? 'disabled' : !sourceId ? 'unscheduled' : excluded ? 'excluded-by-schedule' : 'scheduled',
+      reason: disabled ? 'board-disabled-or-proposed' : !sourceId ? 'no-supported-scheduled-adapter' : excluded ? 'morning-only-source' : 'configured-source-ownership',
+    };
+  });
 }
 
 function toAdapterBoard(entry) {

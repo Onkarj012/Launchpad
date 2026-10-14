@@ -24,6 +24,18 @@ const FOREIGN_WORK_AUTHORIZATION_PATTERN = /\b(?:foreign work authorization|(?:m
 const EXPLICIT_FOREIGN_REMOTE_LOCATION_PATTERN = /\b(?:north america|u\.?s\.?a?|united states|canada|united kingdom|u\.?k\.?|europe|european union|e\.?u\.?|austria|poland|germany|france|spain|italy|netherlands|australia|new zealand|latin america|latam|united arab emirates|u\.?a\.?e\.?)\b/i;
 const FOREIGN_COUNTRY_CODE_REMOTE_LOCATION_PATTERN = /^(?!IN\b|IND\b|APAC\b)[A-Z]{2,3}(?:[\s,;/_-].*)?\bremote\b/i;
 const GLOBAL_SCOPE_PATTERN = /\b(worldwide|world\s+wide|global|anywhere)\b/gi;
+// Use the runtime's country names so authorization checks do not depend on a short denylist.
+const REGION_NAMES = new Intl.DisplayNames(['en'], { type: 'region' });
+const COUNTRY_NAMES = Array.from({ length: 676 }, (_, index) => {
+  const code = String.fromCharCode(65 + Math.floor(index / 26), 65 + index % 26);
+  const name = REGION_NAMES.of(code);
+  return name === code ? null : name;
+}).filter(Boolean);
+const FOREIGN_AUTH_REGION_PATTERN = new RegExp(`\\b(?:${[...COUNTRY_NAMES,
+  'north america', 'us', 'usa', 'u.s', 'u.s.a', 'uk', 'u.k', 'eu', 'e.u', 'latam', 'american', 'canadian', 'british', 'european',
+  'austrian', 'polish', 'german', 'french', 'spanish', 'italian', 'dutch', 'australian', 'japanese',
+  'singaporean', 'swiss', 'irish', 'israeli', 'mexican',
+].map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((left, right) => right.length - left.length).join('|')})\\b`, 'i');
 const FRESHER_EXPERIENCE_PATTERN = /\b(freshers?|new[- ]grad|recent graduate|graduate engineer|graduate trainee|campus|entry[- ]level|junior|associate|trainee|0\s*[-–]\s*1\s+years?|0\s+to\s+1\s+years?)\b/i;
 const SENIORITY_PATTERN = /\b(senior|sr\.?|staff|lead|principal|architect|director|head of|vp|vice president|manager)\b/i;
 const FRESHER_TITLE_PATTERN = /\b(freshers?|new[- ]grad(?:uate)?|recent graduate|graduate|entry[- ]level|junior|trainee|campus)\b/i;
@@ -126,7 +138,7 @@ function isIndiaCompatibleRegion(value, policy) {
 function isRegionQualifiedGlobalToken(text, match, policy) {
   const after = text.slice(match.index + match[0].length);
   const followingRegion = after.match(/^\s+(?:in|within)\s+(?:the\s+)?([a-z][a-z.'-]*(?:\s+[a-z][a-z.'-]*){0,3})/i);
-  if (followingRegion) return !isIndiaCompatibleRegion(followingRegion[1], policy);
+  if (followingRegion) return !/^world\b/i.test(followingRegion[1]) && !isIndiaCompatibleRegion(followingRegion[1], policy);
   const precedingRegion = text.slice(0, match.index).match(/\(\s*([^()]{1,40})\s*\)\s*$/);
   if (precedingRegion) return !isIndiaCompatibleRegion(precedingRegion[1], policy);
   const trailingRegion = after.match(/^\s*\(\s*([^()]{1,40})\s*\)/);
@@ -138,11 +150,62 @@ function hasAllowedGlobalScope(text, policy) {
   return [...text.matchAll(GLOBAL_SCOPE_PATTERN)].some((match) => !isRegionQualifiedGlobalToken(text, match, policy));
 }
 
+// Return a global scope that explicitly names a foreign geographic region.
+export function foreignGlobalScopeEvidence(text, policy) {
+  const pattern = new RegExp(`\\b(?:anywhere|worldwide|global)\\s+(?:in|within)\\s+(?:the\\s+)?(${FOREIGN_AUTH_REGION_PATTERN.source})`, 'gi');
+  return [...text.matchAll(pattern)].find((match) => !isIndiaCompatibleRegion(match[1], policy))?.[0] || null;
+}
+
 // Recognize a remote claim that grants work from any country.
 function hasUnrestrictedGlobalRemoteClaim(text, policy, location = '') {
   return /^(?:remote\s*(?:[-:]\s*)?)?(?:worldwide|world wide|global|anywhere)$/i.test(location.trim())
     || (hasAllowedGlobalScope(text, policy)
       && /\b(?:remote(?:ly)?\s*(?:[-:]\s*)?(?:worldwide|global(?:ly)?|anywhere)|(?:worldwide|global(?:ly)?|anywhere)\s*[-:]?\s*remote|work(?:ing)?\s+(?:remotely\s+)?(?:from\s+)?anywhere|(?:hire|hiring|open|available|eligible)\s+(?:to\s+)?(?:candidates?\s+)?(?:worldwide|globally))\b/i.test(text));
+}
+
+// Apply the same requirement context to shared geography and standalone restriction filters.
+export function isExemptForeignRequirement(text, match, policy) {
+  const requirementStart = /^(?:must|need(?:s)?|require(?:s)?)\b/i.test(match[0])
+    ? match[0].search(/\b(?:work\s+(?:authorization|permit)|(?:authorized|eligible)\s+to\s+work)\b/i) : 0;
+  const start = match.index + Math.max(0, requirementStart);
+  const before = text.slice(0, start).split(/[!?;\n]|(?<!\b[a-z]\.[a-z])\.(?![a-z])|·/i).at(-1);
+  const after = text.slice(match.index + match[0].length).replace(/^\.(?=\s)/, '');
+  const alternatives = after.match(new RegExp(`^(?:(?:\\s*,\\s*|\\s+or\\s+)${FOREIGN_AUTH_REGION_PATTERN.source})*\\s*,?\\s+or\\s+(?:(?:(?:a|an|valid)\\s+)*(?:work\\s+(?:permit|authorization)\\s+(?:in|for)|(?:(?:permanent\\s+)?residency|citizenship|citizens?|residents?)\\s+(?:in|of)|(?:authorized|eligible)\\s+to\\s+work\\s+in)\\s+)?(?:in\\s+)?(india|indian|apac|asia[ -]?pacific)\\b`, 'i'));
+  if (!/\bonly\b/i.test(match[0]) && alternatives && isIndiaCompatibleRegion(alternatives[1], policy)) return true;
+  const precedingAlternative = before.match(/\b(india|indian|apac|asia[ -]?pacific)(?:\s+(?:citizens?|citizenship|work\s+(?:permit|authorization)))?\s+or\s+(?:(?:a|an|valid)\s+)*$/i);
+  if (!/\bonly\b/i.test(match[0]) && precedingAlternative && isIndiaCompatibleRegion(precedingAlternative[1], policy)) return true;
+  const qualification = /\b(?:authorization|permit|authorized|eligible|citizenship|citizens?|residency|residents?)\b/i.test(match[0]);
+  if (!qualification || /\bonly\b/i.test(match[0])) return false;
+  const suffix = after.split(/[!?;\n]|(?<!\b[a-z]\.[a-z])\.(?![a-z])|·/i)[0];
+  const notRequired = /^\s*,?\s*(?:(?:but|which|that)\s+)?(?:(?:it|this|that)\s+)?(?:is\s+)?not\s+(?:required|needed|necessary|mandatory)\b/i.test(suffix);
+  const negatedPrefix = /\b(?:no|not\s+(?:need(?:ing)?|have|required|require(?:s)?|requiring)(?:\s+to)?(?:\s+(?:be|have|hold|possess))?)\s+(?:(?:a|an|any|valid)\s+)?$/i.test(before);
+  if (notRequired || negatedPrefix) return true;
+  if (/^\s+(?:(?:is|are)\s+)?(?:preferred|welcome|optional)\b(?:[\s,]+\w+){0,8}\s+not\s+(?:required|needed|necessary|mandatory)\b/i.test(suffix)) return true;
+  const mandatory = /\b(?:must|only|required|needed|necessary|mandatory)\b/i.test(`${before} ${match[0]} ${suffix}`);
+  if (mandatory) return false;
+  return /^\s+(?:(?:is|are)\s+)?(?:optional|preferred)\s*$/i.test(suffix)
+    || (!suffix.trim() && /\boptional\s+(?:assistance|support|help)\b[^.!?;]{0,80}$/i.test(before));
+}
+
+// Reject explicit foreign permits and citizenship requirements even outside the usual regions.
+function foreignAuthorizationEvidence(text, policy) {
+  const foreignRegion = FOREIGN_AUTH_REGION_PATTERN;
+  for (const clause of text.split(/[!?\n;]|(?<!\b[a-z]\.[a-z])\.(?![a-z])/i)) {
+    const countryClaims = [...clause.matchAll(new RegExp(`\\b(?:work\\s+(?:authorization|permit)\\s+(?:in|for)|(?:authorized|eligible)\\s+to\\s+work\\s+in|(?:(?:permanent\\s+)?residency|citizenship|citizens?|residents?)\\s+(?:in|of)|must\\s+(?:reside|be\\s+(?:based|located))\\s+in|(?:payroll|employment)(?:\\s+\\w+){0,3}\\s+only(?:\\s+\\w+){0,3}\\s+in)\\s+(?:the\\s+)?(${foreignRegion.source})`, 'gi'))];
+    const nationalityClaims = [...clause.matchAll(/\b([a-z]+)\s+(citizenship|citizens?|residents?|residency|work\s+permit|work\s+authorization)\b/gi)].filter((match) => {
+      const nationality = foreignRegion.test(match[1])
+        || /(?:ian|an|ese|ish|ic|i)$/i.test(match[1]) || /^foreign$/i.test(match[1]);
+      return nationality
+        && !/^(?:no|any|all|dual|valid|local|your|their|a|an|be|have|hold|of|proof|legal|permanent|temporary|birthright)$/i.test(match[1]);
+    });
+    const onlyClaims = [...clause.matchAll(new RegExp(`(${foreignRegion.source})\\s+only\\b`, 'gi'))];
+    for (const match of [...countryClaims, ...nationalityClaims, ...onlyClaims]) {
+      if (isIndiaCompatibleRegion(match[1], policy)) continue;
+      if (isExemptForeignRequirement(clause, match, policy)) continue;
+      return match[0];
+    }
+  }
+  return null;
 }
 
 function remoteScopeStatus(text, location, policy, remoteEligibility = null) {
@@ -169,7 +232,13 @@ function remoteScopeStatus(text, location, policy, remoteEligibility = null) {
     }
     return lower.includes(scope.toLowerCase());
   }) || hasIndia || hasUnrestrictedGlobalRemoteClaim(text, policy, location);
-  const foreignMatch = text.match(FOREIGN_REMOTE_REGION_PATTERN) || text.match(FOREIGN_WORK_AUTHORIZATION_PATTERN);
+  const foreignMatch = [FOREIGN_REMOTE_REGION_PATTERN, FOREIGN_WORK_AUTHORIZATION_PATTERN]
+    .flatMap((pattern) => [...text.matchAll(new RegExp(pattern.source, 'gi'))])
+    .find((match) => !isExemptForeignRequirement(text, match, policy));
+  const foreignAuthorization = foreignAuthorizationEvidence(text, policy);
+  if (foreignAuthorization) return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: foreignAuthorization };
+  const foreignScope = foreignGlobalScopeEvidence(text, policy);
+  if (foreignScope) return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: foreignScope };
   const excludesIndia = /excluding\s+india|not\s+(?:open|available)\s+to\s+india|india\s+excluded/.test(lower);
   if (foreignMatch) return { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: foreignMatch[0].trim() };
   if (excludesIndia) return { pass: false, code: 'GEO_REMOTE_EXCLUDES_INDIA', evidence: text };
