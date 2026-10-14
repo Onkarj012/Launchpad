@@ -50,10 +50,11 @@ import {
   planBoundedSources,
   boardIdentityKey,
   boardPauseReason,
-  PROVIDER_LANES,
   recordBoardProbeResponse,
   registryProbeUrl,
   withRegistryProjectedBoards,
+  projectCareerPageBoards,
+  registrySourceCoverage,
 } from './board-registry.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
 import {
@@ -597,12 +598,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
   const projected = withRegistryProjectedBoards(config, { locationPreset: profile?.locationPreset, sourcePlan: profile?.sourcePlan });
   const sources = projected.sources;
-  const careerPageCompanies = (projected.boardRegistry?.boards ?? []).filter((board) =>
-    board.enabled !== false
-    && !PROVIDER_LANES[String(board.provider || '').toLowerCase()]
-    && typeof board.careerPageUrl === 'string'
-    && board.probe?.jobPostingJsonLd === true)
-    .map((board) => ({ company: board.company, websiteUrl: board.careerPageUrl }));
+  const careerPageCompanies = projectCareerPageBoards(projected.boardRegistry, { locationPreset: profile?.locationPreset });
   const careerPagePlan = sourcePlan('structured-career-pages', 'career-pages', 'career-page-discovery', async ({ signal: sourceSignal = signal, deadline: sourceDeadline = deadline } = {}) => {
     if (!careerPageCompanies.length) {
       return { observations: [], manifest: {
@@ -642,7 +638,8 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   const plannerConfig = projected.sourcePlanner ?? {};
   const plannerEnabled = plannerConfig.enabled === true && plannerConfig.legacyPlannerRollback !== true;
   const boardPlan = plannerEnabled ? planBoundedSources({
-    boardsByLane: Object.fromEntries(['atsWarm', 'atsBatch1', 'atsBatch2', 'enterprise'].map((lane) => [lane, sources[lane]?.boards ?? []])),
+    boardsByLane: Object.fromEntries((schedule === 'midday' ? ['atsWarm', 'atsBatch1'] : ['atsWarm', 'atsBatch1', 'atsBatch2', 'enterprise'])
+      .map((lane) => [lane, sources[lane]?.boards ?? []])),
     locationPreset: profile?.locationPreset ?? 'india',
     targetTitles: plannerConfig.targetTitles ?? profile?.sourcePlan?.queryHints ?? [],
     maxBoards: plannerConfig.maxBoards,
@@ -1149,9 +1146,9 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   }, { capabilities: { resolver: typeof resolver === 'function', discoveryUrl: true } }));
   // Spend ATS request budgets on Pune lanes before lanes with no Pune evidence.
   const atsLanes = { 'ats-warm': 'atsWarm', 'ats-batch-1': 'atsBatch1', 'ats-batch-2': 'atsBatch2', 'ats-enterprise': 'enterprise' };
-  const orderedAts = plans.filter((plan) => atsLanes[plan.id]).sort((left, right) =>
-    Number(plannedBoards(atsLanes[right.id]).some((board) => board.puneRelevant === true))
-    - Number(plannedBoards(atsLanes[left.id]).some((board) => board.puneRelevant === true)));
+  const laneRank = (plan) => Math.max(0, ...plannedBoards(atsLanes[plan.id]).map((board) =>
+    board.puneRelevant === true ? 2 : board.indiaRelevant === true || board.indiaFirst === true ? 1 : 0));
+  const orderedAts = plans.filter((plan) => atsLanes[plan.id]).sort((left, right) => laneRank(right) - laneRank(left));
   let atsIndex = 0;
   return [...plans.map((plan) => atsLanes[plan.id] ? orderedAts[atsIndex++] : plan), careerPagePlan, ...hnPlans, ...ycPlans];
 }
@@ -1204,7 +1201,65 @@ export function crawlerSchedulePlan(config, schedule = 'morning') {
 
 export function crawlerDiscoveryPlan(config, { schedule = 'morning', mode = 'normal', locationPreset = 'india' } = {}) {
   const profile = buildDiscoveryProfile({ schedule, mode, locationPreset });
-  return { ...crawlerSchedulePlan(config, schedule), profile };
+  const projected = withRegistryProjectedBoards(config, { locationPreset });
+  return { ...crawlerSchedulePlan(config, schedule), profile,
+    sourceCoverage: {
+      evidence: 'configuration-metadata-only',
+      boards: registrySourceCoverage(projected.boardRegistry, { schedule }),
+      portalDiscovery: portalDiscoveryCoverage(projected.sources, schedule),
+    },
+  };
+}
+
+// Match runtime query cleanup, first-occurrence deduplication and the configured cap.
+function boundedCoverageQueries(queries, budget) {
+  const queryKeys = new Set();
+  const configured = Array.isArray(queries) ? queries : typeof queries === 'string' ? [queries] : [];
+  const unique = configured.filter((query) => typeof query === 'string' && query.trim()).map((query) => query.trim()).filter((query) => {
+    const key = query.toLocaleLowerCase('en-US').replace(/\s+/g, ' ');
+    if (queryKeys.has(key)) return false;
+    queryKeys.add(key);
+    return true;
+  });
+  return { queries: unique, planned: unique.slice(0, Math.max(0, Number(budget ?? unique.length))) };
+}
+
+// Distinguish all configured search lanes from dedicated adapters and optional inbox imports.
+function portalDiscoveryCoverage(sources = {}, schedule) {
+  const domains = { naukri: 'naukri.com', foundit: 'foundit.in', hirist: 'hirist', cutshort: 'cutshort.io', peerlist: 'peerlist.io', indeed: 'indeed.com' };
+  const search = sources.searxng ?? {};
+  const startup = sources.indiaStartup ?? {};
+  const brave = sources.brave ?? {};
+  const searchQueries = boundedCoverageQueries(search.queries ?? search.searchConfig?.queries, search.dailyBudget).queries;
+  const startupQueries = buildIndiaStartupLaneRequests(sources).map((request) => request.query);
+  const lanes = [
+    { sourceId: 'searxng-search', enabled: search.enabled === true && Boolean(search.endpoint),
+      ...boundedCoverageQueries(searchQueries.length
+        ? searchQueries
+        : buildBraveQueries({ ...search, maxQueries: search.maxQueries ?? search.dailyBudget ?? 20 }), search.dailyBudget) },
+    { sourceId: 'india-startup', enabled: startup.enabled === true && search.enabled === true && Boolean(search.endpoint),
+      queries: startupQueries, planned: startupQueries },
+    { sourceId: 'brave-search', enabled: brave.enabled === true, ...boundedCoverageQueries(listBraveQueries(brave), brave.dailyBudget) },
+  ];
+  return Object.fromEntries(Object.entries(domains).map(([provider, domain]) => {
+    const matches = (query) => typeof query === 'string' && query.toLowerCase().includes(`site:${domain}`);
+    const searchLanes = lanes.map((lane) => {
+      const queryCount = lane.queries.filter(matches).length;
+      return { sourceId: lane.sourceId, queryCount,
+        state: !lane.enabled || !queryCount ? 'not-configured' : schedule === 'midday' ? 'excluded-by-schedule'
+          : lane.planned.some(matches) ? 'scheduled' : 'deferred-by-query-cap',
+      };
+    }).filter((lane) => lane.queryCount > 0);
+    const states = searchLanes.map((lane) => lane.state);
+    return [provider, { dedicatedAdapter: 'unavailable',
+      searchDiscovery: ['scheduled', 'excluded-by-schedule', 'deferred-by-query-cap'].find((state) => states.includes(state)) || 'not-configured',
+      queryCount: searchLanes.reduce((sum, lane) => sum + lane.queryCount, 0), searchLanes,
+      ...(provider === 'indeed' ? {
+        inboxImport: sources.indeed?.enabled === true ? 'enabled' : 'disabled',
+        connectorInbox: sources.connectorInbox?.enabled === true ? 'enabled' : 'disabled',
+      } : {}),
+    }];
+  }));
 }
 
 export async function runCrawlerOperator({

@@ -15353,7 +15353,7 @@
       },
       "evidenceRef": "official careers page GET contains application/ld+json JobPosting script",
       "notes": null,
-      "scheduleLane": null,
+      "scheduleLane": "structuredCareerPages",
       "capabilities": {
         "listingEnumeration": true,
         "detailRetrieval": true,
@@ -15402,7 +15402,7 @@
       },
       "evidenceRef": "official company job page GET contains application/ld+json JobPosting script",
       "notes": null,
-      "scheduleLane": null,
+      "scheduleLane": "structuredCareerPages",
       "capabilities": {
         "listingEnumeration": true,
         "detailRetrieval": true,

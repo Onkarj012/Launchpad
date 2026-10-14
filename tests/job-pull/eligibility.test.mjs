@@ -636,9 +636,10 @@ test('foreign work authorization hard-fails despite generic remote scope', () =>
   assert.match(result.geo.evidence, /authorized to work in the US/i);
 });
 
-test('structured India location remains compatible with stray geo wording', () => {
+test('structured India location cannot override an explicit foreign remote scope', () => {
   const result = classifyCandidate(candidate({ location: 'India', description: 'Remote anywhere within Germany. Work authorization in India is accepted.' }), config);
-  assert.equal(result.geo.pass, true);
+  assert.equal(result.geo.pass, false);
+  assert.equal(result.geo.code, 'GEO_REMOTE_REGION_RESTRICTED');
   assert.equal(result.geo.mode, 'remote');
 });
 

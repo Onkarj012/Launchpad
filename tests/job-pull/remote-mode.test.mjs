@@ -102,7 +102,7 @@ test('Remotive preserves provider dates and real employment/location fields, but
   assert.equal(run.shortlist.some((item) => item.provider === 'remotive' && item.waterfallBand === 'strict-hot-0-72h'), true);
 });
 
-test('Real adapter country-restriction evidence rejects US-only/EU-only roles downstream while explicit India/APAC roles pass and context-free worldwide stays in verification', () => {
+test('Real adapter country-restriction evidence rejects US-only/EU-only roles while India/APAC and unrestricted worldwide pass', () => {
   const base = { title: 'Engineer', workMode: 'remote' };
   const usOnly = classifyRemoteEligibility({ ...base, location: 'USA', remoteEvidence: { country: 'USA only (Remotive candidate_required_location)' } });
   assert.equal(usOnly.status, 'Not Eligible');
@@ -117,8 +117,9 @@ test('Real adapter country-restriction evidence rejects US-only/EU-only roles do
   assert.equal(india.classification, 'india');
 
   const worldwide = classifyRemoteEligibility({ ...base, location: '', remoteEvidence: { country: 'Worldwide (Himalayas locationRestrictions: empty)' } });
-  assert.equal(worldwide.status, 'Needs Verification');
-  assert.equal(worldwide.code, 'REMOTE_SCOPE_AMBIGUOUS');
+  assert.equal(worldwide.status, 'India Eligible');
+  assert.equal(worldwide.code, 'REMOTE_WORLDWIDE');
+  assert.equal(worldwide.classification, 'worldwide');
 
   const bareRemote = classifyRemoteEligibility({ ...base, location: 'Remote', remoteEvidence: {} });
   assert.equal(bareRemote.code, 'REMOTE_SCOPE_AMBIGUOUS');
