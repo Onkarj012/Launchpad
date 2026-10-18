@@ -148,8 +148,105 @@ test('standalone role-tenure qualifications require a complete, mandatory, or ap
   assert.equal(extractExperienceYears('Qualifications (preferred):\n5 years in a similar role.'), null);
   assert.equal(extractExperienceYears('<h3>Skills and experience (optional)</h3><p>5 years in a similar role.</p>'), null);
   assert.equal(extractExperienceYears('Qualifications (preferred):\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.').minYears, 3);
+  assert.equal(extractExperienceYears('Strongly preferred:\n5+ years in a customer-facing role.'), null);
+  assert.equal(extractExperienceYears('Strongly preferred:\n- 5+ years in a customer-facing role.'), null);
+  assert.equal(extractExperienceYears('Preferred qualifications:\n- Basic Python knowledge\n- 5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('Requirements:\n- AWS certification preferred\n- 5 years in a similar role.')?.minYears, 5);
+  assert.equal(extractExperienceYears('Preferred qualifications:\nQualifications:\n5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('Preferred qualifications:\nQualifications:\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.')?.minYears, 3);
+  for (const [description, expected] of [
+    ['Optional requirements\n- 5 years in a similar role.', null],
+    ['Preferred requirements\n- 5 years in a similar role.', null],
+    ['Basic and preferred qualifications\n- 5 years in a similar role.', null],
+    ['Preferred qualifications and skills and experience\n- 5 years in a similar role.', null],
+    ['# Preferred qualifications\n- 5 years in a similar role.', null],
+    ['- Preferred qualifications:\n- 5 years in a similar role.', null],
+    ['- Strongly preferred:\n- 5 years in a similar role.', null],
+    ['Preferred qualifications:\n- Basic skills\n- 5 years in a similar role.', null],
+    ['Requirements:\n- Preferred skills\n- 5 years in a similar role.', 5],
+    ['Requirements:\n- AWS certification preferred:\n- 5 years in a similar role.', 5],
+    ['Preferred qualifications:\n# Required qualifications\n- 5 years in a similar role.', 5],
+  ]) assert.equal(extractExperienceYears(description)?.minYears ?? null, expected, description);
+  assert.equal(extractExperienceYears('You will spend\n5 years in a rotational position.'), null);
+  assert.equal(extractExperienceYears('<p>You will spend</p><p>5 years in a rotational position.</p>'), null);
+  assert.equal(extractExperienceYears('<p>You will spend<br>5 years in a rotational position.</p>'), null);
+  assert.equal(extractExperienceYears('You will spend\n5 years in a rotational position\n- 3 years in a technical role.')?.minYears, 3);
+  for (const heading of [
+    '**Preferred qualifications:**',
+    'Preferred',
+    'Preferred qualifications include',
+    'Strongly preferred:',
+  ]) assert.equal(extractExperienceYears(`${heading}\n- 5 years in a similar role.`), null, heading);
+  assert.equal(extractExperienceYears('Qualifications:\n5+ years in a customer-facing role.')?.minYears, 5);
+  assert.equal(extractExperienceYears('Preferred qualifications:\n- Basic skills\n- 5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('Requirements:\n- Preferred skills\n- 5 years in a similar role.')?.minYears, 5);
+  assert.equal(extractExperienceYears('<h3>Required qualifications</h3><p>Python proficiency.</p><p>5 years in a similar role.</p>')?.minYears, 5);
+  assert.equal(extractExperienceYears('Required qualifications:\nPython proficiency.\n5 years in a similar role.')?.minYears, 5);
+  assert.equal(extractExperienceYears('Qualifications:\n**Python proficiency.**\n5 years in a similar role.')?.minYears, 5);
+  assert.equal(extractExperienceYears('Qualifications:\n*Python proficiency.*\n5 years in a similar role.')?.minYears, 5);
+  for (const [description, expected] of [
+    ['5 years in a similar role\n(optional)\n- 3 years in a technical role.', 3],
+    ['5 years in a similar role\n(preferred)\n- 3 years in a technical role.', 3],
+    ['<p>5 years in a similar role</p><p>(optional)</p><ul><li>3 years in a technical role.</li></ul>', 3],
+    ['<p>5 years in a similar role</p><p>(preferred)</p><ul><li>3 years in a technical role.</li></ul>', 3],
+    ['- **Preferred qualifications**\n- 5 years in a similar role.', null],
+    ['<ul><li><strong>Preferred qualifications</strong></li><li>5 years in a similar role.</li></ul>', null],
+    ['<ul><li><b>Preferred qualifications</b></li><li>5 years in a similar role.</li></ul>', null],
+    ['Preferred qualifications:\n- Requirements\n- 5 years in a similar role.', null],
+    ['<h3>Preferred qualifications</h3><ul><li>Basic skills</li><li>5 years in a similar role.</li></ul>', null],
+    ['Preferred qualifications:\n- Basic skills\n- 5 years in a similar role.', null],
+    ['<h3>Requirements</h3><ul><li>Preferred skills</li><li>5 years in a similar role.</li></ul>', 5],
+    ['Requirements:\n- Preferred skills\n- 5 years in a similar role.', 5],
+    ['<ul><li><strong>5 years in a similar role</strong></li></ul>', 5],
+    ['<ul><li><strong>5</strong> years in a similar role</li></ul>', 5],
+    ['<ul><li><b>5 years in a similar role</b></li></ul>', 5],
+    ['<ul><li><b>5</b> years in a similar role</li></ul>', 5],
+    ['<ul><li>5 years in a similar role.</li></ul><p>Python proficiency.</p>', 5],
+    ['<h3>Qualifications</h3><p>Python proficiency</p><p>5 years in a similar role.</p>', 5],
+    ['Experience with our preferred cloud provider:\n- AWS\n- 5 years in a similar role.', 5],
+    ['- 5 years in a similar role.', 5],
+    ['- ~~5 years in a similar role.~~', null],
+    ['<p>You will spend</p><p>5 years in a rotational position.</p>', null],
+    ['<h3>Optional qualifications</h3><p>Python proficiency</p><p>5 years in a similar role.</p>', null],
+    ['<h3>Requirements</h3><p>You will spend</p><p>5 years in a rotational position.</p>', null],
+    ['<h3>Requirements</h3><p>Your role will require</p><p>5 years in a similar role.</p>', 5],
+    ['<h3>Minimum qualifications</h3><p>You will spend</p><p>5 years in a rotational position.</p>', null],
+    ['<h3>Minimum qualifications</h3><p>Candidates should have</p><p>5 years in a similar role.</p>', 5],
+    ['<h3>Requirements</h3><p>Python proficiency.</p><p>5 years in a similar role.</p>', 5],
+    ['<p>Python proficiency.</p><p>5 years in a similar role.</p>', 5],
+    ['<h3>Minimum qualifications</h3><p>You will spend</p><p>5 years in a rotational position.</p><ul><li>3 years in a technical role.</li></ul>', 3],
+  ]) assert.equal(extractExperienceYears(description)?.minYears ?? null, expected, description);
+  for (const description of [
+    '<h3>Requirements</h3><p>Python proficiency.</p><p>5 years in a similar role.</p>',
+    '<p>Python proficiency.</p><p>5 years in a similar role.</p>',
+  ]) assert.equal(classifyExperience({ description }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+  for (const description of [
+    'Requirements: Candidates must have 5 years in a similar role.',
+    'Requirements: You must have 5 years in a technical role.',
+    'Required: You should have 5 years in a similar role.',
+  ]) assert.equal(extractExperienceYears(description)?.minYears, 5, description);
+  assert.equal(extractExperienceYears('You will spend 5 years in a rotational position.'), null);
+  assert.equal(classifyExperience({ description: '<ul><li><p>5 years in a similar role.</p></li></ul>' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(classifyExperience({ description: 'Requirements: Candidates must have 5 years in a similar role.' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(classifyExperience({ description: '<h3>Qualifications</h3><p>Python proficiency</p><p>5 years in a similar role.</p>' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(extractExperienceYears('Qualifications:\nPython proficiency\n5 years in a similar role.'), null);
+  assert.equal(classifyExperience({ description: '<ul><li><strong>5 years in a similar role</strong></li></ul>' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  for (const [description, expected] of [
+    ['You will spend\n**5 years in a rotational position.**', null],
+    ['You will spend\n*5 years in a rotational position.*', null],
+    ['- **5 years in a technical role.**', 5],
+    ['You will spend\n<b>5 years in a rotational position.</b>', null],
+    ['- **Required qualifications**\n- 5 years in a similar role.', 5],
+    ['Preferred qualifications:\n- __Required qualifications__\n- 5 years in a similar role.', 5],
+    ['Preferred qualifications:\n- __Preferred qualifications__\n- 5 years in a similar role.', null],
+  ]) assert.equal(extractExperienceYears(description)?.minYears ?? null, expected, description);
   assert.equal(extractExperienceYears('Bachelor’s degree or\n5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('<h3>Qualifications</h3><p>Bachelor\'s degree or</p><p>5 years in a similar role.</p>'), null);
+  assert.equal(extractExperienceYears('<h3>Qualifications</h3><p>Bachelor\'s degree or</p><p>5 years in a similar role.</p><ul><li>3 years in a technical role.</li></ul>').minYears, 3);
   assert.equal(extractExperienceYears('Bachelor\'s degree or\n- 3 years in a similar role.').minYears, 3);
+  assert.equal(extractExperienceYears('<h3>Requirements</h3><p>Python proficiency</p><p>5 years in a similar role.</p>')?.minYears, 5);
+  assert.equal(classifyExperience({ description: '<h3>Requirements</h3><p>Python proficiency</p><p>5 years in a similar role.</p>' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(extractExperienceYears('<h3>Qualifications</h3><p>Python proficiency</p><p>5 years in a similar role.</p>')?.minYears, 5);
   assert.equal(extractExperienceYears('Preferred qualifications:\n5+ years in a customer-facing role.\nRequired qualifications:\n3 years in a technical role.').minYears, 3);
   const preferredHeadingCase = extractExperienceYears('1 year in a technical role\nPreferred qualifications:\n5 years in a customer-facing role.');
   assert.equal(preferredHeadingCase.minYears, 1);

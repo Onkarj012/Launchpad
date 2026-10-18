@@ -118,37 +118,82 @@ function hasCompleteRoleTenureEnding(match, line) {
 // Accept role tenure only when it begins a qualification line or list item.
 function isRoleTenureRequirement(match) {
   const prefix = match.input?.slice(0, match.index ?? 0) ?? '';
-  return /^\s*(?:[-*•]\s*)?(?:\[\s*[x ]\s*\]\s*)?$/i.test(prefix);
+  return /^\s*(?:(?:[-*•]\s+)?(?:\[\s*[x ]\s*\]\s*)?)?$/i.test(prefix);
+}
+
+// Remove emphasis for matching while keeping only real list markers.
+function roleTenureMatchLine(line) {
+  const prefix = line.match(/^\s*(?:(?:[-*•]\s+)?(?:\[\s*[x ]\s*\]\s*)|(?:[-*•]\s+))?/)?.[0] ?? '';
+  return prefix + line.slice(prefix.length).replace(/[*_]{1,3}/g, '');
 }
 
 // Normalize a possible section heading before looking at adjacent lines.
 function roleTenureSectionHeading(line) {
-  return line.replace(/^\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?/, '').replace(/[*_~]{1,3}/g, '').replace(/[-–—]+/g, ' ').trim();
+  return line.replace(/^\s*(?:(?:[-*•]\s*)|(?:\[\s*[x ]\s*\]\s*))?(?:#{1,6}\s*)?/, '').replace(/[*_]{1,3}/g, '').replace(/[-–—]+/g, ' ').trim();
 }
 
-// Classify only heading-shaped qualification labels.
+// Classify supported qualification headings without reading ordinary bullets as sections.
 function roleTenureHeadingType(line) {
+  const explicitHeading = /^\s*#{1,6}\s/.test(line);
+  const listItem = /^\s*(?:[-*•]\s+|\[\s*[x ]\s*\]\s*)/.test(line);
+  const formattedHeading = /^\s*(?:[-*•]\s+)?(?:\*\*[^*]+\*\*|__[^_]+__)\s*:?$/.test(line);
   const original = roleTenureSectionHeading(line);
-  const heading = original.replace(/&/g, ' and ').replace(/[():]/g, ' ');
-  if (/^requirements?\s*:?$/i.test(heading)) return 'required';
+  const heading = original.replace(/&/g, ' and ').replace(/[():]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/^\([^)]*\)$/.test(original)) return null;
   const cue = String.raw`(?:preferred|desired|optional|desirable|bonus|advantage|nice\s+to\s+have|required|minimum|basic|essential)`;
-  const subject = String.raw`(?:qualifications?|skills?|experience|requirements?)`;
-  const token = String.raw`(?:${cue}|${subject}|and|includes?)`;
+  const subject = String.raw`(?:qualifications?|skills?|experience)`;
+  const token = String.raw`(?:${cue}|${subject}|requirements?|and|includes?)`;
   const shape = new RegExp(String.raw`^(?=.*\b(?:${cue})\b)(?:\s*${token}\s*)+$`, 'i');
-  const match = heading.match(shape);
-  if (!match || (/[()]/.test(original) && !new RegExp(String.raw`\b${subject}\b`, 'i').test(heading))) return null;
-  if (/\b(?:optional|preferred|desired|nice\s+to\s+have|desirable|bonus|advantage)\b/i.test(heading)) return 'preferred';
-  if (/\b(?:required|minimum|basic|essential)\b/i.test(heading)) return 'required';
+  const cueOnlyHeading = new RegExp(String.raw`^(?:(?:strongly|highly)\s+)?${cue}$`, 'i');
+  const explicitBulletLabel = /:\s*(?:[*_~]{1,3})?\s*$/.test(line);
+  if (listItem && !explicitHeading && !explicitBulletLabel && !formattedHeading) return null;
+  if (/^requirements?\s*$/i.test(heading)) return 'required';
+  if (/^(?:qualifications?|skills?|experience)$/i.test(heading)) return 'neutral';
+  const bulletLabel = explicitBulletLabel
+    && (/^requirements?$/i.test(heading) || /^(?:qualifications?|skills?|experience)$/i.test(heading));
+  const bulletHeading = listItem && (explicitBulletLabel || formattedHeading)
+    && (shape.test(heading) || cueOnlyHeading.test(heading) || bulletLabel);
+  if (listItem && !explicitHeading && !bulletHeading) return null;
+  const headingCue = new RegExp(String.raw`\b(?:optional|preferred|desired|nice\s+to\s+have|desirable|bonus|advantage)\b`, 'i');
+  const requiredCue = new RegExp(String.raw`\b(?:required|minimum|basic|essential)\b`, 'i');
+  if (shape.test(heading)) return headingCue.test(heading) ? 'preferred' : 'required';
+  const hasExplicitLabel = explicitHeading || bulletHeading || /:\s*(?:[*_]{1,3})?\s*$/.test(line) || cueOnlyHeading.test(heading);
+  if (!hasExplicitLabel || /\d|[.!?;]/.test(original) || original.split(/\s+/).length > 8) return null;
+  if (cueOnlyHeading.test(heading) && headingCue.test(heading)) return 'preferred';
+  if (cueOnlyHeading.test(heading) && requiredCue.test(heading)) return 'required';
   return null;
 }
 
-// Track whether a standalone role-tenure line starts a new item.
+// Identify a visible boundary after a role-tenure line.
 function isRoleTenureBoundary(line, roleRequirement) {
   if (!line) return true;
   if (roleTenureHeadingType(line)) return true;
-  if (/^\s*(?:[-*•]\s*|\[\s*[x ]\s*\]\s*)/.test(line)) return true;
-  return [...line.matchAll(roleRequirement)].some(isRoleTenureRequirement)
-    || new RegExp(String.raw`^\s*(?:\[\s*[x ]\s*\]\s*)?${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\b`, 'i').test(line);
+  const matchLine = roleTenureMatchLine(line);
+  if (/^\s*(?:[-*•]\s+|\[\s*[x ]\s*\]\s*)/.test(matchLine)) return true;
+  return [...matchLine.matchAll(roleRequirement)].some(isRoleTenureRequirement)
+    || new RegExp(String.raw`^\s*(?:\[\s*[x ]\s*\]\s*)?${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\b`, 'i').test(matchLine);
+}
+
+// Keep a future verb lead open until its quantity arrives or a new item starts.
+function isOpenFutureRoleLead(line) {
+  return /^(?:(?:you|(?:(?:the|this|your)\s+)?(?:role|position|candidate|applicant|engineer|developer)|candidates?|applicants?|engineers?|developers?)\s+(?:will|would|should|must))\s+(?:be\s+)?(?:spend|spending|work|working)$/i.test(line.trim());
+}
+
+// Keep a bachelor-degree alternative open across its paragraph boundary.
+function isOpenBachelorDegreeAlternative(line) {
+  const bachelorDegree = /\b(?:bachelor(?:['’]s)?|b\.?\s?tech|b\.?\s?e\.?|b\.?\s?s\.?|b\.?\s?sc\.?|undergraduate|graduate\s+degree)\b/i;
+  const advancedDegree = /\b(?:master(?:['’]s|s)?|m\.?\s?tech|m\.?\s?s\.?|mba|ph\.?\s?d\.?|doctorate)\b/i;
+  return /\bdegree\b[^.!?;]*\bor(?:\s+equivalent)?\s*$/i.test(line.trim())
+    && bachelorDegree.test(line)
+    && !advancedDegree.test(line);
+}
+
+// Ignore a flattened heading match when a future lead still owns its number.
+function hasOpenFutureLeadBefore(match, text) {
+  const numberStart = (match.index ?? 0) + match[0].lastIndexOf(match.groups?.lower ?? '');
+  const context = text.slice(Math.max(0, numberStart - 120), numberStart).trim();
+  const lead = context.match(/\b((?:(?:you|(?:(?:the|this|your)\s+)?(?:role|position|candidate|applicant|engineer|developer)|candidates?|applicants?|engineers?|developers?)\s+(?:will|would|should|must))\s+(?:(?:be|have)\s+)?[a-z]+)$/i)?.[1];
+  return lead ? isOpenFutureRoleLead(lead) : false;
 }
 
 // Convert an experience quantity without changing the retained JD evidence.
@@ -212,6 +257,7 @@ export function extractExperienceYears(text) {
     'gi',
   );
   for (const match of cleaned.matchAll(forward)) {
+    if (hasOpenFutureLeadBefore(match, cleaned)) continue;
     const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
   }
@@ -239,41 +285,83 @@ export function extractExperienceYears(text) {
   const roleText = (hasHtml ? roleTextInput : roleTextInput.replace(/\r?\n[\t ]*\r?\n/g, '\u0001'))
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<h[1-6]\b[^>]*>/gi, '\n# ')
+    .replace(/<\/h[1-6]\s*>/gi, '\n')
+    .replace(/<\/p\s*>/gi, '\n\u0002\n')
     .replace(/<li\b[^>]*>[\s\S]*?<\/li\s*>/gi, (item) => item
-      .replace(/<\/?(?:br|div|p)\b[^>]*>/gi, ' ')
-      .replace(/\s+/g, ' '))
+      .replace(/<(?:strong|b)\b[^>]*>([\s\S]*?)<\/(?:strong|b)\s*>/gi, '**$1**')
+      .replace(/\u0002/g, ' ')
+      .replace(/<\/(?:br|div|p)\b[^>]*>/gi, ' ')
+      .replace(/<(?:br|div|p)\b[^>]*>/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^<li\b[^>]*>/i, '\n- ')
+      .replace(/<\/li\s*>$/i, '\u0000\n'))
     .replace(/<br\b[^>]*>/gi, '\n')
     .replace(/<\/div\s*>\s*<div\b[^>]*>/gi, '\n')
-    .replace(/<li\b[^>]*>|<\/li\s*>/gi, '\u0000')
+    .replace(/<li\b[^>]*>|<\/li\s*>/gi, '\n')
     .replace(/<\/?(?:address|article|aside|blockquote|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|main|ol|p|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>/gi, '\n')
     .replace(/<[^>]*>/g, ' ');
   const roleBlocks = decodeEntities(roleText).replace(/\n(?:[\t ]*\n)+/g, '\n').replace(/\u0001/g, '\n\n');
   const roleRequirement = new RegExp(
-    String.raw`^\s*(?:[-*•]\s*)?(?:\[\s*[x ]\s*\]\s*)?${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+in\s+(?:(?:a|an|the)\s+)?(?:[A-Za-z][A-Za-z/-]*\s+){0,5}?(?:role|position)\b`,
+    String.raw`^\s*(?:(?:[-*•]\s+)?(?:\[\s*[x ]\s*\]\s*)?)?${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+in\s+(?:(?:a|an|the)\s+)?(?:[A-Za-z][A-Za-z/-]*\s+){0,5}?(?:role|position)\b`,
     'gi',
   );
   let preferredSection = false;
+  let qualificationSection = false;
   for (const item of (hasNestedLists ? [] : roleBlocks.split('\u0000'))) {
     const itemLines = item.split(/\r?\n/).map((value) => value.replace(/\s+/g, ' ').trim());
+    let priorLineIsBoundary = true;
     for (let lineIndex = 0; lineIndex < itemLines.length; lineIndex += 1) {
       const requirementLine = itemLines[lineIndex];
-      if (!requirementLine) continue;
+      if (!requirementLine) {
+        priorLineIsBoundary = true;
+        continue;
+      }
+      if (requirementLine === '\u0002') {
+        const previousLine = roleTenureMatchLine(itemLines[lineIndex - 1] ?? '');
+        if (qualificationSection && !isOpenFutureRoleLead(previousLine) && !isOpenBachelorDegreeAlternative(previousLine)) priorLineIsBoundary = true;
+        continue;
+      }
+      if (/~~[^]*?~~/.test(requirementLine)) continue;
       const headingType = roleTenureHeadingType(requirementLine);
-      if (headingType === 'preferred') preferredSection = true;
-      else if (headingType === 'required') preferredSection = false;
+      if (headingType === 'preferred') {
+        preferredSection = true;
+        qualificationSection = /\b(?:requirements?|qualifications?|skills?|experience)\b/i.test(roleTenureSectionHeading(requirementLine));
+        priorLineIsBoundary = true;
+        continue;
+      }
+      if (headingType === 'required') {
+        preferredSection = false;
+        qualificationSection = /\b(?:requirements?|qualifications?|skills?|experience)\b/i.test(roleTenureSectionHeading(requirementLine));
+        priorLineIsBoundary = true;
+        continue;
+      }
+      if (headingType === 'neutral') {
+        qualificationSection = true;
+        priorLineIsBoundary = true;
+        continue;
+      }
+      if (/^\s*#{1,6}\s/.test(requirementLine)) qualificationSection = false;
       if (preferredSection) continue;
-      const roleRequirementMatches = [...requirementLine.matchAll(roleRequirement)];
-      const previousLine = itemLines[lineIndex - 1] ?? '';
-      const currentLineIsExplicitItem = /^\s*(?:[-*•]\s*|\[\s*[x ]\s*\]\s*)/.test(requirementLine);
-      const advancedDegree = /\b(?:master(?:['’]s|s)?|m\.?\s?tech|m\.?\s?s\.?|mba|ph\.?\s?d\.?|doctorate)\b/i;
-      if (!currentLineIsExplicitItem && /\bdegree\s+or\s*$/i.test(previousLine) && !advancedDegree.test(previousLine)) continue;
-      if (roleRequirementMatches.some(isRoleTenureRequirement)
-        && !isRoleTenureBoundary(itemLines[lineIndex + 1] ?? '', roleRequirement)) continue;
+      const matchLine = roleTenureMatchLine(requirementLine);
+      const roleRequirementMatches = [...matchLine.matchAll(roleRequirement)];
+      const currentLineIsExplicitItem = /^\s*(?:[-*•]\s+|\[\s*[x ]\s*\]\s*)/.test(matchLine);
+      const isStandaloneRequirement = roleRequirementMatches.some(isRoleTenureRequirement);
+      const contextProvesNewItem = currentLineIsExplicitItem || priorLineIsBoundary;
+      let nextLineIndex = lineIndex + 1;
+      while (itemLines[nextLineIndex] === '\u0002') nextLineIndex += 1;
+      const nextLine = roleTenureMatchLine(itemLines[nextLineIndex] ?? '');
+      const nextLineIsContinuation = /^\s*\([^)]*\)\s*$/.test(nextLine)
+        || /^\s*(?:is|are)\s+(?:not\b|(?:(?:strongly|highly)\s+)?(?:optional|preferred|desirable|a\s+(?:bonus|plus)|nice\s+to\s+have|not\s+(?:required|a\s+prerequisite)))/i.test(nextLine);
+      const nextLineIsBoundary = !nextLineIsContinuation && isRoleTenureBoundary(nextLine, roleRequirement);
+      const isCompleteRequirement = roleRequirementMatches.some((match) => hasCompleteRoleTenureEnding(match, matchLine));
       for (const match of roleRequirementMatches) {
-        if (!isRoleTenureRequirement(match) || !hasCompleteRoleTenureEnding(match, requirementLine)) continue;
-        const parsed = experienceMatch(match, requirementLine);
+        if (!contextProvesNewItem || !nextLineIsBoundary || !isRoleTenureRequirement(match) || !hasCompleteRoleTenureEnding(match, matchLine)) continue;
+        const parsed = experienceMatch(match, matchLine);
         if (parsed) matches.push(parsed);
       }
+      priorLineIsBoundary = (isStandaloneRequirement && contextProvesNewItem && nextLineIsBoundary && isCompleteRequirement)
+        || (/[.!?]$/.test(matchLine) && !nextLineIsContinuation);
     }
   }
   const requiredYears = new RegExp(String.raw`\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+(?:is\s+)?required\b`, 'gi');

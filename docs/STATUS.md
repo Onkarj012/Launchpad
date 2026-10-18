@@ -32,17 +32,15 @@ When sources conflict, do not infer promotion from prose. Re-run allowed local c
 
 ## P00 candidate status, 2026-10-19
 
-The new matcher accepts role-tenure qualifications only when the quantity begins a plain-text line or HTML block/list item, with an optional bullet or checklist prefix. One heading classifier recognizes shaped optional/preferred headings, including `Optional qualifications` and `Preferred Qualifications & Skills`, and required/minimum headings reset that context. A blank line, heading, new bullet, or another standalone quantity requirement ends the current item. Other adjacent text leaves the number unknown for manual review. Adjacent HTML block formatting is normalized to one item boundary, and flat HTML list items remain independent. Nested HTML lists defer this new matcher for the whole description because item ownership cannot be proved without parsing a tree. Real plaintext blank lines remain boundaries. Existing forward, reverse, activity, and `requiredYears` extractors retain their HEAD behavior. The greedy role phrase stops at the first `role` or `position`, so a trailing preference remains visible to the existing preference check.
+PR #14 contains the reliability baseline and a reviewed follow-up for standalone role-tenure qualifications. Codex review of the R35 follow-up found no actionable regressions. Final focused checks passed 122/122 across five files at 02:38 IST, and the safety contract passed 7/7. These are local results. The PR remains draft because isolated-checkout validation is still blocked by five missing ignored skill mirrors.
 
-Narrative forms outside this standalone matcher remain P01 work. This includes `bring`/`have`/`possess` sentences that HEAD leaves unmatched, negated narrative claims, and future-tenure wording. The legacy result 3 for `No prior experience required. You will be working remotely for at least three years in this position.` remains unchanged. No broader future or negation grammar is claimed.
+The role-tenure matcher preserves flat HTML list items, recognized qualification paragraphs, real list markers and Markdown emphasis. Supported preferred headings keep their context until a required heading resets it. Ordinary skill bullets do not change section state. A minimum needs a complete qualification, an explicit mandatory ending, or the retained technical-role examples. Unresolved same-item continuations, optional tails and nested HTML lists defer the new matcher. Existing extraction paths still run.
 
-The P00 documentation and tests cover bounded local engineering behavior, including report handling and experience matching. Reports map the canonical successful outcome `ok` to `completed`, while incomplete delivery states keep precedence and unknown outcomes remain `Not Verified`. These checks do not establish live source yield, production behavior, or promotion.
+HTML paragraph handling preserves completed sentences and keeps unfinished bachelor's degree alternatives or prospective tenure attached to the following quantity. Explicit applicant cues such as `must have` retain their minimum. The forward extractor now excludes the bounded prospective `spend` and `work` leads handled by this repair; other legacy parsing remains unchanged apart from the approved preference-suffix correction.
 
-The R20 parser repair treats raw blank lines as boundaries only for plaintext. Blank formatting between HTML paragraphs no longer creates a separate qualification item. The focused parser and report tests passed 23/23 at 00:59 IST. The earlier five-file 122/122 result remains R18 evidence; R20 did not rerun that broader check.
+Narrative parsing beyond these bounded cases stays in P01. The known `7–10+ years building production backend systems; 5+ years hands-on with AWS` defect remains open. The legacy future-tenure example containing `at least three years` still returns 3. No broad future, waiver or negation grammar is claimed.
 
-The R21 report-status fix recognizes `ok` as `completed`. The local report test passed 10/10 at 01:02 IST; `git diff --check` passed. R21 did not rerun parser or broader checks. See the [R21 receipt](../.local/p00-baseline-review/r21/receipt.md).
-
-R22 introduced two hard-rejection regressions. R23 fixes them within the standalone matcher: preference cues can follow qualification labels in shaped headings, and an unbulleted role-tenure line after a dangling bachelor-degree `or` is deferred. A new bullet remains a separate requirement; required headings reset preferred context. Existing advanced and unspecified degree cases retain their tested results. The parser test passed 13/13 and `git diff --check` passed; exact output is in the [R23 receipt](../.local/p00-baseline-review/r23/receipt.md). No live behavior or production status is claimed.
+Reports retain failure causes and source coverage, preserve final degraded delivery status, and map successful outcome `ok` to `completed`. Missing measurements remain `Not Verified`. See [the P00 report](reports/2026-10-18-reliability-repair.md) for verification limits. No live source proof or promotion was performed.
 
 ## Current local position
 
@@ -226,7 +224,3 @@ git diff --check
 ```
 
 The latest verification is the 2026-10-18 section above. Historical verification on 2026-08-21 included validation, safety, tracked diff checks, production-config byte-diff protection, and 725/725 passing tests across 76 files. That local recovery evidence includes three terminal public-source exercises and one fixture interruption/resume drill. These older receipts do not establish current scheduling, credentialed operations, promotion, or rollback. Earlier retained evidence includes Phase 00 (13/13), Phase 01 (168/168), clean-copy Phase 03 (64/64), and Phase 06 (27/27).
-
-## P00 draft review blockers, 19 October 2026 IST
-
-Codex review still found two introduced false hard rejections: a `Strongly preferred:` section and future-tenure prose wrapped before the numeric line. These cases block merge. Passing focused tests do not resolve the findings. P00 remains a draft proposal; no live or production readiness is claimed.

@@ -1,36 +1,43 @@
-# P00 reliability baseline and role-tenure repair, 19 October 2026 IST
+# P00 reliability baseline and role-tenure repair
 
-The local candidate is based on `52e55fd41c8a78b2ded4543b7c5394c6e338f61f` in the isolated worktree. It is not promoted. No live source proof was run.
+19 October 2026 IST. Base revision: `52e55fd41c8a78b2ded4543b7c5394c6e338f61f`. PR #14 remains draft. This is local engineering evidence, with no live source or production proof.
 
-## Candidate changes
+## Changes
 
-The P00 baseline repairs telemetry persistence, fatal report coverage, and fake CLI report paths. The standalone role-tenure matcher accepts a quantity at the start of a plain-text line or preserved HTML block/list item, with an optional bullet or checklist prefix. Preference-heading context lasts until a requirement heading resets it. Only terminal item lines with one of the bounded positive endings below can add a new P00 minimum.
+- Workflow telemetry collections retain per-record size, depth, node and count limits without rejecting a valid collection solely for its aggregate JSON size. Persistence and replay use matching boundaries.
+- A post-crawl handoff failure retains a durable source snapshot. Local reports show terminal failure cause, retained coverage and unknown measurements. Final degraded delivery takes precedence over a completed discovery snapshot; successful outcome `ok` maps to `completed`.
+- Source-yield reports identify the discovery snapshot. They do not count delivered roles, later enrichment or scoring. Per-board rates require matching request evidence.
+- Fake CLI runs write reports to temporary test destinations.
+- Standalone role-tenure qualifications retain flat HTML item and paragraph boundaries, real bullet/checklist markers and Markdown emphasis. Supported preferred headings preserve optional context, while explicit required headings reset it. Ordinary skill bullets and parenthetical continuations do not change section state.
 
-The new matcher adds a minimum only for a complete role/position qualification with optional final punctuation, an explicit `required` or `mandatory` ending, or the retained parenthetical list of technical customer-facing role examples. Section headings are recognized before the matcher checks the next line. A blank line, heading, new bullet, or another standalone quantity requirement ends the current item. Any other adjacent text in the same item defers its number from P00 for manual review. This uses item boundaries, not a growing list of guessed continuation words. Adjacent HTML block formatting is normalized to one item boundary, including paragraphs outside list items; separate HTML list items remain independent. Raw blank lines create boundaries only in plaintext. `Nice-to-have` headings are recognized with or without hyphens.
+The new role-tenure path accepts a complete role/position qualification, an explicit mandatory ending, or the retained technical customer-facing examples. Unknown adjacent continuations defer its number. Nested HTML lists defer this path for the whole description; existing extractors still run. This does not claim nested-list understanding.
 
-R22 shares one heading classifier between item-boundary detection and preferred-section tracking. It recognizes heading-shaped optional and preferred labels such as `Optional qualifications` and `Preferred Qualifications & Skills`; required and minimum headings reset the section. Optional/preferred context wins if a shaped heading includes both preference and requirement cues. R23 extends that same classifier to subject-first headings with a parenthetical preference cue, such as `Qualifications (preferred)` and `Skills and experience (optional)`. Parentheses are accepted only when the heading also names a qualification subject, so a narrative `(optional)` line remains item context.
+Paragraph markers preserve completed sentence boundaries. An unfinished bachelor's degree alternative or prospective tenure remains attached to its following quantity. An independent list item can still supply a mandatory minimum. The forward extractor excludes bounded prospective `spend` and `work` leads, while explicit applicant cues such as `must have`, `should have` under a required heading, and `will require` retain their tested results. Other legacy extraction is unchanged apart from the approved preferred-suffix correction.
 
-R22 introduced two hard-rejection regressions in the new path. R23 defers an unbulleted standalone role-tenure line after a dangling `degree or` line, while an explicit new bullet remains a separate requirement. The existing advanced and unspecified degree alternative cases retain their tested results. The new matcher skips a description containing nested HTML lists because it cannot prove which list item owns a number and its qualifier without tree parsing. Existing extractors still run, so nested content may retain a legacy result. This is a manual-review limitation, not a claim that nested-list requirements are understood.
+## Review and verification
 
-R20 fixes two R19 gaps. Raw blank formatting between HTML paragraphs no longer inserts a semantic blank boundary, including within a list item. The exact outside-list and inside-list preference examples now return unknown. Local reports derive run status from the outcome, delivery reconciliation, and terminal envelope. A final degraded delivery remains `degraded` when the discovery envelope says `completed`, and unknown outcomes remain `Not Verified`. R21 maps canonical outcome `ok` to `completed`, preserving failure precedence and partial envelope status.
+Codex reviewed the uncommitted follow-up against draft revision `6e2f521f1b909bcac81ebc3417451c0711290bb3`. R35 review found no actionable regressions. Earlier rounds found introduced preference, formatting, paragraph and degree-alternative errors. Those failed attempts and their receipts remain local; passing tests alone were not treated as acceptance. The final follow-up retains the existing test names and extends their assertions.
 
-The previously approved preference-suffix correction remains. Existing forward, reverse, activity, and `requiredYears` extraction paths retain their HEAD behavior. This matcher does not change legacy findings. In particular, `5+ years in a role, Python experience is not required` remains outside the new path, and its legacy result is unchanged. Narrative matching remains P01 work. Known future-tenure behavior, including the legacy result 3 for `No prior experience required. You will be working remotely for at least three years in this position.`, is unchanged. No broad future, waiver, or negation grammar is claimed.
+Final local checks on 19 October 2026 IST:
 
-The known listing says “7–10+ years building production backend systems; 5+ years hands-on with AWS.” This repair does not address that text, and no numeric result is claimed for it. The legacy future-tenure example still returns 3. No live source proof was run.
+- Five focused files passed 122/122, from 02:37:34 to 02:38:29. They cover the daily runner, discovery profile, local lead report, source-envelope recovery and experience recovery.
+- `npm run safety` passed all seven checks at 02:38:29.
+- R35's focused parser test passed 13/13 at 02:34:36. Its initial degree-alternative attempt failed and was corrected before the passing run.
+- `git diff --check` passed after the final documentation update.
+- The synthetic fatal report was previously inspected at 728px and 360px. It was not re-rendered for this parser follow-up.
 
-## Checks
+Commands:
 
-- R18: `node --test tests/job-pull/experience-recovery.test.mjs` passed 13/13 at 00:46:48 IST; the requested five files passed 122/122 at 00:47:55 IST; `git diff --check` passed at 00:49:09 IST. Logs and the exact IST receipt remain in `.local/p00-baseline-review/r18/`.
-- R19: after the two parser corrections, `node --test tests/job-pull/experience-recovery.test.mjs` passed 13/13 at 00:53:34 IST. The captured output is in `.local/p00-baseline-review/r19/experience-recovery.log`.
-- R19 `git diff --check` is recorded separately in `.local/p00-baseline-review/r19/diff-check.log`. The R18 five-file 122/122 result is prior evidence; R19 did not rerun it.
-- R20: `node --test tests/job-pull/experience-recovery.test.mjs tests/crawler/local-lead-report.test.mjs` passed 23/23 at 00:59:51 IST. Output: `.local/p00-baseline-review/r20/focused-tests.log`.
-- R20 `git diff --check` result is retained in `.local/p00-baseline-review/r20/diff-check.log`.
-- R21: `node --test tests/crawler/local-lead-report.test.mjs` passed 10/10 at 01:02 IST. The focused run and `git diff --check` receipt are in `.local/p00-baseline-review/r21/`.
-- R22: `node --test tests/job-pull/experience-recovery.test.mjs` passed 13/13 at 01:08 IST; `git diff --check` passed. The test extends the existing parser case, with no new named tests. Exact output and the IST receipt are in `.local/p00-baseline-review/r22/`.
-- R23: the same focused parser test passed 13/13; `git diff --check` passed. The existing parser case now covers the two heading forms, a heading reset with a separate required item, the bachelor-degree alternative, and a separately bulleted requirement. Exact output and start times are in `.local/p00-baseline-review/r23/`.
+```sh
+node --test tests/crawler/daily-runner.test.mjs tests/crawler/discovery-profile.test.mjs tests/crawler/local-lead-report.test.mjs tests/crawler/source-envelope-recovery.test.mjs tests/job-pull/experience-recovery.test.mjs
+npm run safety
+git diff --check
+```
 
-No full suite, readiness run, rehearse, validator rerun, safety rerun, live source query, or production verification was performed. `npm run validate` remains blocked in this checkout because five ignored `.claude` skill mirrors are absent; this blocker was not rerun or repaired. Prior safety evidence remains 7/7 and was not rerun.
+`npm run validate` remains blocked in the isolated checkout by five absent ignored `.claude` skill mirrors. No skills or validator behavior were changed. That known blocker was not rerun for the final follow-up. Full-suite, readiness and rehearsal checks were not run. GitHub has no check results for this draft; an empty checks list is not a passing CI run.
 
-## P00 draft review blockers, 19 October 2026 IST
+## Remaining limits
 
-Codex review still found two introduced false hard rejections: a `Strongly preferred:` section and future-tenure prose wrapped before the numeric line. These cases block merge. Passing focused tests do not resolve the findings. P00 remains a draft proposal; no live or production readiness is claimed.
+Narrative experience parsing stays in P01. The known `7–10+ years building production backend systems; 5+ years hands-on with AWS` defect is not fixed. The legacy future-tenure example `No prior experience required. You will be working remotely for at least three years in this position.` still returns 3. No broad future, waiver or negation grammar is claimed.
+
+No live job query, application, message, tracker write, credential change, schedule installation, production promotion or PR merge was performed. The original dirty checkout is preserved. Private research and job evidence remain local. Local checks do not establish suitable daily supply or operational readiness.
