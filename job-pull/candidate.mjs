@@ -105,6 +105,51 @@ const EXPERIENCE_VALUE = String.raw`(?:\d+(?:\.\d+)?|(?:${EXPERIENCE_WORDS.join(
 const EXPERIENCE_UNIT = String.raw`(?:years?|yrs?)(?:\(s\))?(?![A-Za-z])`;
 // A match must start at the lower bound, never at the tail of a range.
 const EXPERIENCE_NUMBER = String.raw`(?<![\d.])(?<lower>${EXPERIENCE_VALUE})(?:\s*(?<plus>\+)|\s*(?<separator>to|[-–—])\s*(?<upper>${EXPERIENCE_VALUE}))?`;
+const ROLE_EXAMPLES_TAIL = String.raw`\(\s*(?:solutions engineering|forward deployed engineering|implementation engineering|technical consulting|technical pm)(?:\s*,\s*(?:solutions engineering|forward deployed engineering|implementation engineering|technical consulting|technical pm))*(?:\s*,?\s+or similar)?\s*\)`;
+
+// Accept only a complete role qualification or an explicit mandatory ending.
+function hasCompleteRoleTenureEnding(match, line) {
+  const suffix = line.slice((match.index ?? 0) + match[0].length).trim();
+  return /^(?:[.!?]|[.!?]\s*)*$/.test(suffix)
+    || /^(?:(?:is|are)\s+)?(?:required|mandatory)[.!?]*$/i.test(suffix)
+    || new RegExp(String.raw`^${ROLE_EXAMPLES_TAIL}[.!?]*$`, 'i').test(suffix);
+}
+
+// Accept role tenure only when it begins a qualification line or list item.
+function isRoleTenureRequirement(match) {
+  const prefix = match.input?.slice(0, match.index ?? 0) ?? '';
+  return /^\s*(?:[-*•]\s*)?(?:\[\s*[x ]\s*\]\s*)?$/i.test(prefix);
+}
+
+// Normalize a possible section heading before looking at adjacent lines.
+function roleTenureSectionHeading(line) {
+  return line.replace(/^\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?/, '').replace(/[*_~]{1,3}/g, '').replace(/[-–—]+/g, ' ').trim();
+}
+
+// Classify only heading-shaped qualification labels.
+function roleTenureHeadingType(line) {
+  const original = roleTenureSectionHeading(line);
+  const heading = original.replace(/&/g, ' and ').replace(/[():]/g, ' ');
+  if (/^requirements?\s*:?$/i.test(heading)) return 'required';
+  const cue = String.raw`(?:preferred|desired|optional|desirable|bonus|advantage|nice\s+to\s+have|required|minimum|basic|essential)`;
+  const subject = String.raw`(?:qualifications?|skills?|experience|requirements?)`;
+  const token = String.raw`(?:${cue}|${subject}|and|includes?)`;
+  const shape = new RegExp(String.raw`^(?=.*\b(?:${cue})\b)(?:\s*${token}\s*)+$`, 'i');
+  const match = heading.match(shape);
+  if (!match || (/[()]/.test(original) && !new RegExp(String.raw`\b${subject}\b`, 'i').test(heading))) return null;
+  if (/\b(?:optional|preferred|desired|nice\s+to\s+have|desirable|bonus|advantage)\b/i.test(heading)) return 'preferred';
+  if (/\b(?:required|minimum|basic|essential)\b/i.test(heading)) return 'required';
+  return null;
+}
+
+// Track whether a standalone role-tenure line starts a new item.
+function isRoleTenureBoundary(line, roleRequirement) {
+  if (!line) return true;
+  if (roleTenureHeadingType(line)) return true;
+  if (/^\s*(?:[-*•]\s*|\[\s*[x ]\s*\]\s*)/.test(line)) return true;
+  return [...line.matchAll(roleRequirement)].some(isRoleTenureRequirement)
+    || new RegExp(String.raw`^\s*(?:\[\s*[x ]\s*\]\s*)?${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\b`, 'i').test(line);
+}
 
 // Convert an experience quantity without changing the retained JD evidence.
 function experienceNumber(value) {
@@ -146,7 +191,7 @@ function experienceMatch(match, text) {
     && bachelorDegree.test(prefix) && !advancedDegree.test(degreeClause)) return null;
   const cue = [...prefix.slice(-80).matchAll(new RegExp(HARD_EXPERIENCE_CUE_RE.source, 'gi'))].at(-1);
   const preference = [...prefix.slice(-80).matchAll(new RegExp(PREFERENCE_RE.source, 'gi'))].at(-1);
-  const afterPreference = /^\s*(?:is\s+|are\s+)?(?:preferred|desirable|a\s+bonus|an?\s+advantage|nice\s+to\s+have)\b/i.test(suffix);
+  const afterPreference = /^\s*(?:(?:is|are|would\s+be|will\s+be)\s+)?(?:preferred|desirable|a\s+(?:bonus|plus|nice\s+to\s+have)|an?\s+advantage|nice\s+to\s+have)\b/i.test(suffix);
   const experiencePreference = /\bexperience\b(?:(?!\b(?:required|must|mandatory|and|but)\b)[^.!?;,]){0,60}\b(?:preferred|desirable|bonus|advantage|nice\s+to\s+have)\b/i.test(requirementTail);
   const beforePreference = preference && (!cue || preference.index > cue.index);
   if (afterPreference || experiencePreference || beforePreference) return null;
@@ -187,6 +232,49 @@ export function extractExperienceYears(text) {
   for (const match of cleaned.matchAll(activityRequirement)) {
     const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
+  }
+  const roleTextInput = typeof text === 'string' ? text : '';
+  const hasHtml = /<\/?[a-z][^>]*>/i.test(roleTextInput);
+  const hasNestedLists = /<(ul|ol)\b[^>]*>(?:(?!<\/?\1\b)[\s\S])*<(?:ul|ol)\b/i.test(roleTextInput);
+  const roleText = (hasHtml ? roleTextInput : roleTextInput.replace(/\r?\n[\t ]*\r?\n/g, '\u0001'))
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<li\b[^>]*>[\s\S]*?<\/li\s*>/gi, (item) => item
+      .replace(/<\/?(?:br|div|p)\b[^>]*>/gi, ' ')
+      .replace(/\s+/g, ' '))
+    .replace(/<br\b[^>]*>/gi, '\n')
+    .replace(/<\/div\s*>\s*<div\b[^>]*>/gi, '\n')
+    .replace(/<li\b[^>]*>|<\/li\s*>/gi, '\u0000')
+    .replace(/<\/?(?:address|article|aside|blockquote|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|main|ol|p|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, ' ');
+  const roleBlocks = decodeEntities(roleText).replace(/\n(?:[\t ]*\n)+/g, '\n').replace(/\u0001/g, '\n\n');
+  const roleRequirement = new RegExp(
+    String.raw`^\s*(?:[-*•]\s*)?(?:\[\s*[x ]\s*\]\s*)?${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+in\s+(?:(?:a|an|the)\s+)?(?:[A-Za-z][A-Za-z/-]*\s+){0,5}?(?:role|position)\b`,
+    'gi',
+  );
+  let preferredSection = false;
+  for (const item of (hasNestedLists ? [] : roleBlocks.split('\u0000'))) {
+    const itemLines = item.split(/\r?\n/).map((value) => value.replace(/\s+/g, ' ').trim());
+    for (let lineIndex = 0; lineIndex < itemLines.length; lineIndex += 1) {
+      const requirementLine = itemLines[lineIndex];
+      if (!requirementLine) continue;
+      const headingType = roleTenureHeadingType(requirementLine);
+      if (headingType === 'preferred') preferredSection = true;
+      else if (headingType === 'required') preferredSection = false;
+      if (preferredSection) continue;
+      const roleRequirementMatches = [...requirementLine.matchAll(roleRequirement)];
+      const previousLine = itemLines[lineIndex - 1] ?? '';
+      const currentLineIsExplicitItem = /^\s*(?:[-*•]\s*|\[\s*[x ]\s*\]\s*)/.test(requirementLine);
+      const advancedDegree = /\b(?:master(?:['’]s|s)?|m\.?\s?tech|m\.?\s?s\.?|mba|ph\.?\s?d\.?|doctorate)\b/i;
+      if (!currentLineIsExplicitItem && /\bdegree\s+or\s*$/i.test(previousLine) && !advancedDegree.test(previousLine)) continue;
+      if (roleRequirementMatches.some(isRoleTenureRequirement)
+        && !isRoleTenureBoundary(itemLines[lineIndex + 1] ?? '', roleRequirement)) continue;
+      for (const match of roleRequirementMatches) {
+        if (!isRoleTenureRequirement(match) || !hasCompleteRoleTenureEnding(match, requirementLine)) continue;
+        const parsed = experienceMatch(match, requirementLine);
+        if (parsed) matches.push(parsed);
+      }
+    }
   }
   const requiredYears = new RegExp(String.raw`\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+(?:is\s+)?required\b`, 'gi');
   for (const match of cleaned.matchAll(requiredYears)) {

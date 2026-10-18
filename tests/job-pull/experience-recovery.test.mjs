@@ -77,6 +77,106 @@ test('explicit applicant experience strings preserve Unicode range bounds and el
   }
 });
 
+test('standalone role-tenure qualifications require a complete, mandatory, or approved example ending', () => {
+  for (const description of [
+    '5+ years in a customer-facing role.',
+    'Five years in a similar position.',
+    '3–5 years in a technical role.',
+    '5+ years in a role is required.',
+    '5+ years in a role are mandatory.',
+    '5+ years in a technical customer-facing role (Solutions Engineering, Forward Deployed Engineering, Implementation Engineering, Technical Consulting, Technical PM, or similar).',
+  ]) {
+    const expected = description.startsWith('3') ? 3 : 5;
+    const candidate = normalizeCandidate({ ...captured[0], description, experience: {} });
+    assert.equal(candidate.experience.minYears, expected, description);
+    assert.equal(classifyExperience(candidate, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+  }
+  for (const description of [
+    '- 5+ years in a customer-facing role.',
+    '* [x] Five years in a similar position.',
+    '<ul><li>3–5 years in a technical role</li></ul>',
+  ]) assert.ok(extractExperienceYears(description), description);
+
+  for (const description of [
+    '5+ years in a similar role is strongly preferred.',
+    '5+ years in a similar role is optional.',
+    '5+ years in a similar role (optional).',
+    '5+ years in a similar role is not a prerequisite.',
+    '5+ years in a role, Python experience is not required.',
+    '5+ years in a role with Python experience.',
+    '5+ years in a role may be useful.',
+    '5+ years in a role (preferred).',
+    '5+ years in a role (Solutions Engineering, or preferred).',
+  ]) assert.equal(extractExperienceYears(description), null, description);
+
+  for (const description of [
+    '5+ years in a customer-facing role\n(preferred, not required)',
+    '5+ years in a customer-facing role\n(optional)',
+    '5+ years in a customer-facing role\n(unclear qualification)',
+    '<div>5+ years in a customer-facing role</div><div>(preferred, not required)</div>',
+    '<p>5+ years in a customer-facing role</p><p>(preferred, not required)</p>',
+    '<div>\n <section><p>5+ years in a customer-facing role</p></section> \n </div><div>\n <section><p>(preferred, not required)</p></section> \n </div>',
+    '<ul><li>5+ years in a customer-facing role<br>(preferred, not required)</li></ul>',
+    '5+ years in a customer-facing role\n(strongly preferred)',
+    '5 years in a similar role\nis a nice to have.',
+    '5 years in a similar role\nis not a prerequisite.',
+    '5 years in a similar role\nextra context that does not mark a new item',
+  ]) assert.equal(extractExperienceYears(description), null, description);
+  assert.equal(extractExperienceYears('5+ years in a customer-facing role\n\n(preferred, not required)').minYears, 5);
+  assert.equal(extractExperienceYears('<p>5 years in a similar role</p>\n\n<p>(preferred, not required)</p>'), null);
+  assert.equal(extractExperienceYears('<ul><li><p>5 years in a similar role</p>\n\n<p>(preferred, not required)</p></li></ul>'), null);
+  assert.equal(extractExperienceYears('<ul><li>5+ years in a customer-facing role<br>(preferred, not required)</li><li>3 years in a technical role</li></ul>').minYears, 3);
+  assert.equal(extractExperienceYears('<ul><li>3+ years in a customer-facing role<br>(preferred, not required)</li><li>5 years in a technical role</li></ul>').minYears, 5);
+  assert.equal(extractExperienceYears('<ul><li>5 years in a similar role<br>(optional)</li><li>3 years in a technical role.</li></ul>').minYears, 3);
+  assert.equal(extractExperienceYears('<ul><li>3 years in a similar role<br>(optional)</li><li>5 years in a technical role.</li></ul>').minYears, 5);
+  assert.equal(extractExperienceYears('<ul><li><p>5 years in a similar role</p><p>(preferred, not required)</p></li></ul>'), null);
+  assert.equal(extractExperienceYears('<ul><li><p>5 years in a similar role</p><p>(preferred, not required)</p></li><li><p>3 years in a technical role.</p></li></ul>').minYears, 3);
+  assert.equal(extractExperienceYears('<ul><li>5 years in a similar role<ul><li>preferred, not required</li></ul></li></ul>'), null);
+  assert.equal(extractExperienceYears('<ul><li>5 years in a similar role<ul><li>preferred, not required</li></ul></li></ul><p>Minimum 2 years of Python experience required.</p>').minYears, 2);
+  for (const description of [
+    'Preferred qualifications:\n5+ years in a customer-facing role.',
+    'Preferred qualifications include:\n5+ years in a customer-facing role.',
+    'Preferred qualifications includes:\n5+ years in a customer-facing role.',
+    '<h3>Preferred qualifications</h3><ul><li>5+ years in a customer-facing role.</li></ul>',
+    '<h3><strong>Preferred qualifications include:</strong></h3><ul><li>5+ years in a customer-facing role.</li></ul>',
+    '<h3><strong>Preferred qualifications includes:</strong></h3><ul><li>5+ years in a customer-facing role.</li></ul>',
+  ]) assert.equal(extractExperienceYears(description), null, description);
+  for (const heading of ['Optional qualifications:', 'Preferred Qualifications & Skills:']) {
+    assert.equal(extractExperienceYears(`${heading}\n5 years in a similar role.`), null, heading);
+    assert.equal(extractExperienceYears(`${heading}\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.`).minYears, 3, heading);
+  }
+  assert.equal(extractExperienceYears('Qualifications (preferred):\n5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('<h3>Skills and experience (optional)</h3><p>5 years in a similar role.</p>'), null);
+  assert.equal(extractExperienceYears('Qualifications (preferred):\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.').minYears, 3);
+  assert.equal(extractExperienceYears('Bachelor’s degree or\n5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('Bachelor\'s degree or\n- 3 years in a similar role.').minYears, 3);
+  assert.equal(extractExperienceYears('Preferred qualifications:\n5+ years in a customer-facing role.\nRequired qualifications:\n3 years in a technical role.').minYears, 3);
+  const preferredHeadingCase = extractExperienceYears('1 year in a technical role\nPreferred qualifications:\n5 years in a customer-facing role.');
+  assert.equal(preferredHeadingCase.minYears, 1);
+  assert.equal(classifyExperience({ experience: preferredHeadingCase }, policy).pass, true);
+  assert.equal(extractExperienceYears('5 years in a similar role\nRequirements:\n1 year in a technical role.').minYears, 5);
+  assert.equal(extractExperienceYears('5 years in a similar role\n3 years in a technical role.').minYears, 5);
+  assert.equal(extractExperienceYears('**Preferred qualifications:**\n5+ years in a customer-facing role.\n# **Required qualifications:**\n3 years in a technical role.').minYears, 3);
+  for (const heading of ['Preferred:', 'Preferred skills:', 'Nice to have:', 'Nice-to-have:']) {
+    assert.equal(extractExperienceYears(`${heading}\n5+ years in a customer-facing role.`), null, heading);
+    assert.equal(extractExperienceYears(`${heading}\n5+ years in a customer-facing role.\nRequirements:\n3 years in a technical role.`).minYears, 3, heading);
+  }
+  assert.equal(extractExperienceYears('<h3>Nice to have</h3><ul><li>5+ years in a customer-facing role.</li></ul><h3>Required qualifications</h3><ul><li>3 years in a technical role.</li></ul>').minYears, 3);
+  assert.equal(extractExperienceYears('No prior experience required. You will be working remotely for at least three years in this position.').minYears, 3);
+  assert.equal(extractExperienceYears('Minimum 3 years of Python experience required. You will spend five years in a rotational position.').minYears, 3);
+  for (const sentence of [
+    'You will spend five years in a rotational position.',
+    'You must spend five years in a rotational position.',
+    'You need to spend five years in a rotational position.',
+    'You will have five years in a rotational position.',
+    'You will bring five years in a customer-facing role.',
+    'You will have five years in a customer-facing role.',
+    'You will possess five years in a customer-facing role.',
+    'You do not need five years in a similar position.',
+    'You do not need to have five years in a similar position.',
+  ]) assert.equal(extractExperienceYears(sentence), null, sentence);
+});
+
 test('saved Accenture minima survive parenthesized units and education years', () => {
   for (const minimum of [2, 3, 2, 2, 5]) {
     const description = `Minimum ${minimum} year(s) of experience is required Educational Qualification : 15 years full time education Summary : As a Custom Software Engineer`;

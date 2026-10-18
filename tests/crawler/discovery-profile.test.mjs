@@ -35,6 +35,8 @@ const baseConfig = (databasePath) => ({
 });
 
 const notificationArgs = (root) => ['--notification-log', path.join(root, 'notification-receipts.jsonl')];
+// Keep fake CLI runs from writing reports into the shared checkout.
+const isolatedReportArgs = (root) => ['--report', path.join(root, 'reports', 'fake-run.html')];
 const testNotifier = () => ({ sent: true, reason: null });
 
 test('normalizes profile choices and rejects unsupported values', () => {
@@ -186,7 +188,7 @@ test('strict write CLI keeps credential paths lazy when runner returns no-write'
     '--journal', journalPath,
     '--shortlist-limit', '1',
     '--run-id', 'strict-no-write-shadow',
-    '--lock-path', path.join(root, 'daily.lock'),
+    '--lock-path', path.join(root, 'daily.lock'), ...isolatedReportArgs(root),
   ], {
     dailyRunner: async (options) => {
       received = options;
@@ -248,7 +250,7 @@ test('notification failure degrades write output and persists an invalid canary'
     '--run-id', 'notification-failure',
     '--lock-path', path.join(root, 'daily.lock'),
     '--canary-log', canaryLog,
-    '--notification-log', notificationLog,
+    '--notification-log', notificationLog, ...isolatedReportArgs(root),
   ], {
     dailyRunner: async () => ({
       runId: 'notification-failure',
@@ -301,7 +303,7 @@ test('daily command invokes the unified runner and emits its operator result wit
   const evidencePath = path.join(root, 'canary-evidence.json');
   const evidence = { schemaVersion: 'LaunchpadDeliveryCanaryEvidenceV1', runId: 'command-daily-1' };
   writeFileSync(evidencePath, JSON.stringify(evidence));
-  const exitCode = await main(['daily', 'midday', '--env', 'dev', '--mode', 'remote', '--location-preset', 'pune', '--run-id', 'command-daily-1', '--canary-evidence', evidencePath, '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', 'midday', '--env', 'dev', '--mode', 'remote', '--location-preset', 'pune', '--run-id', 'command-daily-1', '--canary-evidence', evidencePath, '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -353,7 +355,7 @@ test('daily command passes missing canary evidence as nonfatal invalid evidence'
   let received = null;
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
   const missingPath = path.join(root, 'missing-canary-evidence.json');
-  const exitCode = await main(['daily', '--env', 'dev', '--canary-evidence', missingPath, '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--canary-evidence', missingPath, '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -368,7 +370,7 @@ test('daily command passes missing canary evidence as nonfatal invalid evidence'
 test('daily command activates the codex scorer by default', async () => {
   let received = null;
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-scorer-default', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-scorer-default', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -383,7 +385,7 @@ test('daily command activates the codex scorer by default', async () => {
 test('daily --no-scorer passes no scorer to the runner', async () => {
   let received = null;
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
-  const exitCode = await main(['daily', '--env', 'dev', '--no-scorer', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--no-scorer', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -398,7 +400,7 @@ test('daily --no-scorer passes no scorer to the runner', async () => {
 test('daily --scores-json with --no-scorer passes the scores path through and no scorer', async () => {
   let received = null;
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
-  const exitCode = await main(['daily', '--env', 'dev', '--scores-json', 'scores/manual.json', '--no-scorer', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--scores-json', 'scores/manual.json', '--no-scorer', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async (options) => {
       received = options;
       return { schemaVersion: 'LaunchpadV5NormalModeV1', outcome: { status: 'ok' } };
@@ -414,7 +416,7 @@ test('daily --scores-json with --no-scorer passes the scores path through and no
 test('daily command notifies once when the run is fatal', async () => {
   const notifications = [];
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-fatal', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-fatal', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async () => ({
       runId: 'command-daily-fatal',
       outcome: { status: 'fatal', errors: [{ message: 'source timeout' }] },
@@ -432,7 +434,7 @@ test('daily command notifies once when the run is fatal', async () => {
 test('daily command notifies once for fresh Strict Hot/Active matches', async () => {
   const notifications = [];
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-fresh', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-fresh', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async () => ({
       runId: 'command-daily-fresh',
       outcome: { status: 'ok' },
@@ -454,7 +456,7 @@ test('daily command notifies once for fresh Strict Hot/Active matches', async ()
 test('daily command still notifies a terminal receipt when there are no fresh strict matches', async () => {
   const notifications = [];
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-no-fresh', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root)], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-no-fresh', '--lock-path', path.join(root, 'daily.lock'), ...notificationArgs(root), ...isolatedReportArgs(root)], {
     dailyRunner: async () => ({
       runId: 'command-daily-no-fresh',
       outcome: { status: 'ok' },
@@ -475,7 +477,7 @@ test('daily command still notifies a terminal receipt when there are no fresh st
 test('daily keeps terminal exit codes and emits receipts when delivery or persistence fails', async () => {
   const fatalRoot = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
   let fatalEmitted = null;
-  const fatalExitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-notifier-failure', '--lock-path', path.join(fatalRoot, 'daily.lock'), ...notificationArgs(fatalRoot)], {
+  const fatalExitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-notifier-failure', '--lock-path', path.join(fatalRoot, 'daily.lock'), ...notificationArgs(fatalRoot), ...isolatedReportArgs(fatalRoot)], {
     dailyRunner: async () => ({ runId: 'command-daily-notifier-failure', outcome: { status: 'fatal' } }),
     emit: (result) => { fatalEmitted = result; },
     notify: () => { throw new Error('desktop unavailable'); },
@@ -487,7 +489,7 @@ test('daily keeps terminal exit codes and emits receipts when delivery or persis
 
   const persistenceRoot = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-lock-'));
   let persistenceEmitted = null;
-  const persistenceExitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-persistence-failure', '--lock-path', path.join(persistenceRoot, 'daily.lock'), '--notification-log', persistenceRoot], {
+  const persistenceExitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-persistence-failure', '--lock-path', path.join(persistenceRoot, 'daily.lock'), '--notification-log', persistenceRoot, ...isolatedReportArgs(persistenceRoot)], {
     dailyRunner: async () => ({ runId: 'command-daily-persistence-failure', outcome: { status: 'ok' } }),
     emit: (result) => { persistenceEmitted = result; },
     notify: testNotifier,
@@ -501,7 +503,7 @@ test('daily CLI emits one partial envelope without notification or notification 
   const root = mkdtempSync(path.join(os.tmpdir(), 'crawler-command-partial-'));
   let emitted = null;
   let notifications = 0;
-  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-partial', '--lock-path', path.join(root, 'daily.lock'), '--notification-log', path.join(root, 'notifications.json')], {
+  const exitCode = await main(['daily', '--env', 'dev', '--run-id', 'command-daily-partial', '--lock-path', path.join(root, 'daily.lock'), '--notification-log', path.join(root, 'notifications.json'), ...isolatedReportArgs(root)], {
     dailyRunner: async () => ({ runId: 'command-daily-partial', outcome: { status: 'partial' }, terminalEnvelope: { schemaVersion: 'LaunchpadDailyTerminalEnvelopeV1', status: 'partial', writesPlanned: false } }),
     emit: (result) => { emitted = result; },
     notify: () => { notifications += 1; },

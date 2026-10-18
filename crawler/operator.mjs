@@ -22,7 +22,7 @@ import { discoverHnJobs } from './hn-discovery.mjs';
 import { isSourceTrialActive } from './source-yield.mjs';
 import { buildVcWatchlistRequests, loadVcPortfolioWatchlist } from './vc-portfolio-watchlist.mjs';
 import { runCommercialRescue } from './commercial-rescue.mjs';
-import { openCrawlerStore } from './run.mjs';
+import { openCrawlerStore, readCrawlerRunSnapshot } from './run.mjs';
 import { selectDailyReserve } from './reserve.mjs';
 import { buildSchedulePlans } from './schedules.mjs';
 import { crawlWorkflow } from './workflow.mjs';
@@ -1496,6 +1496,11 @@ export async function runCrawlerOperator({
       profile,
       operator: { databasePath, schedule, configVersion: config.schemaVersion, profile },
     };
+  } catch (error) {
+    if (error instanceof Error && !error.lastDurableSourceState) {
+      error.lastDurableSourceState = readCrawlerRunSnapshot(store, runId ?? dailyRunIdentity({ schedule, mode, locationPreset, at: runAt }));
+    }
+    throw error;
   } finally {
     if (!suppliedStore) store.close();
   }

@@ -434,8 +434,10 @@ function newestPostingAt(observations, manifest) {
   return manifest?.newestPostingAt ?? values.at(-1) ?? null;
 }
 
-function snapshot(db, runId) {
+// Read one durable run and its source attempts without resuming any work.
+export function readCrawlerRunSnapshot(db, runId) {
   const run = runRow(db, runId);
+  if (!run) return null;
   return {
     run,
     stages: stagesFor(db, runId),
@@ -684,6 +686,9 @@ export function finishCrawlRun(store, runId, { status = 'completed', counts = {}
   const safeCounts = cloneJsonSafe(counts, 'run counts');
   const safeTelemetry = cloneJsonEnvelope(telemetry, 'run telemetry', [
     ['sources', '*', 'attemptHistory'],
+    ['workflow', 'sourceTelemetry', '*', 'attemptHistory'],
+    ['workflow', 'sourceYield', 'sources'],
+    ['workflow', 'funnel', 'sourceHealth', '*', 'boards'],
     ...WORKFLOW_COLLECTIONS.map((key) => ['workflow', key]),
     ...TERMINAL_COLLECTIONS.map((key) => ['workflow', 'terminalEnvelope', key]),
   ]);
@@ -1187,7 +1192,7 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
   if (!store) throw new TypeError('crawlRun requires an open crawler store');
   if (!runId) throw new TypeError('crawlRun requires runId for durable idempotency');
   const started = startCrawlRun(store, { runId, schedule, config, clock });
-  if (started.idempotent) return { ...snapshot(store, runId), idempotent: true, newlyDated: 0 };
+  if (started.idempotent) return { ...readCrawlerRunSnapshot(store, runId), idempotent: true, newlyDated: 0 };
   try {
     const at = nowFrom(clock);
     const undatedBefore = Number(store.prepare('SELECT COUNT(*) AS count FROM jobs WHERE original_posted_at IS NULL').get().count);
@@ -1403,10 +1408,10 @@ export async function crawlRun({ store, sourcePlans = [], priorState = {}, confi
       },
       clock,
     });
-    return { ...snapshot(store, runId), idempotent: false, resumed: started.resumed, newlyDated };
+    return { ...readCrawlerRunSnapshot(store, runId), idempotent: false, resumed: started.resumed, newlyDated };
   } catch (error) {
     const failedRun = failCrawlRun(store, runId, error, { clock });
-    error.lastDurableSourceState = snapshot(store, runId);
+    error.lastDurableSourceState = readCrawlerRunSnapshot(store, runId);
     error.failedRun = failedRun;
     throw error;
   }

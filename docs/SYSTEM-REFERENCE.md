@@ -46,6 +46,10 @@ The daily runner:
 
 Crawler SQLite owns crawl observations, novelty, source health, and schedule state. It does not own the seven-day opportunity cooldown/surfacing policy.
 
+Workflow telemetry gives declared source, yield, and funnel-board collections their own bounded record budgets. Each record retains JSON type, depth, node, count, and byte checks. Workflow persistence and replay use the same boundaries. If post-crawl handoff fails, the operator retains a read-only run snapshot before closing the store.
+
+Daily HTML reports show terminal status, failure cause, and retained source coverage. Missing funnel measurements stay `Not Verified`. `sourceYieldScope: crawler-discovery` identifies the discovery snapshot before final enrichment and scoring; it excludes later tracked-source reads and does not count delivered roles. Per-board request rates require matching board evidence. CLI tests select temporary report destinations and leave runtime reports untouched.
+
 Workday freshness trusts a usable DETAIL `startDate` and applies the normal age classes. LIST-only `postedOn`, including bounded labels, is not trusted for selection and remains in `VerifyQueue` until detail evidence supplies a usable `startDate`.
 
 Company-careers traversal matches career paths, filters assets, and treats same-host sitemap entries as inventory to inspect. A sitemap URL alone never creates a job. Supported HTML job details require an explicit title, location, and job-description field or heading section. Missing posting dates and employment types stay unknown. Field provenance retains the detail URL and discovery source.

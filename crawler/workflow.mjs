@@ -473,7 +473,7 @@ export async function crawlWorkflow({
   const persistedSourceTelemetry = durable.idempotent ? durable.telemetry?.workflow?.sourceTelemetry : null;
   const sourceTelemetry = persistedSourceTelemetry ?? Object.fromEntries(Object.entries(durable.telemetry?.sources ?? {}).map(([sourceId, telemetry]) => [
     sourceId,
-    { ...telemetry, detail: sourceTelemetryDetails[sourceId] ?? null },
+    { ...telemetry, detail: sourceTelemetryDetails[sourceId] ?? telemetry.detail ?? telemetry.manifest ?? null },
   ]));
   const sourceYield = buildSourceYieldReport(records, sourceTelemetry, config.sourceYield);
   const sourceEndStates = (durable.idempotent ? durable.telemetry?.workflow?.terminalEnvelope?.sourceEndStates : null)
@@ -598,9 +598,9 @@ export async function crawlWorkflow({
         unresolvedLeads: jsonSafe(unresolvedLeads),
         historicalSuppressions: jsonSafe(historicalResult.suppressed),
         historicalAmbiguous: jsonSafe(historicalResult.ambiguous),
-        sourceTelemetry: jsonSafe(sourceTelemetry),
-        sourceYield: jsonSafe(sourceYield),
-        funnel: jsonSafe(funnel),
+        sourceTelemetry: cloneJsonEnvelope(sourceTelemetry, 'workflow source telemetry', [['*', 'attemptHistory']]),
+        sourceYield: cloneJsonEnvelope(sourceYield, 'workflow source yield', [['sources']]),
+        funnel: cloneJsonEnvelope(funnel, 'workflow funnel', [['sourceHealth', '*', 'boards']]),
         v4Snapshot: jsonSafe(v4SnapshotTelemetry),
         novelty: jsonSafe(noveltyBreakdown),
         terminalEnvelope: cloneJsonEnvelope(terminalEnvelope, 'terminal envelope', TERMINAL_COLLECTIONS.map((key) => [key])),
@@ -633,12 +633,12 @@ export async function crawlWorkflow({
     counts: workflowCounts,
     novelty: jsonSafe(noveltyBreakdown),
     v4Snapshot: jsonSafe(v4SnapshotTelemetry),
-    funnel: jsonSafe(persistedWorkflow?.funnel ?? funnel),
+    funnel: cloneJsonEnvelope(persistedWorkflow?.funnel ?? funnel, 'workflow funnel', [['sourceHealth', '*', 'boards']]),
     reserve: selection.reserve,
     shortlist: selection.shortlist,
     shortfall: selection.shortfall,
-    sourceTelemetry: jsonSafe(sourceTelemetry),
-    sourceYield: jsonSafe(persistedWorkflow?.sourceYield ?? sourceYield),
+    sourceTelemetry: cloneJsonEnvelope(sourceTelemetry, 'workflow source telemetry', [['*', 'attemptHistory']]),
+    sourceYield: cloneJsonEnvelope(persistedWorkflow?.sourceYield ?? sourceYield, 'workflow source yield', [['sources']]),
     plannedDownstreamHandoff: handoff,
     failures: durable.failures,
     selectionInvariants: { selectedVerifyQueue },

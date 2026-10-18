@@ -14,24 +14,43 @@ When sources conflict, do not infer promotion from prose. Re-run allowed local c
 
 ## Checkout identity and warning
 
-- Branch: `feat/launchpad-readiness-completion`
-- HEAD at this documentation synchronization: `ae89f73eba5a2bdb8eea5b9a39694e33919c7d99`
-- Working tree: dirty, with substantial tracked and untracked implementation work.
-- Consequence: all implementation claims below are **working-tree** claims. They are not claims about HEAD alone, a clean committed baseline, a pushed branch, or production.
+- Branch: `dco/yield-00-reliability-baseline`
+- Candidate base: `52e55fd41c8a78b2ded4543b7c5394c6e338f61f`
+- Preparation provenance: P00 candidate work began in this isolated checkout on 2026-10-18 IST from the stated base.
+- Consequence: implementation claims below describe this checkout's contents, not HEAD alone, a pushed branch, or production.
 - Preservation rule: do not reset, restore, clean, stash, stage, commit, rebase, switch branches, or remove unrelated user work as part of status maintenance.
+- This checkout carries the P00 reliability baseline plus a scoped standalone role-tenure qualification repair. Candidate-specific checks are recorded below; earlier dated sections describe historical source-root checkouts and are not evidence for this candidate.
 
 ## Status vocabulary
 
 | Term | Meaning |
 |---|---|
-| **working-tree** | Present in current dirty checkout. It may differ from HEAD and remote branches. |
+| **working-tree** | Present in the current checkout. It may differ from HEAD and remote branches. |
 | **local-verified** | Exercised by deterministic local validation or tests in this checkout. This does not prove credentials, external services, scheduling, yield, or production behavior. |
-| **live-verified** | Observed through an explicitly authorized live integration or production-shadow procedure with retained evidence. No current item is claimed live-verified here. |
-| **promoted** | A clean, reviewed revision has satisfied executable release gates and been deliberately adopted for production use. Launchpad is not promoted. |
+| **live-verified** | Observed through an authorized live integration with retained evidence. No live integration was run for this candidate. |
+| **promoted** | A clean, reviewed revision has satisfied release gates and been deliberately adopted for production use. This candidate is not promoted. |
+
+## P00 candidate status, 2026-10-19
+
+The new matcher accepts role-tenure qualifications only when the quantity begins a plain-text line or HTML block/list item, with an optional bullet or checklist prefix. One heading classifier recognizes shaped optional/preferred headings, including `Optional qualifications` and `Preferred Qualifications & Skills`, and required/minimum headings reset that context. A blank line, heading, new bullet, or another standalone quantity requirement ends the current item. Other adjacent text leaves the number unknown for manual review. Adjacent HTML block formatting is normalized to one item boundary, and flat HTML list items remain independent. Nested HTML lists defer this new matcher for the whole description because item ownership cannot be proved without parsing a tree. Real plaintext blank lines remain boundaries. Existing forward, reverse, activity, and `requiredYears` extractors retain their HEAD behavior. The greedy role phrase stops at the first `role` or `position`, so a trailing preference remains visible to the existing preference check.
+
+Narrative forms outside this standalone matcher remain P01 work. This includes `bring`/`have`/`possess` sentences that HEAD leaves unmatched, negated narrative claims, and future-tenure wording. The legacy result 3 for `No prior experience required. You will be working remotely for at least three years in this position.` remains unchanged. No broader future or negation grammar is claimed.
+
+The P00 documentation and tests cover bounded local engineering behavior, including report handling and experience matching. Reports map the canonical successful outcome `ok` to `completed`, while incomplete delivery states keep precedence and unknown outcomes remain `Not Verified`. These checks do not establish live source yield, production behavior, or promotion.
+
+The R20 parser repair treats raw blank lines as boundaries only for plaintext. Blank formatting between HTML paragraphs no longer creates a separate qualification item. The focused parser and report tests passed 23/23 at 00:59 IST. The earlier five-file 122/122 result remains R18 evidence; R20 did not rerun that broader check.
+
+The R21 report-status fix recognizes `ok` as `completed`. The local report test passed 10/10 at 01:02 IST; `git diff --check` passed. R21 did not rerun parser or broader checks. See the [R21 receipt](../.local/p00-baseline-review/r21/receipt.md).
+
+R22 introduced two hard-rejection regressions. R23 fixes them within the standalone matcher: preference cues can follow qualification labels in shaped headings, and an unbulleted role-tenure line after a dangling bachelor-degree `or` is deferred. A new bullet remains a separate requirement; required headings reset preferred context. Existing advanced and unspecified degree cases retain their tested results. The parser test passed 13/13 and `git diff --check` passed; exact output is in the [R23 receipt](../.local/p00-baseline-review/r23/receipt.md). No live behavior or production status is claimed.
 
 ## Current local position
 
-Working-tree implementations for readiness Phases 00–06 and daily-discovery recovery are present. Discovery now includes public LinkedIn guest search plus Chromium-backed Glassdoor, Instahyre, and Wellfound lanes. Workday LIST-only `postedOn` and genuinely undated roles remain in `VerifyQueue`; only DETAIL `startDate` supplies Workday freshness. Local engineering paths are substantially complete; shortlist selection, live v5 writes, and production promotion remain open.
+Working-tree implementations for readiness Phases 00–06 and daily-discovery recovery are present. Discovery includes public LinkedIn guest search plus Chromium-backed Glassdoor, Instahyre, and Wellfound lanes. Workday LIST-only `postedOn` and genuinely undated roles remain in `VerifyQueue`; only DETAIL `startDate` supplies Workday freshness. Local engineering paths are substantially complete; shortlist selection, live v5 writes, and production promotion remain open.
+
+- Candidate checks: see [the P00 review report](reports/2026-10-18-reliability-repair.md).
+- `npm run validate` is blocked in this isolated checkout because five ignored `.claude` skill mirrors are absent. The source root's historical validation result does not apply to this candidate. No skill mirrors or validator behavior were changed.
+- No live source probe or production verification was run for this candidate.
 
 ### 2026-10-07 enforcement repairs and bounded verification
 
@@ -84,7 +103,7 @@ Working-tree implementations for readiness Phases 00–06 and daily-discovery re
 - Durable opportunity identity prefers provider + requisition ID. Distinct requisitions do not merge through company/title/location fallback.
 - Workday DETAIL `startDate` is trusted and follows the normal `Hot`, `Active`, and `Backfill` age classes. LIST-only `postedOn`, including bounded labels, and genuinely undated rows route to `VerifyQueue`. See [workday-postedon-probe.md](research/workday-postedon-probe.md).
 - Deadline and source signals propagate into scoring and mode selection.
-- Remote eligibility requires explicit India/APAC evidence or compatible IST overlap; context-free worldwide/global text is insufficient.
+- Remote eligibility follows current `master_prompt.md` §2, including worldwide/anywhere/global roles without country limits or foreign work-authorization requirements. The older India/APAC-only description is superseded.
 - Apify remains explicit rescue only and default-off, with persisted offsets, seen-cache state, hard budget controls, and cost reconciliation paths.
 - Location presets reorder source emphasis without bypassing shared eligibility and score gates.
 - Focused Phase 01 checks passed 168/168.
@@ -206,4 +225,8 @@ node crawler/cli.mjs readiness --run-tests
 git diff --check
 ```
 
-Latest bounded verification on 2026-08-21 included Launchpad validation, safety-contract validation, full tracked diff checks, production-config byte-diff protection, and 725/725 passing tests across a fail-closed inventory of 76 files. Local no-write recovery evidence includes three terminal public-source exercises and one fixture interruption/resume drill. Readiness is code-complete but intentionally non-production because evidence is local-only; credentialed operational verification, external writes, schedule installation, release promotion, and rollback evidence remain absent. Earlier retained evidence includes Phase 00 (13/13), Phase 01 (168/168), clean-copy Phase 03 (64/64), and Phase 06 (27/27).
+The latest verification is the 2026-10-18 section above. Historical verification on 2026-08-21 included validation, safety, tracked diff checks, production-config byte-diff protection, and 725/725 passing tests across 76 files. That local recovery evidence includes three terminal public-source exercises and one fixture interruption/resume drill. These older receipts do not establish current scheduling, credentialed operations, promotion, or rollback. Earlier retained evidence includes Phase 00 (13/13), Phase 01 (168/168), clean-copy Phase 03 (64/64), and Phase 06 (27/27).
+
+## P00 draft review blockers, 19 October 2026 IST
+
+Codex review still found two introduced false hard rejections: a `Strongly preferred:` section and future-tenure prose wrapped before the numeric line. These cases block merge. Passing focused tests do not resolve the findings. P00 remains a draft proposal; no live or production readiness is claimed.
