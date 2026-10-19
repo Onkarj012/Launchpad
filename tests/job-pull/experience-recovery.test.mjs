@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { extractExperienceYears, normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { extractExperienceRequirements, extractExperienceYears, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyExperience } from '../../job-pull/eligibility.mjs';
+import { parseLinkedInJobDetail } from '../../job-pull/portal-adapters/linkedin.mjs';
 
 const captured = JSON.parse(readFileSync(new URL('../fixtures/portals/linkedin-details/live-trial-observations-2026-10-03.json', import.meta.url)));
 const accenture = JSON.parse(readFileSync(new URL('../fixtures/experience/accenture-captured-2026-10-06.json', import.meta.url)));
@@ -66,6 +67,50 @@ test('applicant ranges, activity requirements, and explicit 3+ still enforce the
     '3-5 years of experience preferred.',
     'The company has 30 years of experience. Build backend systems.',
   ]) assert.equal(extractExperienceYears(description), null, description);
+  for (const [description, minimum] of [
+    ['Our company has\n30 years of experience. Minimum 1 year of software experience required.', 1],
+    ['<p>Our company has</p><p>30 years of experience.</p><p>Minimum 1 year of software experience required.</p>', 1],
+    ['Our company has\n30 years of experience. Minimum 5 years of software experience required.', 5],
+    ['<p>Our company has</p><p>30 years of experience.</p><p>Minimum 5 years of software experience required.</p>', 5],
+  ]) assert.equal(extractExperienceYears(description)?.minYears, minimum, description);
+  assert.equal(classifyExperience({ description: 'Our company has\n30 years of experience. Minimum 1 year of software experience required.' }, policy).code, 'EXPERIENCE_STRICT_0_1');
+  assert.equal(classifyExperience({ description: 'Bachelor\'s degree in CS or\n4 years of software experience. Minimum 1 year overall experience required.' }, policy).code, 'EXPERIENCE_STRICT_0_1');
+  assert.equal(classifyExperience({ description: 'Bachelor\'s degree in CS or\n4 years of software experience. Must have 5 years of AWS experience.' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+
+  const recoveredEvidence = 'Minimum 5 years of software experience required. Python preferred.';
+  const sourceEvidenceCandidate = { title: 'AI Engineer', company: 'Synthetic Example', canonicalUrl: 'https://example.com/jobs/synthetic', description: 'Full-time Pune role.' };
+  for (const scalarMinimum of [null, 0, 1, 2, 5]) {
+    for (const candidate of [
+      normalizeCandidate({ ...sourceEvidenceCandidate, experience: { minYears: scalarMinimum, evidence: recoveredEvidence } }),
+      normalizeCandidate({ ...sourceEvidenceCandidate, minYears: scalarMinimum, experienceEvidence: recoveredEvidence }),
+    ]) {
+      assert.equal(candidate.experience.minYears, 5);
+      assert.equal(candidate.experience.sourceMinYears, 5);
+      assert.equal(classifyExperience(candidate, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+      assert.equal(classifyExperience(normalizeCandidate(candidate), policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+    }
+  }
+  const derivedPreference = normalizeCandidate({
+    ...sourceEvidenceCandidate,
+    experience: { minYears: 5, evidence: recoveredEvidence, sourceMinYears: null, sourceMaxYears: null },
+  });
+  assert.equal(derivedPreference.experience.sourceMinYears, null);
+  assert.equal(classifyExperience(derivedPreference, policy).code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+
+  const mismatchedTrack = {
+    title: 'AI Engineer', company: 'Synthetic Example', canonicalUrl: 'https://example.com/jobs/synthetic',
+    description: 'This opening is for the junior track. Entry-level track: 5 years experience. Senior track: 8 years experience.',
+    experience: null,
+  };
+  for (const candidate of [mismatchedTrack, normalizeCandidate(mismatchedTrack), normalizeCandidate(normalizeCandidate(mismatchedTrack))]) {
+    const decision = classifyExperience(candidate, policy);
+    assert.equal(decision.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+    assert.equal(decision.pass, false);
+    assert.equal(decision.verificationRequired, true);
+    assert.equal(decision.selectedTrack, 'junior');
+    assert.deepEqual([...new Set(decision.requirements.map((item) => item.track).filter(Boolean))], ['entry-level', 'senior']);
+    assert.match(decision.evidence, /does not match stated requirement tracks/);
+  }
 });
 
 test('explicit applicant experience strings preserve Unicode range bounds and eligibility', () => {
@@ -146,14 +191,29 @@ test('standalone role-tenure qualifications require a complete, mandatory, or ap
     assert.equal(extractExperienceYears(`${heading}\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.`).minYears, 3, heading);
   }
   assert.equal(extractExperienceYears('Qualifications (preferred):\n5 years in a similar role.'), null);
+  for (const description of [
+    'Preferred qualifications:\nQualifications:\nMust have 5 years AWS experience.',
+    'Preferred qualifications:\n# Qualifications\nMust have 5 years AWS experience.',
+    'Preferred qualifications:\n**Qualifications:**\nMust have 5 years AWS experience.',
+    '<h3>Preferred qualifications</h3><h3>Qualifications</h3><p>Must have 5 years AWS experience.</p>',
+    '<ul><li>Preferred qualifications</li><li>Qualifications:</li><li>Must have 5 years AWS experience.</li></ul>',
+    'Junior track:\n0-1 years experience\nSenior track:\n6+ years experience\nQualifications:\nMust have 5 years AWS experience.',
+    '<h3>Junior track</h3><p>0-1 years experience</p><h3>Senior track</h3><p>6+ years experience</p><h3>Qualifications</h3><p>Must have 5 years AWS experience.</p>',
+  ]) {
+    const parsed = extractExperienceRequirements(description).requirements;
+    assert.ok(parsed.some((item) => item.minYears === 5 && item.track === null), description);
+    if (/Senior track/.test(description)) assert.ok(parsed.some((item) => item.minYears === 6 && item.track === 'senior'), description);
+    else assert.equal(extractExperienceYears(description)?.minYears, 5, description);
+  }
+  assert.equal(extractExperienceYears('Preferred qualifications:\n5 years backend experience.\nQualifications:\nMinimum 1 year overall experience required.')?.minYears, 1);
   assert.equal(extractExperienceYears('<h3>Skills and experience (optional)</h3><p>5 years in a similar role.</p>'), null);
   assert.equal(extractExperienceYears('Qualifications (preferred):\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.').minYears, 3);
   assert.equal(extractExperienceYears('Strongly preferred:\n5+ years in a customer-facing role.'), null);
   assert.equal(extractExperienceYears('Strongly preferred:\n- 5+ years in a customer-facing role.'), null);
   assert.equal(extractExperienceYears('Preferred qualifications:\n- Basic Python knowledge\n- 5 years in a similar role.'), null);
   assert.equal(extractExperienceYears('Requirements:\n- AWS certification preferred\n- 5 years in a similar role.')?.minYears, 5);
-  assert.equal(extractExperienceYears('Preferred qualifications:\nQualifications:\n5 years in a similar role.'), null);
-  assert.equal(extractExperienceYears('Preferred qualifications:\nQualifications:\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.')?.minYears, 3);
+  assert.equal(extractExperienceYears('Preferred qualifications:\nQualifications:\n5 years in a similar role.')?.minYears, 5);
+  assert.equal(extractExperienceYears('Preferred qualifications:\nQualifications:\n5 years in a similar role.\nRequired qualifications:\n3 years in a technical role.')?.minYears, 5);
   for (const [description, expected] of [
     ['Optional requirements\n- 5 years in a similar role.', null],
     ['Preferred requirements\n- 5 years in a similar role.', null],
@@ -241,7 +301,13 @@ test('standalone role-tenure qualifications require a complete, mandatory, or ap
     ['Preferred qualifications:\n- __Preferred qualifications__\n- 5 years in a similar role.', null],
   ]) assert.equal(extractExperienceYears(description)?.minYears ?? null, expected, description);
   assert.equal(extractExperienceYears('Bachelor’s degree or\n5 years in a similar role.'), null);
+  assert.equal(extractExperienceYears('Bachelor\'s degree in CS or\n4 years of software experience.'), null);
+  assert.equal(extractExperienceYears('Bachelor\'s degree in CS or\n4 years of software experience. Minimum 1 year overall experience required.')?.minYears, 1);
+  assert.equal(extractExperienceYears('Bachelor\'s degree in CS or\n4 years of software experience. Must have 5 years of AWS experience.')?.minYears, 5);
   assert.equal(extractExperienceYears('<h3>Qualifications</h3><p>Bachelor\'s degree or</p><p>5 years in a similar role.</p>'), null);
+  assert.equal(extractExperienceYears('<p>Bachelor\'s degree in CS or</p><p>4 years of software experience.</p>'), null);
+  assert.equal(extractExperienceYears('<p>Bachelor\'s degree in CS or</p><p>4 years of software experience.</p><p>Minimum 1 year overall experience required.</p>')?.minYears, 1);
+  assert.equal(extractExperienceYears('<p>Bachelor\'s degree in CS or</p><p>4 years of software experience.</p><p>Must have 5 years of AWS experience.</p>')?.minYears, 5);
   assert.equal(extractExperienceYears('<h3>Qualifications</h3><p>Bachelor\'s degree or</p><p>5 years in a similar role.</p><ul><li>3 years in a technical role.</li></ul>').minYears, 3);
   assert.equal(extractExperienceYears('Bachelor\'s degree or\n- 3 years in a similar role.').minYears, 3);
   assert.equal(extractExperienceYears('<h3>Requirements</h3><p>Python proficiency</p><p>5 years in a similar role.</p>')?.minYears, 5);
@@ -365,4 +431,167 @@ test('advanced and unspecified degree alternatives retain the experience minimum
     'A degree, or equivalent 4 years experience.',
     'Required: a degree or 4 years of software development experience.',
   ]) assert.equal(extractExperienceYears(description)?.minYears, description.includes('5+') ? 5 : 4, description);
+  const hidden = 'Requirements: 7-10+ years building production backend systems; 5+ years hands-on with AWS. Junior team environment with mentoring responsibilities.';
+  for (const minimum of [1, 2]) {
+    for (const requirement of [
+      'Requirements: 3-5 years of backend experience required.',
+      'Requirements: 5+ years of backend experience required.',
+      'Requirements: 6+ years of backend experience required.',
+    ]) {
+      const candidate = normalizeCandidate({ ...captured[0], description: requirement, experience: { minYears: minimum, maxYears: minimum, evidence: `${minimum} years from source` } });
+      assert.equal(classifyExperience(candidate, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS', `${minimum} source years, ${requirement}`);
+    }
+    const candidate = normalizeCandidate({ ...captured[0], description: hidden, experience: { minYears: minimum, maxYears: minimum, evidence: `${minimum} years from source` } });
+    const first = classifyExperience(candidate, policy);
+    const repeated = classifyExperience(normalizeCandidate(candidate), policy);
+    assert.equal(first.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+    assert.equal(repeated.code, first.code);
+    assert.match(first.evidence, /7-10\+ years building production backend systems/);
+    assert.match(first.evidence, /5\+ years hands-on with AWS/);
+    assert.equal(first.requirements.some((item) => item.minYears === 5), true);
+  }
+  const oneToTwo = normalizeCandidate({ ...captured[0], description: '1-2 years of backend development experience required.', experience: {} });
+  assert.equal(classifyExperience(oneToTwo, policy).code, 'EXPERIENCE_STRICT_0_1');
+
+  const preferred = normalizeCandidate({ ...captured[0], description: 'Preferred experience: 5+ years AWS preferred. Minimum 1 year overall experience.', experience: {} });
+  const preferredResult = classifyExperience(preferred, policy);
+  assert.equal(preferredResult.code, 'EXPERIENCE_STRICT_0_1');
+  assert.deepEqual(preferredResult.requirements.map((item) => item.minYears), [1]);
+  assert.equal(classifyExperience({ description: 'Preferred qualifications:\n5+ years in a customer-facing role.' }, policy).code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  for (const description of [
+    'Preferred qualifications:\n5+ years of backend experience.\nMinimum 1 year overall experience.',
+    '<h3>Preferred qualifications</h3><p>5+ years backend experience.</p><p>Minimum 1 year overall experience.</p>',
+    '<ul><li>Preferred qualifications</li><li>5+ years backend experience</li></ul><p>Requirements</p><p>Minimum 1 year overall experience.</p>',
+  ]) {
+    const decision = classifyExperience({ description }, policy);
+    assert.equal(decision.code, 'EXPERIENCE_STRICT_0_1', description);
+    assert.deepEqual(decision.requirements.map((item) => item.minYears), [1]);
+  }
+  for (const description of [
+    'Minimum 1 year overall experience.\nPreferred qualifications:\n5 years backend experience required.',
+    '<p>Minimum 1 year overall experience.</p><h3>Preferred qualifications</h3><p>5 years backend experience required.</p>',
+    '<ul><li>Minimum 1 year overall experience.</li><li>Preferred qualifications</li><li>5 years backend experience required.</li></ul>',
+  ]) {
+    const decision = classifyExperience({ description }, policy);
+    assert.equal(decision.code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+    assert.equal(decision.requirements.some((item) => item.minYears === 5 && /required/.test(item.excerpt)), true, description);
+  }
+  const headedTracks = [
+    'This opening is for the junior track.\nJunior track:\n0-1 years experience\nSenior track:\n6+ years experience',
+    '<h3>This opening is for the junior track.</h3><h4>Junior track:</h4><p>0-1 years experience</p><h4>Senior track:</h4><p>6+ years experience</p>',
+    '<ul><li>This opening is for the junior track.</li><li>Junior track:</li><li>0-1 years experience</li><li>Senior track:</li><li>6+ years experience</li></ul>',
+  ];
+  for (const description of headedTracks) {
+    const decision = classifyExperience({ description, experience: { minYears: 1, maxYears: 1 } }, policy);
+    assert.equal(decision.code, 'EXPERIENCE_STRICT_0_1', description);
+    assert.equal(decision.selectedTrack, 'junior');
+    const requirements = extractExperienceRequirements(description).requirements;
+    assert.equal(requirements.find((item) => item.minYears === 6)?.track, 'senior');
+    assert.equal(requirements.find((item) => item.minYears === 0)?.track, 'junior');
+  }
+  for (const description of [
+    'This opening is for the junior track.\nJunior track:\n0-1 years experience\nSenior track:\n6+ years experience\nRequirements:\nAll candidates must have 5+ years of AWS experience.',
+    '<h3>This opening is for the junior track.</h3><h4>Junior track:</h4><p>0-1 years experience</p><h4>Senior track:</h4><p>6+ years experience</p><h3>Requirements</h3><p>All candidates must have 5+ years of AWS experience.</p>',
+  ]) assert.equal(classifyExperience({ description, experience: { minYears: 1, maxYears: 1 } }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+  const inlineUniversal = 'This opening is for the junior track. Junior track: 1 year experience; Senior track: 6 years experience, but all candidates must have 5 years of AWS experience.';
+  const inlineUniversalRequirements = extractExperienceRequirements(inlineUniversal).requirements;
+  assert.equal(inlineUniversalRequirements.find((item) => item.minYears === 5)?.track, null);
+  assert.equal(classifyExperience({ description: inlineUniversal, experience: { minYears: 1, maxYears: 1 } }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  const universalAfterQuantity = 'This opening is for the junior track.\nJunior track:\n1 year experience\nSenior track:\n6 years experience\n5 years AWS experience required for all candidates.';
+  const universalAfterRequirements = extractExperienceRequirements(universalAfterQuantity).requirements;
+  assert.equal(universalAfterRequirements.find((item) => item.minYears === 6)?.track, 'senior');
+  assert.equal(universalAfterRequirements.find((item) => item.minYears === 5)?.track, null);
+  assert.equal(classifyExperience({ description: universalAfterQuantity, experience: { minYears: 1, maxYears: 1 } }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(classifyExperience({ description: 'Preferred qualifications:\nAWS knowledge\nRequirements:\n5+ years of backend experience required.' }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(classifyExperience({ description: 'Preferred qualifications:\n5 years in a similar role.\nPython experience required.' }, policy).code, 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW');
+  for (const description of [
+    'Python preferred. 5+ years of backend experience required.',
+    'Requirements: Python preferred. Must have 5+ years of backend experience.',
+  ]) {
+    assert.equal(classifyExperience({ description }, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+  }
+
+  const alternative = 'Junior track requires 0-1 years experience. Senior track requires 6+ years experience.';
+  const conditionalSelection = 'This opening is for the junior track or senior track depending on interview performance. Junior track: 1 year experience. Senior track: 6 years experience.';
+  const conditionalDecision = classifyExperience({ description: conditionalSelection, experience: { minYears: 1, maxYears: 1 } }, policy);
+  assert.equal(conditionalDecision.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  assert.equal(conditionalDecision.selectedTrack, null);
+  const conditionalAssignment = 'This opening is for the junior track if selected after interview. Junior track: 1 year experience. Senior track: 6 years experience.';
+  const conditionalAssignmentDecision = classifyExperience({ description: conditionalAssignment, experience: { minYears: 1, maxYears: 1 } }, policy);
+  assert.equal(conditionalAssignmentDecision.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  assert.equal(conditionalAssignmentDecision.selectedTrack, null);
+  const unresolvedDescription = '0-1 or 6+ depending on level; no assignment.';
+  assert.equal(classifyExperience({ description: unresolvedDescription, experience: { minYears: 1, maxYears: 1 } }, policy).code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  const unresolved = normalizeCandidate({ ...captured[0], description: unresolvedDescription, experience: { minYears: 1, maxYears: 1, evidence: '1 year from source' } });
+  assert.equal(classifyExperience(unresolved, policy).code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  const unresolvedAgain = classifyExperience(normalizeCandidate(unresolved), policy);
+  assert.equal(unresolvedAgain.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  assert.match(unresolvedAgain.evidence, /depending on level/);
+  const negatedSelection = normalizeCandidate({ ...captured[0], description: alternative, experience: { minYears: 1, maxYears: 1, evidence: 'not selected as junior track' } });
+  assert.equal(classifyExperience(negatedSelection, policy).code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  const hardRequirementAndConflict = normalizeCandidate({ ...captured[0], description: 'At least 3 years of backend experience is required. A junior applicant may have 0-1 or 6+ depending on level; no assignment.', experience: { minYears: 1, maxYears: 1, evidence: '1 year from source' } });
+  assert.equal(classifyExperience(hardRequirementAndConflict, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  const structuredMinimumAndConflict = normalizeCandidate({ ...captured[0], description: 'Junior track: 1 year experience. Senior track: 6 years experience.', experience: { minYears: 5, maxYears: null, sourceMinYears: 5, sourceMaxYears: null, sourceMaxUnbounded: true, evidence: 'JobPosting.experienceRequirements.monthsOfExperience=60' } });
+  const structuredConflictDecision = classifyExperience(structuredMinimumAndConflict, policy);
+  assert.equal(structuredConflictDecision.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(structuredConflictDecision.minYears, 5);
+  assert.equal(structuredConflictDecision.maxYears, null);
+  assert.match(structuredConflictDecision.evidence, /monthsOfExperience=60/);
+
+  const linkedInDescription = 'This opening is for the junior track. Junior track requires 0-1 years experience. Senior track requires 6+ years experience.';
+  const linkedInUrl = 'https://www.linkedin.com/jobs/view/4473136187';
+  const linkedInHtml = (experienceRequirements = undefined) => `<link rel="canonical" href="${linkedInUrl}"><script type="application/ld+json">${JSON.stringify({ '@type': 'JobPosting', identifier: { value: '4473136187' }, title: 'Software Engineer - NLP/LLM Reasoning', hiringOrganization: { name: 'woodfrog' }, description: linkedInDescription, ...(experienceRequirements ? { experienceRequirements } : {}) })}</script>`;
+  const linkedInPatch = parseLinkedInJobDetail(linkedInHtml(), { requestedUrl: linkedInUrl, title: 'Software Engineer - NLP/LLM Reasoning', company: 'woodfrog' }).patch;
+  const linkedInJunior = normalizeCandidate({ ...captured[0], ...linkedInPatch, experience: linkedInPatch.experience });
+  assert.equal(linkedInJunior.experience.minYears, 6);
+  assert.equal(linkedInJunior.experience.sourceMinYears, null);
+  assert.equal(classifyExperience(linkedInJunior, policy).code, 'EXPERIENCE_STRICT_0_1');
+  const linkedInStructuredPatch = parseLinkedInJobDetail(linkedInHtml({ monthsOfExperience: 60 }), { requestedUrl: linkedInUrl, title: 'Software Engineer - NLP/LLM Reasoning', company: 'woodfrog' }).patch;
+  const linkedInStructured = normalizeCandidate({ ...captured[0], ...linkedInStructuredPatch, experience: linkedInStructuredPatch.experience });
+  assert.equal(linkedInStructured.experience.minYears, 6);
+  assert.equal(linkedInStructured.experience.sourceMinYears, 5);
+  assert.equal(classifyExperience(linkedInStructured, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(classifyExperience(linkedInStructured, policy).maxYears, null);
+
+  const selected = normalizeCandidate({ ...captured[0], description: alternative, experience: { minYears: 1, maxYears: 1, evidence: '1 year from source; applicable track is junior' } });
+  const result = classifyExperience(selected, policy);
+  assert.equal(result.code, 'EXPERIENCE_STRICT_0_1');
+  assert.equal(result.selectedTrack, 'junior');
+  assert.equal(result.requirements.filter((item) => item.track === 'junior').every((item) => item.minYears < 3), true);
+  const selectedWithoutSource = { title: 'AI Engineer', description: `This opening is for the junior track. ${alternative}`, experience: null };
+  for (const candidate of [selectedWithoutSource, normalizeCandidate({ ...captured[0], ...selectedWithoutSource }), normalizeCandidate(normalizeCandidate({ ...captured[0], ...selectedWithoutSource }))]) {
+    const decision = classifyExperience(candidate, policy);
+    assert.equal(decision.code, 'EXPERIENCE_STRICT_0_1');
+    assert.equal(decision.minYears, 0);
+    assert.equal(decision.selectedTrack, 'junior');
+  }
+  const titleMinimum = normalizeCandidate({ ...captured[0], title: 'Python Developer - 5 years experience', description: 'Full-time Pune role.', experience: {} });
+  const titleMinimumDecision = classifyExperience(titleMinimum, policy);
+  assert.equal(titleMinimumDecision.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(titleMinimumDecision.requirements.some((item) => item.minYears === 5 && item.source === 'title' && /5 years experience/.test(item.excerpt)), true);
+  assert.equal(titleMinimumDecision.requirements.find((item) => item.source === 'title')?.track, null);
+  const universal = normalizeCandidate({ ...captured[0], description: `This opening is for the junior track. ${alternative} All candidates must have 5+ years of AWS experience.`, experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' } });
+  assert.equal(classifyExperience(universal, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  for (const description of [
+    'This opening is for the junior track.\nJunior track: 0-1 years experience\nSenior track: 6+ years experience\nAll candidates must have 5+ years of AWS experience.',
+    '<p>This opening is for the junior track.</p><ul><li>Junior track: 0-1 years experience</li><li>Senior track: 6+ years experience</li></ul><p>All candidates must have 5+ years of AWS experience.</p>',
+    '<p>This opening is for the junior track.</p><p>Junior track: 0-1 years experience</p><p>Senior track: 6+ years experience</p><p>All candidates must have 5+ years of AWS experience.</p>',
+  ]) {
+    const resultForBoundary = classifyExperience(normalizeCandidate({ ...captured[0], description, experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' } }), policy);
+    assert.equal(resultForBoundary.code, 'EXPERIENCE_HARD_MIN_3_PLUS', description);
+    assert.match(resultForBoundary.evidence, /All candidates must have 5\+ years of AWS experience/);
+  }
+  const stale = normalizeCandidate({ ...captured[0], description: 'Full-time AI role. Minimum 1 year of software experience required.', experience: { minYears: 1, maxYears: 1 } });
+  stale.description = 'Full-time AI role. Minimum 6 years of software experience required.';
+  assert.equal(classifyExperience(stale, policy).code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  const loneTrack = classifyExperience({ title: 'AI Engineer', description: 'Senior track requires 6+ years experience.', experience: { minYears: 1, maxYears: 1 } }, policy);
+  assert.equal(loneTrack.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.match(loneTrack.evidence, /Senior track requires 6\+ years experience/);
+  const repeatedTrackRequirements = normalizeCandidate({ ...captured[0], description: 'Junior track requires 1 year of experience. Senior track requires 1 year of experience.', experience: null });
+  assert.deepEqual(repeatedTrackRequirements.experience.requirements.requirements.map(({ track }) => track), ['junior', 'senior']);
+  const scalarRange = normalizeCandidate({ ...captured[0], experience: { minYears: 1, maxYears: 2, evidence: '1-2 years from source' }, description: '' });
+  assert.deepEqual([classifyExperience(scalarRange, policy).minYears, classifyExperience(scalarRange, policy).maxYears], [1, 2]);
+  const onePlus = normalizeCandidate({ ...captured[0], description: 'Minimum 1+ years experience required.', experience: null });
+  assert.equal(classifyExperience(onePlus, policy).minYears, 1);
+  assert.equal(classifyExperience(onePlus, policy).maxYears, null);
 });

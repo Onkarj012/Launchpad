@@ -1,5 +1,5 @@
 import { parseStipend } from './stipend.mjs';
-import { extractExperienceYears, normalizedKey } from './candidate.mjs';
+import { extractExperienceRequirements, normalizedKey } from './candidate.mjs';
 import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mjs';
 import { classifyRemoteTimezone } from './remote-enrichment.mjs';
 
@@ -368,12 +368,81 @@ export function classifyEmployment(candidate, policy) {
 }
 
 function parsedExperience(candidate) {
-  const knownMin = Number.isFinite(candidate.experience?.minYears) ? candidate.experience.minYears : null;
-  const knownMax = Number.isFinite(candidate.experience?.maxYears) ? candidate.experience.maxYears : null;
-  if (knownMin != null || knownMax != null) return { min: knownMin ?? knownMax, max: knownMax ?? knownMin, evidence: candidate.experience?.evidence || null };
-  const parsed = extractExperienceYears(`${candidate.title || ''} ${candidate.description || ''}`);
-  if (!parsed) return { min: null, max: null, evidence: null };
-  return { min: parsed.minYears, max: parsed.maxYears, evidence: parsed.evidence };
+  const hasProvenance = Object.hasOwn(candidate.experience || {}, 'sourceMinYears');
+  const knownMin = hasProvenance
+    ? (Number.isFinite(candidate.experience.sourceMinYears) ? candidate.experience.sourceMinYears : null)
+    : candidate.experience?.requirements ? null
+      : Number.isFinite(candidate.experience?.minYears) ? candidate.experience.minYears : null;
+  const knownMax = hasProvenance
+    ? (Number.isFinite(candidate.experience.sourceMaxYears) ? candidate.experience.sourceMaxYears : null)
+    : candidate.experience?.requirements ? null
+    : Number.isFinite(candidate.experience?.maxYears) ? candidate.experience.maxYears : null;
+  if (knownMin != null || knownMax != null) return {
+    min: knownMin ?? knownMax,
+    max: candidate.experience?.sourceMaxUnbounded === true ? null : knownMax ?? knownMin,
+    evidence: candidate.experience?.evidence || null,
+  };
+  return { min: null, max: null, evidence: candidate.experience?.evidence || null };
+}
+
+// Reconcile source evidence with mandatory requirements on the applicable track.
+function reconciledExperience(candidate) {
+  const descriptionEvidence = extractExperienceRequirements(candidate.description || '', candidate.experience?.evidence || '');
+  const titleEvidence = extractExperienceRequirements(candidate.title || '');
+  const source = parsedExperience(candidate);
+  const evidence = {
+    ...descriptionEvidence,
+    requirements: [
+      ...(descriptionEvidence.requirements || []).map((item) => ({ ...item, source: 'description' })),
+      ...(titleEvidence.requirements || []).map((item) => ({ ...item, track: null, source: 'title' })),
+    ],
+  };
+  if (evidence.conflict) return {
+    conflict: evidence.conflict,
+    requirements: evidence.requirements || [],
+    selectedTrack: evidence.selectedTrack,
+    selectionEvidence: evidence.selectionEvidence,
+    min: source.min,
+    max: source.max,
+    evidence: source.evidence,
+    source,
+  };
+  const tracks = [...new Set((evidence.requirements || []).map((item) => item.track).filter(Boolean))];
+  if (tracks.length > 1 && !evidence.selectedTrack) return {
+    conflict: { code: 'EXPERIENCE_NOT_VERIFIED_CONFLICT', evidence: evidence.requirements.map((item) => item.excerpt).filter(Boolean).join(' | ').slice(0, 600) },
+    requirements: evidence.requirements, selectedTrack: null,
+  };
+  if (tracks.length > 0 && evidence.selectedTrack && !tracks.includes(evidence.selectedTrack)) return {
+    conflict: {
+      code: 'EXPERIENCE_NOT_VERIFIED_CONFLICT',
+      evidence: `Selected track ${evidence.selectedTrack} does not match stated requirement tracks: ${tracks.join(', ')}`,
+    },
+    requirements: evidence.requirements,
+    selectedTrack: evidence.selectedTrack,
+    selectionEvidence: evidence.selectionEvidence,
+    min: source.min,
+    max: source.max,
+    evidence: source.evidence,
+    source,
+  };
+  const requirements = (evidence.requirements || []).filter((item) => !item.track || item.track === evidence.selectedTrack || tracks.length === 1);
+  const mins = [...requirements.map((item) => item.minYears), source.min].filter(Number.isFinite);
+  const min = mins.length ? Math.max(...mins) : null;
+  const matching = requirements.filter((item) => item.minYears === min);
+  const excerpts = requirements.map((item) => item.excerpt || item.evidence).filter(Boolean);
+  const summary = [source.evidence ? `Source: ${source.evidence}` : null, ...excerpts.map((excerpt) => `JD: ${excerpt}`)].filter(Boolean).join(' | ');
+  return {
+    min,
+    max: min == null ? source.max : matching.length
+      ? (matching.some((item) => !Number.isFinite(item.maxYears))
+        ? null
+        : Math.min(...matching.map((item) => item.maxYears)))
+      : source.max,
+    evidence: summary || source.evidence,
+    requirements,
+    selectedTrack: evidence.selectedTrack,
+    selectionEvidence: evidence.selectionEvidence,
+  };
 }
 
 // Reject role-specific senior hiring language while leaving employer boilerplate alone.
@@ -384,14 +453,44 @@ function seniorRoleRequirement(candidate) {
 
 // Classify required experience while retaining numeric evidence for selection.
 export function classifyExperience(candidate, policy) {
-  const parsed = parsedExperience(candidate);
+  const parsed = reconciledExperience(candidate);
+  const decisionEvidence = {
+    requirements: parsed.requirements || [],
+    selectedTrack: parsed.selectedTrack ?? null,
+    selectionEvidence: parsed.selectionEvidence ?? null,
+  };
+  const hardRequirement = (parsed.requirements || []).find((item) => !item.track && item.minYears >= policy.experience.hardRejectMinimumYears);
+  if (!hardRequirement && parsed.conflict && parsed.source?.min >= policy.experience.hardRejectMinimumYears) return {
+    pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS',
+    evidence: `${parsed.source.evidence || `Source minimum ${parsed.source.min} years`} | ${parsed.conflict.evidence}`,
+    ...decisionEvidence, minYears: parsed.source.min, maxYears: parsed.source.max,
+  };
+  if (hardRequirement && parsed.conflict) return {
+    pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS',
+    evidence: `${hardRequirement.excerpt || hardRequirement.evidence} | ${parsed.conflict.evidence}`,
+    ...decisionEvidence, minYears: hardRequirement.minYears, maxYears: hardRequirement.maxYears,
+  };
+  if (parsed.conflict) return {
+    pass: false,
+    strict: false,
+    relaxed: false,
+    manualReview: true,
+    verificationRequired: true,
+    code: parsed.conflict.code || 'EXPERIENCE_NOT_VERIFIED_CONFLICT',
+    evidence: [parsed.conflict.evidence, ...parsed.requirements.map((item) => item.excerpt || item.evidence)].filter(Boolean).join(' | ').slice(0, 600),
+    requirements: parsed.requirements,
+    selectedTrack: parsed.selectedTrack,
+    selectionEvidence: parsed.selectionEvidence ?? null,
+    minYears: null,
+    maxYears: null,
+  };
   const seniorRequirement = seniorRoleRequirement(candidate);
-  if (seniorRequirement) return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_SENIOR_ROLE_REQUIREMENT', evidence: seniorRequirement, minYears: parsed.min, maxYears: parsed.max };
+  if (seniorRequirement) return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_SENIOR_ROLE_REQUIREMENT', evidence: seniorRequirement, ...decisionEvidence, minYears: parsed.min, maxYears: parsed.max };
   if (parsed.min != null && parsed.min >= policy.experience.hardRejectMinimumYears) {
-    return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS', evidence: parsed.evidence, minYears: parsed.min, maxYears: parsed.max };
+    return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS', evidence: parsed.evidence, ...decisionEvidence, minYears: parsed.min, maxYears: parsed.max };
   }
   if (parsed.min != null && parsed.min > policy.experience.relaxedMaximumYears) {
-    return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_ABOVE_RELAXED_LIMIT', evidence: parsed.evidence, minYears: parsed.min, maxYears: parsed.max };
+    return { pass: false, strict: false, relaxed: false, code: 'EXPERIENCE_ABOVE_RELAXED_LIMIT', evidence: parsed.evidence, ...decisionEvidence, minYears: parsed.min, maxYears: parsed.max };
   }
   if (parsed.min == null) {
     const fresherMatch = `${candidate.title || ''} ${candidate.description || ''}`.match(FRESHER_EXPERIENCE_PATTERN);
@@ -402,6 +501,7 @@ export function classifyExperience(candidate, policy) {
         relaxed: false,
         code: 'EXPERIENCE_FRESHER_EVIDENCE',
         evidence: fresherMatch[0],
+        ...decisionEvidence,
         minYears: null,
         maxYears: null,
       };
@@ -413,6 +513,7 @@ export function classifyExperience(candidate, policy) {
       manualReview: true,
       code: 'EXPERIENCE_NOT_STATED_MANUAL_REVIEW',
       evidence: null,
+      ...decisionEvidence,
       minYears: null,
       maxYears: null,
     };
@@ -424,6 +525,7 @@ export function classifyExperience(candidate, policy) {
       relaxed: false,
       code: 'EXPERIENCE_STRICT_0_1',
       evidence: parsed.evidence,
+      ...decisionEvidence,
       minYears: parsed.min,
       maxYears: parsed.max,
     };
@@ -434,6 +536,7 @@ export function classifyExperience(candidate, policy) {
     relaxed: true,
     code: 'EXPERIENCE_RELAXED_UP_TO_2',
     evidence: parsed.evidence,
+    ...decisionEvidence,
     minYears: parsed.min,
     maxYears: parsed.max,
   };

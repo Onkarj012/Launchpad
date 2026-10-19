@@ -1,7 +1,7 @@
 import { withManualFixtureScores } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -12,7 +12,7 @@ import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
 import { openCrawlerStore, crawlRun } from '../../crawler/run.mjs';
-import { candidateDedupKey } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
@@ -1352,6 +1352,186 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(result.verificationQueue.length, 1);
   assert.equal(result.verificationQueue[0].provider, 'foundit');
   assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
+
+  const { config: experienceConfig } = testConfig();
+  const hidden = rawPortalJob(1961, {
+    company: 'Hidden Senior Requirements',
+    title: 'Junior AI Engineer',
+    description: 'Full-time Pune AI role. Requirements: 7-10+ years building production backend systems; 5+ years hands-on with AWS. Junior team environment with mentoring responsibilities.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+  });
+  const ambiguous = rawPortalJob(1962, {
+    company: 'Unassigned Experience Tracks',
+    description: 'Full-time Pune AI role. Experience: 0-1 or 6+ years depending on level; no assignment.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+  });
+  const conditionalTrack = rawPortalJob(1970, {
+    company: 'Conditional Track Selection',
+    description: 'Full-time Pune AI role. This opening is for the junior track or senior track depending on interview performance. Junior track: 1 year experience. Senior track: 6 years experience.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+  });
+  const selectedJunior = rawPortalJob(1963, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    experience: undefined,
+    company: 'Selected Junior Track',
+    description: 'Full-time Pune AI role. This opening is for the junior track.\nJunior track:\n0-1 years experience\nSenior track:\n6+ years experience',
+  });
+  const preferred = rawPortalJob(1964, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Preferred Five Years',
+    description: 'Full-time Pune AI role. Preferred qualifications:\n5+ years with AWS.\nRequirements:\nMinimum 1 year overall experience.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+  });
+  const twoYears = rawPortalJob(1965, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Two Years Fallback',
+    description: 'Full-time Pune AI role. 2-4 years of software development experience required.',
+    experience: { minYears: 2, maxYears: 2, evidence: '2 years source minimum' },
+  });
+  const universalSenior = rawPortalJob(1966, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Universal Senior Requirement',
+    description: 'Full-time Pune AI role. This opening is for the junior track. Junior track: 1 year experience; Senior track: 6 years experience, but all candidates must have 5 years of AWS experience.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+  });
+  const universalAfterTrackRequirements = rawPortalJob(1971, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Universal Requirement After Quantity',
+    description: 'Full-time Pune AI role. This opening is for the junior track.\nJunior track:\n1 year experience\nSenior track:\n6 years experience\n5 years AWS experience required for all candidates.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+  });
+  const conditionalAssignment = rawPortalJob(1972, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Conditional Assignment After Interview',
+    description: 'Full-time Pune AI role. This opening is for the junior track if selected after interview. Junior track: 1 year experience. Senior track: 6 years experience.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+  });
+  const structuredMinimumAndConflict = rawPortalJob(1973, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Structured Minimum with Unassigned Tracks',
+    description: 'Full-time Pune AI role. Junior track: 1 year experience. Senior track: 6 years experience.',
+    experience: { minYears: 5, maxYears: null, sourceMinYears: 5, sourceMaxYears: null, sourceMaxUnbounded: true, evidence: 'JobPosting.experienceRequirements.monthsOfExperience=60' },
+  });
+  const recoveredSourceMinimum = rawPortalJob(1975, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Recovered Source Minimum with Preference',
+    description: 'Full-time Pune AI role.',
+    experience: { minYears: 1, evidence: 'Minimum 5 years of software experience required. Python preferred.' },
+  });
+  const mismatchedSelectedTrack = rawPortalJob(1976, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'Selected Track Has No Requirement',
+    description: 'Full-time Pune AI role. This opening is for the junior track. Entry-level track: 5 years experience. Senior track: 8 years experience.',
+    experience: null,
+  });
+  const linkedInJunior = rawPortalJob(1974, {
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+    company: 'LinkedIn Description Track Junior',
+    description: 'Full-time Pune AI role. This opening is for the junior track. Junior track requires 0-1 years experience. Senior track requires 6+ years experience.',
+    experience: { minYears: 6, maxYears: null, sourceMinYears: null, sourceMaxYears: null, evidence: '6+ years experience' },
+  });
+  const updatedCandidate = normalizeCandidate(rawPortalJob(1967, {
+    company: 'Updated Senior Requirement',
+    title: 'Junior AI Engineer',
+    description: 'Full-time Pune AI role. Minimum 1 year of software experience required.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+  }));
+  updatedCandidate.description = 'Full-time Pune AI role. Minimum 6 years of software experience required.';
+  const titleMinimum = rawPortalJob(1968, {
+    company: 'Title Experience Minimum',
+    title: 'Python Developer - 5 years experience',
+    description: 'Full-time Pune role.',
+    experience: undefined,
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+  });
+  const seniorTitleMinimum = rawPortalJob(1969, {
+    company: 'Senior Title Experience Minimum',
+    title: 'Python Developer - 6 years experience',
+    description: 'Full-time Pune role.',
+    experience: undefined,
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+  });
+  const scored = [];
+  const scorer = async (rows) => {
+    scored.push(...rows.map((row) => row.company));
+    return { scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) };
+  };
+  const sourceFixtures = { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [hidden, ambiguous, selectedJunior, preferred, twoYears, universalSenior, conditionalTrack, universalAfterTrackRequirements, conditionalAssignment, structuredMinimumAndConflict, recoveredSourceMinimum, mismatchedSelectedTrack, linkedInJunior, updatedCandidate, titleMinimum, seniorTitleMinimum], manifest: { status: 'ok' } } };
+  const experienceResult = await runDailyNormal(runOptions(experienceConfig, fakeTransport({}), { sourceFixtures, scorer }));
+  const report = renderLocalLeadReport(experienceResult, { now: NOW });
+  const htmlReport = renderLocalDailyHtmlReport(experienceResult);
+  assert.equal(experienceResult.outcome.fatal, false);
+  assert.equal(scored.includes(hidden.company), false);
+  assert.equal(scored.includes(universalSenior.company), false);
+  assert.equal(scored.includes(universalAfterTrackRequirements.company), false);
+  assert.equal(scored.includes(conditionalTrack.company), false);
+  assert.equal(scored.includes(conditionalAssignment.company), false);
+  assert.equal(scored.includes(structuredMinimumAndConflict.company), false);
+  assert.equal(scored.includes(recoveredSourceMinimum.company), false);
+  assert.equal(scored.includes(mismatchedSelectedTrack.company), false);
+  assert.equal(scored.includes(updatedCandidate.company), false);
+  assert.equal(scored.includes(titleMinimum.company), false);
+  assert.equal(scored.includes(seniorTitleMinimum.company), false);
+  assert.equal(scored.includes(ambiguous.company), false);
+  assert.ok(scored.includes(selectedJunior.company));
+  assert.ok(scored.includes(linkedInJunior.company));
+  assert.equal(experienceResult.results.find((item) => item.company === linkedInJunior.company)?.eligibility.experience.code, 'EXPERIENCE_STRICT_0_1');
+  assert.equal(experienceResult.results.find((item) => item.company === selectedJunior.company)?.eligibility.experience.selectedTrack, 'junior');
+  assert.equal(experienceResult.results.find((item) => item.company === selectedJunior.company)?.eligibility.experience.minYears, 0);
+  assert.doesNotMatch(experienceResult.results.find((item) => item.company === selectedJunior.company)?.eligibility.experience.evidence || '', /Source:/);
+  assert.ok(scored.includes(preferred.company));
+  assert.ok(scored.includes(twoYears.company));
+  assert.ok(experienceResult.verificationQueue.some((item) => item.company === ambiguous.company));
+  assert.ok(experienceResult.verificationQueue.some((item) => item.company === conditionalTrack.company));
+  assert.ok(experienceResult.verificationQueue.some((item) => item.company === conditionalAssignment.company));
+  assert.ok(experienceResult.verificationQueue.some((item) => item.company === mismatchedSelectedTrack.company));
+  const recoveredSourceDecision = experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === recoveredSourceMinimum.company)?.eligibility.experience;
+  assert.equal(recoveredSourceDecision.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(recoveredSourceDecision.minYears, 5);
+  assert.match(recoveredSourceDecision.evidence, /Minimum 5 years/);
+  const mismatchedTrackDecision = experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === mismatchedSelectedTrack.company)?.eligibility.experience;
+  assert.equal(mismatchedTrackDecision.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  assert.equal(mismatchedTrackDecision.selectedTrack, 'junior');
+  assert.deepEqual([...new Set(mismatchedTrackDecision.requirements.map((item) => item.track).filter(Boolean))], ['entry-level', 'senior']);
+  assert.equal(experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === structuredMinimumAndConflict.company)?.eligibility.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === structuredMinimumAndConflict.company)?.eligibility.experience.minYears, 5);
+  assert.equal(experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === universalSenior.company)?.eligibility.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === universalAfterTrackRequirements.company)?.eligibility.experience.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === conditionalTrack.company)?.eligibility.experience.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  assert.equal(experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === conditionalAssignment.company)?.eligibility.experience.code, 'EXPERIENCE_NOT_VERIFIED_CONFLICT');
+  assert.equal(experienceResult.shortlist.some((item) => [hidden.company, ambiguous.company, universalSenior.company, universalAfterTrackRequirements.company, conditionalTrack.company, conditionalAssignment.company, structuredMinimumAndConflict.company, recoveredSourceMinimum.company, mismatchedSelectedTrack.company, updatedCandidate.company, titleMinimum.company, seniorTitleMinimum.company].includes(item.company)), false);
+  const titleDecision = experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === titleMinimum.company)?.eligibility.experience;
+  assert.equal(titleDecision.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(titleDecision.requirements.some((item) => item.source === 'title' && item.minYears === 5), true);
+  const seniorTitleDecision = experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === seniorTitleMinimum.company)?.eligibility.experience;
+  assert.equal(seniorTitleDecision.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  assert.equal(seniorTitleDecision.requirements.some((item) => item.source === 'title' && item.minYears === 6), true);
+  assert.match(report, /7-10\+ years building production backend systems/);
+  assert.match(report, /5\+ years hands-on with AWS/);
+  assert.match(report, /EXPERIENCE_HARD_MIN_3_PLUS/);
+  assert.match(report, /Minimum 6 years of software experience required/);
+  assert.match(report, /all candidates must have 5 years of AWS experience/i);
+  assert.match(report, /depending on level/);
+  assert.match(report, /EXPERIENCE_NOT_VERIFIED_CONFLICT/);
+  assert.match(htmlReport, /EXPERIENCE_HARD_MIN_3_PLUS/);
+  assert.match(htmlReport, /selected track: junior/);
+  assert.match(htmlReport, /EXPERIENCE_NOT_VERIFIED_CONFLICT/);
+  assert.match(htmlReport, /5\+ years hands-on with AWS/);
+  const receiptDir = path.join(process.cwd(), '.local/p01-experience');
+  mkdirSync(receiptDir, { recursive: true });
+  writeFileSync(path.join(receiptDir, 'daily-report.html'), htmlReport);
+  writeFileSync(path.join(receiptDir, 'results.json'), JSON.stringify({
+    status: experienceResult.outcome.status,
+    scored,
+    hardRejections: experienceResult.experienceDecisions.filter(({ eligibility }) => eligibility.experience.code === 'EXPERIENCE_HARD_MIN_3_PLUS').map(({ candidate, eligibility }) => ({ company: candidate.company, title: candidate.title, code: eligibility.experience.code, evidence: eligibility.experience.evidence, requirements: eligibility.experience.requirements })),
+    verificationQueue: experienceResult.verificationQueue.filter((item) => [ambiguous.company, conditionalTrack.company, conditionalAssignment.company, mismatchedSelectedTrack.company].includes(item.company)).map(({ company, reasons, evidence }) => ({ company, reasons, experienceDecision: evidence.experienceDecision })),
+    selectedJunior: experienceResult.results.find((item) => item.company === selectedJunior.company)?.eligibility.experience,
+    preferredFive: experienceResult.results.find((item) => item.company === preferred.company)?.eligibility.experience,
+    twoYears: experienceResult.results.find((item) => item.company === twoYears.company)?.eligibility.experience,
+  }, null, 2));
 });
 
 test('daily records the exact final shortlist before persisting a valid canary', async () => {
