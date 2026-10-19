@@ -10,6 +10,7 @@ import {
   cloneJsonSafe, cloneJsonCollection, cloneJsonEnvelope,
   openCrawlerStore, crawlRun, readCrawlerRunData, finishCrawlRun,
 } from '../../crawler/run.mjs';
+import { crawlWorkflow } from '../../crawler/workflow.mjs';
 
 const captured = JSON.parse(readFileSync(new URL('../fixtures/portals/linkedin-details/live-trial-observations-2026-10-03.json', import.meta.url)));
 const policy = loadJobPullPolicy();
@@ -99,5 +100,40 @@ test('run telemetry validates bounded source and workflow envelopes without a cu
     const bad = { workflow: { verificationQueue: [{ value: undefined }] } };
     assert.throws(() => finishCrawlRun(store, 'envelope', { telemetry: bad }), /unsupported undefined/);
     assert.throws(() => cloneJsonEnvelope({ rows: Array(10_001).fill(null) }, 'envelope', [['rows']]), /record count limit/);
+  } finally { store.close(); }
+});
+
+test('workflow telemetry and yield survive aggregate source size and replay after reopening the store', async () => {
+  const database = path.join(mkdtempSync(path.join(tmpdir(), 'workflow-telemetry-')), 'crawler.sqlite');
+  const sources = Array.from({ length: 4 }, (_, lane) => ({
+    id: `source-${lane}`, lane: 'ats',
+    fetch: async () => ({ observations: [], manifest: { sources: Array.from({ length: 650 }, (_, board) => ({
+      provider: 'fixture', board: `${lane}-${board}`, fetched: 0, status: 'ok',
+    })) } }),
+  }));
+  let store = openCrawlerStore(database);
+  try {
+    const result = await crawlWorkflow({ store, runId: 'large-telemetry', sourcePlans: sources });
+    assert.equal(result.run.status, 'completed');
+    assert.equal(result.sourceYield.sources.length, 2600);
+    assert.throws(() => cloneJsonSafe(result.sourceTelemetry), /JSON size limit/);
+    assert.throws(() => cloneJsonSafe(result.sourceYield), /JSON size limit/);
+    for (const telemetry of Object.values(result.sourceTelemetry)) assert.doesNotThrow(() => cloneJsonSafe(telemetry.detail));
+    const persisted = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('large-telemetry').telemetry_json);
+    assert.deepEqual(persisted.workflow.sourceYield, result.sourceYield);
+    store.close();
+    store = openCrawlerStore(database);
+    const replay = await crawlWorkflow({ store, runId: 'large-telemetry', sourcePlans: [{
+      id: 'never-fetch', fetch: () => { throw new Error('replay must not fetch'); },
+    }] });
+    assert.equal(replay.idempotent, true);
+    assert.deepEqual(replay.sourceTelemetry, result.sourceTelemetry);
+    assert.deepEqual(replay.sourceYield, result.sourceYield);
+    assert.throws(() => finishCrawlRun(store, 'large-telemetry', { telemetry: {
+      workflow: { sourceTelemetry: { bad: { detail: { invalid: undefined } } } },
+    } }), /unsupported undefined/);
+    assert.throws(() => finishCrawlRun(store, 'large-telemetry', { telemetry: {
+      workflow: { sourceTelemetry: { bad: { detail: { nodes: Array(10_001).fill(0) } } } },
+    } }), /JSON size limit/);
   } finally { store.close(); }
 });

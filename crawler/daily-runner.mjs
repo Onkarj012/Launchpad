@@ -338,7 +338,10 @@ function terminalEnvelope({ crawlerResult = null, result = null, runId, schedule
     failed: [...(crawlerEnvelope.sourceCoverage?.failed ?? [])],
     not_started: [...(crawlerEnvelope.sourceCoverage?.not_started ?? crawlerEnvelope.sourceCoverage?.notStarted ?? [])],
   };
-  for (const [sourceId, telemetry] of Object.entries(additionalSources)) {
+  const durableSources = lastDurableSourceState && Object.values(lastDurableSourceState)
+    .every((value) => value && typeof value === 'object' && !Array.isArray(value)) ? lastDurableSourceState : {};
+  const retainedSources = { ...durableSources, ...additionalSources };
+  for (const [sourceId, telemetry] of Object.entries(retainedSources)) {
     const status = telemetry?.status;
     const group = ['succeeded', 'ok', 'empty', 'degraded', 'truncated'].includes(status)
       ? 'completed'
@@ -372,7 +375,7 @@ function terminalEnvelope({ crawlerResult = null, result = null, runId, schedule
       ...Object.keys(rejectionCounts),
     ])].sort(),
     sourceCoverage,
-    sourceEndStates: { ...(crawlerEnvelope.sourceEndStates ?? {}), ...buildSourceEndStates(additionalSources) },
+    sourceEndStates: { ...(crawlerEnvelope.sourceEndStates ?? {}), ...buildSourceEndStates(retainedSources) },
     completedSources: sourceCoverage.completed,
     interruptedSources: sourceCoverage.interrupted,
     failedSources: sourceCoverage.failed,
@@ -1184,6 +1187,8 @@ async function runDailyNormalImpl({
       : config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
   result.mode = selectedMode;
+  result.sourceYield = crawlerResult.sourceYield;
+  result.sourceYieldScope = 'crawler-discovery';
   const finalStatus = result.outcome?.status === 'fatal'
     ? 'failed'
     : crawlerResult.run?.status === 'partial' || result.outcome?.status === 'partial'

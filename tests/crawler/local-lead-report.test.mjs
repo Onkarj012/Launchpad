@@ -128,3 +128,76 @@ test('daily terminal envelope source failures remain visible in HTML Markdown an
   assert.match(rendered, /ats-warm: board failure/);
   assert.match(renderLocalLeadReport(result, { now: result.runAt }), /ats-warm: failed/);
 });
+
+test('fatal HTML reports show escaped causes, retained coverage, unknown counts, and event dates', () => {
+  const result = {
+    runAt: NOW,
+    outcome: { status: 'fatal', errors: [{ message: 'Scorer <offline> & timed out' }] },
+    terminalEnvelope: {
+      status: 'failed',
+      fatalReason: 'Scorer <offline> & timed out',
+      sourceCoverage: { completed: [], interrupted: ['workday'], failed: ['ats-warm'], not_started: ['career-sites'] },
+      sourceEndStates: { 'ats-warm': { state: 'failed', reason: 'HTTP <503>' } },
+      lastDurableSourceState: { completed: ['greenhouse'] },
+    },
+    hiringEvents: { items: [{ title: 'Campus drive', date: '2026-10-20' }] },
+  };
+  const report = renderLocalDailyHtmlReport(result);
+  assert.match(report, /Status: failed/);
+  assert.match(renderLocalLeadReport(result, { now: NOW }), /Status: failed/);
+  assert.match(report, /Cause: Scorer &lt;offline&gt; &amp; timed out/);
+  assert.match(report, /completed:<\/strong> None recorded/);
+  assert.match(report, /interrupted:<\/strong> workday/);
+  assert.match(report, /failed:<\/strong> ats-warm/);
+  assert.match(report, /not started:<\/strong> career-sites/);
+  assert.match(report, /ats-warm: failed, HTTP &lt;503&gt;/);
+  assert.match(report, /Fetched: Not Verified/);
+  assert.match(report, /Campus drive: 2026-10-20/);
+
+  const degraded = {
+    runAt: NOW,
+    outcome: { status: 'degraded', errors: [{ stage: 'transaction', message: 'delivery transaction incomplete: aborted' }] },
+    terminalEnvelope: { status: 'completed', deliveryReconciliation: { status: 'degraded' } },
+  };
+  for (const rendered of [renderLocalDailyHtmlReport(degraded), renderLocalLeadReport(degraded, { now: NOW })]) {
+    assert.match(rendered, /Status: degraded/);
+    assert.match(rendered, /delivery transaction incomplete: aborted/);
+    assert.doesNotMatch(rendered, /Status: completed/);
+  }
+
+  const successful = { outcome: { status: 'ok' }, terminalEnvelope: { status: 'completed' } };
+  for (const rendered of [renderLocalDailyHtmlReport(successful), renderLocalLeadReport(successful, { now: NOW })]) {
+    assert.match(rendered, /Status: completed/);
+  }
+
+  const successfulPartialEnvelope = { outcome: { status: 'ok' }, terminalEnvelope: { status: 'partial' } };
+  for (const rendered of [renderLocalDailyHtmlReport(successfulPartialEnvelope), renderLocalLeadReport(successfulPartialEnvelope, { now: NOW })]) {
+    assert.match(rendered, /Status: partial/);
+  }
+
+  const unknown = { outcome: { status: 'unknown' }, terminalEnvelope: { status: 'completed' } };
+  for (const rendered of [renderLocalDailyHtmlReport(unknown), renderLocalLeadReport(unknown, { now: NOW })]) {
+    assert.match(rendered, /Status: Not Verified/);
+  }
+
+  const partial = { outcome: { status: 'partial' }, terminalEnvelope: { status: 'partial' } };
+  for (const rendered of [renderLocalDailyHtmlReport(partial), renderLocalLeadReport(partial, { now: NOW })]) {
+    assert.match(rendered, /Status: partial/);
+  }
+});
+
+test('source yield uses the matching board request evidence and keeps unknown boards unverified', () => {
+  const report = renderLocalDailyHtmlReport({ sourceYieldScope: 'crawler-discovery',
+    sourceYield: { sources: [
+      { sourceId: 'greenhouse:acme', provider: 'greenhouse', board: 'acme', applicationReady: 2 },
+      { sourceId: 'greenhouse:missing', provider: 'greenhouse', board: 'missing', applicationReady: 1 },
+    ] },
+    sourceTelemetry: { unrelated: { requests: 99 } },
+    crawlerV2Telemetry: { warm: { detail: { sources: [{ provider: 'greenhouse', board: 'Acme', requests: 4 }] } } },
+    terminalEnvelope: { lastDurableSourceState: { warm: { status: 'succeeded', fetched: 2, detail: { description: 'x'.repeat(100_000) } } } },
+  });
+  assert.match(report, /2 application-ready roles \/ 4 requests/);
+  assert.doesNotMatch(report, /99 requests|100000|x{100}/);
+  assert.match(report, /greenhouse:missing<\/td><td>0<\/td><td>1<\/td><td>Not Verified/);
+  assert.match(report, /Discovery counts precede final enrichment and scoring/);
+});

@@ -14,24 +14,41 @@ When sources conflict, do not infer promotion from prose. Re-run allowed local c
 
 ## Checkout identity and warning
 
-- Branch: `feat/launchpad-readiness-completion`
-- HEAD at this documentation synchronization: `ae89f73eba5a2bdb8eea5b9a39694e33919c7d99`
-- Working tree: dirty, with substantial tracked and untracked implementation work.
-- Consequence: all implementation claims below are **working-tree** claims. They are not claims about HEAD alone, a clean committed baseline, a pushed branch, or production.
+- Branch: `dco/yield-00-reliability-baseline`
+- Candidate base: `52e55fd41c8a78b2ded4543b7c5394c6e338f61f`
+- Preparation provenance: P00 candidate work began in this isolated checkout on 2026-10-18 IST from the stated base.
+- Consequence: implementation claims below describe this checkout's contents, not HEAD alone, a pushed branch, or production.
 - Preservation rule: do not reset, restore, clean, stash, stage, commit, rebase, switch branches, or remove unrelated user work as part of status maintenance.
+- This checkout carries the P00 reliability baseline plus a scoped standalone role-tenure qualification repair. Candidate-specific checks are recorded below; earlier dated sections describe historical source-root checkouts and are not evidence for this candidate.
 
 ## Status vocabulary
 
 | Term | Meaning |
 |---|---|
-| **working-tree** | Present in current dirty checkout. It may differ from HEAD and remote branches. |
+| **working-tree** | Present in the current checkout. It may differ from HEAD and remote branches. |
 | **local-verified** | Exercised by deterministic local validation or tests in this checkout. This does not prove credentials, external services, scheduling, yield, or production behavior. |
-| **live-verified** | Observed through an explicitly authorized live integration or production-shadow procedure with retained evidence. No current item is claimed live-verified here. |
-| **promoted** | A clean, reviewed revision has satisfied executable release gates and been deliberately adopted for production use. Launchpad is not promoted. |
+| **live-verified** | Observed through an authorized live integration with retained evidence. No live integration was run for this candidate. |
+| **promoted** | A clean, reviewed revision has satisfied release gates and been deliberately adopted for production use. This candidate is not promoted. |
+
+## P00 candidate status, 2026-10-19
+
+PR #14 contains the reliability baseline and a reviewed follow-up for standalone role-tenure qualifications. Codex review of the R35 follow-up found no actionable regressions. Final focused checks passed 122/122 across five files at 02:38 IST, and the safety contract passed 7/7. These are local results. The PR remains draft because isolated-checkout validation is still blocked by five missing ignored skill mirrors.
+
+The role-tenure matcher preserves flat HTML list items, recognized qualification paragraphs, real list markers and Markdown emphasis. Supported preferred headings keep their context until a required heading resets it. Ordinary skill bullets do not change section state. A minimum needs a complete qualification, an explicit mandatory ending, or the retained technical-role examples. Unresolved same-item continuations, optional tails and nested HTML lists defer the new matcher. Existing extraction paths still run.
+
+HTML paragraph handling preserves completed sentences and keeps unfinished bachelor's degree alternatives or prospective tenure attached to the following quantity. Explicit applicant cues such as `must have` retain their minimum. The forward extractor now excludes the bounded prospective `spend` and `work` leads handled by this repair; other legacy parsing remains unchanged apart from the approved preference-suffix correction.
+
+Narrative parsing beyond these bounded cases stays in P01. The known `7–10+ years building production backend systems; 5+ years hands-on with AWS` defect remains open. The legacy future-tenure example containing `at least three years` still returns 3. No broad future, waiver or negation grammar is claimed.
+
+Reports retain failure causes and source coverage, preserve final degraded delivery status, and map successful outcome `ok` to `completed`. Missing measurements remain `Not Verified`. See [the P00 report](reports/2026-10-18-reliability-repair.md) for verification limits. No live source proof or promotion was performed.
 
 ## Current local position
 
-Working-tree implementations for readiness Phases 00–06 and daily-discovery recovery are present. Discovery now includes public LinkedIn guest search plus Chromium-backed Glassdoor, Instahyre, and Wellfound lanes. Workday LIST-only `postedOn` and genuinely undated roles remain in `VerifyQueue`; only DETAIL `startDate` supplies Workday freshness. Local engineering paths are substantially complete; shortlist selection, live v5 writes, and production promotion remain open.
+Working-tree implementations for readiness Phases 00–06 and daily-discovery recovery are present. Discovery includes public LinkedIn guest search plus Chromium-backed Glassdoor, Instahyre, and Wellfound lanes. Workday LIST-only `postedOn` and genuinely undated roles remain in `VerifyQueue`; only DETAIL `startDate` supplies Workday freshness. Local engineering paths are substantially complete; shortlist selection, live v5 writes, and production promotion remain open.
+
+- Candidate checks: see [the P00 review report](reports/2026-10-18-reliability-repair.md).
+- `npm run validate` is blocked in this isolated checkout because five ignored `.claude` skill mirrors are absent. The source root's historical validation result does not apply to this candidate. No skill mirrors or validator behavior were changed.
+- No live source probe or production verification was run for this candidate.
 
 ### 2026-10-07 enforcement repairs and bounded verification
 
@@ -84,7 +101,7 @@ Working-tree implementations for readiness Phases 00–06 and daily-discovery re
 - Durable opportunity identity prefers provider + requisition ID. Distinct requisitions do not merge through company/title/location fallback.
 - Workday DETAIL `startDate` is trusted and follows the normal `Hot`, `Active`, and `Backfill` age classes. LIST-only `postedOn`, including bounded labels, and genuinely undated rows route to `VerifyQueue`. See [workday-postedon-probe.md](research/workday-postedon-probe.md).
 - Deadline and source signals propagate into scoring and mode selection.
-- Remote eligibility requires explicit India/APAC evidence or compatible IST overlap; context-free worldwide/global text is insufficient.
+- Remote eligibility follows current `master_prompt.md` §2, including worldwide/anywhere/global roles without country limits or foreign work-authorization requirements. The older India/APAC-only description is superseded.
 - Apify remains explicit rescue only and default-off, with persisted offsets, seen-cache state, hard budget controls, and cost reconciliation paths.
 - Location presets reorder source emphasis without bypassing shared eligibility and score gates.
 - Focused Phase 01 checks passed 168/168.
@@ -206,4 +223,4 @@ node crawler/cli.mjs readiness --run-tests
 git diff --check
 ```
 
-Latest bounded verification on 2026-08-21 included Launchpad validation, safety-contract validation, full tracked diff checks, production-config byte-diff protection, and 725/725 passing tests across a fail-closed inventory of 76 files. Local no-write recovery evidence includes three terminal public-source exercises and one fixture interruption/resume drill. Readiness is code-complete but intentionally non-production because evidence is local-only; credentialed operational verification, external writes, schedule installation, release promotion, and rollback evidence remain absent. Earlier retained evidence includes Phase 00 (13/13), Phase 01 (168/168), clean-copy Phase 03 (64/64), and Phase 06 (27/27).
+The latest verification is the 2026-10-18 section above. Historical verification on 2026-08-21 included validation, safety, tracked diff checks, production-config byte-diff protection, and 725/725 passing tests across 76 files. That local recovery evidence includes three terminal public-source exercises and one fixture interruption/resume drill. These older receipts do not establish current scheduling, credentialed operations, promotion, or rollback. Earlier retained evidence includes Phase 00 (13/13), Phase 01 (168/168), clean-copy Phase 03 (64/64), and Phase 06 (27/27).

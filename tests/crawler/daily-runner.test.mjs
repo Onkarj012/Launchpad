@@ -11,7 +11,7 @@ import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, re
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
-import { openCrawlerStore } from '../../crawler/run.mjs';
+import { openCrawlerStore, crawlRun } from '../../crawler/run.mjs';
 import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
@@ -21,6 +21,28 @@ import { renderLocalDailyHtmlReport, renderLocalLeadReport, writeLocalDailyHtmlR
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
+test('a workflow handoff failure retains durable source coverage in the fatal daily report', async () => {
+  const { config } = testConfig();
+  const store = openCrawlerStore(config.databasePath);
+  try {
+    const runId = 'workflow-handoff-failure';
+    const crawlerId = `${runId}-crawler-v2`;
+    const retained = await crawlRun({ store, runId: crawlerId, sourcePlans: [{
+      id: 'ats-warm', fetch: async () => ({ observations: [] }),
+    }] });
+    const telemetry = { ...retained.telemetry, workflow: { sourceTelemetry: { invalid: null } } };
+    store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), crawlerId);
+    const result = await runDailyNormalActual(runOptions(config, () => { throw new Error('replay must not fetch'); }, { runId, store }));
+    assert.equal(result.outcome.status, 'fatal');
+    assert.deepEqual(result.terminalEnvelope.sourceCoverage.completed, ['ats-warm']);
+    assert.equal(result.terminalEnvelope.sourceEndStates['ats-warm'].state, 'empty');
+    assert.equal(result.terminalEnvelope.lastDurableSourceState['ats-warm'].status, 'succeeded');
+    const report = renderLocalDailyHtmlReport(result);
+    assert.match(report, /Status: failed/);
+    assert.match(report, /ats-warm: empty/);
+  } finally { store.close(); }
+});
+
 test('one daily crawl routes a Pune startup once and tags its other mode', async () => {
   const { config } = testConfig({ warmBoards: [{ slug: 'routing-startup', company: 'Routing Startup' }] });
   Object.assign(config.sources.atsWarm.boards[0], { startupTagged: true, evidenceRef: 'https://portfolio.example.test/routing-startup' });
@@ -29,6 +51,8 @@ test('one daily crawl routes a Pune startup once and tags its other mode', async
     scorer: async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) }),
   }));
   assert.equal(result.outcome.fatal, false);
+  assert.equal(result.sourceYieldScope, 'crawler-discovery');
+  assert.equal(result.sourceYield.sources.length, 1);
   const roles = Object.values(result.modes).flatMap((mode) => mode.results);
   assert.equal(roles.length, 1);
   assert.equal(roles[0].primaryMode, 'startup');

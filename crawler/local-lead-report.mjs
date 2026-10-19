@@ -11,6 +11,20 @@ const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ')
 // Escape text before placing it in the HTML report.
 const html = (value) => String(value ?? 'Not Verified').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
+// Prefer the final delivery outcome and reconciliation over the discovery envelope.
+function reportRunStatus(result) {
+  const normalize = (status) => status === 'fatal' ? 'failed' : status === 'ok' ? 'completed' : ['completed', 'partial', 'degraded', 'failed'].includes(status) ? status : null;
+  const statuses = [
+    normalize(result.outcome?.status),
+    normalize(result.deliveryReconciliation?.status ?? result.terminalEnvelope?.deliveryReconciliation?.status),
+    normalize(result.terminalEnvelope?.status),
+  ];
+  const incomplete = ['failed', 'degraded', 'partial'].find((status) => statuses.includes(status));
+  if (incomplete) return incomplete;
+  if (result.outcome?.status != null && statuses[0] == null) return 'Not Verified';
+  return statuses.find(Boolean) ?? 'Not Verified';
+}
+
 const MODE_LABELS = Object.freeze({
   normal: Object.freeze({ label: 'Pune', roleTarget: 10, employerTarget: 6 }),
   startup: Object.freeze({ label: 'Startup', roleTarget: 5, employerTarget: 4 }),
@@ -78,7 +92,7 @@ function sourceRequests(source) {
 // Render only drift signals supported by retained run evidence.
 function dailyDriftSignals(result) {
   const signals = [];
-  const telemetry = result.sourceTelemetry ?? {};
+  const telemetry = { ...(result.sourceTelemetry ?? {}), ...(result.crawlerV2Telemetry ?? {}) };
   const textFor = (source) => JSON.stringify(source).toLowerCase();
   for (const [id, source] of Object.entries(telemetry)) {
     const evidence = textFor(source);
@@ -87,7 +101,7 @@ function dailyDriftSignals(result) {
     const failedBoards = Number(source.boardsFailed ?? source.failed ?? source.detail?.boardsFailed ?? source.detail?.failed ?? source.detail?.telemetry?.boardsFailed ?? source.detail?.telemetry?.failed ?? source.detail?.failures?.length ?? 0);
     if (failedBoards > 0) signals.push(`${id}: ${failedBoards} board failure${failedBoards === 1 ? '' : 's'}`);
   }
-  for (const [id, endState] of Object.entries(result.sourceEndStates ?? result.terminalEnvelope?.sourceEndStates ?? {})) {
+  for (const [id, endState] of Object.entries({ ...(result.terminalEnvelope?.sourceEndStates ?? {}), ...(result.sourceEndStates ?? {}) })) {
     const evidence = `${endState.state ?? ''} ${endState.reason ?? ''}`.toLowerCase();
     if (/linkedin/.test(id.toLowerCase()) && /429|rate.limit/.test(evidence)) signals.push(`LinkedIn 429: ${id}`);
     if (/glassdoor/.test(id.toLowerCase()) && /403|forbidden/.test(evidence)) signals.push(`Glassdoor 403: ${id}`);
@@ -195,6 +209,18 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     if (!['ok', 'empty', 'disabled'].includes(endState.state)) lines.push(`- ${cell(id)}: ${cell(endState.state)}; ${cell(endState.reason)}.`);
   }
   if (result.error) lines.push(`- ${cell(result.error)}`);
+  const terminal = result.terminalEnvelope ?? {};
+  const errors = result.outcome?.errors ?? [];
+  const runStatus = reportRunStatus(result);
+  const runCause = terminal.fatalReason ?? result.outcome?.fatalReason ?? (errors.map((error) => error?.message ?? error).filter(Boolean).join('; ') || 'Not Verified');
+  lines.push('', '## Run status', '', `Status: ${cell(runStatus)}.`, `Cause: ${cell(runCause)}.`);
+  for (const error of errors) lines.push(`- ${cell(error?.message ?? error)}`);
+  const coverage = terminal.sourceCoverage ?? result.sourceCoverage ?? {};
+  const durable = terminal.lastDurableSourceState ?? result.lastDurableSourceState ?? {};
+  for (const group of ['completed', 'interrupted', 'failed', 'not_started']) {
+    const sources = coverage[group] ?? durable[group];
+    lines.push(`- ${group.replace('_', ' ')}: ${Array.isArray(sources) ? sources.map(cell).join(', ') || 'None recorded' : 'Not Verified'}`);
+  }
   lines.push('');
   return lines.join('\n');
 }
@@ -204,18 +230,17 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const targetModes = Object.entries(MODE_LABELS).map(([mode, config]) => [mode, config.label]);
   const modes = [...targetModes, ['eorContract', 'EOR / Contract']];
   const modeRuns = result.modes ?? {};
-  const telemetry = result.sourceTelemetry ?? {};
-  const uniqueResults = uniqueRoles(targetModes.flatMap(([mode]) => modeRuns[mode]?.results ?? []));
+  const telemetry = { ...(result.sourceTelemetry ?? {}), ...(result.crawlerV2Telemetry ?? {}) };
   const units = dailyReportUnits(result, now);
   const uniqueShortlist = units.runRoles;
   const lifecycle = result.funnel?.lifecycle ?? {};
   const counts = result.counts ?? {};
   // Choose the first available count without inferring missing values.
-  const readCount = (...values) => values.find((value) => Number.isFinite(value)) ?? 0;
+  const readCount = (...values) => values.find((value) => Number.isFinite(value)) ?? null;
   const strictCount = uniqueShortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
   const employers = new Set(uniqueShortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
   const funnel = [
-    ['Fetched', readCount(counts.fetched, lifecycle.fetched, uniqueResults.length)],
+    ['Fetched', readCount(counts.fetched, lifecycle.fetched)],
     ['Eligible', readCount(counts.eligible, lifecycle.eligible)],
     ['Passed gates', readCount(counts.gatePassing, lifecycle.gatePassing, lifecycle.eligible)],
     ['Ready', readCount(counts.ready, lifecycle.ready)],
@@ -258,18 +283,38 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
   const separate = `<section data-section="separate-lanes"><h2>Separate lanes outside daily role targets</h2><p>This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.</p></section>`;
   const verification = `<section data-section="verification"><h2>VerifyQueue</h2><p>These roles do not count toward daily targets.</p>${(result.verificationQueue ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}</section>`;
-  const sourceFailures = `<section data-section="source-failures"><h2>Source end states</h2>${Object.entries(result.sourceEndStates ?? result.terminalEnvelope?.sourceEndStates ?? {}).map(([id, source]) => `<p>${html(id)}: ${html(source.state)}${source.reason ? `, ${html(source.reason)}` : ''}</p>`).join('') || '<p>Not Verified</p>'}</section>`;
+  const envelope = result.terminalEnvelope ?? {};
+  const endStates = { ...(envelope.sourceEndStates ?? {}), ...(result.sourceEndStates ?? {}) };
+  const coverage = envelope.sourceCoverage ?? result.sourceCoverage ?? {};
+  const lastDurable = envelope.lastDurableSourceState ?? result.lastDurableSourceState ?? {};
+  const coverageGroups = ['completed', 'interrupted', 'failed', 'not_started'];
+  const sourceCoverage = coverageGroups.map((group) => {
+    const sources = coverage[group] ?? lastDurable[group];
+    return `<p><strong>${html(group.replace('_', ' '))}:</strong> ${Array.isArray(sources) && sources.length ? sources.map(html).join(', ') : Array.isArray(sources) ? 'None recorded' : 'Not Verified'}</p>`;
+  }).join('');
+  const durableDetail = Object.entries(lastDurable).filter(([key]) => !coverageGroups.includes(key))
+    .map(([id, source]) => `<p>Last durable source state: ${html(id)}: ${html(source?.status)}; fetched ${html(source?.fetched)}.</p>`).join('');
+  const sourceFailures = `<section data-section="source-failures"><h2>Source coverage and end states</h2>${sourceCoverage}${durableDetail}${Object.entries(endStates).map(([id, source]) => `<p>${html(id)}: ${html(source.state)}${source.reason ? `, ${html(source.reason)}` : ''}</p>`).join('') || '<p>Source end states: Not Verified</p>'}</section>`;
+  const errorItems = result.outcome?.errors ?? [];
+  const fatalReason = envelope.fatalReason ?? result.outcome?.fatalReason ?? null;
+  const runStatus = reportRunStatus(result);
+  const runCause = fatalReason ?? (errorItems.map((error) => error?.message ?? error).filter(Boolean).join('; ') || 'Not Verified');
+  const errors = `<section data-section="run-status"><h2>Run status</h2><p>Status: ${html(runStatus)}</p><p>Cause: ${html(runCause)}</p>${errorItems.length ? `<ul>${errorItems.map((error) => `<li>${html(error?.message ?? error)}</li>`).join('')}</ul>` : ''}</section>`;
+  const hiringEvents = result.hiringEvents?.items ?? [];
+  const events = `<section data-section="hiring-events"><h2>Hiring events</h2><p>Times use IST. Date-only entries have no verified time. Events do not count toward role targets.</p>${hiringEvents.length ? hiringEvents.map((item) => `<p>${html(item.title)}: ${html(eventDate(item.date))}. Deadline: ${html(eventDate(item.deadline))}.</p>`).join('') : '<p>Not Verified</p>'}</section>`;
   const yieldRows = (result.sourceYield?.sources ?? []).map((row) => {
-    const matchingTelemetry = Object.entries(telemetry).find(([id, source]) => id === row.sourceId || `${row.provider}:${row.board}` === row.sourceId || source.detail?.sources?.some((entry) => `${entry.provider}:${entry.board}` === row.sourceId));
-    const boardTelemetry = matchingTelemetry?.[1].detail?.sources?.find((entry) => `${entry.provider}:${entry.board}` === row.sourceId);
+    // Compare the retained board identity before using its request count.
+    const matchesBoard = (entry) => `${entry.provider}:${entry.board}`.toLowerCase() === row.sourceId.toLowerCase();
+    const matchingTelemetry = Object.entries(telemetry).find(([id, source]) => id === row.sourceId || source.detail?.sources?.some(matchesBoard));
+    const boardTelemetry = matchingTelemetry?.[1].detail?.sources?.find(matchesBoard);
     const requests = boardTelemetry ? sourceRequests(boardTelemetry) : matchingTelemetry ? sourceRequests(matchingTelemetry[1]) : null;
     const rate = requests == null ? 'Not Verified' : `${row.applicationReady ?? 0} application-ready roles / ${requests} requests`;
     return `<tr><td>${html(row.sourceId)}</td><td>${row.fetched ?? 0}</td><td>${row.applicationReady ?? 0}</td><td>${requests ?? 'Not Verified'}</td><td>${rate}</td></tr>`;
   }).join('');
-  const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
+  const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${result.sourceYieldScope === 'crawler-discovery' ? '<p>Discovery counts precede final enrichment and scoring. They exclude later tracked-source reads and do not measure delivered roles.</p>' : ''}${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
   const driftSignals = dailyDriftSignals(result);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p><section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value}</li>`).join('')}</ul></section>${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${sourceYield}${sourceFailures}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${sourceYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.
