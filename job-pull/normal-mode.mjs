@@ -238,9 +238,14 @@ export async function runNormalMode({
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const {
       kept: nonHistoricalCandidates,
-      suppressed: historicalSuppressions,
+      suppressed: rawHistoricalSuppressions,
       ambiguous: historicalAmbiguities,
     } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
+    const candidateByCanonicalUrl = new Map(pipeline.postSuppressionCandidates.map((candidate) => [candidate.canonicalUrl, candidate]));
+    const historicalSuppressions = rawHistoricalSuppressions.map((row) => {
+      const candidate = candidateByCanonicalUrl.get(row.canonicalUrl);
+      return candidate ? { ...row, dedupKey: candidateDedupKey(candidate) } : row;
+    });
     const readinessEntries = nonHistoricalCandidates.filter((candidate) => !dailyExcludedKeys.includes(candidateDedupKey(candidate))).map((candidate) => ({
       candidate,
       eligibility: candidate.eligibility,

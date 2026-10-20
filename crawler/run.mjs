@@ -308,6 +308,7 @@ export function cloneJsonEnvelope(value, label, boundaries) {
   const visit = (input, name, paths) => {
     if (!paths.length) return cloneJsonSafe(input, name);
     if (paths.some((path) => path.length === 0)) {
+      if (name.endsWith('.workflow.dailyReceipt.retained.identityRows') && input === 'Not Verified') return input;
       const result = cloneJsonCollection(input, name);
       collections.count += result.length;
       if (collections.count > MAX_JSON_RECORDS) throw new TypeError(`${label} exceeds total record count limit`);
@@ -330,6 +331,34 @@ export function cloneJsonEnvelope(value, label, boundaries) {
 
 export const WORKFLOW_COLLECTIONS = ['verificationQueue', 'unresolvedLeads', 'historicalSuppressions', 'historicalAmbiguous'];
 export const TERMINAL_COLLECTIONS = ['verificationQueue', 'backfill', 'scoredReady', 'scorePendingReady'];
+export const FUNNEL_COLLECTION_BOUNDARIES = [['sourceHealth', '*', 'boards'], ['identityRows'], ['receiptLedgerSuppressions']];
+export const DAILY_RECEIPT_COLLECTIONS = [
+  ['workflow', 'dailyReceipt', 'retained', 'identityRows'],
+  ['workflow', 'dailyReceipt', 'retained', 'observations'],
+];
+export const WORKFLOW_TELEMETRY_BOUNDARIES = [
+  ['sources', '*', 'attemptHistory'],
+  ['workflow', 'sourceTelemetry', '*', 'attemptHistory'],
+  ['workflow', 'sourceYield', 'sources'],
+  ['workflow', 'funnel', 'sourceHealth', '*', 'boards'],
+  ...FUNNEL_COLLECTION_BOUNDARIES.map((path) => ['workflow', 'funnel', ...path]),
+  ...WORKFLOW_COLLECTIONS.map((key) => ['workflow', key]),
+  ...TERMINAL_COLLECTIONS.map((key) => ['workflow', 'terminalEnvelope', key]),
+  ...DAILY_RECEIPT_COLLECTIONS,
+];
+
+// Validate retained telemetry and its additive receipt under independent record budgets.
+function cloneWorkflowTelemetry(value, label) {
+  const workflow = value?.workflow;
+  const hasDailyReceipt = isRecord(workflow) && Object.hasOwn(workflow, 'dailyReceipt');
+  const { dailyReceipt, ...workflowTelemetry } = isRecord(workflow) ? workflow : {};
+  const core = cloneJsonEnvelope({ ...value, ...(isRecord(workflow) ? { workflow: workflowTelemetry } : {}) }, label, WORKFLOW_TELEMETRY_BOUNDARIES);
+  if (!hasDailyReceipt) return core;
+  const receipt = cloneJsonEnvelope({ workflow: { dailyReceipt } }, `${label} daily receipt`, DAILY_RECEIPT_COLLECTIONS).workflow.dailyReceipt;
+  const result = { ...core, workflow: { ...(core.workflow ?? {}), dailyReceipt: receipt } };
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_JSON_ENVELOPE_BYTES) throw new TypeError(`${label} exceeds total byte limit`);
+  return result;
+}
 
 const text = (value) => value == null ? null : String(value);
 const nowFrom = (clock) => {
@@ -684,16 +713,21 @@ export function transitionStage(store, runId, stage, status, { clock, error = nu
 export function finishCrawlRun(store, runId, { status = 'completed', counts = {}, telemetry = {}, clock, error = null } = {}) {
   const at = nowFrom(clock);
   const safeCounts = cloneJsonSafe(counts, 'run counts');
-  const safeTelemetry = cloneJsonEnvelope(telemetry, 'run telemetry', [
-    ['sources', '*', 'attemptHistory'],
-    ['workflow', 'sourceTelemetry', '*', 'attemptHistory'],
-    ['workflow', 'sourceYield', 'sources'],
-    ['workflow', 'funnel', 'sourceHealth', '*', 'boards'],
-    ...WORKFLOW_COLLECTIONS.map((key) => ['workflow', key]),
-    ...TERMINAL_COLLECTIONS.map((key) => ['workflow', 'terminalEnvelope', key]),
-  ]);
+  const safeTelemetry = cloneWorkflowTelemetry(telemetry, 'run telemetry');
   store.prepare('UPDATE crawl_runs SET status = ?, stage = ?, finished_at = ?, error = ?, counts_json = ?, telemetry_json = ? WHERE run_id = ?').run(status, status === 'partial' ? 'fetch' : 'complete', at, error, JSON.stringify(safeCounts), JSON.stringify(safeTelemetry), runId);
   return runRow(store, runId);
+}
+
+// Attach the final daily receipt to the existing run envelope without changing its outcome.
+export function persistDailyReceipt(store, runId, receipt) {
+  const row = runRow(store, runId);
+  if (!row) return false;
+  const telemetry = cloneWorkflowTelemetry({
+    ...row.telemetry,
+    workflow: { ...(row.telemetry.workflow ?? {}), dailyReceipt: receipt },
+  }, 'daily receipt telemetry');
+  store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), runId);
+  return true;
 }
 
 export function failCrawlRun(store, runId, error, { clock } = {}) {

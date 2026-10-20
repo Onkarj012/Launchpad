@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig, loadConversionPlan, DEFAULT_CONFIG_PATH } from './config.mjs';
 import { assertCandidate, buildPayloadRecord, candidateDedupKey, candidateMatchesLedgerRow, canonicalizeUrl, validatePayloadRecord } from './candidate.mjs';
@@ -200,6 +200,24 @@ export function runPipeline({
   deferSelection = false,
 }) {
   const allCandidates = sources.flatMap((source) => source.candidates || []);
+  const sourceProvenance = new Map();
+  for (const source of sources) {
+    for (const candidate of source.candidates || []) {
+      const identity = candidateDedupKey(candidate);
+      if (!identity) continue;
+      const provenance = sourceProvenance.get(identity) ?? [];
+      const observation = {
+        provider: candidate.provider ?? null,
+        source: candidate.source ?? null,
+        sourceId: source.id ?? source.sourceId ?? source.manifest?.sourceId ?? candidate.source ?? null,
+        observedAt: candidate.observedAt ?? null,
+        postedAt: candidate.postedAt ?? null,
+      };
+      const signature = JSON.stringify(observation);
+      if (provenance.length < 20 && !provenance.some((item) => JSON.stringify(item) === signature)) provenance.push(observation);
+      sourceProvenance.set(identity, provenance);
+    }
+  }
   const manifests = sources.map((source) => ({ ...source.manifest }));
   for (const manifest of manifests) {
     if (!manifest.errors) manifest.errors = [];
@@ -212,6 +230,16 @@ export function runPipeline({
   for (const duplicate of deduped.duplicates) {
     const manifest = manifestForCandidate(manifests, duplicate.candidate);
     if (manifest) manifest.duplicate++;
+    if (!duplicate.winner) continue;
+    const winnerIdentity = candidateDedupKey(duplicate.winner);
+    const loserIdentity = candidateDedupKey(duplicate.candidate);
+    const winnerProvenance = sourceProvenance.get(winnerIdentity) ?? [];
+    const merged = new Map(winnerProvenance.slice(0, 20).map((item) => [JSON.stringify(item), item]));
+    for (const item of sourceProvenance.get(loserIdentity) ?? []) {
+      if (merged.size >= 20) break;
+      merged.set(JSON.stringify(item), item);
+    }
+    sourceProvenance.set(winnerIdentity, [...merged.values()]);
   }
 
   const opportunityRowsForRun = opportunityLedgerRows ?? opportunityRows ?? readOpportunityLedger(opportunityLedgerPath).rows;
@@ -238,6 +266,7 @@ export function runPipeline({
     });
     const entry = {
       candidate: scoredCandidate,
+      sourceProvenance: sourceProvenance.get(candidateDedupKey(input)) ?? [],
       freshness,
       eligibility,
       selectionTier: eligibility.tier,
@@ -367,6 +396,30 @@ export function runPipeline({
       newlyActionable: null,
     },
   });
+  const ledgerSuppressionRows = new Map();
+  for (const duplicate of deduped.duplicates) {
+    if (duplicate.code !== 'DEDUP_EXISTING_LEDGER' || duplicate.winner) continue;
+    const candidate = duplicate.candidate;
+    const identity = candidateDedupKey(candidate);
+    if (!identity) continue;
+    const identityHash = `sha256:${createHash('sha256').update(identity).digest('hex')}`;
+    const provenance = sourceProvenance.get(identity) ?? [];
+    const previous = ledgerSuppressionRows.get(identityHash);
+    if (previous) {
+      previous.provenance = [...new Map([...previous.provenance, ...provenance]
+        .map((item) => [JSON.stringify(item), item])).values()].slice(0, 20);
+    } else {
+      ledgerSuppressionRows.set(identityHash, {
+        identity: identityHash,
+        code: duplicate.code,
+        evidence: duplicate.evidence,
+        provider: candidate.provider ?? null,
+        source: candidate.source ?? null,
+        provenance: provenance.slice(0, 20),
+      });
+    }
+  }
+  funnel.receiptLedgerSuppressions = [...ledgerSuppressionRows.values()];
   return {
     schemaVersion: 'JobPullRunV1',
     runId,

@@ -12,6 +12,10 @@ This is the sole repository index for current execution status. It describes the
 
 When sources conflict, do not infer promotion from prose. Re-run allowed local checks and treat live gates as open until explicit production evidence exists.
 
+## P02 daily stage-loss receipts, 2026-10-20
+
+The isolated P02 worktree adds a hashed daily receipt to the existing crawler run telemetry and readable Markdown/HTML reports. Receipt persistence reuses the crawler SQLite run envelope. This is uncommitted local implementation, not a release or readiness claim. Focused evidence and remaining limits are in `.local/p02-receipts/report.md`.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`
