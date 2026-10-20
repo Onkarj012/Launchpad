@@ -445,6 +445,7 @@ function extractDetails(response, observation, provider) {
     location: location ? FIELD_SOURCE_ORIGINAL : null,
     employment: employment ? FIELD_SOURCE_ORIGINAL : null,
     experience: experience && (experience.minYears != null || experience.evidence) ? FIELD_SOURCE_ORIGINAL : null,
+    salary: salaryValue(posting || root) ? FIELD_SOURCE_ORIGINAL : null,
     postedAt: postedAt ? FIELD_SOURCE_ORIGINAL : null,
     liveness: FIELD_SOURCE_ORIGINAL,
     originalApplicationUrl: FIELD_SOURCE_ORIGINAL,
@@ -941,6 +942,32 @@ export function applyOriginalListingResolution(observation, resolution) {
   }
   const merged = { ...observation, ...patch, discoveryUrl, employerDetailUrl: patch.employerDetailUrl ?? finalUrl,
     finalApplyUrl: patch.finalApplyUrl ?? finalUrl, originalApplicationUrl: finalUrl };
+  if (observation.evidence?.recovery?.kind === 'held-lead-recovery') {
+    const fieldSources = patch.evidence?.fieldSources || {};
+    for (const field of ['company', 'title', 'location', 'description', 'employment', 'experience', 'salary', 'postedAt', 'liveness']) {
+      merged[field] = fieldSources[field] === 'original-employer-detail' ? patch[field] ?? null : null;
+    }
+    merged.workMode = null;
+    merged.work_mode = null;
+    merged.remoteEligibility = { status: 'Not Verified', evidence: null };
+    merged.remoteEligible = null;
+    merged.remoteEligibilityEvidence = null;
+    for (const field of [
+      'companyName', 'role', 'descriptionPlain', 'jd', 'body',
+      'employmentType', 'type', 'employmentEvidence', 'payEvidence', 'paid',
+      'minYears', 'minimumYears', 'experienceMinYears', 'maxYears', 'maximumYears', 'experienceMaxYears',
+      'experienceEvidence', 'sourceMinYears', 'sourceMaxYears', 'sourceMaxUnbounded',
+    ]) {
+      merged[field] = null;
+    }
+    for (const field of ['salaryMin', 'salaryMax', 'salaryCurrency', 'salaryPeriod', 'salaryEvidence']) {
+      delete merged[field];
+    }
+    merged.stipend = parseStipend({
+      description: fieldSources.description === 'original-employer-detail' ? patch.description : null,
+      salary: fieldSources.salary === 'original-employer-detail' ? patch.salary : null,
+    });
+  }
   merged.applicationResolution = resolution.applicationResolution || { status: 'Resolved Original', evidence: resolution.evidence?.originalApplication || 'injected-resolver' };
   merged.evidence = { ...(observation.evidence || {}), ...(resolution.evidence || {}), ...(resolution.patch?.evidence || {}) };
   merged.classification = 'direct';
