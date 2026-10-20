@@ -98,13 +98,19 @@ function finiteYears(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+// Keep the strictest finite minimum when source representations disagree.
+function strictestYears(...values) {
+  const finite = values.filter(Number.isFinite);
+  return finite.length ? Math.max(...finite) : null;
+}
+
 const HARD_EXPERIENCE_CUE_RE = /\b(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)/i;
 const PREFERENCE_RE = /\b(?:preferred|nice\s+to\s+have|bonus|desirable|advantage)\b/i;
 const EXPERIENCE_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
 const EXPERIENCE_VALUE = String.raw`(?:\d+(?:\.\d+)?|(?:${EXPERIENCE_WORDS.join('|')})(?:\s*\(\d+\))?)`;
 const EXPERIENCE_UNIT = String.raw`(?:years?|yrs?)(?:\(s\))?(?![A-Za-z])`;
 // A match must start at the lower bound, never at the tail of a range.
-const EXPERIENCE_NUMBER = String.raw`(?<![\d.])(?<lower>${EXPERIENCE_VALUE})(?:\s*(?<plus>\+)|\s*(?<separator>to|[-–—])\s*(?<upper>${EXPERIENCE_VALUE}))?`;
+const EXPERIENCE_NUMBER = String.raw`(?<![\d.])(?<lower>${EXPERIENCE_VALUE})(?:\s*(?<plus>\+)|\s*(?<separator>to|[-–—])\s*(?<upper>${EXPERIENCE_VALUE})(?<upperPlus>\s*\+)?)?`;
 const ROLE_EXAMPLES_TAIL = String.raw`\(\s*(?:solutions engineering|forward deployed engineering|implementation engineering|technical consulting|technical pm)(?:\s*,\s*(?:solutions engineering|forward deployed engineering|implementation engineering|technical consulting|technical pm))*(?:\s*,?\s+or similar)?\s*\)`;
 
 // Accept only a complete role qualification or an explicit mandatory ending.
@@ -214,43 +220,96 @@ export function stripHtmlToText(value) {
     .trim();
 }
 
+// Preserve requirement boundaries while removing HTML from a job description.
+function stripHtmlToRequirementText(value) {
+  if (typeof value !== 'string') return '';
+  return decodeEntities(value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\b[^>]*>/gi, '\n')
+    .replace(/<\/(?:li|p|div|section|article|h[1-6])\s*>/gi, '\n')
+    .replace(/<(?:li|p|div|section|article|h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, ' '))
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+// Read bounded section and track headings that apply at one JD offset.
+function requirementHeadingContext(text, offset) {
+  let preferred = false;
+  let track = null;
+  for (const line of text.slice(0, offset).split(/\r?\n/)) {
+    const value = line.trim();
+    if (!value) continue;
+    const headingType = roleTenureHeadingType(value);
+    if (headingType === 'preferred') {
+      preferred = true;
+      track = null;
+      continue;
+    }
+    if (headingType === 'required' || headingType === 'neutral') {
+      preferred = false;
+      track = null;
+      continue;
+    }
+    const heading = value.match(/^\s*(?:#{1,6}\s*)?(junior|entry[ -]?level|senior|staff|principal)\s+(?:experience\s+)?(?:track|level)\s*:?\s*$/i);
+    if (heading) {
+      track = heading[1].toLowerCase().replace(/[ -]/g, '-');
+      continue;
+    }
+    if (/\b(?:all\s+candidates|everyone|regardless\s+of\s+level)\b/i.test(value)) track = null;
+  }
+  return { preferred, track };
+}
+
 // Keep applicant requirements and discard education, tenure, and preferences.
-function experienceMatch(match, text) {
+function experienceMatch(match, text, textOffset = 0) {
   const groups = match.groups || {};
   const lower = experienceNumber(groups.lower);
-  const upper = groups.upper == null ? (groups.plus ? null : lower) : experienceNumber(groups.upper);
+  const upper = groups.upper == null || groups.upperPlus ? (groups.plus || groups.upperPlus ? null : lower) : experienceNumber(groups.upper);
   const start = match.index ?? 0;
   const end = start + match[0].length;
   const numberStart = start + match[0].indexOf(groups.lower);
   if (/\d\s*(?:[-–—]|to)\s*$/i.test(text.slice(0, numberStart))) return null;
-  const clauseStart = [...text.slice(0, start).matchAll(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;]/gi)].at(-1)?.index ?? -1;
+  const clauseStart = [...text.slice(0, start).matchAll(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;\n]/gi)].at(-1)?.index ?? -1;
   const prefix = text.slice(Math.max(clauseStart + 1, numberStart - 180), numberStart);
+  const contextClauseStart = [...text.slice(0, numberStart).matchAll(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;]/gi)].at(-1)?.index ?? -1;
+  const contextPrefix = text.slice(Math.max(contextClauseStart + 1, numberStart - 180), numberStart);
+  const headingContext = requirementHeadingContext(text, numberStart);
   const suffix = text.slice(end).replace(/^\.(?=\s)/, '').split(/[.!?;,]/, 1)[0].slice(0, 60);
   const requirementTail = text.slice(numberStart).split(/[.!?;,]/, 1)[0].slice(0, 140);
   if (/\b(?:education(?:al)?|qualification|school(?:ing)?|academic|degree)\b/i.test(match[0].slice(0, match[0].indexOf(groups.lower)))
     || /^\s*(?:of\s+)?(?:(?:full[ -]?time|formal|academic)\s+)*(?:education(?:al)?|schooling|study|studies)\b/i.test(suffix)) return null;
   const bachelorDegree = /\b(?:bachelor(?:['’]s)?|b\.?\s?tech|b\.?\s?e\.?|b\.?\s?s\.?|b\.?\s?sc\.?|undergraduate|graduate\s+degree)\b/i;
   const advancedDegree = /\b(?:master(?:['’]s|s)?|m\.?\s?tech|m\.?\s?s\.?|mba|ph\.?\s?d\.?|doctorate)\b/i;
-  const degreeClause = text.slice(clauseStart + 1).split(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;]/i, 1)[0];
-  if (/\bdegree\b[^.!?;]*\bor\s+(?:equivalent\s+)?$/i.test(prefix)
-    && bachelorDegree.test(prefix) && !advancedDegree.test(degreeClause)) return null;
+  const degreeClause = text.slice(contextClauseStart + 1).split(/(?<!\b(?:B\.E|B\.S|M\.S))\.\s|[!?;]/i, 1)[0];
+  if (/\bdegree\b[^.!?;]*\bor\s+(?:equivalent\s+)?$/i.test(contextPrefix)
+    && bachelorDegree.test(contextPrefix) && !advancedDegree.test(degreeClause)) return null;
   const cue = [...prefix.slice(-80).matchAll(new RegExp(HARD_EXPERIENCE_CUE_RE.source, 'gi'))].at(-1);
   const preference = [...prefix.slice(-80).matchAll(new RegExp(PREFERENCE_RE.source, 'gi'))].at(-1);
+  const preferenceSection = [...prefix.matchAll(/\b(?:preferred|optional|desired|nice\s+to\s+have|bonus)\s+(?:qualifications?|requirements?|experience|skills)\b/gi)].at(-1);
+  const requiredSection = [...prefix.matchAll(/\b(?:(?:required|minimum|essential)\s+(?:qualifications?|requirements?|experience|skills)|requirements?)\b\s*:?/gi)].at(-1);
+  const mandatorySuffix = text.slice(end).split(/[.!?;,\n]/, 1)[0];
+  const explicitMandatoryClause = /\b(?:required|must\s+have|mandatory|minimum|at\s+least)\b/i.test(`${prefix} ${mandatorySuffix}`);
+  if ((headingContext.preferred && !explicitMandatoryClause)
+    || (preferenceSection && (!requiredSection || preferenceSection.index > requiredSection.index) && !explicitMandatoryClause)) return null;
   const afterPreference = /^\s*(?:(?:is|are|would\s+be|will\s+be)\s+)?(?:preferred|desirable|a\s+(?:bonus|plus|nice\s+to\s+have)|an?\s+advantage|nice\s+to\s+have)\b/i.test(suffix);
   const experiencePreference = /\bexperience\b(?:(?!\b(?:required|must|mandatory|and|but)\b)[^.!?;,]){0,60}\b(?:preferred|desirable|bonus|advantage|nice\s+to\s+have)\b/i.test(requirementTail);
   const beforePreference = preference && (!cue || preference.index > cue.index);
   if (afterPreference || experiencePreference || beforePreference) return null;
   if (/\b(?:supported|warrantied)\s+for\s*$/i.test(prefix)) return null;
   // Company tenure is evidence about the employer, not the applicant.
-  if (/\b(?:we|company|organisation|organization|corporation|group|business|firm|team)\b[^.!?;]*\b(?:has|have|with|brings?|boasts?|spanning)\b[^.!?;]*$/i.test(prefix)
-    && !/\b(?:you|candidate|applicant|engineer|developer|seeking|looking|expect|requires?|requirements?|must\s+have)\b[^.!?;]*$/i.test(prefix)) return null;
-  return { minYears: lower, maxYears: upper, evidence: match[0].trim().replace(/\s+/g, ' ') };
+  if (/\b(?:we|company|organisation|organization|corporation|group|business|firm|team)\b[^.!?;]*\b(?:has|have|with|brings?|boasts?|spanning)\b[^.!?;]*$/i.test(contextPrefix)
+    && !/\b(?:you|candidate|applicant|engineer|developer|seeking|looking|expect|requires?|requirements?|must\s+have)\b[^.!?;]*$/i.test(contextPrefix)) return null;
+  return { minYears: lower, maxYears: upper, evidence: match[0].trim().replace(/\s+/g, ' '), start: textOffset + numberStart, end: textOffset + end };
 }
 
-// Extract the strictest applicant experience requirement from the JD.
-export function extractExperienceYears(text) {
-  const cleaned = stripHtmlToText(text);
-  if (!cleaned) return null;
+// Collect applicant experience matches while retaining the full JD context.
+function collectExperienceYears(text) {
+  const cleaned = stripHtmlToRequirementText(text);
+  if (!cleaned) return [];
   const matches = [];
   const forward = new RegExp(
     String.raw`(?:minimum(?:\s+of)?|at\s+least|must\s+have|require(?:d|s)?|requirements?:|experience:)(?=[^A-Za-z]|$)[^\d.!?;]{0,40}?\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}`,
@@ -276,6 +335,14 @@ export function extractExperienceYears(text) {
     'gi',
   );
   for (const match of cleaned.matchAll(activityRequirement)) {
+    const parsed = experienceMatch(match, cleaned);
+    if (parsed) matches.push(parsed);
+  }
+  const handsOnRequirement = new RegExp(
+    String.raw`\b${EXPERIENCE_NUMBER}\s*${EXPERIENCE_UNIT}\s+(?:of\s+)?hands[ -]on\s+(?:experience\s+)?(?:with|using|on)\s+[A-Za-z][A-Za-z0-9+.#/-]*`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(handsOnRequirement)) {
     const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
   }
@@ -308,6 +375,7 @@ export function extractExperienceYears(text) {
   );
   let preferredSection = false;
   let qualificationSection = false;
+  let roleSearchOffset = 0;
   for (const item of (hasNestedLists ? [] : roleBlocks.split('\u0000'))) {
     const itemLines = item.split(/\r?\n/).map((value) => value.replace(/\s+/g, ' ').trim());
     let priorLineIsBoundary = true;
@@ -337,6 +405,7 @@ export function extractExperienceYears(text) {
         continue;
       }
       if (headingType === 'neutral') {
+        preferredSection = false;
         qualificationSection = true;
         priorLineIsBoundary = true;
         continue;
@@ -358,7 +427,17 @@ export function extractExperienceYears(text) {
       for (const match of roleRequirementMatches) {
         if (!contextProvesNewItem || !nextLineIsBoundary || !isRoleTenureRequirement(match) || !hasCompleteRoleTenureEnding(match, matchLine)) continue;
         const parsed = experienceMatch(match, matchLine);
-        if (parsed) matches.push(parsed);
+        if (parsed) {
+          const occurrenceText = match[0].replace(/^\s*[-*•]\s+/, '');
+          const occurrenceAt = cleaned.indexOf(occurrenceText, roleSearchOffset);
+          if (occurrenceAt >= 0) {
+            const numberAt = occurrenceText.indexOf(match.groups?.lower ?? parsed.evidence);
+            matches.push({ ...parsed, start: occurrenceAt + numberAt, end: occurrenceAt + occurrenceText.length });
+            roleSearchOffset = occurrenceAt + match[0].length;
+          } else {
+            matches.push({ ...parsed, start: null, end: null });
+          }
+        }
       }
       priorLineIsBoundary = (isStandaloneRequirement && contextProvesNewItem && nextLineIsBoundary && isCompleteRequirement)
         || (/[.!?]$/.test(matchLine) && !nextLineIsContinuation);
@@ -369,8 +448,91 @@ export function extractExperienceYears(text) {
     const parsed = experienceMatch(match, cleaned);
     if (parsed) matches.push(parsed);
   }
+  return matches;
+}
+
+// Return the strictest mandatory experience requirement from the full JD.
+export function extractExperienceYears(text) {
+  const matches = collectExperienceYears(text);
   if (!matches.length) return null;
   return matches.reduce((best, current) => current.minYears > best.minYears ? current : best);
+}
+
+// Retain bounded mandatory requirements while preserving full JD context.
+export function extractExperienceRequirements(text, sourceEvidence = '') {
+  const cleaned = stripHtmlToRequirementText(text);
+  const requirements = [];
+  const occurrences = new Map();
+  let fallbackOffset = 0;
+  for (const parsed of collectExperienceYears(text)) {
+    const at = Number.isInteger(parsed.start) ? parsed.start : cleaned.indexOf(parsed.evidence, fallbackOffset);
+    if (at < 0) continue;
+    fallbackOffset = at + parsed.evidence.length;
+    const occurrenceKey = `${at}:${parsed.minYears}:${parsed.maxYears}`;
+    if (occurrences.has(occurrenceKey)) continue;
+    occurrences.set(occurrenceKey, { ...parsed, start: at });
+  }
+  const parsedOccurrences = [...occurrences.values()].sort((left, right) => left.start - right.start);
+  for (const [occurrenceIndex, parsed] of parsedOccurrences.entries()) {
+    const at = parsed.start;
+    const context = cleaned.slice(Math.max(0, at - 100), Math.min(cleaned.length, at + parsed.evidence.length + 100));
+    const clauseStart = Math.max(cleaned.lastIndexOf(';', at), cleaned.lastIndexOf('.', at), cleaned.lastIndexOf('!', at), cleaned.lastIndexOf('?', at), cleaned.lastIndexOf('\n', at)) + 1;
+    const clauseEndings = [';', '.', '!', '?', '\n'].map((mark) => cleaned.indexOf(mark, parsed.end)).filter((index) => index >= 0);
+    const clauseEnd = clauseEndings.length ? Math.min(...clauseEndings) : cleaned.length;
+    const clause = cleaned.slice(clauseStart, clauseEnd);
+    const before = clause.slice(0, Math.max(0, at - clauseStart));
+    const trackMatches = [...before.matchAll(/\b(junior|entry[ -]?level|senior|staff|principal)\s+(?:experience\s+)?(?:track|level)\b|\b(?:track|level)\s*(?:is|:|=)?\s*(junior|entry[ -]?level|senior|staff|principal)\b/gi)];
+    const trailingRequirementEnd = Math.min(parsedOccurrences[occurrenceIndex + 1]?.start ?? clauseEnd, clauseEnd);
+    const trailingRequirement = cleaned.slice(parsed.end, trailingRequirementEnd);
+    const trailingUniversal = [...trailingRequirement.matchAll(/\b(?:all\s+candidates|everyone|regardless\s+of\s+level)\b/gi)].some((match) => {
+      const preceding = trailingRequirement.slice(0, match.index);
+      const following = trailingRequirement.slice((match.index ?? 0) + match[0].length);
+      return /\b(?:required|must\s+have|mandatory|minimum|at\s+least)\b/i.test(preceding)
+        || !/\b(?:required|must\s+have|mandatory|minimum|at\s+least)\b/i.test(following);
+    });
+    const universalBoundary = trailingUniversal
+      ? Number.POSITIVE_INFINITY
+      : [...before.matchAll(/\b(?:all\s+candidates|everyone|regardless\s+of\s+level)\b/gi)].at(-1)?.index ?? -1;
+    const applicableTrack = trackMatches.filter((match) => (match.index ?? -1) > universalBoundary).at(-1);
+    const track = trailingUniversal
+      ? null
+      : applicableTrack?.[1] || applicableTrack?.[2]
+        ? (applicableTrack[1] || applicableTrack[2]).toLowerCase().replace(/[ -]/g, '-')
+        : requirementHeadingContext(cleaned, at).track;
+    const localContext = clause;
+    const scope = /\b(overall|total|general)\s+(?:professional\s+)?experience\b/i.test(localContext)
+      ? 'overall'
+      : /\b(?:hands[ -]?on|with|using)\s+[A-Z][A-Za-z0-9+.#/-]*\b/.test(localContext) ? 'specialized' : 'unspecified';
+    requirements.push({
+      minYears: parsed.minYears,
+      maxYears: parsed.maxYears,
+      scope,
+      track,
+      evidence: parsed.evidence,
+      excerpt: context.trim().slice(0, 300),
+    });
+  }
+  const selectionPatterns = [
+    /^\s*(?:this|the)\s+(?:opening|position|role)\s+is\s+(?:for\s+)?(?:the\s+)?(junior|entry[ -]?level|senior|staff|principal)\s+(?:track|level)\s*[.!?]?\s*$/i,
+    /^\s*(?:applicable|selected|hired|opening|position|role)\s+(?:experience\s+)?(?:track|level)\s*(?:is|:|=|will be|selected as)?\s*(junior|entry[ -]?level|senior|staff|principal)\s*[.!?]?\s*$/i,
+  ];
+  const selectionClauses = [cleaned, stripHtmlToRequirementText(sourceEvidence)]
+    .filter(Boolean)
+    .flatMap((text) => text.split(/[;.!?\n]+/));
+  const selections = selectionClauses.flatMap((clause) => {
+    const match = selectionPatterns.map((pattern) => clause.match(pattern)).find(Boolean);
+    return match ? [{ 0: clause.trim(), 1: match[1] }] : [];
+  });
+  const selectedNames = [...new Set(selections.map((match) => (match[1] || match[2]).toLowerCase().replace(/[ -]/g, '-')))];
+  const selection = selectedNames.length === 1 ? selections.find((match) => (match[1] || match[2]).toLowerCase().replace(/[ -]/g, '-') === selectedNames[0]) : null;
+  const selectedTrack = selectedNames.length === 1 ? selectedNames[0] : null;
+  const hasUnassignedAlternative = /\b\d+(?:\s*[-–—]\s*\d+)?(?:\s*years?)?\s+or\s+\d+\s*\+?(?:\s*years?)?[^.!?;]{0,120}\b(?:depending on|based on)\s+(?:the\s+)?(?:level|experience)\b/i.test(cleaned)
+    && !selectedTrack;
+  const tracks = [...new Set(requirements.map((item) => item.track).filter(Boolean))];
+  const conflict = hasUnassignedAlternative || selectedNames.length > 1 || (tracks.length > 1 && !selectedTrack)
+    ? { code: 'EXPERIENCE_NOT_VERIFIED_CONFLICT', evidence: cleaned.match(/[^.!?;]{0,160}\b(?:track|level|depending on)\b[^.!?;]{0,160}/i)?.[0]?.trim().slice(0, 600) || cleaned.slice(0, 600) }
+    : null;
+  return { requirements, selectedTrack, selectionEvidence: selection?.[0] ?? null, conflict };
 }
 
 // Detect recruiting on a client's behalf without mistaking client work for hiring.
@@ -397,27 +559,62 @@ function parseExperienceString(value) {
 
 // Preserve supplied experience evidence and distinguish hard requirements from preferences.
 function normalizeExperience(raw) {
+  const sourceEvidence = typeof raw?.experience === 'object' && raw.experience !== null ? raw.experience.evidence : raw?.experienceEvidence;
+  const description = raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body;
+  const requirements = extractExperienceRequirements(description || raw?.title, sourceEvidence);
+  const requirementTracks = new Set(requirements.requirements.map((item) => item.track).filter(Boolean));
+  const derived = requirementTracks.size > 1
+    ? { minYears: null, maxYears: null, evidence: null }
+    : extractExperienceYears(description || raw?.title) || { minYears: null, maxYears: null, evidence: null };
   const value = raw?.experience;
-  if (typeof value === 'string') return parseExperienceString(value);
+  if (typeof value === 'string') {
+    const parsed = parseExperienceString(value);
+    return { ...parsed, sourceMinYears: parsed.minYears, sourceMaxYears: parsed.maxYears, requirements };
+  }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const explicit = {
       minYears: finiteYears(value.minYears ?? value.minimumYears ?? value.min),
       maxYears: finiteYears(value.maxYears ?? value.maximumYears ?? value.max),
       evidence: preserveText(value.evidence),
     };
-    if (explicit.evidence && PREFERENCE_RE.test(explicit.evidence)) return parseExperienceString(explicit.evidence);
-    if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return explicit;
-    return extractExperienceYears(raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body) || explicit;
+    if (explicit.evidence && PREFERENCE_RE.test(explicit.evidence)) {
+      const recovered = parseExperienceString(explicit.evidence);
+      const recoveredMin = recovered.minYears;
+      return {
+        ...recovered,
+        sourceMinYears: Object.hasOwn(value, 'sourceMinYears') ? finiteYears(value.sourceMinYears) : recoveredMin == null ? null : strictestYears(explicit.minYears, recoveredMin),
+        sourceMaxYears: Object.hasOwn(value, 'sourceMaxYears') ? finiteYears(value.sourceMaxYears) : recoveredMin == null ? null : explicit.maxYears,
+        sourceMaxUnbounded: value.sourceMaxUnbounded === true,
+        requirements,
+      };
+    }
+    if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return { ...explicit, sourceMinYears: Object.hasOwn(value, 'sourceMinYears') ? finiteYears(value.sourceMinYears) : explicit.minYears, sourceMaxYears: Object.hasOwn(value, 'sourceMaxYears') ? finiteYears(value.sourceMaxYears) : explicit.maxYears, sourceMaxUnbounded: value.sourceMaxUnbounded === true, requirements };
+    return { ...(requirementTracks.size > 1 ? derived : extractExperienceYears(description) || explicit), sourceMinYears: null, requirements };
   }
   const explicit = {
     minYears: finiteYears(raw?.minYears ?? raw?.minimumYears ?? raw?.experienceMinYears),
     maxYears: finiteYears(raw?.maxYears ?? raw?.maximumYears ?? raw?.experienceMaxYears),
     evidence: preserveText(raw?.experienceEvidence),
   };
-  if (explicit.evidence && PREFERENCE_RE.test(explicit.evidence)) return parseExperienceString(explicit.evidence);
-  if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return explicit;
-  return extractExperienceYears(raw?.description ?? raw?.descriptionPlain ?? raw?.jd ?? raw?.body)
-    || { minYears: null, maxYears: null, evidence: null };
+  if (explicit.evidence && PREFERENCE_RE.test(explicit.evidence)) {
+    const recovered = parseExperienceString(explicit.evidence);
+    const recoveredMin = recovered.minYears;
+    return {
+      ...recovered,
+      sourceMinYears: Object.hasOwn(raw, 'sourceMinYears') ? finiteYears(raw.sourceMinYears) : recoveredMin == null ? null : strictestYears(explicit.minYears, recoveredMin),
+      sourceMaxYears: Object.hasOwn(raw, 'sourceMaxYears') ? finiteYears(raw.sourceMaxYears) : recoveredMin == null ? null : explicit.maxYears,
+      sourceMaxUnbounded: raw.sourceMaxUnbounded === true,
+      requirements,
+    };
+  }
+  if (explicit.minYears != null || explicit.maxYears != null || explicit.evidence) return {
+    ...explicit,
+    sourceMinYears: Object.hasOwn(raw, 'sourceMinYears') ? finiteYears(raw.sourceMinYears) : explicit.minYears,
+    sourceMaxYears: Object.hasOwn(raw, 'sourceMaxYears') ? finiteYears(raw.sourceMaxYears) : explicit.maxYears,
+    sourceMaxUnbounded: raw.sourceMaxUnbounded === true,
+    requirements,
+  };
+  return { ...derived, sourceMinYears: null, requirements };
 }
 
 function normalizeEmployment(raw) {

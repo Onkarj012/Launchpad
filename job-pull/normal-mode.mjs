@@ -117,13 +117,14 @@ function provenanceFor(candidate, runId) {
 
 function verificationRecord(candidate, eligibility, evaluatedReadiness = null) {
   const contractReview = eligibility?.employment?.verificationRequired === true;
-  if ((eligibility?.eligible === false && !contractReview) || (candidate.freshness?.eligible === false && !candidate.freshness.verifyQueue)) return null;
+  const experienceReview = eligibility?.experience?.verificationRequired === true;
+  if ((eligibility?.eligible === false && !contractReview && !experienceReview) || (candidate.freshness?.eligible === false && !candidate.freshness.verifyQueue)) return null;
   const readiness = evaluatedReadiness || applicationReadiness(candidate, eligibility);
   if (readiness.ready && candidate.postedAt) return null;
   if (!candidate.postedAt) readiness.reasons = [...new Set([...readiness.reasons, 'FRESHNESS_NOT_VERIFIED'])];
   const needsResolution = !readiness.evidence.resolution.ready;
   const needsLiveness = !readiness.evidence.liveness.pass;
-  if (!needsResolution && !needsLiveness && eligibility?.eligible === false && !contractReview && candidate.postedAt) return null;
+  if (!needsResolution && !needsLiveness && eligibility?.eligible === false && !contractReview && !experienceReview && candidate.postedAt) return null;
   return {
     company: candidate.company,
     title: candidate.title,
@@ -137,7 +138,16 @@ function verificationRecord(candidate, eligibility, evaluatedReadiness = null) {
     applicationResolution: readiness.evidence.resolution,
     liveness: readiness.evidence.liveness,
     reasons: readiness.reasons,
-    evidence: readiness.evidence,
+    evidence: {
+      ...readiness.evidence,
+      experienceDecision: eligibility?.experience ? {
+        code: eligibility.experience.code,
+        evidence: eligibility.experience.evidence,
+        selectedTrack: eligibility.experience.selectedTrack ?? null,
+        selectionEvidence: eligibility.experience.selectionEvidence ?? null,
+        requirements: eligibility.experience.requirements ?? [],
+      } : null,
+    },
     dedupKey: candidateDedupKey(candidate),
   };
 }
@@ -219,6 +229,11 @@ export async function runNormalMode({
       deferSelection: true,
       ...(opportunityLedgerPath ? { opportunityLedgerPath } : {}),
     });
+    const experienceDecisions = sourceResults.flatMap((source) => source.candidates)
+      .map((candidate) => ({ candidate, eligibility: classifyCandidate(candidate, { ...normalConfig, salaryFloorLpa: baseConversionPlan.salaryFloorLpa }) }))
+      .filter(({ eligibility }) => /^EXPERIENCE_(?:HARD_MIN|ABOVE_RELAXED)/.test(eligibility.experience?.code || '')
+        || eligibility.experience?.verificationRequired === true
+        || Boolean(eligibility.experience?.selectedTrack));
     // v4 identity matches are suppressed before they reach shortlist/Notion planning.
     // Read-only against v4 rows: never migrates, mutates, or deletes historical data.
     const {
@@ -315,7 +330,7 @@ export async function runNormalMode({
       ]);
       return {
         schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), stretch: selection.stretch ?? [], shortlist,
-        scoringQueue: selection.scoringQueue, funnel, verificationQueue,
+        scoringQueue: selection.scoringQueue, funnel, verificationQueue, experienceDecisions,
         sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, rejectionCounts, rejectionReasons: [...new Set([...rejectionReasons, ...partialSourceReasons(sourceManifests)])].sort(),
         shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing: Math.max(0, 10 - shortlist.length), failedLanes: sourceManifests.filter((manifest) => ['failed', 'unavailable'].includes(manifest.status)).map((manifest) => manifest.sourceId), emptyLanes: [], reasons: partialSourceReasons(sourceManifests), linkedinRescueSuggestion: { suggested: false, invoked: false } },
@@ -390,7 +405,7 @@ export async function runNormalMode({
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), stretch: selection.stretch ?? [], shortlist,
       scoringQueue: selection.scoringQueue, funnel,
-      verificationQueue, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
+      verificationQueue, experienceDecisions, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
       historicalSuppressions,
       dedupInputs: {
         committedLedgerRows: effectiveLedgerRows.length,

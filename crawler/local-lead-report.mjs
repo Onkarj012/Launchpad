@@ -182,6 +182,15 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   table('Shortage fallback ready, unscored', buckets.fallbackReady);
   table('Needs verification', buckets.verification);
   table('Rejected', buckets.rejected);
+  if (result.experienceDecisions?.length) {
+    lines.push('## Experience decisions', '', '| Role / company | Decision | Selected track | Requirement evidence |', '| --- | --- | --- | --- |');
+    for (const { candidate, eligibility } of result.experienceDecisions) {
+      const decision = eligibility.experience;
+      const evidence = [...new Set((decision.requirements || []).map((item) => item.excerpt).filter(Boolean))].join(' | ') || decision.evidence || 'Not Verified';
+      lines.push(`| ${cell(candidate.title)} / ${cell(candidate.company)} | ${cell(decision.code)} | ${cell(decision.selectedTrack || 'Not Verified')} | ${cell(evidence)} |`);
+    }
+    lines.push('');
+  }
   if (result.hiringEvents?.items?.length || result.hiringEvents?.quarantine?.length) {
     lines.push('## Hiring challenges and off-campus drives', '',
       'Timestamps use IST. Date-only values have no verified time. These items do not count toward role targets.', '',
@@ -252,11 +261,15 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   // Render one role card with its evidence, labels, and employer apply link.
   const roleCard = (role, isShortlist) => {
     const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
+    const experienceDecision = role.evidence?.experienceDecision;
+    const experienceEvidence = experienceDecision
+      ? `<p>Experience: ${html(experienceDecision.code)}; selected track ${html(experienceDecision.selectedTrack || 'Not Verified')}. ${html(experienceDecision.evidence || '')} ${html((experienceDecision.requirements || []).map((item) => item.excerpt).filter(Boolean).join(' | '))}</p>`
+      : '';
     const rawApplyUrl = role.originalApplicationUrl ?? null;
     const applyUrl = typeof rawApplyUrl === 'string' && /^https?:\/\//i.test(rawApplyUrl) ? rawApplyUrl : null;
     const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
-    return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p>${role.selectionTier ? `<p>Selection tier: ${html(role.selectionTier)}</p>` : ''}${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
+    return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p>${experienceEvidence}${role.selectionTier ? `<p>Selection tier: ${html(role.selectionTier)}</p>` : ''}${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
   };
   const sections = modes.map(([mode, label]) => {
     const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
@@ -283,6 +296,11 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
   const separate = `<section data-section="separate-lanes"><h2>Separate lanes outside daily role targets</h2><p>This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.</p></section>`;
   const verification = `<section data-section="verification"><h2>VerifyQueue</h2><p>These roles do not count toward daily targets.</p>${(result.verificationQueue ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}</section>`;
+  const experienceDecisions = `<section data-section="experience-decisions"><h2>Experience decisions</h2>${(result.experienceDecisions ?? []).map(({ candidate, eligibility }) => {
+    const decision = eligibility.experience;
+    const excerpts = [...new Set((decision.requirements ?? []).map((item) => item.excerpt).filter(Boolean))];
+    return `<article><h3>${html(candidate.title)} at ${html(candidate.company)}</h3><p>${html(decision.code)}; selected track: ${html(decision.selectedTrack || 'Not Verified')}</p><p>${html(decision.evidence || 'Not Verified')}</p>${excerpts.map((excerpt) => `<p>${html(excerpt)}</p>`).join('')}</article>`;
+  }).join('') || '<p>None.</p>'}</section>`;
   const envelope = result.terminalEnvelope ?? {};
   const endStates = { ...(envelope.sourceEndStates ?? {}), ...(result.sourceEndStates ?? {}) };
   const coverage = envelope.sourceCoverage ?? result.sourceCoverage ?? {};
@@ -314,7 +332,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${result.sourceYieldScope === 'crawler-discovery' ? '<p>Discovery counts precede final enrichment and scoring. They exclude later tracked-source reads and do not measure delivered roles.</p>' : ''}${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
   const driftSignals = dailyDriftSignals(result);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${sourceYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.

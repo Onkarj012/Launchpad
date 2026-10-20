@@ -97,11 +97,15 @@ export function parseLinkedInJobDetail(html, { requestedUrl, jobId, title, compa
   const node = matches[0];
   const description = text(decodeEntities(typeof node.description === 'string' ? node.description : ''));
   if (!description) return fail('portal-detail-description-missing');
-  const patch = { description, experience: extractExperienceYears(description) || { minYears: null, maxYears: null, evidence: null } };
+  const derivedExperience = extractExperienceYears(description);
+  const patch = { description, experience: { ...(derivedExperience || { minYears: null, maxYears: null, evidence: null }), sourceMinYears: null, sourceMaxYears: null } };
   const months = node.experienceRequirements?.monthsOfExperience;
-  if (typeof months === 'number' && Number.isFinite(months) && months >= 0
-    && (patch.experience.minYears == null || months / 12 > patch.experience.minYears)) {
-    patch.experience = { minYears: months / 12, maxYears: null, evidence: `JobPosting.experienceRequirements.monthsOfExperience=${months}` };
+  if (typeof months === 'number' && Number.isFinite(months) && months >= 0) {
+    if (patch.experience.minYears == null) patch.experience.minYears = months / 12;
+    patch.experience.sourceMinYears = months / 12;
+    patch.experience.sourceMaxYears = null;
+    patch.experience.sourceMaxUnbounded = true;
+    patch.experience.evidence = [patch.experience.evidence, `JobPosting.experienceRequirements.monthsOfExperience=${months}`].filter(Boolean).join('; ');
   }
   const rawEmployment = [node.employmentType].flat().filter((value) => typeof value === 'string').join(', ');
   const types = { FULL_TIME: 'full-time', PART_TIME: 'part-time', CONTRACTOR: 'contract', TEMPORARY: 'temporary', INTERN: 'internship', INTERNSHIP: 'internship', VOLUNTEER: 'volunteer' };
