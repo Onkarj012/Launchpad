@@ -383,6 +383,11 @@ export function buildDailyReceipt(result) {
     try { return `${file}\0${readFileSync(new URL(`../${file}`, import.meta.url))}\0`; } catch { return `${file}\0Not Verified\0`; }
   }).join('');
   const retained = retainedEvidence(result);
+  const heldLeadRecovery = result.heldLeadRecovery
+    ?? result.crawlerV2Telemetry?.['portal-discovery']?.detail?.telemetry?.heldLeadRecovery
+    ?? result.crawlerV2Telemetry?.['portal-discovery']?.manifest?.telemetry?.heldLeadRecovery
+    ?? result.sourceTelemetry?.['portal-discovery']?.detail?.telemetry?.heldLeadRecovery
+    ?? result.sourceTelemetry?.['portal-discovery']?.manifest?.telemetry?.heldLeadRecovery;
   const stage = (value) => Number.isFinite(value) ? value : 'Not Verified';
   const raw = counts.fetched ?? lifecycle.fetched;
   const identityRows = receiptIdentityRows(result);
@@ -393,6 +398,11 @@ export function buildDailyReceipt(result) {
     schemaVersion: 'LaunchpadDailyFunnelReceiptV1',
     retained: { identityRows, observations: (result.observations ?? []).map(observationFingerprint) },
     run: { id: result.runId ?? null, at: result.runAt ?? result.run?.startedAt ?? null, status: result.terminalEnvelope?.status ?? result.outcome?.status ?? 'Not Verified', cause: formatRunCause(result.terminalEnvelope?.fatalReason ?? result.outcome?.fatalReason, result.outcome?.errors), sourceCoverage: result.terminalEnvelope?.sourceCoverage ?? result.sourceCoverage ?? 'Not Verified' },
+    recovery: {
+      heldLeads: heldLeadRecovery ?? 'Not Verified',
+      meaning: 'already known leads resolved through the shared portal resolver; not new discovery or new market supply',
+    },
+    historyEvidence: result.v4HistorySnapshot ?? 'Not Verified',
     scopes: {
       requestedCount: { count: stage(result.requestedCount), meaning: 'explicit retained requestedCount only' },
       rawObservations: { count: stage(raw), meaning: 'source-reported fetched observations; repeats may occur across sources and modes' },

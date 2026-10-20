@@ -20,6 +20,10 @@ The isolated P02 worktree adds a hashed daily receipt to the existing crawler ru
 
 The isolated P03 worktree preserves provider requisition IDs, identity aliases and separate date evidence through the current daily receipt/report path. Date-only evidence stays date-only, unknown publication dates remain in VerifyQueue, and same-provider distinct requisitions do not merge through a shared alias. Focused local proof and limits are in `.local/p03-receipts/report.md`; no live source or history claim is made.
 
+## P04 held employer-route recovery, 2026-10-20
+
+The isolated P04 implementation adds an explicit retained-lead input to the existing portal resolver pass. Recovery shares that pass's resolver request and parent deadline limits, and its local receipt/report labels recovered leads separately from new discovery. This is local fixture evidence only. No live probe or operational verification is claimed.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

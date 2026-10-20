@@ -34,7 +34,7 @@ import { loadConfig as loadJobPullPolicy } from '../job-pull/config.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 import { readOpportunityLedger } from '../job-pull/opportunity-ledger.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
-import { normalizeCandidate } from '../job-pull/candidate.mjs';
+import { candidateIdentityKeys, candidateRequisitionKey, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { runStartupSourcePlan } from '../job-pull/startup-sources.mjs';
 import { runRemoteSourcePlan, selectRemoteProviders } from '../job-pull/remote-sources.mjs';
 import { PORTAL_SOURCE_LANES, runPortalSourcePlan } from '../job-pull/normal-sources.mjs';
@@ -614,7 +614,7 @@ export function screenPortalCandidate(candidate, policy) {
 }
 
 // Build the scheduled source fetchers with their run-scoped policies.
-export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null, linkedInPolicy = null, renderedFetcherFactory = createRenderedFetcher }) {
+export function buildSourcePlans({ config, transport, runAt, clock, schedule, resolver, profile, signal = null, deadline = null, onSourcePlanState = null, portalCandidateScreen = null, linkedInPolicy = null, renderedFetcherFactory = createRenderedFetcher, heldPortalLeads = [] }) {
   transport = (linkedInPolicy ?? createLinkedInGuestPolicy({ transport, runAt, clock })).transport;
   // Project boards from the unified registry when configured; tests that inject
   // inline sources.*.boards without boardRegistryPath keep their fixtures.
@@ -887,9 +887,14 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
   // portals share one Chromium context for the whole run and it is always torn
   // down, including on failure, so a crashed lane cannot leak a browser.
   let linkedInGuestPass = null;
-  if (sources.portals?.enabled) plans.push(sourcePlan('portal-discovery', 'portal-sources', 'portals', async ({ runId: sourceRunId = runAt, cursor = null, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
+  if (sources.portals?.enabled || heldPortalLeads.length > 0) plans.push(sourcePlan('portal-discovery', 'portal-sources', 'portals', async ({ runId: sourceRunId = runAt, cursor = null, signal: sourceSignal = signal, deadline: sourceDeadline = deadline, checkpoint = null } = {}) => {
     const portalConfig = sources.portals ?? {};
-    const portalLimits = portalResolverSettings({ sources: { portals: portalConfig } });
+    const configuredLimits = portalResolverSettings({ sources: { portals: portalConfig } });
+    const portalLimits = heldPortalLeads.length ? {
+      ...configuredLimits,
+      maxRequests: Math.min(configuredLimits.maxRequests, 30),
+      maxDurationMs: Math.min(configuredLimits.maxDurationMs, 90_000),
+    } : configuredLimits;
     const discoveryDeadline = portalDiscoveryDeadline(sourceDeadline, portalLimits);
     const browserEnabled = portalConfig.browser?.enabled === true;
     const browserProviders = new Set(browserEnabled ? (portalConfig.browser?.providers ?? []) : []);
@@ -953,46 +958,106 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       }
     }
 
-    let outputs;
+    let outputs = [];
     try {
-      outputs = await runPortalSourcePlan({
-        providerFetchers,
-        laneInputs,
-        runAt,
-        runId: profile?.mode || 'normal',
-        signal: sourceSignal,
-        deadline: sourceDeadline,
-        maxRecordsPerProvider: portalConfig.maxRecordsPerProvider ?? null,
-      });
+      if (portalConfig.enabled) outputs = await runPortalSourcePlan({
+          providerFetchers,
+          laneInputs,
+          runAt,
+          runId: profile?.mode || 'normal',
+          signal: sourceSignal,
+          deadline: sourceDeadline,
+          maxRecordsPerProvider: portalConfig.maxRecordsPerProvider ?? null,
+        });
     } finally {
       if (browser) await browser.close().catch(() => {});
     }
     linkedInGuestPass = cursor?.linkedInGuestPass?.runId === sourceRunId ? cursor.linkedInGuestPass : linkedInGuestPass;
 
     const retained = new Map((cursor?.completedDetails || []).map((candidate) => [linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl), candidate]).filter(([id]) => id));
-    const candidates = outputs.flatMap((item) => item.candidates || []).map(withPortalIdentity)
-      .map((candidate) => retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl)) ?? candidate);
+    const currentDiscoveryCandidates = outputs.flatMap((item) => item.candidates || []);
+    // Keep proven aliases from merging different provider requisitions.
+    const sameLeadIdentity = (left, right) => {
+      const leftRequisition = candidateRequisitionKey(left);
+      const rightRequisition = candidateRequisitionKey(right);
+      if (leftRequisition && rightRequisition) {
+        const [leftProvider, leftId] = leftRequisition.split('|');
+        const [rightProvider, rightId] = rightRequisition.split('|');
+        if (leftProvider === rightProvider && leftId !== rightId) return false;
+      }
+      const rightKeys = new Set(candidateIdentityKeys(right));
+      return candidateIdentityKeys(left).some((key) => rightKeys.has(key));
+    };
+    const seenRecoveryLeads = [];
+    const recoveredInputs = [];
+    const reusedRecoveryDetails = new WeakSet();
+    const retryableResolutionReasons = ['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded'];
+    let recoveryDuplicates = 0;
+    let recoveryAlreadyDiscovered = 0;
+    let recoveryDistinctCount = 0;
+    let recoveryScanCount = 0;
+    for (const lead of heldPortalLeads.slice(0, 30)) {
+      recoveryScanCount += 1;
+      if (seenRecoveryLeads.some((seen) => sameLeadIdentity(lead, seen))) {
+        recoveryDuplicates += 1;
+        continue;
+      }
+      seenRecoveryLeads.push(lead);
+      recoveryDistinctCount += 1;
+      if (currentDiscoveryCandidates.some((candidate) => sameLeadIdentity(lead, candidate))) {
+        recoveryAlreadyDiscovered += 1;
+        continue;
+      }
+      if (recoveredInputs.length >= 10) continue;
+      const recoveryInput = {
+        ...lead,
+        source: lead.source ?? lead.provider ?? 'held-lead-recovery',
+        discoveryProvider: lead.discoveryProvider ?? lead.provider ?? null,
+        evidence: { ...(lead.evidence ?? {}), recovery: {
+          kind: 'held-lead-recovery',
+          originalDiscoverySource: lead.source ?? lead.provider ?? null,
+          originalDiscoverySourceId: lead.sourceId ?? null,
+          originalDiscoveryUrl: lead.discoveryUrl ?? lead.canonicalUrl ?? lead.url ?? null,
+        } },
+      };
+      const retainedDetail = retained.get(linkedInPublicJobId(recoveryInput.discoveryUrl ?? recoveryInput.canonicalUrl));
+      const retainedReason = retainedDetail?.evidence?.resolution?.reason;
+      if (retainedDetail && !retryableResolutionReasons.includes(retainedReason)) {
+        recoveredInputs.push(retainedDetail);
+        reusedRecoveryDetails.add(retainedDetail);
+      } else {
+        recoveredInputs.push(recoveryInput);
+      }
+    }
+    const candidates = [
+      ...outputs.flatMap((item) => item.candidates || []).map(withPortalIdentity)
+        .map((candidate) => retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl)) ?? candidate),
+      ...recoveredInputs,
+    ];
     const completedDetails = new Map(retained);
     const resolutionCursor = (nextIndex) => ({ phase: 'portal-resolution', nextIndex, maxCandidates: portalLimits.maxCandidates,
       linkedInGuestPass, discoveryDeadlineExhausted,
       completedDetails: [...completedDetails.values()].slice(0, portalLimits.maxCandidates) });
     const screened = candidates.map((candidate) => {
       let result = { eligible: true };
-      if (typeof portalCandidateScreen === 'function') {
+      if (candidate.evidence?.recovery?.kind !== 'held-lead-recovery' && typeof portalCandidateScreen === 'function') {
         try { result = portalCandidateScreen(candidate) ?? { eligible: false }; }
         catch { result = { eligible: false }; }
       }
       return { candidate, eligible: result === true || result?.eligible === true };
     });
-    const isAlreadyResolved = (candidate) => ['Direct ATS', 'Resolved Original'].includes(candidate.applicationResolution?.status)
+    const isAlreadyResolved = (candidate) => candidate.evidence?.recovery?.kind !== 'held-lead-recovery'
+      && ['Direct ATS', 'Resolved Original'].includes(candidate.applicationResolution?.status)
       && candidate.originalApplicationUrl;
     const targetCandidates = screened.filter((item) => item.eligible);
     const unresolvedTargetCandidates = targetCandidates.filter(({ candidate }) => !isAlreadyResolved(candidate));
-    const boardCandidates = unresolvedTargetCandidates.filter(({ candidate }) => portalBoardPriority(candidate, config));
-    const otherCandidates = unresolvedTargetCandidates.filter(({ candidate }) => !portalBoardPriority(candidate, config));
-    const preferredCandidates = fairPortalResolutionCandidates(boardCandidates, portalLimits.maxCandidates);
-    const resolutionCandidates = [...preferredCandidates,
-      ...fairPortalResolutionCandidates(otherCandidates, portalLimits.maxCandidates - preferredCandidates.length)];
+    const recoveryCandidates = unresolvedTargetCandidates.filter(({ candidate }) => candidate.evidence?.recovery?.kind === 'held-lead-recovery')
+      .slice(0, Math.min(10, portalLimits.maxCandidates));
+    const discoveryCandidates = unresolvedTargetCandidates.filter(({ candidate }) => candidate.evidence?.recovery?.kind !== 'held-lead-recovery');
+    const discoverySlots = Math.max(0, portalLimits.maxCandidates - recoveryCandidates.length);
+    const resolutionCandidates = [...recoveryCandidates,
+      ...fairPortalResolutionCandidates(discoveryCandidates.filter(({ candidate }) => portalBoardPriority(candidate, config)), discoverySlots),
+      ...fairPortalResolutionCandidates(discoveryCandidates.filter(({ candidate }) => !portalBoardPriority(candidate, config)), Math.max(0, discoverySlots - Math.min(discoverySlots, discoveryCandidates.filter(({ candidate }) => portalBoardPriority(candidate, config)).length)))];
     const sharedRequestBudget = createSharedRequestBudget(portalLimits.maxRequests);
     const hostLimiter = createHostSerializedRunner();
     const resolverDeadline = resolverPhaseDeadline({
@@ -1017,6 +1082,29 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       maxCandidates: portalLimits.maxCandidates,
       maxRequests: portalLimits.maxRequests,
       maxDurationMs: portalLimits.maxDurationMs,
+      ...(heldPortalLeads.length ? { heldLeadRecovery: {
+        requested: heldPortalLeads.length,
+        rawRequested: heldPortalLeads.length,
+        distinct: recoveryDistinctCount,
+        duplicates: recoveryDuplicates,
+        alreadyDiscovered: recoveryAlreadyDiscovered,
+        considered: recoveryScanCount,
+        unscanned: Math.max(0, heldPortalLeads.length - recoveryScanCount),
+        attempted: 0,
+        reused: 0,
+        recovered: 0,
+        blocked: 0,
+        missing: 0,
+        mismatched: 0,
+        failed: 0,
+        unattempted: Math.max(0, heldPortalLeads.length - recoveryDuplicates - recoveryAlreadyDiscovered - recoveredInputs.length),
+        maxLeads: 10,
+        maxRequests: Math.min(configuredLimits.maxRequests, 30),
+        maxDurationMs: Math.min(configuredLimits.maxDurationMs, 90_000),
+        requestBudgetExhausted: false,
+        deadlineExhausted: false,
+        outcomes: [],
+      } } : {}),
       handoffReserveMs: portalLimits.handoffReserveMs,
       resolutionReserveMs: discoveryDeadline.resolutionReserveMs,
       discoveryDeadlineExhausted,
@@ -1035,6 +1123,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const verificationQueue = [];
     let checkpointCursor = 0;
     const completedIndexes = new Set();
+    const recoveryRequestsByUrl = new Map();
     // Retain each completed portal resolution and advance its durable cursor.
     const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true, requested = false } = {}) => {
       const id = linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl);
@@ -1055,11 +1144,11 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       concurrency: portalLimits.concurrency,
       providerKey: ({ candidate }) => hostOfUrl(candidate.discoveryUrl ?? candidate.canonicalUrl),
     }, async ({ candidate }, candidateIndex) => {
-      const unresolved = (reason) => applyOriginalListingResolution(candidate, verificationResolution(candidate, null, reason));
       let resolution;
       if (isAlreadyResolved(candidate)) return candidate;
+      if (reusedRecoveryDetails.has(candidate)) return candidate;
       const retainedReason = retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl))?.evidence?.resolution?.reason;
-      if (retainedReason && !['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded'].includes(retainedReason)) return candidate;
+      if (retainedReason && !retryableResolutionReasons.includes(retainedReason)) return candidate;
       if (sourceSignal?.aborted) {
         resolution = verificationResolution(candidate, null, 'aborted');
       } else if (resolverDeadline.remainingMs() <= 0) {
@@ -1081,6 +1170,9 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         }
       }
       const resolved = applyOriginalListingResolution(candidate, resolution);
+      if (candidate.evidence?.recovery?.kind === 'held-lead-recovery') {
+        recoveryRequestsByUrl.set(candidate, resolution.telemetry?.requests ?? 0);
+      }
       const eligibility = classifyCandidate(resolved, loadJobPullPolicy());
       resolved.eligibility = eligibility;
       if (!eligibility.eligible) resolved.shortlistEligible = false;
@@ -1105,6 +1197,49 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       const result = eligible ? verificationResolution(candidate, null, 'candidate-cap-exceeded') : verificationResolution(candidate, null, 'target-screen-rejected');
       return { ...applyOriginalListingResolution(candidate, result), shortlistEligible: false };
     });
+    const observationsByCandidate = new Map(screened.map(({ candidate }, index) => [candidate, observations[index]]));
+    if (heldPortalLeads.length) {
+      const recoveryTelemetry = initialTelemetry.heldLeadRecovery;
+      for (const [index, lead] of recoveredInputs.entries()) {
+        const candidate = recoveredInputs[index];
+        const resolved = observationsByCandidate.get(candidate) ?? null;
+        const reason = index >= portalLimits.maxCandidates ? 'candidate-cap-exceeded'
+            : resolved?.evidence?.resolution?.reason ?? (resolved?.originalApplicationUrl ? 'original-employer-detail' : 'candidate-cap-exceeded');
+        const outcome = resolved?.classification === 'direct' && resolved.originalApplicationUrl ? 'recovered'
+          : /mismatch|identity/.test(reason) ? 'mismatched'
+            : /not-found|missing|http-404/.test(reason) ? 'missing'
+              : /unsupported|blocked|budget|deadline|cap-exceeded|aborted/.test(reason) ? 'blocked' : 'failed';
+        const missingFields = resolved?.originalApplicationUrl ? [
+          !resolved.company ? 'employer' : null,
+          !resolved.title ? 'role' : null,
+          !resolved.location ? 'location' : null,
+          !resolved.description ? 'description' : null,
+          !resolved.employment?.type ? 'employment' : null,
+          !resolved.experience?.evidence && resolved.experience?.minYears == null && resolved.experience?.maxYears == null ? 'experience' : null,
+          !resolved.postedAt ? 'original-date' : null,
+          resolved.liveness?.status !== 'Active' ? 'liveness' : null,
+        ].filter(Boolean) : [];
+        recoveryTelemetry[outcome] += 1;
+        const requests = recoveryRequestsByUrl.get(candidate) ?? 0;
+        if (requests > 0) recoveryTelemetry.attempted += 1;
+        if (reusedRecoveryDetails.has(candidate)) recoveryTelemetry.reused += 1;
+        recoveryTelemetry.outcomes.push({
+          lead: lead.jobId ?? lead.providerJobId ?? lead.discoveryUrl ?? lead.canonicalUrl ?? `held-lead-${index + 1}`,
+          outcome,
+          reason,
+          requests,
+          originalDiscoverySource: lead.source ?? lead.provider ?? null,
+          originalDiscoveryUrl: lead.discoveryUrl ?? lead.canonicalUrl ?? lead.url ?? null,
+          employerDetailUrl: resolved?.employerDetailUrl ?? null,
+          originalApplicationUrl: resolved?.originalApplicationUrl ?? null,
+          missingFields,
+        });
+      }
+      recoveryTelemetry.unattempted = Math.max(0, heldPortalLeads.length - recoveryTelemetry.duplicates
+        - recoveryTelemetry.alreadyDiscovered - recoveryTelemetry.attempted - recoveryTelemetry.reused);
+      recoveryTelemetry.requestBudgetExhausted = initialTelemetry.requestBudgetExhausted;
+      recoveryTelemetry.deadlineExhausted = initialTelemetry.deadlineExhausted;
+    }
     initialTelemetry.unresolved = observations.filter((candidate) => candidate.classification !== 'direct' || !candidate.originalApplicationUrl).length;
     initialTelemetry.resolutionRequests = sharedRequestBudget.used;
     if (sharedRequestBudget.exhausted) initialTelemetry.requestBudgetExhausted = true;
@@ -1113,6 +1248,28 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       await checkpointResolution(candidate, observations[index], resolutionCandidates.length, { advance: false });
     }
     for (const candidate of observations) {
+      if (candidate.evidence?.recovery?.kind === 'held-lead-recovery'
+        && candidate.classification === 'direct' && candidate.originalApplicationUrl) {
+        const missingFields = [
+          !candidate.company ? 'employer' : null,
+          !candidate.title ? 'role' : null,
+          !candidate.location ? 'location' : null,
+          !candidate.description ? 'description' : null,
+          !candidate.employment?.type ? 'employment' : null,
+          !candidate.experience?.evidence && candidate.experience?.minYears == null && candidate.experience?.maxYears == null ? 'experience' : null,
+          !candidate.postedAt ? 'original-date' : null,
+          candidate.liveness?.status !== 'Active' ? 'liveness' : null,
+        ].filter(Boolean);
+        if (missingFields.length) verificationQueue.push({
+          url: candidate.discoveryUrl ?? candidate.canonicalUrl,
+          company: candidate.company,
+          reason: 'held-lead-employer-evidence-incomplete',
+          resolutionReason: 'employer-evidence-incomplete',
+          missingFields,
+          evidence: candidate.evidence,
+        });
+        continue;
+      }
       if (candidate.eligibility?.eligible === false) continue;
       if (candidate.classification === 'direct' && candidate.originalApplicationUrl) continue;
       const reason = candidate.evidence?.resolution?.reason || 'original-listing';
@@ -1321,6 +1478,7 @@ export async function runCrawlerOperator({
   store: suppliedStore = null,
   signal = null,
   deadline = null,
+  heldPortalLeads = [],
 } = {}) {
   validateCrawlerConfig(config);
   crawlerSchedulePlan(config, schedule);
@@ -1387,6 +1545,7 @@ export async function runCrawlerOperator({
         deadline,
         onSourcePlanState: (state) => { pendingPlannerState = state; },
         portalCandidateScreen: (candidate) => screenPortalCandidate(candidate, policy),
+        heldPortalLeads,
       }),
       careerSites: config.sources.careerSites ?? [],
       careerOptions: config.sources.careerOptions ?? {},

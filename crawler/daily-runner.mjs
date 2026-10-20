@@ -912,6 +912,15 @@ export function selectDailyModes(entries, options, selectedMode, stretchBudget) 
 // Merge injected focused lanes into the shared pipeline without fetching them again.
 function sharedModeFixtures(result, callerFixtures) {
   const fixtures = { ...crawlerLaneFixtures(result), ...callerFixtures };
+  for (const [laneId, fixture] of Object.entries(fixtures)) {
+    const candidates = fixture?.candidates;
+    const records = fixture?.records;
+    fixtures[laneId] = {
+      ...fixture,
+      ...(Array.isArray(candidates) ? { candidates: candidates.filter((candidate) => !isIdentityIncompleteHeldRecovery(candidate)) } : {}),
+      ...(Array.isArray(records) ? { records: records.filter((candidate) => !isIdentityIncompleteHeldRecovery(candidate)) } : {}),
+    };
+  }
   const focused = [];
   for (const laneId of new Set([...STARTUP_LANE_IDS, ...REMOTE_LANE_IDS])) {
     const fixture = callerFixtures[laneId];
@@ -924,6 +933,36 @@ function sharedModeFixtures(result, callerFixtures) {
     fixtures['web-discovery'] = { ...web, candidates: [...(web?.candidates ?? web?.records ?? []), ...focused] };
   }
   return fixtures;
+}
+
+// Identify recovery rows whose current employer identity is incomplete.
+function isIdentityIncompleteHeldRecovery(candidate) {
+  return candidate?.evidence?.recovery?.kind === 'held-lead-recovery'
+    && (!candidate.company || !candidate.title);
+}
+
+// Preserve incomplete employer identity as an explicit verification row.
+function heldRecoveryIdentityVerification(candidate) {
+  const identityMissingFields = [!candidate.company ? 'employer' : null, !candidate.title ? 'role' : null].filter(Boolean);
+  const missingFields = [
+    ...identityMissingFields,
+    !candidate.location ? 'location' : null,
+    !candidate.description ? 'description' : null,
+    !candidate.employment?.type ? 'employment' : null,
+    !candidate.experience?.evidence && candidate.experience?.minYears == null && candidate.experience?.maxYears == null ? 'experience' : null,
+    !candidate.postedAt ? 'original-date' : null,
+    candidate.liveness?.status !== 'Active' ? 'liveness' : null,
+  ].filter(Boolean);
+  return {
+    company: candidate.company ?? null,
+    title: candidate.title ?? null,
+    status: 'Needs Verification',
+    discoveryUrl: candidate.discoveryUrl ?? candidate.canonicalUrl ?? null,
+    reason: 'held-lead-employer-identity-incomplete',
+    reasons: identityMissingFields.map((field) => `${field === 'employer' ? 'EMPLOYER' : 'ROLE'}_NOT_VERIFIED`),
+    missingFields,
+    evidence: candidate.evidence,
+  };
 }
 
 function candidatesForKeys(shortlist, keys) {
@@ -963,6 +1002,7 @@ async function runCrawlerFull({
   locationPreset = 'india',
   signal = null,
   deadline = null,
+  heldPortalLeads = [],
 }) {
   const crawlerConfig = validateCrawlerConfig(config);
   const crawlerRunId = `${runId}-crawler-v2`;
@@ -977,7 +1017,17 @@ async function runCrawlerFull({
     store,
     signal,
     deadline,
+    heldPortalLeads,
   });
+}
+
+// Read retained-lead outcomes from the existing portal source envelope.
+function heldPortalRecoveryTelemetry(crawlerResult) {
+  const portal = crawlerResult?.sourceTelemetry?.['portal-discovery'];
+  return portal?.detail?.telemetry?.heldLeadRecovery
+    ?? portal?.manifest?.telemetry?.heldLeadRecovery
+    ?? portal?.telemetry?.heldLeadRecovery
+    ?? null;
 }
 
 async function runDailyNormalImpl({
@@ -1013,6 +1063,7 @@ async function runDailyNormalImpl({
   sourceFunctions = {},
   sourceFixtures = {},
   laneInputs = {},
+  heldPortalLeads = [],
   execution = null,
 } = {}) {
   const runAt = runAtFrom(clock);
@@ -1072,6 +1123,7 @@ async function runDailyNormalImpl({
       locationPreset,
       signal: dailyExecution.signal,
       deadline: dailyExecution.sourceBudget(),
+      heldPortalLeads,
     });
   } catch (error) {
     const failed = {
@@ -1188,6 +1240,19 @@ async function runDailyNormalImpl({
       ? 0
       : config.sources?.enterprise?.maxDetailRequestsPerRun ?? 50,
   });
+  const heldRecoveryObservations = crawlerResult.observations.filter((candidate) =>
+    candidate?.evidence?.recovery?.kind === 'held-lead-recovery');
+  const incompleteHeldRecovery = heldRecoveryObservations.filter(isIdentityIncompleteHeldRecovery);
+  if (heldRecoveryObservations.length) {
+    const recoveryKeys = new Set(heldRecoveryObservations.flatMap((candidate) =>
+      [candidate.providerJobId, candidate.canonicalUrl, candidate.discoveryUrl].filter(Boolean)));
+    const existing = (result.observations ?? []).filter((candidate) =>
+      ![candidate.providerJobId, candidate.canonicalUrl, candidate.discoveryUrl].some((key) => key && recoveryKeys.has(key)));
+    result.observations = [...existing, ...heldRecoveryObservations];
+  }
+  if (incompleteHeldRecovery.length) {
+    result.verificationQueue = [...(result.verificationQueue ?? []), ...incompleteHeldRecovery.map(heldRecoveryIdentityVerification)];
+  }
   result.mode = selectedMode;
   result.sourceYield = crawlerResult.sourceYield;
   result.sourceYieldScope = 'crawler-discovery';
@@ -1217,6 +1282,7 @@ async function runDailyNormalImpl({
     const finalEnvelope = { ...envelope, deliveryReconciliation };
     return {
       ...result,
+      heldLeadRecovery: heldPortalRecoveryTelemetry(crawlerResult),
       terminalEnvelope: finalEnvelope,
       deliveryReconciliation,
       writesPlanned: false,
@@ -1267,6 +1333,7 @@ async function runDailyNormalImpl({
     const finalEnvelope = { ...envelope, deliveryReconciliation };
     return {
       ...result,
+      heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
       terminalEnvelope: finalEnvelope,
       deliveryReconciliation,
       transaction: null,
@@ -1438,6 +1505,7 @@ async function runDailyNormalImpl({
   const finalEnvelope = { ...envelope, deliveryReconciliation };
   return {
     ...result,
+    heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
     terminalEnvelope: finalEnvelope,
     deliveryReconciliation,
     outcome: finalOutcome,

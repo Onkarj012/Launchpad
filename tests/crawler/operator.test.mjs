@@ -538,6 +538,76 @@ test('portal resolution retries retained deadline failures and preserves fresh e
   assert.deepEqual(result.manifest.telemetry.verificationReasonCounts, { 'deadline-exceeded': 1 });
   assert.equal(result.manifest.telemetry.deadlineExhausted, true);
   assert.equal(result.manifest.truncated, true);
+
+  const heldLeads = ['123456', '234567', '345678'].map((jobId) => ({
+    provider: 'linkedin-jobs', jobId, providerJobId: jobId, company: 'Acme', title: 'AI Engineer',
+    discoveryUrl: `https://www.linkedin.com/jobs/view/${jobId}`, canonicalUrl: `https://www.linkedin.com/jobs/view/${jobId}`,
+  }));
+  const callsByLead = new Map();
+  const recoveryOptions = {
+    config: { sources: { portals: { enabled: false, maxCandidates: 10, maxResolverRequests: 30 } } },
+    transport: async () => { throw new Error('held recovery must not search portals'); },
+    runAt, clock: { monotonicNow: () => 0 }, schedule: 'morning', heldPortalLeads: heldLeads,
+    resolver: async (candidate) => {
+      const calls = (callsByLead.get(candidate.jobId) ?? 0) + 1;
+      callsByLead.set(candidate.jobId, calls);
+      if (candidate.jobId === '234567') return {
+        status: 'resolved', originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+        telemetry: { requests: 1 }, patch: {
+          company: 'Acme', title: 'AI Engineer', location: 'Pune, India',
+          description: 'Build Python APIs.', employment: { type: 'full-time' },
+          experience: { minYears: 0, maxYears: 1, evidence: 'original employer detail' },
+          salary: { min: 100000, currency: 'INR' }, postedAt: '2026-10-20', liveness: { status: 'Active' },
+          evidence: { fieldSources: { company: 'original-employer-detail', title: 'original-employer-detail',
+            location: 'original-employer-detail', description: 'original-employer-detail', employment: 'original-employer-detail',
+            experience: 'original-employer-detail', salary: 'original-employer-detail', postedAt: 'original-employer-detail',
+            liveness: 'original-employer-detail' } },
+        },
+      };
+      return { status: 'verification', telemetry: { requests: 1 }, evidence: { resolution: {
+        reason: candidate.jobId === '345678' && calls > 1 ? 'original-listing-not-found'
+          : candidate.jobId === '345678' ? 'deadline-exceeded' : 'original-listing-not-found',
+      } } };
+    },
+  };
+  let checkpointCursor;
+  const firstRecovery = await buildSourcePlans(recoveryOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { checkpointCursor = value; },
+  });
+  assert.equal(firstRecovery.manifest.telemetry.heldLeadRecovery.missing, 1);
+  assert.equal(firstRecovery.manifest.telemetry.heldLeadRecovery.recovered, 1);
+  assert.equal(firstRecovery.manifest.telemetry.heldLeadRecovery.blocked, 1);
+  assert.equal(checkpointCursor.completedDetails.length, 3);
+
+  const resumedRecovery = await buildSourcePlans(recoveryOptions).find(({ id }) => id === 'portal-discovery').fetch({ cursor: checkpointCursor });
+  const recovery = resumedRecovery.manifest.telemetry.heldLeadRecovery;
+  assert.equal(callsByLead.get('123456'), 1);
+  assert.equal(callsByLead.get('234567'), 1);
+  assert.equal(callsByLead.get('345678'), 2);
+  assert.equal(recovery.attempted, 1);
+  assert.equal(recovery.reused, 2);
+  assert.equal(recovery.missing, 2);
+  assert.equal(recovery.recovered, 1);
+  assert.equal(recovery.blocked, 0);
+  assert.equal(recovery.unattempted, 0);
+  assert.deepEqual(recovery.outcomes.map(({ lead, outcome, reason, requests }) => ({ lead, outcome, reason, requests })), [
+    { lead: '123456', outcome: 'missing', reason: 'original-listing-not-found', requests: 0 },
+    { lead: '234567', outcome: 'recovered', reason: 'original-employer-detail', requests: 0 },
+    { lead: '345678', outcome: 'missing', reason: 'original-listing-not-found', requests: 1 },
+  ]);
+  const resumedSuccess = resumedRecovery.observations.find(({ jobId }) => jobId === '234567');
+  assert.equal(resumedSuccess.company, 'Acme');
+  assert.equal(resumedSuccess.title, 'AI Engineer');
+  assert.equal(resumedSuccess.location, 'Pune, India');
+  assert.equal(resumedSuccess.description, 'Build Python APIs.');
+  assert.deepEqual(resumedSuccess.employment, { type: 'full-time' });
+  assert.deepEqual(resumedSuccess.experience, { minYears: 0, maxYears: 1, evidence: 'original employer detail' });
+  assert.deepEqual(resumedSuccess.salary, { min: 100000, currency: 'INR' });
+  assert.equal(resumedSuccess.postedAt, '2026-10-20');
+  assert.deepEqual(resumedSuccess.liveness, { status: 'Active' });
+  assert.deepEqual(resumedRecovery.observations.find(({ jobId }) => jobId === '123456').evidence.resolution, { reason: 'original-listing-not-found' });
+  assert.equal(resumedSuccess.evidence.recovery.kind, 'held-lead-recovery');
+  assert.equal(resumedSuccess.evidence.recovery.originalDiscoveryUrl, 'https://www.linkedin.com/jobs/view/234567');
 });
 
 test('portal shared request cap retains every unverified lead and its cap reason', async () => {

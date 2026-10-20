@@ -477,7 +477,10 @@ export async function crawlWorkflow({
     sourceId,
     { ...telemetry, detail: sourceTelemetryDetails[sourceId] ?? telemetry.detail ?? telemetry.manifest ?? null },
   ]));
-  const sourceYield = buildSourceYieldReport(records, sourceTelemetry, config.sourceYield);
+  const discoveryRecords = records.filter((record) =>
+    record?.evidence?.recovery?.kind !== 'held-lead-recovery'
+      && record?._crawlerReserveEntry?.candidate?.evidence?.recovery?.kind !== 'held-lead-recovery');
+  const sourceYield = buildSourceYieldReport(discoveryRecords, sourceTelemetry, config.sourceYield);
   const sourceEndStates = (durable.idempotent ? durable.telemetry?.workflow?.terminalEnvelope?.sourceEndStates : null)
     ?? buildSourceEndStates(sourceTelemetry, config.sources);
   // Reserve/verification counts are durable so schedule-health can report them

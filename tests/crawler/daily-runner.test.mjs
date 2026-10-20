@@ -11,9 +11,10 @@ import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, re
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
-import { openCrawlerStore, crawlRun } from '../../crawler/run.mjs';
+import { openCrawlerStore, crawlRun, readCrawlerRunData } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
 import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
@@ -1411,6 +1412,8 @@ test('no portal injection stays healthy but is reported as an empty lane', async
   // zero-yield run came to look identical to a healthy one.
   assert.equal(result.shortfall.emptyLanes.includes('portal-linkedin-jobs'), true);
   assert.equal(result.shortfall.reasons.includes('SOURCE_EMPTY:portal-linkedin-jobs'), true);
+  assert.equal(result.heldLeadRecovery == null, true);
+  assert.doesNotMatch(renderLocalLeadReport(result, { now: NOW }), /Recovery of already known leads/);
 });
 
 test('live-injected portal candidates retain their portal manifest and verification handling', async () => {
@@ -1841,6 +1844,401 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
   assert.equal(result.dailyReceipt.scopes.verification.count, 1);
   assert.equal(result.dailyReceipt.retained.identityRows.find((row) => row.identityHash === `sha256:${createHash('sha256').update(result.verificationQueue[0].dedupKey).digest('hex')}`)?.stage, 'verification');
+
+  const { config: recoveryConfig } = testConfig();
+  recoveryConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const recoveredLeads = [
+    ['good', 'AI Engineer', 'Acme Labs'], ['missing-date', 'AI Engineer', 'Acme Labs'],
+    ['missing-employment', 'AI Engineer', 'Acme Labs'], ['mismatch', 'AI Engineer', 'Acme Labs'],
+    ['unsupported', 'AI Engineer', 'Acme Labs'], ['forbidden', 'AI Engineer', 'Acme Labs'],
+    ['missing-route', 'AI Engineer', 'Acme Labs'], ['thrown', 'AI Engineer', 'Acme Labs'],
+    ['requisition-mismatch', 'AI Engineer', 'Acme Labs'], ['missing-current-facts', 'AI Engineer', 'Acme Labs'],
+  ].map(([id, title, company]) => ({
+    canonicalUrl: `https://www.glassdoor.com/job-listing/${id}`, discoveryUrl: `https://www.glassdoor.com/job-listing/${id}`,
+    provider: id === 'requisition-mismatch' ? 'greenhouse' : 'glassdoor', discoveryProvider: 'glassdoor', source: 'portal-glassdoor', sourceId: 'portal-discovery', providerJobId: id,
+    jobId: id, title: id === 'missing-current-facts' ? null : title, company: id === 'missing-current-facts' ? null : company,
+    location: id === 'good' ? 'London, UK' : 'Pune, India', description: 'Index preview only.', postedAt: NOW,
+    employment: { type: 'full-time', evidence: 'index preview' }, experience: { minYears: 0, maxYears: 1, evidence: 'index preview' },
+    ...(id === 'good' || id === 'missing-date' ? {
+      workMode: 'remote', work_mode: 'remote', remoteEligibility: { status: 'India Eligible', evidence: 'stale portal preview' },
+      remoteEligible: true, remoteEligibilityEvidence: 'stale portal preview',
+    } : {}),
+    ...(['good', 'missing-employment', 'missing-current-facts'].includes(id) ? {
+      companyName: 'Stale Alias Employer', role: 'Stale Alias Role', descriptionPlain: 'Remote from India. Full-time. 0-1 years experience.',
+      jd: 'Remote from India. Full-time. 0-1 years experience.', body: 'Remote from India. Full-time. 0-1 years experience.',
+      employmentType: 'full-time', type: 'full-time', employmentEvidence: 'stale alias employment', payEvidence: 'stale alias pay', paid: true,
+      salaryMin: 900000, salaryMax: 1200000, salaryCurrency: 'INR', salaryPeriod: 'annual', salaryEvidence: 'stale alias salary',
+      minYears: 0, minimumYears: 0, experienceMinYears: 0, maxYears: 1, maximumYears: 1, experienceMaxYears: 1,
+      experienceEvidence: '0-1 years experience', sourceMinYears: 0, sourceMaxYears: 1,
+    } : {}),
+    ...(id === 'requisition-mismatch' ? { employerRequisitionId: 'EXPECTED-REQ' } : {}),
+    ...(id === 'good' || id === 'missing-current-facts' ? { provider: 'greenhouse' } : {}),
+  }));
+  const recoveryRequests = [];
+  const recoveryTransport = async (url) => {
+    recoveryRequests.push(url);
+    const parsedUrl = new URL(url);
+    const sourceId = parsedUrl.hostname === 'www.glassdoor.com' ? parsedUrl.pathname.split('/').at(-1) : null;
+    if (sourceId) {
+      if (sourceId === 'forbidden') return { status: 403, body: 'blocked fixture' };
+      if (sourceId === 'missing-route') return { status: 404, body: 'missing fixture' };
+      if (sourceId === 'thrown') throw new Error('fixture transport failure');
+      const destination = sourceId === 'unsupported' ? 'https://redirect.example.test/jobs/1'
+      : `https://boards.greenhouse.io/acme/jobs/${sourceId}`;
+      return { status: 302, headers: { location: destination }, body: '' };
+    }
+    const id = parsedUrl.pathname.split('/').at(-1);
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', ...(id === 'missing-current-facts' ? {} : { title: 'AI Engineer' }),
+      ...(id === 'missing-current-facts' ? {} : { hiringOrganization: { name: id === 'mismatch' ? 'Different Employer' : 'Acme Labs' } }),
+      description: id === 'missing-current-facts'
+        ? 'Build Python APIs.'
+        : id === 'good'
+        ? 'Remote from London, United Kingdom. Full-time AI Engineer. Build Python systems. 0-1 years experience.'
+        : id === 'missing-date'
+        ? 'AI Engineer in Pune, India. Full-time AI Engineer. Build Python systems. 0-1 years experience.'
+        : id === 'missing-employment'
+        ? 'Remote from India. AI Engineer. Build Python systems. 0-1 years experience.'
+        : 'Full-time AI Engineer in Pune, India. Build Python systems. 0-1 years experience.',
+      ...(id === 'missing-current-facts' ? {} : id === 'missing-date'
+        ? { jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } } }
+        : id === 'good'
+        ? { jobLocation: { address: { addressLocality: 'London', addressCountry: 'UK' } } }
+        : id === 'missing-employment'
+        ? { jobLocation: { address: { addressCountry: 'India' } } }
+        : { jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } } }),
+      datePosted: '2026-07-23',
+      ...(id === 'good' ? { baseSalary: { currency: 'INR', unitText: 'annual', value: { minValue: 800000, maxValue: 1000000 } } } : {}),
+      ...(id === 'missing-current-facts' ? {} : { employmentType: 'FULL_TIME' }),
+      identifier: { name: 'Acme Labs', value: id === 'requisition-mismatch' ? 'OTHER-REQ' : id },
+      ...(id !== 'missing-date' ? {} : { datePosted: undefined }),
+      ...(id !== 'missing-employment' ? {} : { employmentType: undefined }),
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  };
+  const recoveryStore = openCrawlerStore(recoveryConfig.databasePath);
+  const recoveryResult = await runDailyNormalActual(runOptions(recoveryConfig, recoveryTransport, {
+    runId: 'p04-held-recovery-daily', store: recoveryStore, heldPortalLeads: recoveredLeads,
+  }));
+  recoveryStore.close();
+  assert.ok(recoveryResult.heldLeadRecovery, JSON.stringify({ errors: recoveryResult.outcome.errors, telemetry: recoveryResult.crawlerV2Telemetry }));
+  assert.equal(recoveryResult.sourceYield.totals.fetched, 0, 'known held leads must not count as new discovery');
+  assert.equal(recoveryResult.sourceYield.sources.length, 0, 'recovery-only runs have no discovery-yield rows');
+  assert.equal(recoveryResult.heldLeadRecovery.requested, recoveredLeads.length);
+  assert.equal(recoveryResult.heldLeadRecovery.recovered, 4);
+  assert.equal(recoveryResult.heldLeadRecovery.mismatched, 2);
+  assert.equal(recoveryResult.heldLeadRecovery.blocked, 2);
+  assert.equal(recoveryResult.heldLeadRecovery.failed, 1);
+  assert.equal(recoveryResult.heldLeadRecovery.unattempted, 0);
+  assert.equal(recoveryRequests.length, 16);
+  assert.deepEqual(recoveryResult.heldLeadRecovery.outcomes.find((item) => item.lead === 'missing-date').missingFields, ['original-date']);
+  assert.deepEqual(recoveryResult.heldLeadRecovery.outcomes.find((item) => item.lead === 'missing-employment').missingFields, ['employment']);
+  const recoveredGood = recoveryResult.observations.find((lead) => lead.providerJobId === 'good');
+  assert.equal(recoveredGood.company, 'Acme Labs');
+  assert.equal(recoveredGood.title, 'AI Engineer');
+  assert.equal(recoveredGood.companyName, null);
+  assert.equal(recoveredGood.role, null);
+  assert.equal(recoveredGood.employmentType, null);
+  assert.equal(recoveredGood.salaryMin, undefined);
+  assert.deepEqual(normalizeCandidate(recoveredGood).salary, {
+    minimum: 800000, maximum: 1000000, currency: 'INR', period: 'annual', evidence: '800000-1000000',
+  });
+  assert.equal(recoveredGood.location, 'London, UK');
+  assert.equal(recoveredGood.evidence.fieldSources.location, 'original-employer-detail');
+  assert.equal(recoveredGood.employment.type, 'full-time');
+  assert.match(recoveredGood.description, /Build Python systems/);
+  assert.equal(recoveredGood.workMode, null);
+  assert.equal(recoveredGood.remoteEligibility.status, 'Not Verified');
+  assert.equal(recoveredGood.eligibility.geo.pass, false);
+  assert.equal(recoveredGood.eligibility.geo.code, 'GEO_ONSITE_NOT_PUNE');
+  const currentIndia = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-date');
+  assert.equal(currentIndia.eligibility.geo.pass, true);
+  assert.equal(currentIndia.eligibility.geo.mode, 'onsite');
+  assert.equal(currentIndia.location, 'Pune, India');
+  assert.equal(currentIndia.remoteEligibility.status, 'Not Verified');
+  const currentRemote = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-employment');
+  assert.equal(currentRemote.eligibility.geo.pass, true);
+  assert.equal(currentRemote.eligibility.geo.mode, 'remote');
+  assert.equal(currentRemote.remoteEligibility.status, 'Not Verified');
+  assert.equal(recoveredGood.evidence.recovery.originalDiscoveryUrl, 'https://www.glassdoor.com/job-listing/good');
+  const missingDate = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-date');
+  const missingEmployment = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-employment');
+  const missingCurrentFacts = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-current-facts');
+  assert.equal(missingDate.postedAt, null);
+  assert.equal(missingDate.dateEvidence.originalPublication, null);
+  assert.equal(missingEmployment.employment?.type ?? null, null);
+  assert.deepEqual(normalizeCandidate(missingEmployment).salary, {
+    minimum: null, maximum: null, currency: null, period: null, evidence: null,
+  });
+  assert.equal(missingCurrentFacts.company, null);
+  assert.equal(missingCurrentFacts.title, null);
+  assert.equal(missingCurrentFacts.evidence.fieldSources.company, null);
+  assert.equal(missingCurrentFacts.evidence.fieldSources.title, null);
+  assert.equal(missingCurrentFacts.location, null);
+  assert.equal(missingCurrentFacts.employment?.type ?? null, null);
+  assert.equal(missingCurrentFacts.experience?.evidence ?? null, null);
+  assert.equal(missingCurrentFacts.salary?.minimum ?? null, null);
+  assert.equal(missingCurrentFacts.employment?.evidence ?? null, null);
+  assert.equal(missingCurrentFacts.description, 'Build Python APIs.');
+  for (const field of [
+    'companyName', 'role', 'descriptionPlain', 'jd', 'body', 'employmentType', 'type', 'employmentEvidence', 'payEvidence', 'paid',
+    'minYears', 'minimumYears', 'experienceMinYears', 'maxYears', 'maximumYears',
+    'experienceMaxYears', 'experienceEvidence', 'sourceMinYears', 'sourceMaxYears',
+  ]) assert.equal(missingCurrentFacts[field], null, `${field} must not restore a stale recovery fact`);
+  for (const field of ['salaryMin', 'salaryMax', 'salaryCurrency', 'salaryPeriod', 'salaryEvidence']) {
+    assert.equal(missingCurrentFacts[field], undefined, `${field} fallback must be absent after recovery`);
+  }
+  assert.deepEqual(recoveryResult.heldLeadRecovery.outcomes.find((item) => item.lead === 'missing-current-facts').missingFields,
+    ['employer', 'role', 'location', 'employment', 'experience']);
+  assert.equal(missingCurrentFacts.eligibility.eligible, false);
+  assert.equal(recoveryResult.shortlist.some((lead) => lead.providerJobId === 'missing-current-facts'), false);
+  assert.equal((recoveryResult.scoringQueue ?? []).some((lead) => (lead.candidate ?? lead).providerJobId === 'missing-current-facts'), false);
+  assert.notEqual(missingDate.applicationReady, true);
+  assert.notEqual(missingEmployment.applicationReady, true);
+  assert.equal(recoveryResult.shortlist.length, 0);
+  assert.equal(recoveryResult.shortlist.some((lead) => lead.providerJobId === 'good'), false);
+  assert.equal(recoveryResult.dailyReceipt.historyEvidence.status, 'missing');
+  assert.notEqual(recoveryResult.outcome.fatal, true);
+  assert.ok(recoveryResult.verificationQueue.some((lead) => lead.discoveryUrl === 'https://www.glassdoor.com/job-listing/missing-date'));
+  const missingEmploymentVerification = recoveryResult.verificationQueue.find((lead) => lead.discoveryUrl === 'https://www.glassdoor.com/job-listing/missing-employment');
+  assert.ok(missingEmploymentVerification);
+  assert.ok(missingEmploymentVerification.reasons.includes('EMPLOYMENT_NOT_VERIFIED'));
+  const missingIdentityVerification = recoveryResult.verificationQueue.find((lead) => lead.discoveryUrl === 'https://www.glassdoor.com/job-listing/missing-current-facts');
+  assert.deepEqual(missingIdentityVerification.reasons, ['EMPLOYER_NOT_VERIFIED', 'ROLE_NOT_VERIFIED']);
+  assert.deepEqual(missingIdentityVerification.missingFields, ['employer', 'role', 'location', 'employment', 'experience']);
+  const recoveryReport = renderLocalLeadReport(recoveryResult, { now: '2026-07-24T06:30:00Z' });
+  assert.match(recoveryReport, /Recovery of already known leads/);
+  assert.match(recoveryReport, /do not count as new discovery or new market supply/);
+  assert.match(recoveryReport, /Historical V4 snapshot: missing/);
+  assert.match(recoveryReport, /missing facts original-date/);
+  assert.doesNotMatch(recoveryReport, /Stale Alias Employer|Stale Alias Role|900000|stale alias employment/);
+  assert.match(recoveryReport, /missing facts employer, role, location, employment, experience/);
+  assert.match(recoveryReport, /EMPLOYER_NOT_VERIFIED; ROLE_NOT_VERIFIED/);
+  assert.match(recoveryReport, /GEO_ONSITE_NOT_PUNE/);
+  const currentIndiaRecovery = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-date');
+  const incompleteIdentityRecovery = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-current-facts');
+  const incompleteReport = renderLocalLeadReport({ ...recoveryResult, observations: [
+    incompleteIdentityRecovery,
+    { ...currentIndiaRecovery, providerJobId: 'unknown-experience', description: 'Build Python APIs and machine learning tools with our engineering team.',
+      experience: { minYears: null, maxYears: null, evidence: null } },
+  ] }, { now: '2026-07-24T06:30:00Z' });
+  assert.match(incompleteReport, /Needs verification: 2/);
+  assert.match(incompleteReport, /Rejected: 0/);
+  assert.match(incompleteReport, /ROLE_NOT_VERIFIED/);
+  assert.match(incompleteReport, /EMPLOYER_NOT_VERIFIED/);
+  assert.match(incompleteReport, /EXPERIENCE_NOT_STATED_MANUAL_REVIEW/);
+  assert.equal(recoveryResult.dailyReceipt.historyEvidence.status, 'missing');
+  const reopenedRecoveryStore = openCrawlerStore(recoveryConfig.databasePath);
+  const persistedRecovery = JSON.parse(reopenedRecoveryStore.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('p04-held-recovery-daily-crawler-v2').telemetry_json);
+  const reopenedRunData = readCrawlerRunData(reopenedRecoveryStore, 'p04-held-recovery-daily-crawler-v2');
+  reopenedRecoveryStore.close();
+  assert.deepEqual(persistedRecovery.workflow.sourceYield, recoveryResult.sourceYield);
+  assert.equal(persistedRecovery.workflow.sourceYield.totals.fetched, 0);
+  assert.deepEqual(persistedRecovery.workflow.dailyReceipt.recovery.heldLeads, recoveryResult.heldLeadRecovery);
+  assert.deepEqual(persistedRecovery.workflow.dailyReceipt.recovery.heldLeads.outcomes
+    .find((item) => item.lead === 'missing-current-facts').missingFields, ['employer', 'role', 'location', 'employment', 'experience']);
+  assert.equal(persistedRecovery.workflow.dailyReceipt.historyEvidence.status, 'missing');
+  assert.match(persistedRecovery.workflow.dailyReceipt.retained.observations.find((row) => row.source === 'portal-glassdoor')?.evidenceContentHash, /^sha256:/);
+  const replayRecoveryStore = openCrawlerStore(recoveryConfig.databasePath);
+  const replayedRecovery = await runDailyNormalActual(runOptions(recoveryConfig, () => {
+    throw new Error('completed recovery replay must not fetch');
+  }, { runId: 'p04-held-recovery-daily', store: replayRecoveryStore, heldPortalLeads: recoveredLeads }));
+  replayRecoveryStore.close();
+  assert.deepEqual(replayedRecovery.sourceYield, recoveryResult.sourceYield);
+  assert.equal(replayedRecovery.sourceYield.totals.fetched, 0);
+  assert.equal(replayedRecovery.heldLeadRecovery.requested, 10);
+  assert.equal(replayedRecovery.heldLeadRecovery.recovered, 4);
+  const reopenedGood = reopenedRunData.observations.find((row) => row.raw.providerJobId === 'good')?.raw;
+  assert.match(reopenedGood.description, /Build Python systems/);
+  assert.deepEqual(normalizeCandidate(reopenedGood).salary, {
+    minimum: 800000, maximum: 1000000, currency: 'INR', period: 'annual', evidence: '800000-1000000',
+  });
+  assert.equal(reopenedGood.workMode, null);
+  assert.equal(reopenedGood.remoteEligibility.status, 'Not Verified');
+  const reopenedMissingCurrentFacts = reopenedRunData.observations.find((row) => row.raw.providerJobId === 'missing-current-facts')?.raw;
+  assert.equal(reopenedMissingCurrentFacts.company, null);
+  assert.equal(reopenedMissingCurrentFacts.title, null);
+  assert.equal(reopenedMissingCurrentFacts.evidence.fieldSources.company, null);
+  assert.equal(reopenedMissingCurrentFacts.evidence.fieldSources.title, null);
+  assert.equal(reopenedMissingCurrentFacts.salary?.minimum ?? null, null);
+  assert.equal(reopenedMissingCurrentFacts.employment?.type ?? null, null);
+  assert.equal(reopenedMissingCurrentFacts.experience?.minYears ?? null, null);
+  assert.equal(reopenedMissingCurrentFacts.description, 'Build Python APIs.');
+  for (const field of ['companyName', 'role', 'employmentType', 'type', 'minYears', 'minimumYears', 'experienceMinYears']) {
+    assert.equal(reopenedMissingCurrentFacts[field], null, `stored ${field} must remain cleared`);
+  }
+  for (const field of ['salaryMin', 'salaryMax', 'salaryCurrency', 'salaryPeriod', 'salaryEvidence']) {
+    assert.equal(reopenedMissingCurrentFacts[field], undefined, `stored ${field} fallback must remain absent`);
+  }
+  const reopenedMissingEmployment = reopenedRunData.observations.find((row) => row.raw.providerJobId === 'missing-employment')?.raw;
+  assert.deepEqual(normalizeCandidate(reopenedMissingEmployment).salary, {
+    minimum: null, maximum: null, currency: null, period: null, evidence: null,
+  });
+  assert.equal(reopenedGood.eligibility.geo.pass, false);
+  const reopenedIndia = reopenedRunData.observations.find((row) => row.raw.providerJobId === 'missing-date')?.raw;
+  assert.equal(reopenedIndia.eligibility.geo.pass, true);
+  assert.equal(reopenedIndia.location, 'Pune, India');
+  const reopenedRemote = reopenedRunData.observations.find((row) => row.raw.providerJobId === 'missing-employment')?.raw;
+  assert.equal(reopenedRemote.eligibility.geo.pass, true);
+  assert.equal(reopenedRemote.eligibility.geo.mode, 'remote');
+  assert.equal(reopenedRemote.remoteEligibility.status, 'Not Verified');
+  assert.equal(reopenedIndia.remoteEligibility.status, 'Not Verified');
+  assert.equal(reopenedGood.originalApplicationUrl, 'https://boards.greenhouse.io/acme/jobs/good');
+  assert.equal(reopenedGood.evidence.recovery.originalDiscoverySource, 'portal-glassdoor');
+
+  const { config: duplicateConfig } = testConfig();
+  duplicateConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const duplicateLead = {
+    ...recoveredLeads[0], provider: 'greenhouse', jobId: 'duplicate-opening', providerJobId: 'duplicate-opening',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/duplicate-opening',
+    canonicalUrl: 'https://www.glassdoor.com/job-listing/duplicate-opening',
+    identityAliases: ['glassdoor|old-shared'],
+  };
+  const distinctRequisitionLead = {
+    ...duplicateLead,
+    jobId: 'distinct-opening', providerJobId: 'distinct-opening',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/distinct-opening',
+    canonicalUrl: 'https://www.glassdoor.com/job-listing/distinct-opening',
+    identityAliases: ['glassdoor|old-shared'],
+  };
+  const duplicateRequests = [];
+  const duplicateResult = await runDailyNormalActual(runOptions(duplicateConfig, async (url) => {
+    duplicateRequests.push(url);
+    if (new URL(url).hostname === 'boards.greenhouse.io'
+      && new URL(url).pathname.endsWith('/distinct-opening')) {
+      return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+        hiringOrganization: { name: 'Acme Labs' },
+        description: 'Full-time AI Engineer in Pune, India. Build Python systems. 5 years experience.',
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: 'distinct-opening' },
+      })}</script>` };
+    }
+    return recoveryTransport(url);
+  }, {
+    runId: 'p04-held-recovery-duplicates', heldPortalLeads: [duplicateLead, duplicateLead, distinctRequisitionLead],
+  }));
+  assert.equal(duplicateRequests.length, 4);
+  assert.equal(duplicateResult.heldLeadRecovery.requested, 3);
+  assert.equal(duplicateResult.heldLeadRecovery.distinct, 2);
+  assert.equal(duplicateResult.heldLeadRecovery.duplicates, 1);
+  assert.equal(duplicateResult.heldLeadRecovery.recovered, 2);
+  assert.equal(duplicateResult.heldLeadRecovery.outcomes.length, 2);
+  assert.deepEqual(duplicateResult.heldLeadRecovery.outcomes.map((item) => item.lead), ['duplicate-opening', 'distinct-opening']);
+  const distinctCurrent = duplicateResult.observations.find((lead) => lead.providerJobId === 'distinct-opening');
+  assert.equal(distinctCurrent.experience.minYears, 5);
+  assert.match(distinctCurrent.experience.evidence, /5 years experience/);
+  assert.equal(distinctCurrent.eligibility.experience.strict, false);
+
+  const { config: currentDiscoveryConfig } = testConfig();
+  currentDiscoveryConfig.sources.portals = {
+    enabled: true, maxCandidates: 24, maxResolverRequests: 30, resolverMaxDurationMs: 90_000,
+    http: { providers: ['linkedin-jobs'] },
+    linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] },
+  };
+  const linkedinDetail = '<li><h3 class="base-search-card__title">AI Engineer</h3><h4 class="base-search-card__subtitle"><a>Acme Labs</a></h4><span class="job-search-card__location">Pune, India</span><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/123456"></a><time datetime="2026-07-23"></time></li>';
+  const currentDiscoveryRequests = [];
+  const currentDiscoveryTransport = async (url) => {
+    currentDiscoveryRequests.push(url);
+    const parsed = new URL(url);
+    if (parsed.hostname === 'www.linkedin.com' && parsed.pathname.includes('jobs-guest')) {
+      return { status: 200, body: linkedinDetail };
+    }
+    if (parsed.hostname === 'www.glassdoor.com') {
+      return { status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/different-requisition' }, body: '' };
+    }
+    if (parsed.hostname === 'www.linkedin.com') {
+      return { status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/123456' }, body: '' };
+    }
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python systems. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: '123456' },
+    })}</script>` };
+  };
+  const retainedLinkedInLead = {
+    canonicalUrl: 'https://www.linkedin.com/jobs/view/123456',
+    discoveryUrl: 'https://www.linkedin.com/jobs/view/123456',
+    provider: 'linkedin-jobs', jobId: '123456', providerJobId: '123456',
+    identityAliases: ['linkedin-jobs|old-shared'],
+    source: 'portal-linkedin-jobs', sourceId: 'portal-discovery',
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  };
+  const distinctRetainedLead = {
+    ...retainedLinkedInLead,
+    provider: 'linkedin-jobs',
+    jobId: 'different-requisition',
+    providerJobId: 'different-requisition',
+    canonicalUrl: 'https://www.glassdoor.com/job-listing/different-requisition',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/different-requisition',
+  };
+  const currentDiscoveryStore = openCrawlerStore(currentDiscoveryConfig.databasePath);
+  const duplicateCurrentDiscovery = await runDailyNormalActual(runOptions(currentDiscoveryConfig, currentDiscoveryTransport, {
+    store: currentDiscoveryStore,
+    runId: 'p04-held-recovery-current-discovery',
+    heldPortalLeads: [retainedLinkedInLead, retainedLinkedInLead, distinctRetainedLead],
+  }));
+  currentDiscoveryStore.close();
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.rawRequested, 3);
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.distinct, 2);
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.duplicates, 1);
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.alreadyDiscovered, 1);
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.outcomes.length, 1);
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.outcomes[0].lead, 'different-requisition');
+  assert.equal(currentDiscoveryRequests.filter((url) => url.includes('/jobs/view/123456')).length, 1);
+  assert.equal(duplicateCurrentDiscovery.sourceYield.totals.fetched, 1, 'only the current discovery role contributes to yield');
+  assert.equal(duplicateCurrentDiscovery.sourceYield.sources.reduce((sum, row) => sum + row.fetched, 0), 1);
+  const reopenedCurrentDiscoveryStore = openCrawlerStore(currentDiscoveryConfig.databasePath);
+  const persistedCurrentDiscovery = JSON.parse(reopenedCurrentDiscoveryStore.prepare(
+    'SELECT telemetry_json FROM crawl_runs WHERE run_id = ?',
+  ).get('p04-held-recovery-current-discovery-crawler-v2').telemetry_json);
+  reopenedCurrentDiscoveryStore.close();
+  assert.deepEqual(persistedCurrentDiscovery.workflow.sourceYield, duplicateCurrentDiscovery.sourceYield);
+  assert.equal(persistedCurrentDiscovery.workflow.sourceYield.totals.fetched, 1);
+
+  const { config: requestConfig } = testConfig();
+  requestConfig.sources.portals = { enabled: false, maxResolverRequests: 1, resolverMaxDurationMs: 90_000 };
+  const requestLimited = await runDailyNormal(runOptions(requestConfig, recoveryTransport, {
+    runId: 'p04-held-recovery-request-cap', heldPortalLeads: [recoveredLeads[0]],
+  }));
+  assert.equal(requestLimited.dailyReceipt.recovery.heldLeads.blocked, 1);
+  assert.equal(requestLimited.dailyReceipt.recovery.heldLeads.outcomes[0].reason, 'request-budget-exhausted');
+  assert.match(renderLocalLeadReport(requestLimited, { now: '2026-07-24T06:30:00Z' }), /Request budget exhausted: Yes/);
+
+  const { config: deadlineConfig } = testConfig();
+  deadlineConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  let monotonic = 0;
+  const deadlineLimited = await runDailyNormal(runOptions(deadlineConfig, async (url) => {
+    const response = await recoveryTransport(url);
+    monotonic += 100_000;
+    return response;
+  }, {
+    runId: 'p04-held-recovery-deadline-cap', clock: { now: () => NOW, monotonicNow: () => monotonic, sleep: async () => {} },
+    heldPortalLeads: [recoveredLeads[0]],
+  }));
+  assert.equal(deadlineLimited.dailyReceipt.recovery.heldLeads.blocked, 1);
+  assert.match(deadlineLimited.dailyReceipt.recovery.heldLeads.outcomes[0].reason, /deadline/);
+  assert.match(renderLocalLeadReport(deadlineLimited, { now: '2026-07-24T06:30:00Z' }), /Deadline exhausted: Yes/);
+
+  const { config: leadCapConfig } = testConfig();
+  leadCapConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const cappedLeads = Array.from({ length: 11 }, (_, index) => ({
+    ...recoveredLeads[0],
+    jobId: `cap-${index}`,
+    providerJobId: `cap-${index}`,
+    discoveryUrl: `https://www.glassdoor.com/job-listing/cap-${index}`,
+    canonicalUrl: `https://www.glassdoor.com/job-listing/cap-${index}`,
+  }));
+  const leadCapped = await runDailyNormal(runOptions(leadCapConfig, recoveryTransport, {
+    runId: 'p04-held-recovery-lead-cap', heldPortalLeads: cappedLeads,
+  }));
+  assert.equal(leadCapped.dailyReceipt.recovery.heldLeads.requested, 11);
+  assert.equal(leadCapped.dailyReceipt.recovery.heldLeads.attempted, 10);
+  assert.equal(leadCapped.dailyReceipt.recovery.heldLeads.unattempted, 1);
+  assert.equal(leadCapped.crawlerV2Telemetry['portal-discovery'].detail.telemetry.resolutionRequests, 20);
+  assert.match(renderLocalLeadReport(leadCapped, { now: '2026-07-24T06:30:00Z' }), /Unattempted: 1/);
 
   const { config: experienceConfig } = testConfig();
   const hidden = rawPortalJob(1961, {

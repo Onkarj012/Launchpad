@@ -146,18 +146,59 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const effectivePolicy = policy ?? { ...loadConfig(), salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
   const buckets = { strictReady: [], fallbackReady: [], verification: [], rejected: [] };
   for (const raw of result.observations ?? []) {
+    const missingRecoveryIdentity = raw.evidence?.recovery?.kind === 'held-lead-recovery'
+      ? [!raw.company ? 'EMPLOYER_NOT_VERIFIED' : null, !raw.title ? 'ROLE_NOT_VERIFIED' : null].filter(Boolean)
+      : [];
+    if (missingRecoveryIdentity.length) {
+      buckets.verification.push({
+        candidate: raw,
+        eligibility: { reasons: [], experience: { manualReview: false, code: null } },
+        freshness: { window: 'VerifyQueue', eligible: false, code: 'FRESHNESS_NOT_VERIFIED' },
+        readiness: { reasons: missingRecoveryIdentity },
+        reasons: [],
+        verificationReasons: missingRecoveryIdentity,
+      });
+      continue;
+    }
     const candidate = normalizeCandidate(raw, { runAt: now });
     const eligibility = classifyCandidate(candidate, effectivePolicy);
     const freshness = classifyFreshness(candidate, { now, ...effectivePolicy.freshness });
     const readiness = applicationReadiness(candidate, eligibility);
-    const reasons = [...eligibility.reasons, ...(freshness.eligible === false && freshness.window !== 'VerifyQueue' ? [freshness.code ?? 'FRESHNESS_REJECTED'] : [])];
+    const missingRecoveryFacts = raw.evidence?.recovery?.kind === 'held-lead-recovery' ? [
+      !raw.company ? 'EMPLOYER_NOT_VERIFIED' : null,
+      !raw.title ? 'ROLE_NOT_VERIFIED' : null,
+      !raw.location ? 'LOCATION_NOT_VERIFIED' : null,
+      !raw.employment?.type ? 'EMPLOYMENT_NOT_VERIFIED' : null,
+    ].filter(Boolean) : [];
+    const reasons = [...eligibility.reasons,
+      ...(freshness.eligible === false && freshness.window !== 'VerifyQueue' ? [freshness.code ?? 'FRESHNESS_REJECTED'] : [])];
     const row = { candidate, eligibility, freshness, readiness, reasons };
-    if (reasons.length) buckets.rejected.push(row);
+    const recoveryFactsUnverified = missingRecoveryFacts.length > 0;
+    const recoveryHasOnlyUnverifiedFacts = recoveryFactsUnverified && eligibility.reasons.every((reason) =>
+      /NOT_VERIFIED/.test(reason) || (!raw.title && reason === 'TITLE_OFF_TARGET'));
+    if (recoveryHasOnlyUnverifiedFacts && eligibility.experience.code !== 'EXPERIENCE_HARD_MIN_3_PLUS'
+      && !(freshness.eligible === false && freshness.window !== 'VerifyQueue')) {
+      row.verificationReasons = missingRecoveryFacts;
+      buckets.verification.push(row);
+    }
+    else if (reasons.length) buckets.rejected.push(row);
     else if (readiness.ready && freshness.eligible) buckets[eligibility.strict ? 'strictReady' : 'fallbackReady'].push(row);
     else buckets.verification.push(row);
   }
   const lines = ['# Local lead handoff', '', `Observed at ${now}. Public evidence only. No scores, applications, outreach or store delivery.`, '',
     `Strict ready: ${buckets.strictReady.length}. Shortage fallback ready: ${buckets.fallbackReady.length}. Needs verification: ${buckets.verification.length}. Rejected: ${buckets.rejected.length}.`, ''];
+  const heldRecovery = result.heldLeadRecovery ?? result.crawlerV2Telemetry?.['portal-discovery']?.detail?.telemetry?.heldLeadRecovery;
+  if (heldRecovery) {
+    lines.push('## Recovery of already known leads', '',
+      `Recovered: ${heldRecovery.recovered ?? 0}. Blocked: ${heldRecovery.blocked ?? 0}. Missing: ${heldRecovery.missing ?? 0}. Mismatched: ${heldRecovery.mismatched ?? 0}. Failed: ${heldRecovery.failed ?? 0}. Unattempted: ${heldRecovery.unattempted ?? 0}.`,
+      `Raw requested: ${heldRecovery.rawRequested ?? heldRecovery.requested ?? 0}. Distinct: ${heldRecovery.distinct ?? 'Not Verified'}. Duplicate inputs: ${heldRecovery.duplicates ?? 'Not Verified'}. Already in current discovery: ${heldRecovery.alreadyDiscovered ?? 'Not Verified'}.`,
+      `Request budget exhausted: ${heldRecovery.requestBudgetExhausted === true ? 'Yes' : 'No'}. Deadline exhausted: ${heldRecovery.deadlineExhausted === true ? 'Yes' : 'No'}.`,
+      `Historical V4 snapshot: ${cell(result.v4HistorySnapshot?.status ?? 'Not Verified')}. Recovery alone does not establish history novelty.`,
+      'These outcomes describe retained leads. They do not count as new discovery or new market supply.', '');
+    for (const outcome of heldRecovery.outcomes ?? []) lines.push(`- ${cell(outcome.lead)}: ${cell(outcome.outcome)} / ${cell(outcome.reason)}; requests ${outcome.requests ?? 0}; discovery ${cell(outcome.originalDiscoverySource ?? 'Not Verified')} ${cell(outcome.originalDiscoveryUrl ?? 'Not Verified')}; employer route ${cell(outcome.employerDetailUrl ?? 'Not Verified')}; missing facts ${cell(outcome.missingFields?.join(', ') || 'None recorded')}.`);
+    if (!heldRecovery.outcomes?.length) lines.push('- No held lead recovery was attempted.');
+    lines.push('');
+  }
   if (result.modes && typeof result.modes === 'object') {
     const units = dailyReportUnits(result, now);
     lines.push('## This-run allocation and focus delivery', '',
@@ -183,7 +224,8 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
       '| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const row of rows) {
       const { candidate: c, eligibility: e, freshness: f, readiness: r } = row;
-      const reasonList = row.reasons.length ? row.reasons : [...r.reasons,
+      const reasonList = [...row.reasons, ...(row.verificationReasons ?? []),
+        ...(!row.reasons.length ? r.reasons : []),
         ...(e.experience.manualReview ? [e.experience.code] : []),
         ...(!c.description ? ['PORTAL_DESCRIPTION_MISSING'] : []),
         ...(c.evidence?.resolution?.reason ? [c.evidence.resolution.reason] : []),
