@@ -10,6 +10,15 @@ function parseTimestamp(value) {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.getTime();
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'string' || !value) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)
+    && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const [, yearText, monthText, dayText] = /^(\d{4})-(\d{2})-(\d{2})/.exec(value) || [];
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]) return null;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
 }
@@ -19,7 +28,12 @@ export function classifyFreshness(candidateOrPostedAt, options = {}) {
   const isWorkday = candidate?.provider?.toLowerCase?.() === 'workday';
   const isPersonio = candidate?.provider?.toLowerCase?.() === 'personio';
   const workdayHasVerifiedDate = candidate?.evidence?.freshness?.kind === 'workday-startDate';
-  const rawPostedAt = candidate ? candidate.postedAt : candidateOrPostedAt;
+  const resolverDateEvidence = candidate?.evidence?.resolver && candidate?.evidence?.dateEvidence;
+  const candidateDateEvidence = resolverDateEvidence || candidate?.dateEvidence;
+  const hasOriginalResolverEvidence = candidateDateEvidence && Object.hasOwn(candidateDateEvidence, 'originalPublication');
+  const rawPostedAt = candidate
+    ? hasOriginalResolverEvidence ? candidateDateEvidence.originalPublication?.value ?? null : candidate.postedAt
+    : candidateOrPostedAt;
   const workdayUncorroborated = Boolean(isWorkday && !workdayHasVerifiedDate && rawPostedAt != null);
   const personioUncorroborated = Boolean(isPersonio && candidate?.evidence?.dateConfidence === 'provider-unverified' && rawPostedAt != null);
   const postedAt = (isWorkday && !workdayHasVerifiedDate) || personioUncorroborated

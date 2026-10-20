@@ -16,6 +16,10 @@ When sources conflict, do not infer promotion from prose. Re-run allowed local c
 
 The isolated P02 worktree adds a hashed daily receipt to the existing crawler run telemetry and readable Markdown/HTML reports. Receipt persistence reuses the crawler SQLite run envelope. This is uncommitted local implementation, not a release or readiness claim. Focused evidence and remaining limits are in `.local/p02-receipts/report.md`.
 
+## P03 identity and date evidence, 2026-10-20
+
+The isolated P03 worktree preserves provider requisition IDs, identity aliases and separate date evidence through the current daily receipt/report path. Date-only evidence stays date-only, unknown publication dates remain in VerifyQueue, and same-provider distinct requisitions do not merge through a shared alias. Focused local proof and limits are in `.local/p03-receipts/report.md`; no live source or history claim is made.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

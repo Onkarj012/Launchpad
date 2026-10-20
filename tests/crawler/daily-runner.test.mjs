@@ -14,11 +14,13 @@ import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/bo
 import { openCrawlerStore, crawlRun } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { classifyFreshness } from '../../job-pull/freshness.mjs';
 import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
-import { readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
+import { markAction, readOpportunityLedger, recordSurfaced } from '../../job-pull/opportunity-ledger.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
 import { renderLocalDailyHtmlReport, renderLocalLeadReport, writeLocalDailyHtmlReport } from '../../crawler/local-lead-report.mjs';
+import { applyOriginalListingResolution, createOriginalListingResolver } from '../../crawler/original-listing-resolver.mjs';
 
 const NOW = '2026-07-24T06:30:00.000Z';
 
@@ -1519,8 +1521,303 @@ test('a resolved portal lead is scored in web-discovery with its surfacing provi
   const retainedSuppression = ledgerTelemetry.workflow.dailyReceipt.retained.identityRows.find((row) => row.reason === 'DEDUP_EXISTING_LEDGER');
   assert.deepEqual(retainedSuppression, suppressed);
   assert.equal(ledgerTelemetry.workflow.dailyReceipt.scopes.finalSelection.count, 0);
-
+  await verifyDailyAliasDateReplay();
 });
+
+async function verifyDailyAliasDateReplay() {
+  const { config } = testConfig();
+  const missingDateResolver = createOriginalListingResolver({
+    runAt: '2026-10-20T09:00:00Z',
+    transport: async () => ({ status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+      '@type': 'JobPosting', title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Current Detail Employer' },
+    })}</script>` }),
+  });
+  const missingDateStore = openCrawlerStore(config.databasePath);
+  await crawlRun({
+    store: missingDateStore,
+    runId: 'p03-current-detail-missing-date',
+    clock: { now: () => '2026-10-20T09:00:00Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-detail-date-fixture', fetch: async () => {
+      const observation = normalizeCandidate({
+        canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123', provider: 'greenhouse', jobId: '123',
+        company: 'Current Detail Employer', title: 'AI Engineer', postedAt: '2026-10-20',
+        dateEvidence: { originalPublication: { value: '2026-10-20T08:00:00Z', source: 'prior-employer-detail' } },
+      });
+      const resolution = await missingDateResolver(observation);
+      return { observations: [applyOriginalListingResolution(observation, resolution)] };
+    } }],
+  });
+  missingDateStore.close();
+  const missingDateReopened = openCrawlerStore(config.databasePath);
+  const missingDateLifecycle = missingDateReopened.prepare('SELECT raw_json FROM job_observations').all()
+    .map((row) => JSON.parse(row.raw_json)).find((row) => row.jobId === '123');
+  missingDateReopened.close();
+  assert.equal(missingDateLifecycle.postedAt, null);
+  assert.equal(missingDateLifecycle.dateEvidence.originalPublication, null);
+  assert.equal(missingDateLifecycle.evidence.dateEvidence.originalPublication, null);
+  assert.equal(missingDateLifecycle.dateEvidence.originalPublicationAlternates[0].value, '2026-10-20T08:00:00Z');
+  assert.equal(classifyFreshness(missingDateLifecycle, { now: '2026-10-20T09:00:00Z' }).window, 'VerifyQueue');
+  const impossibleDate = rawPortalJob(124, {
+    canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/124', url: 'https://boards.greenhouse.io/acme/jobs/124',
+    originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/124', provider: 'greenhouse', jobId: '124',
+    company: 'Current Detail Employer', title: 'AI Engineer', postedAt: '2026-02-30',
+    dateEvidence: { originalPublication: { value: '2026-02-30', source: 'original-employer-detail', precision: 'date' } },
+  });
+  const impossibleDateDailyConfig = testConfig();
+  const impossibleDateDaily = await runDailyNormal(runOptions(impossibleDateDailyConfig.config, fakeTransport({}), {
+    runId: 'p03-impossible-publication-date',
+    clock: { now: () => '2026-03-02T12:00:00Z', sleep: async () => {} },
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [impossibleDate], manifest: { status: 'ok' } } },
+  }));
+  const impossibleDateRow = impossibleDateDaily.dailyReceipt.retained.identityRows.find((row) => row.dateEvidence?.originalPublication?.value === '2026-02-30');
+  assert.ok(impossibleDateRow);
+  assert.equal(impossibleDateRow.dateEvidence.originalPublication.value, '2026-02-30');
+  const impossibleDateVerifyRole = impossibleDateDaily.verificationQueue.find((role) => role.discoveryUrl === 'https://boards.greenhouse.io/acme/jobs/124');
+  assert.ok(impossibleDateVerifyRole);
+  assert.equal(classifyFreshness(impossibleDateVerifyRole, { now: '2026-03-02T12:00:00Z' }).window, 'VerifyQueue');
+  assert.equal(impossibleDateDaily.shortlist.some((role) => role.jobId === '124'), false);
+  const missingDateReplayStore = openCrawlerStore(config.databasePath);
+  await crawlRun({ store: missingDateReplayStore, runId: 'p03-current-detail-missing-date-replay',
+    clock: { now: () => '2026-10-20T09:05:00Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-detail-date-replay', fetch: async () => ({ observations: [missingDateLifecycle] }) }] });
+  missingDateReplayStore.close();
+  const missingDateReplayRead = openCrawlerStore(config.databasePath);
+  const missingDateReplayed = JSON.parse(missingDateReplayRead.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+  missingDateReplayRead.close();
+  assert.equal(missingDateReplayed.postedAt, null);
+  assert.equal(missingDateReplayed.dateEvidence.originalPublicationAlternates[0].value, '2026-10-20T08:00:00Z');
+  const { config: dailyMissingConfig } = testConfig();
+  const missingDateDaily = await runDailyNormal(runOptions(dailyMissingConfig, fakeTransport({}), {
+    runId: 'p03-current-detail-missing-date-selection',
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [rawPortalJob(123, {
+      provider: 'greenhouse', jobId: '123', url: 'https://boards.greenhouse.io/acme/jobs/123',
+      canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123', originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+      sourceKind: 'ats-direct', postedAt: missingDateLifecycle.postedAt,
+      dateEvidence: missingDateLifecycle.dateEvidence, evidence: missingDateLifecycle.evidence,
+    })], manifest: { status: 'ok' } } },
+  }));
+  assert.equal(missingDateDaily.shortlist.some((role) => role.jobId === '123'), false);
+  assert.ok(missingDateDaily.verificationQueue.some((role) => role.discoveryUrl === 'https://boards.greenhouse.io/acme/jobs/123'), JSON.stringify({ shortlist: missingDateDaily.shortlist, verify: missingDateDaily.verificationQueue, pool: missingDateDaily.scoringQueue }));
+  const publicPosting = normalizeCandidate({
+    ...rawPortalJob(123, { company: 'Acme', url: 'https://boards.greenhouse.io/acme/jobs/123',
+      canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123', originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+      provider: 'greenhouse', jobId: '123', requisitionId: 'REQ-42', sourceKind: 'ats-direct', postedAt: '2026-10-20' }),
+  });
+  const publicDetailResolver = createOriginalListingResolver({ transport: async () => ({
+    status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+      '@type': 'JobPosting', title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' },
+      identifier: { name: 'Acme', value: 'REQ-42' }, datePosted: '2026-10-20',
+    })}</script>`,
+  }) });
+  const publicDetail = await publicDetailResolver(publicPosting, { runAt: '2026-10-20T09:00:00Z' });
+  assert.equal(publicDetail.status, 'resolved');
+  const publicCandidate = { ...applyOriginalListingResolution(publicPosting, publicDetail),
+    scoreOrigin: 'explicit-scored-input', matchScore: 80, responseLikelihood: 15 };
+  assert.equal(publicCandidate.jobId, '123');
+  assert.equal(publicCandidate.employerRequisitionId, 'REQ-42');
+  const { config: publicConfig } = testConfig();
+  const publicStore = openCrawlerStore(publicConfig.databasePath);
+  await crawlRun({ store: publicStore, runId: 'p03-public-provider-id-persist',
+    clock: { now: () => '2026-10-20T09:00:00Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-public-provider-id', fetch: async () => ({ observations: [publicCandidate] }) }] });
+  publicStore.close();
+  const publicReplayStore = openCrawlerStore(publicConfig.databasePath);
+  const publicPersisted = JSON.parse(publicReplayStore.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+  publicReplayStore.close();
+  assert.equal(publicPersisted.jobId, '123');
+  assert.equal(publicPersisted.employerRequisitionId, 'REQ-42');
+  const publicReplayWriteStore = openCrawlerStore(publicConfig.databasePath);
+  await crawlRun({ store: publicReplayWriteStore, runId: 'p03-public-provider-id-replay',
+    clock: { now: () => '2026-10-20T09:05:00Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-public-provider-id-replay', fetch: async () => ({ observations: [publicPersisted] }) }] });
+  publicReplayWriteStore.close();
+  const publicReplayReadStore = openCrawlerStore(publicConfig.databasePath);
+  const publicReplayed = JSON.parse(publicReplayReadStore.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+  publicReplayReadStore.close();
+  assert.equal(publicReplayed.jobId, '123');
+  assert.equal(publicReplayed.employerRequisitionId, 'REQ-42');
+  const publicSelectionCandidate = rawPortalJob(123, {
+    provider: 'greenhouse', jobId: '123', requisitionId: 'REQ-42', postedAt: NOW,
+    url: 'https://boards.greenhouse.io/acme/jobs/123', canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+    originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+  });
+  const publicSelection = await runDailyNormal(runOptions(publicConfig, fakeTransport({}), {
+    runId: 'p03-public-provider-id-selection',
+    sourceFixtures: { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [publicSelectionCandidate], manifest: { status: 'ok' } } },
+  }));
+  assert.ok(publicSelection.shortlist.some((role) => role.jobId === '123'));
+  const refreshBase = normalizeCandidate({
+    url: 'https://boards.greenhouse.io/acme/jobs/123', canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123',
+    provider: 'greenhouse', jobId: '123', company: 'Acme', title: 'AI Engineer', postedAt: '2026-10-20',
+  });
+  const initialDetailResolver = createOriginalListingResolver({ transport: async () => ({
+    status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+      '@type': 'JobPosting', title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted: '2026-10-20',
+    })}</script>`,
+  }) });
+  const initialResolution = await initialDetailResolver(refreshBase, { runAt: '2026-10-20T09:10:00Z' });
+  assert.equal(initialResolution.status, 'resolved');
+  assert.equal(initialResolution.patch.jobId, '123');
+  assert.equal(initialResolution.patch.employerRequisitionId, undefined);
+  assert.equal(initialResolution.patch.requisitionId, undefined);
+  const initiallyResolved = applyOriginalListingResolution(refreshBase, initialResolution);
+  const initialWriteStore = openCrawlerStore(publicConfig.databasePath);
+  await crawlRun({ store: initialWriteStore, runId: 'p03-refresh-no-employer-id',
+    clock: { now: () => '2026-10-20T09:10:00Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-refresh-no-employer-id', fetch: async () => ({ observations: [initiallyResolved] }) }] });
+  initialWriteStore.close();
+  const initialReadStore = openCrawlerStore(publicConfig.databasePath);
+  const initialPersisted = JSON.parse(initialReadStore.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+  initialReadStore.close();
+  assert.equal(initialPersisted.jobId, '123');
+  assert.equal(initialPersisted.employerRequisitionId, undefined);
+  const refreshDetailResolver = createOriginalListingResolver({ transport: async () => ({
+    status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+      '@type': 'JobPosting', title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' },
+      jobReqId: 'REQ-42', datePosted: '2026-10-20',
+    })}</script>`,
+  }) });
+  const refreshedResolution = await refreshDetailResolver(normalizeCandidate(initialPersisted), { runAt: '2026-10-20T09:15:00Z' });
+  assert.equal(refreshedResolution.status, 'resolved');
+  const refreshedCandidate = applyOriginalListingResolution(normalizeCandidate(initialPersisted), refreshedResolution);
+  assert.equal(refreshedCandidate.jobId, '123');
+  assert.equal(refreshedCandidate.employerRequisitionId, 'REQ-42');
+  const refreshWriteStore = openCrawlerStore(publicConfig.databasePath);
+  await crawlRun({ store: refreshWriteStore, runId: 'p03-refresh-known-employer-id',
+    clock: { now: () => '2026-10-20T09:15:00Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-refresh-known-employer-id', fetch: async () => ({ observations: [refreshedCandidate] }) }] });
+  refreshWriteStore.close();
+  const refreshReadStore = openCrawlerStore(publicConfig.databasePath);
+  const refreshedPersisted = JSON.parse(refreshReadStore.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+  refreshReadStore.close();
+  assert.equal(refreshedPersisted.jobId, '123');
+  assert.equal(refreshedPersisted.employerRequisitionId, 'REQ-42');
+  for (const [priorDate, currentDate] of [['2026-10-15', '2026-09-01'], ['2026-09-01', '2026-10-15']]) {
+    const { config: conflictConfig } = testConfig();
+    const original = normalizeCandidate({
+      canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/123', provider: 'greenhouse', jobId: '123',
+      company: 'Acme', title: 'AI Engineer', postedAt: priorDate,
+      dateEvidence: { originalPublication: { value: priorDate, source: 'employer-detail', precision: 'date' } },
+    });
+    const firstStore = openCrawlerStore(conflictConfig.databasePath);
+    await crawlRun({ store: firstStore, runId: `p03-date-prior-${priorDate}`, clock: { now: () => '2026-10-20T09:00:00Z', sleep: async () => {} },
+      sourcePlans: [{ id: 'p03-date-prior', fetch: async () => ({ observations: [original] }) }] });
+    firstStore.close();
+    const replayStore = openCrawlerStore(conflictConfig.databasePath);
+    const retained = JSON.parse(replayStore.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+    const dateResolver = createOriginalListingResolver({ runAt: '2026-10-20T09:05:00Z', transport: async () => ({
+      status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+        '@type': 'JobPosting', title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted: currentDate,
+      })}</script>`,
+    }) });
+    const resolution = await dateResolver(retained, { runAt: '2026-10-20T09:05:00Z' });
+    const replayedCandidate = applyOriginalListingResolution(retained, resolution);
+    await crawlRun({ store: replayStore, runId: `p03-date-replay-${priorDate}`, clock: { now: () => '2026-10-20T09:05:00Z', sleep: async () => {} },
+      sourcePlans: [{ id: 'p03-date-replay', fetch: async () => ({ observations: [replayedCandidate] }) }] });
+    replayStore.close();
+    const reopened = openCrawlerStore(conflictConfig.databasePath);
+    const replayed = JSON.parse(reopened.prepare('SELECT raw_json FROM job_observations ORDER BY rowid DESC LIMIT 1').get().raw_json);
+    reopened.close();
+    assert.equal(normalizeCandidate(replayed).postedAt, '2026-09-01');
+    assert.deepEqual(replayed.dateEvidence.originalPublicationAlternates.map((item) => item.value).sort(), ['2026-09-01', '2026-10-15']);
+    const rendered = renderLocalDailyHtmlReport({ runAt: '2026-10-20T09:05:00Z', mode: 'normal',
+      results: [replayed], shortlist: [], verificationQueue: [replayed] });
+    assert.match(rendered, /originalPublication alternatives: .*2026-09-01.*2026-10-15/);
+    assert.match(rendered, /Historical suppression evidence: Not Verified/);
+  }
+  const bridged = rawPortalJob('alias-1', {
+    provider: 'greenhouse', jobId: undefined, providerJobId: 'REQ-1', identityAliases: ['foundit|portal-9'],
+    company: 'Alias Employer', postedAt: '2026-10-15', originalPublicationDate: '2026-10-15',
+    sourcePublicationDate: '2026-10-20T09:00:00+05:30', catalogFirstSeenAt: '2026-10-18T12:00:00Z',
+    updatedAt: '2026-10-19T10:00:00Z', observedAt: '2026-10-20T09:05:00+05:30',
+  });
+  const portalDuplicate = rawPortalJob('alias-2', {
+    provider: 'foundit', jobId: 'portal-9', company: 'Alias Employer', postedAt: '2026-10-15',
+  });
+  const distinct = rawPortalJob('alias-3', {
+    provider: 'greenhouse', jobId: 'REQ-2', company: 'Alias Employer', postedAt: '2026-10-15',
+  });
+  const first = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId: 'p03-alias-first',
+    clock: { now: () => '2026-10-20T06:30:00.000Z', sleep: async () => {} },
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [bridged, distinct], manifest: { status: 'ok' } },
+      'portal-foundit': { candidates: [portalDuplicate], manifest: { status: 'ok' } },
+    },
+  }));
+  assert.equal(first.dailyReceipt.scopes.rawObservations.count, 3);
+  assert.equal(first.dailyReceipt.scopes.uniqueRequisitions.count, 2, JSON.stringify(first.dailyReceipt.retained.identityRows));
+  assert.equal(first.dailyReceipt.retained.identityRows.length, 2);
+  assert.equal(first.shortlist.some((role) => role.jobId === 'REQ-1'), true);
+  const aliasRow = first.dailyReceipt.retained.identityRows.find((row) => row.dateEvidence?.originalPublication?.value === '2026-10-15');
+  assert.equal(aliasRow.dateEvidence.originalPublication.value, '2026-10-15');
+  assert.equal(aliasRow.dateEvidence.originalPublication.precision, 'date');
+  assert.equal(aliasRow.dateEvidence.sourcePublication.timezone, '+05:30');
+  assert.deepEqual(aliasRow.dateEvidence.conflicts, ['originalPublication differs from sourcePublication']);
+  const report = renderLocalDailyHtmlReport(first);
+  assert.match(report, /Discovery URL:/);
+  assert.match(report, /employer detail URL:/);
+  assert.match(report, /final apply URL:/);
+  assert.match(report, /originalPublication: 2026-10-15/);
+  assert.match(report, /conflicts: originalPublication differs from sourcePublication/);
+  assert.match(report, /Historical suppression evidence: Not Verified/);
+  assert.doesNotMatch(report, /originalPublication: 2026-10-15T00:00:00/);
+
+  const store = openCrawlerStore(config.databasePath);
+  await crawlRun({
+    store,
+    runId: 'p03-persist-alias',
+    clock: { now: () => '2026-10-20T06:30:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'p03-alias-fixture', fetch: async () => ({ observations: [{
+      provider: 'foundit', providerJobId: 'portal-9', identityAliases: ['foundit|portal-9', 'greenhouse|REQ-1'],
+      canonicalUrl: 'https://foundit.example.test/jobs/portal-9', company: 'Alias Employer',
+      title: 'AI Engineer', location: 'Pune', postedAt: '2026-10-15',
+    }] }) }],
+  });
+  store.prepare("UPDATE jobs SET lifecycle_state = 'surfaced', lifecycle_json = json_set(lifecycle_json, '$.state', 'surfaced') WHERE provider_job_id = 'portal-9'").run();
+  store.close();
+  const reopened = openCrawlerStore(config.databasePath);
+  const retained = reopened.prepare('SELECT lifecycle_json FROM jobs').all().map((row) => JSON.parse(row.lifecycle_json));
+  reopened.close();
+  assert.ok(retained.some((row) => row.identityAliases.includes('foundit|portal-9')), JSON.stringify(retained));
+  recordSurfaced([normalizeCandidate(bridged)], { path: config.opportunityLedgerPath, now: '2026-10-20T06:30:00.000Z' });
+
+  const now = '2026-10-21T06:30:00.000Z';
+  const replay = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId: 'p03-alias-replay',
+    clock: { now: () => now, sleep: async () => {} },
+    opportunityLedgerRows: null,
+    opportunityRows: null,
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-foundit': { candidates: [rawPortalJob('alias-replay', {
+        provider: 'foundit', jobId: 'portal-9', identityAliases: ['greenhouse|REQ-1'], company: 'Alias Employer', postedAt: '2026-10-15',
+      })], manifest: { status: 'ok' } },
+    },
+  }));
+  assert.equal(replay.shortlist.length, 0);
+  assert.equal(replay.dailyReceipt.scopes.historySuppression.count, 1);
+  assert.ok(replay.dailyReceipt.retained.identityRows.some((row) => row.stage === 'historySuppression'));
+  assert.ok(replay.dailyReceipt.retained.identityRows.some((row) => row.reason === 'SUPPRESSED_COOLDOWN_7D'));
+
+  markAction({ key: 'greenhouse|REQ-1', state: 'applied', path: config.opportunityLedgerPath, now: '2026-10-21T06:30:00.000Z' });
+  const actionReplay = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    runId: 'p03-alias-action-replay',
+    clock: { now: () => '2026-10-21T07:30:00.000Z', sleep: async () => {} },
+    opportunityLedgerRows: null,
+    opportunityRows: null,
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-foundit': { candidates: [rawPortalJob('alias-action-replay', {
+        provider: 'foundit', jobId: 'portal-9', identityAliases: ['greenhouse|REQ-1'], company: 'Alias Employer', postedAt: '2026-10-15',
+      })], manifest: { status: 'ok' } },
+    },
+  }));
+  assert.equal(actionReplay.shortlist.length, 0);
+  assert.equal(actionReplay.dailyReceipt.scopes.historySuppression.count, 1);
+  assert.ok(actionReplay.dailyReceipt.retained.identityRows.some((row) => row.reason === 'SUPPRESSED_ACTIONED'));
+}
 
 test('an unresolved portal lead stays in verification and cannot be selected', async () => {
   const { config } = testConfig();

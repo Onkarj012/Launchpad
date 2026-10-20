@@ -90,7 +90,7 @@ function keysFor(row) {
   const title = identityText(value(row, 'title', 'role'));
   const location = identityText(value(row, 'location'));
   return {
-    providerJobId: provider && providerJobId ? `${provider}|${providerJobId}` : null,
+    providerJobId: provider && providerJobId ? normalizeIdentityKey(`${provider}|${providerJobId}`) : null,
     canonicalUrl: url,
     companyTitleLocation: company && title && location ? `${company}|${title}|${location}` : null,
   };
@@ -118,6 +118,9 @@ function matchingRows(observation, candidates) {
     if (!key) continue;
     const matches = candidates.filter((candidate) => {
       const candidateKeys = keysFor(candidate);
+      if (observationKeys.providerJobId && candidateKeys.providerJobId
+        && observationKeys.providerJobId.split('|')[0] === candidateKeys.providerJobId.split('|')[0]
+        && normalizeIdentityKey(observationKeys.providerJobId) !== normalizeIdentityKey(candidateKeys.providerJobId)) return false;
       const candidateKey = candidateKeys[type === 'provider_job_id' ? 'providerJobId' : type === 'canonical_url' ? 'canonicalUrl' : 'companyTitleLocation'];
       if (type === 'provider_job_id') {
         const observationIds = [key, ...(observation.identityAliases || [])].map(normalizeIdentityKey);

@@ -32,6 +32,27 @@ test('undated and future records are not eligible for selection', () => {
   assert.equal(undated.code, 'FRESHNESS_UNDATED_VERIFY_QUEUE');
   assert.equal(undated.evidence, 'Not Verified');
   assert.equal(classifyFreshness('2026-07-14T12:00:00.001Z', { now }).code, 'FRESHNESS_FUTURE_POSTED_AT');
+  const nestedOriginal = classifyFreshness({
+    provider: 'greenhouse', postedAt: '2026-10-20T08:00:00Z',
+    dateEvidence: {
+      originalPublication: { value: '2026-09-01', source: 'original-employer-detail', precision: 'date' },
+      sourcePublication: { value: '2026-10-20T08:00:00Z', source: 'catalog' },
+    },
+  }, { now: '2026-10-20T09:00:00Z' });
+  assert.equal(nestedOriginal.window, 'Rejected');
+  const ambiguousOriginal = classifyFreshness({
+    provider: 'greenhouse', postedAt: '2026-10-20 08:00:00',
+    dateEvidence: { originalPublication: { value: '2026-10-20 08:00:00', source: 'original-employer-detail' } },
+  }, { now: '2026-10-20T09:00:00Z' });
+  assert.equal(ambiguousOriginal.window, 'VerifyQueue');
+  assert.equal(ambiguousOriginal.ageHours, null);
+  for (const date of ['2026-02-30', '2025-02-29', '2026-02-30T08:00:00Z']) {
+    const impossible = classifyFreshness(date, { now: '2026-03-02T12:00:00Z' });
+    assert.equal(impossible.window, 'VerifyQueue', date);
+    assert.equal(impossible.verifyQueue, true, date);
+  }
+  assert.equal(classifyFreshness('2024-02-29', { now: '2024-03-01T00:00:00Z' }).window, 'Hot');
+  assert.equal(classifyFreshness('2026-10-20T09:00:00+05:30', { now: '2026-10-20T04:00:00Z' }).window, 'Hot');
 });
 
 test('Workday without verified startDate evidence remains in VerifyQueue', () => {

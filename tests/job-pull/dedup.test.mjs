@@ -66,6 +66,9 @@ test('portal and ATS aliases deduplicate in either order and match old ledger ke
   for (const pair of [[resolved, portal], [portal, resolved], [resolved, direct], [direct, resolved, portal]]) assert.equal(deduplicateCandidates(pair).kept.length, 1);
   assert.equal(deduplicateCandidates([resolved], { ledgerRows: [{ dedup_key: 'naukri|portal 9', state: 'committed' }] }).kept.length, 0);
   assert.equal(deduplicateCandidates([resolved], { ledgerRows: [{ dedup_key: 'naukri|portal 9', state: 'aborted' }] }).kept.length, 1);
+  const first = candidate({ provider: 'workday', jobId: 'R-1', identityAliases: ['naukri|portal-9'] });
+  const second = candidate({ provider: 'workday', jobId: 'R-2', identityAliases: ['naukri|portal-9'] });
+  assert.equal(deduplicateCandidates([first, second]).kept.length, 2);
 });
 
 test('provider ID and alias collisions require compatible companies', () => {
