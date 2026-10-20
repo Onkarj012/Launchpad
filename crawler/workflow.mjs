@@ -16,6 +16,8 @@ import {
   cloneJsonSafe,
   cloneJsonCollection,
   cloneJsonEnvelope,
+  FUNNEL_COLLECTION_BOUNDARIES,
+  WORKFLOW_TELEMETRY_BOUNDARIES,
   TERMINAL_COLLECTIONS,
   finishCrawlRun,
   readCrawlerRunData,
@@ -600,22 +602,23 @@ export async function crawlWorkflow({
         historicalAmbiguous: jsonSafe(historicalResult.ambiguous),
         sourceTelemetry: cloneJsonEnvelope(sourceTelemetry, 'workflow source telemetry', [['*', 'attemptHistory']]),
         sourceYield: cloneJsonEnvelope(sourceYield, 'workflow source yield', [['sources']]),
-        funnel: cloneJsonEnvelope(funnel, 'workflow funnel', [['sourceHealth', '*', 'boards']]),
+        funnel: cloneJsonEnvelope(funnel, 'workflow funnel', FUNNEL_COLLECTION_BOUNDARIES),
         v4Snapshot: jsonSafe(v4SnapshotTelemetry),
         novelty: jsonSafe(noveltyBreakdown),
         terminalEnvelope: cloneJsonEnvelope(terminalEnvelope, 'terminal envelope', TERMINAL_COLLECTIONS.map((key) => [key])),
       },
     };
     const status = durable.run.status;
+    const persistedTelemetry = cloneJsonEnvelope(workflowTelemetry, 'workflow telemetry', WORKFLOW_TELEMETRY_BOUNDARIES);
     const updatedRun = finishCrawlRun(store, runId, {
       status,
       counts: { ...durable.run.counts, ...workflowCounts },
-      telemetry: workflowTelemetry,
+      telemetry: persistedTelemetry,
       clock,
       error: durable.run.error,
     });
     durable.run = updatedRun;
-    durable.telemetry = workflowTelemetry;
+    durable.telemetry = persistedTelemetry;
   }
 
   return {
@@ -633,7 +636,7 @@ export async function crawlWorkflow({
     counts: workflowCounts,
     novelty: jsonSafe(noveltyBreakdown),
     v4Snapshot: jsonSafe(v4SnapshotTelemetry),
-    funnel: cloneJsonEnvelope(persistedWorkflow?.funnel ?? funnel, 'workflow funnel', [['sourceHealth', '*', 'boards']]),
+    funnel: cloneJsonEnvelope(persistedWorkflow?.funnel ?? funnel, 'workflow funnel', FUNNEL_COLLECTION_BOUNDARIES),
     reserve: selection.reserve,
     shortlist: selection.shortlist,
     shortfall: selection.shortfall,

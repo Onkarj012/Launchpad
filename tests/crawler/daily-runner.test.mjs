@@ -1,7 +1,7 @@
 import { withManualFixtureScores } from '../fixtures/manual-scores.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -12,6 +12,7 @@ import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
 import { openCrawlerStore, crawlRun } from '../../crawler/run.mjs';
+import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
@@ -23,7 +24,7 @@ const NOW = '2026-07-24T06:30:00.000Z';
 
 test('a workflow handoff failure retains durable source coverage in the fatal daily report', async () => {
   const { config } = testConfig();
-  const store = openCrawlerStore(config.databasePath);
+  let store = openCrawlerStore(config.databasePath);
   try {
     const runId = 'workflow-handoff-failure';
     const crawlerId = `${runId}-crawler-v2`;
@@ -32,15 +33,51 @@ test('a workflow handoff failure retains durable source coverage in the fatal da
     }] });
     const telemetry = { ...retained.telemetry, workflow: { sourceTelemetry: { invalid: null } } };
     store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), crawlerId);
-    const result = await runDailyNormalActual(runOptions(config, () => { throw new Error('replay must not fetch'); }, { runId, store }));
+    const { config: decoyConfig } = testConfig();
+    const result = await runDailyNormalActual(runOptions(decoyConfig, () => { throw new Error('replay must not fetch'); }, { runId, store }));
     assert.equal(result.outcome.status, 'fatal');
     assert.deepEqual(result.terminalEnvelope.sourceCoverage.completed, ['ats-warm']);
     assert.equal(result.terminalEnvelope.sourceEndStates['ats-warm'].state, 'empty');
     assert.equal(result.terminalEnvelope.lastDurableSourceState['ats-warm'].status, 'succeeded');
+    assert.equal(result.dailyReceipt.retained.identityRows, 'Not Verified');
+    assert.equal(result.receiptPersistence, 'failed');
+    assert.match(result.receiptPersistenceError, /sourceTelemetry\.invalid must be a plain object/);
+    assert.equal(result.dailyReceipt.scopes.rawObservations.count, 'Not Verified');
+    assert.equal(result.dailyReceipt.scopes.uniqueRequisitions.count, 'Not Verified');
+    assert.equal(existsSync(decoyConfig.databasePath), false, 'a caller-owned store avoids opening the configured decoy database');
+    store.close();
+    store = null;
+    const reopened = openCrawlerStore(config.databasePath);
+    const persisted = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get(crawlerId).telemetry_json);
+    reopened.close();
+    assert.equal(persisted.workflow.dailyReceipt, undefined, 'malformed durable telemetry remains unchanged when receipt validation fails');
+    assert.match(renderLocalLeadReport({ dailyReceipt: result.dailyReceipt }, { now: NOW }), /Daily stage-loss receipt/);
     const report = renderLocalDailyHtmlReport(result);
     assert.match(report, /Status: failed/);
     assert.match(report, /ats-warm: empty/);
-  } finally { store.close(); }
+
+    const { config: actualConfig } = testConfig();
+    const { config: configuredDecoy } = testConfig();
+    const actualStore = openCrawlerStore(actualConfig.databasePath);
+    const fatalRun = await runDailyNormalActual(runOptions(configuredDecoy, () => { throw new Error('fixture transport must not be called'); }, {
+      runId: 'fatal-scoring-receipt',
+      store: actualStore,
+      sourceFixtures: {
+        ...emptyLegacyFixtures(),
+        'portal-naukri': { candidates: [rawPortalJob(1978, { scoringFailed: true, scoringError: 'fixture scorer failed' })], manifest: { status: 'ok' } },
+      },
+    }));
+    assert.equal(fatalRun.outcome.status, 'fatal');
+    assert.equal(fatalRun.receiptPersistence, 'persisted', fatalRun.receiptPersistenceError);
+    assert.equal(existsSync(configuredDecoy.databasePath), false, 'receipt persistence must not open the decoy database');
+    assert.ok(actualStore.prepare('SELECT 1').get(), 'runDailyNormal leaves the caller-owned store open');
+    actualStore.close();
+    const fatalReopened = openCrawlerStore(actualConfig.databasePath);
+    const fatalTelemetry = JSON.parse(fatalReopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('fatal-scoring-receipt-crawler-v2').telemetry_json);
+    fatalReopened.close();
+    assert.equal(fatalTelemetry.workflow.dailyReceipt.run.status, 'failed');
+    assert.equal(fatalTelemetry.workflow.dailyReceipt.scopes.scoringFailure.count, 1);
+  } finally { store?.close(); }
 });
 
 test('one daily crawl routes a Pune startup once and tags its other mode', async () => {
@@ -650,6 +687,8 @@ test('historicalV4Rows suppress crawler-fed duplicates before Normal shortlist p
   assert.equal(result.plannedNotionOperations.length, 0);
   assert.equal(result.historicalSuppressions.length, 1);
   assert.equal(result.counts.historicalSuppressed, 1);
+  assert.equal(result.dailyReceipt.scopes.historySuppression.count, 1, JSON.stringify({ suppressions: result.historicalSuppressions, rows: result.dailyReceipt.retained.identityRows }));
+  assert.equal(result.dailyReceipt.retained.identityRows.filter((row) => row.stage === 'historySuppression').length, 1);
 });
 
 test('lanes outside crawler-v2 and tracked ATS stay truthfully unavailable', async () => {
@@ -921,6 +960,8 @@ test('a scoring failure fails the unified run and surfaces its cause', async () 
   assert.deepEqual(result.shortlist, []);
   assert.equal(result.scoringQueue[0].scoringStatus, 'scoring-failed');
   assert.equal(result.scoringQueue[0].scoringFailureReason, 'rubric service unavailable');
+  assert.equal(result.dailyReceipt.scopes.scoringFailure.count, 1);
+  assert.equal(result.dailyReceipt.retained.identityRows[0].reason, 'rubric service unavailable');
   assert.match(result.outcome.errors[0].message, /rubric service unavailable/);
 });
 
@@ -1267,6 +1308,92 @@ test('unified daily result surfaces the Normal pipeline funnel report', async ()
   }));
   assert.ok(result.funnel);
   assert.equal(result.funnel.reconciliation.ok, true);
+  assert.equal(result.dailyReceipt.schemaVersion, 'LaunchpadDailyFunnelReceiptV1');
+  assert.equal(result.receiptPersistence, 'persisted', `${result.receiptPersistenceError}; runId=${result.terminalEnvelope.runId}; database=${config.databasePath}`);
+  assert.equal(result.dailyReceipt.scopes.confirmedDelivery.count, 'Not Verified');
+  assert.equal(result.dailyReceipt.provenance.releaseClaim, 'none; local working-tree evidence');
+  assert.match(renderLocalLeadReport(result, { now: NOW }), /Daily stage-loss receipt/);
+  assert.match(renderLocalDailyHtmlReport(result), /daily-stage-loss-receipt/);
+  const repeated = normalizeCandidate(rawPortalJob(1299, { provider: 'fixture-provider', source: 'discovery' }));
+  const repeatedIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(repeated)).digest('hex')}`;
+  const deduplicatedReceipt = buildDailyReceipt({
+    counts: { fetched: 2, selected: 0 },
+    funnel: { lifecycle: { normalized: 2 }, identityRows: [
+      { identity: repeatedIdentity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: 'fixture-provider', source: 'discovery', postedAt: repeated.postedAt, evidenceHash: 'sha256:a' },
+      { identity: repeatedIdentity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: 'fixture-provider', source: 'enrichment', postedAt: repeated.postedAt, evidenceHash: 'sha256:b' },
+    ] },
+    observations: [{ candidate: repeated }, { candidate: { ...repeated, source: 'enrichment' } }],
+    modes: {},
+  });
+  assert.equal(deduplicatedReceipt.scopes.rawObservations.count, 2);
+  assert.equal(deduplicatedReceipt.scopes.uniqueRequisitions.count, 1);
+  assert.deepEqual([...new Set(deduplicatedReceipt.retained.identityRows[0].provenance.map((item) => item.source))].sort(), ['discovery', 'enrichment']);
+  const hashInputs = {
+    runId: 'receipt-hash-inputs',
+    counts: { fetched: 2 },
+    requestedCount: 2,
+    outcome: { status: 'completed' },
+    deliveryReconciliation: {
+      status: 'completed', counts: { deliveredKeys: 1, surfacedCount: 1 },
+      notification: { status: 'sent' }, canary: { status: 'completed' },
+    },
+  };
+  const receiptHash = (overrides = {}) => buildDailyReceipt({ ...hashInputs, ...overrides }).provenance.retainedInputHash;
+  const stableHash = receiptHash();
+  assert.equal(receiptHash(), stableHash);
+  assert.notEqual(receiptHash({ deliveryReconciliation: { ...hashInputs.deliveryReconciliation, counts: { deliveredKeys: 2, surfacedCount: 1 } } }), stableHash);
+  assert.notEqual(receiptHash({ requestedCount: 3 }), stableHash);
+  assert.notEqual(receiptHash({ outcome: { status: 'completed', fatalReason: 'fixture cause changed' } }), stableHash);
+  const timestampedCandidate = {
+    company: 'Acme', title: 'Engineer', canonicalUrl: 'https://example.com/jobs/1',
+  };
+  const flatObservation = (observedAt) => buildDailyReceipt({
+    observations: [{ ...timestampedCandidate, observedAt }],
+  });
+  const flatFirst = flatObservation('2026-10-19T00:00:00Z');
+  assert.equal(flatFirst.retained.observations[0].observedAt, '2026-10-19T00:00:00Z');
+  assert.equal(flatObservation('2026-10-19T00:00:00Z').provenance.retainedInputHash, flatFirst.provenance.retainedInputHash);
+  assert.notEqual(flatObservation('2026-10-20T00:00:00Z').provenance.retainedInputHash, flatFirst.provenance.retainedInputHash);
+  const wrappedObservation = (observedAt) => buildDailyReceipt({
+    observations: [{ candidate: timestampedCandidate, observedAt }],
+  });
+  const wrappedFirst = wrappedObservation('2026-10-19T00:00:00Z');
+  assert.equal(wrappedFirst.retained.observations[0].observedAt, '2026-10-19T00:00:00Z');
+  assert.equal(wrappedObservation('2026-10-19T00:00:00Z').provenance.retainedInputHash, wrappedFirst.provenance.retainedInputHash);
+  assert.notEqual(wrappedObservation('2026-10-20T00:00:00Z').provenance.retainedInputHash, wrappedFirst.provenance.retainedInputHash);
+  assert.equal(buildDailyReceipt({ observations: [{ candidate: timestampedCandidate }] }).retained.observations[0].observedAt, null);
+  const inheritedSelection = buildDailyReceipt({
+    funnel: { identityRows: [{ identity: repeatedIdentity, bucket: 'selected', selected: true, provider: repeated.provider, source: repeated.source }] },
+    modes: {
+      startup: { results: [repeated], shortlist: [] },
+      normal: { results: [], shortlist: [] },
+      remote: { results: [], shortlist: [] },
+    },
+  });
+  assert.equal(inheritedSelection.scopes.finalSelection.count, 0);
+  assert.equal(inheritedSelection.retained.identityRows[0].stage, 'eligible');
+  const unavailableSelection = buildDailyReceipt({
+    funnel: { identityRows: [{ identity: repeatedIdentity, bucket: 'selected', selected: true }] },
+    modes: {},
+  });
+  assert.equal(unavailableSelection.scopes.finalSelection.count, 'Not Verified');
+  assert.equal(unavailableSelection.retained.identityRows[0].stage, 'unknown');
+  const historyBuckets = ['suppressedCooldown', 'suppressedBackfillAlreadySeen', 'suppressedActioned', 'suppressedRejected'];
+  const suppressedReceipt = buildDailyReceipt({
+    funnel: { identityRows: historyBuckets.map((bucket, index) => ({
+      identity: `sha256:suppressed-${index}`, bucket, reason: `SUPPRESSED_FIXTURE_${index}`, provider: 'fixture-provider', source: 'fixture-source',
+    })) },
+    historicalSuppressions: [{ code: 'SUPPRESSED_V4_HISTORY' }],
+    modes: { normal: { shortlist: [] } },
+  });
+  assert.equal(suppressedReceipt.scopes.historySuppression.count, historyBuckets.length);
+  assert.deepEqual(suppressedReceipt.retained.identityRows.map((row) => row.reason), historyBuckets.map((_, index) => `SUPPRESSED_FIXTURE_${index}`));
+  const reopened = openCrawlerStore(config.databasePath);
+  const persisted = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get(`${result.runId}-crawler-v2`).telemetry_json);
+  reopened.close();
+  assert.equal(persisted.workflow.dailyReceipt.schemaVersion, result.dailyReceipt.schemaVersion);
+  assert.equal(persisted.workflow.dailyReceipt.provenance.retainedInputHash, result.dailyReceipt.provenance.retainedInputHash);
+  assert.match(renderLocalLeadReport({ ...result, dailyReceipt: persisted.workflow.dailyReceipt }, { now: NOW }), /Daily stage-loss receipt/);
 });
 
 test('no portal injection stays healthy but is reported as an empty lane', async () => {
@@ -1328,8 +1455,71 @@ test('a resolved portal lead is scored in web-discovery with its surfacing provi
   assert.equal(result.shortlist[0].normalLaneId, 'web-discovery');
   assert.equal(result.shortlist[0].provider, 'naukri');
   assert.equal(result.shortlist[0].discoveryProvider, 'naukri');
+  const selectedReceiptRow = result.dailyReceipt.retained.identityRows.find((row) => row.selected);
+  assert.ok(selectedReceiptRow);
+  assert.equal(selectedReceiptRow.stage, 'finalSelection');
+  assert.equal(selectedReceiptRow.reason, 'SELECTED');
+  const allModeShortlist = Object.values(result.modes).flatMap((mode) => mode.shortlist);
+  const expectedSelected = [...new Set(allModeShortlist.map((role) => `sha256:${createHash('sha256').update(candidateDedupKey(role)).digest('hex')}`))].sort();
+  const receiptSelected = result.dailyReceipt.retained.identityRows.filter((row) => row.selected).map((row) => row.identityHash).sort();
+  assert.deepEqual(receiptSelected, expectedSelected);
+  assert.equal(result.dailyReceipt.scopes.finalSelection.count, expectedSelected.length);
   assert.equal(result.plannedNotionOperations[0].payload.provider, 'naukri');
   assert.equal(result.sourceManifests.find(({ sourceId }) => sourceId === 'web-discovery').fetched, 1);
+
+  const { config: duplicateConfig } = testConfig();
+  const duplicateCandidate = rawPortalJob(1304, {
+    provider: 'fixture-provider', source: 'discovery', jobId: undefined,
+    canonicalUrl: 'https://fixture.example.test/jobs/shared-req-1304',
+    url: 'https://fixture.example.test/jobs/shared-req-1304',
+  });
+  const duplicateRun = await runDailyNormal(runOptions(duplicateConfig, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [duplicateCandidate], manifest: { status: 'ok' } },
+      'portal-foundit': { candidates: [{ ...duplicateCandidate, source: 'enrichment' }], manifest: { status: 'ok' } },
+    },
+  }));
+  const duplicateIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(duplicateCandidate)).digest('hex')}`;
+  const duplicateRow = duplicateRun.dailyReceipt.retained.identityRows.find((row) => row.identityHash === duplicateIdentity);
+  assert.equal(duplicateRun.dailyReceipt.scopes.uniqueRequisitions.count, 1);
+  assert.deepEqual([...new Set(duplicateRow.provenance.map((item) => item.provider))].sort(), ['foundit', 'naukri']);
+  const duplicateStore = openCrawlerStore(duplicateConfig.databasePath);
+  const duplicateTelemetry = JSON.parse(duplicateStore.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get(`${duplicateRun.runId}-crawler-v2`).telemetry_json);
+  duplicateStore.close();
+  const duplicateReport = renderLocalLeadReport({ ...duplicateRun, dailyReceipt: duplicateTelemetry.workflow.dailyReceipt }, { now: NOW });
+  assert.equal(duplicateTelemetry.workflow.dailyReceipt.scopes.uniqueRequisitions.count, 1);
+  assert.deepEqual([...new Set(duplicateTelemetry.workflow.dailyReceipt.retained.identityRows.find((row) => row.identityHash === duplicateIdentity).provenance.map((item) => item.provider))].sort(), ['foundit', 'naukri']);
+  assert.match(duplicateReport, /Unique requisitions: 1/);
+
+  const { config: ledgerConfig } = testConfig();
+  const ledgerCandidate = rawPortalJob(1310, { provider: 'naukri', source: 'daily-discovery', jobId: 'ledger-1310' });
+  const normalizedLedgerCandidate = normalizeCandidate(ledgerCandidate);
+  const ledgerIdentity = candidateDedupKey(normalizedLedgerCandidate);
+  const ledgerRun = await runDailyNormal(runOptions(ledgerConfig, fakeTransport({}), {
+    runId: 'daily-ledger-suppression-receipt',
+    ledgerRows: [{ dedup_key: ledgerIdentity, state: 'committed', company: normalizedLedgerCandidate.company }],
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': { candidates: [ledgerCandidate], manifest: { status: 'ok' } },
+    },
+  }));
+  const suppressed = ledgerRun.dailyReceipt.retained.identityRows.find((row) => row.reason === 'DEDUP_EXISTING_LEDGER');
+  assert.ok(suppressed, JSON.stringify(ledgerRun.dailyReceipt.retained.identityRows));
+  assert.equal(ledgerRun.dailyReceipt.scopes.rawObservations.count, 1);
+  assert.equal(ledgerRun.dailyReceipt.scopes.uniqueRequisitions.count, 1);
+  assert.equal(ledgerRun.dailyReceipt.scopes.historySuppression.count, 1);
+  assert.equal(ledgerRun.dailyReceipt.scopes.finalSelection.count, 0);
+  assert.deepEqual(ledgerRun.plannedNotionOperations, []);
+  assert.equal(suppressed.selected, false);
+  assert.equal(suppressed.reason, 'DEDUP_EXISTING_LEDGER');
+  const ledgerStore = openCrawlerStore(ledgerConfig.databasePath);
+  const ledgerTelemetry = JSON.parse(ledgerStore.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get(`${ledgerRun.runId}-crawler-v2`).telemetry_json);
+  ledgerStore.close();
+  const retainedSuppression = ledgerTelemetry.workflow.dailyReceipt.retained.identityRows.find((row) => row.reason === 'DEDUP_EXISTING_LEDGER');
+  assert.deepEqual(retainedSuppression, suppressed);
+  assert.equal(ledgerTelemetry.workflow.dailyReceipt.scopes.finalSelection.count, 0);
+
 });
 
 test('an unresolved portal lead stays in verification and cannot be selected', async () => {
@@ -1352,6 +1542,8 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(result.verificationQueue.length, 1);
   assert.equal(result.verificationQueue[0].provider, 'foundit');
   assert.equal(result.verificationQueue[0].applicationResolution.status, 'Unresolved');
+  assert.equal(result.dailyReceipt.scopes.verification.count, 1);
+  assert.equal(result.dailyReceipt.retained.identityRows.find((row) => row.identityHash === `sha256:${createHash('sha256').update(result.verificationQueue[0].dedupKey).digest('hex')}`)?.stage, 'verification');
 
   const { config: experienceConfig } = testConfig();
   const hidden = rawPortalJob(1961, {
@@ -1364,6 +1556,13 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   const ambiguous = rawPortalJob(1962, {
     company: 'Unassigned Experience Tracks',
     description: 'Full-time Pune AI role. Experience: 0-1 or 6+ years depending on level; no assignment.',
+    experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
+    matchScore: null, responseLikelihood: null, scoreOrigin: null,
+  });
+  const foreignAmbiguous = rawPortalJob(1977, {
+    company: 'Foreign Ambiguous Experience',
+    location: 'London, United Kingdom',
+    description: 'Full-time AI role. Experience: 0-1 or 6+ years depending on level; no assignment.',
     experience: { minYears: 1, maxYears: 1, evidence: '1 year source minimum' },
     matchScore: null, responseLikelihood: null, scoreOrigin: null,
   });
@@ -1459,7 +1658,7 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
     scored.push(...rows.map((row) => row.company));
     return { scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) };
   };
-  const sourceFixtures = { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [hidden, ambiguous, selectedJunior, preferred, twoYears, universalSenior, conditionalTrack, universalAfterTrackRequirements, conditionalAssignment, structuredMinimumAndConflict, recoveredSourceMinimum, mismatchedSelectedTrack, linkedInJunior, updatedCandidate, titleMinimum, seniorTitleMinimum], manifest: { status: 'ok' } } };
+  const sourceFixtures = { ...emptyLegacyFixtures(), 'portal-naukri': { candidates: [hidden, ambiguous, foreignAmbiguous, selectedJunior, preferred, twoYears, universalSenior, conditionalTrack, universalAfterTrackRequirements, conditionalAssignment, structuredMinimumAndConflict, recoveredSourceMinimum, mismatchedSelectedTrack, linkedInJunior, updatedCandidate, titleMinimum, seniorTitleMinimum], manifest: { status: 'ok' } } };
   const experienceResult = await runDailyNormal(runOptions(experienceConfig, fakeTransport({}), { sourceFixtures, scorer }));
   const report = renderLocalLeadReport(experienceResult, { now: NOW });
   const htmlReport = renderLocalDailyHtmlReport(experienceResult);
@@ -1485,11 +1684,20 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.ok(scored.includes(preferred.company));
   assert.ok(scored.includes(twoYears.company));
   assert.ok(experienceResult.verificationQueue.some((item) => item.company === ambiguous.company));
+  const ambiguousIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(ambiguous)).digest('hex')}`;
+  assert.equal(experienceResult.dailyReceipt.retained.identityRows.find((row) => row.identityHash === ambiguousIdentity)?.stage, 'verification');
+  const foreignAmbiguousIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(foreignAmbiguous)).digest('hex')}`;
+  const foreignAmbiguousReceipt = experienceResult.dailyReceipt.retained.identityRows.find((row) => row.identityHash === foreignAmbiguousIdentity);
+  assert.equal(foreignAmbiguousReceipt?.stage, 'hardRejection');
+  assert.equal(foreignAmbiguousReceipt?.reason, 'GEO_ONSITE_NOT_PUNE');
+  assert.ok(foreignAmbiguousReceipt?.alsoFailed.some((item) => item.code === 'EXPERIENCE_NOT_VERIFIED_CONFLICT'));
   assert.ok(experienceResult.verificationQueue.some((item) => item.company === conditionalTrack.company));
   assert.ok(experienceResult.verificationQueue.some((item) => item.company === conditionalAssignment.company));
   assert.ok(experienceResult.verificationQueue.some((item) => item.company === mismatchedSelectedTrack.company));
   const recoveredSourceDecision = experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === recoveredSourceMinimum.company)?.eligibility.experience;
   assert.equal(recoveredSourceDecision.code, 'EXPERIENCE_HARD_MIN_3_PLUS');
+  const recoveredSourceIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(recoveredSourceMinimum)).digest('hex')}`;
+  assert.equal(experienceResult.dailyReceipt.retained.identityRows.find((row) => row.identityHash === recoveredSourceIdentity)?.stage, 'hardRejection');
   assert.equal(recoveredSourceDecision.minYears, 5);
   assert.match(recoveredSourceDecision.evidence, /Minimum 5 years/);
   const mismatchedTrackDecision = experienceResult.experienceDecisions.find(({ candidate }) => candidate.company === mismatchedSelectedTrack.company)?.eligibility.experience;

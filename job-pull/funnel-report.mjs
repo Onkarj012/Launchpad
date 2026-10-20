@@ -8,6 +8,8 @@
  */
 
 import { WORKDAY_DEFAULT_LOCATION_KEYWORDS } from '../crawler/ats-enterprise.mjs';
+import { createHash } from 'node:crypto';
+import { candidateDedupKey } from './candidate.mjs';
 
 const number = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 
@@ -138,6 +140,7 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
   let historicallySuppressed = 0;
   let ready = 0;
   let selected = 0;
+  const identityRows = [];
 
   for (const entry of observations) {
     const candidate = entry.candidate || {};
@@ -179,6 +182,38 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
     if (entry.selected === true) selected += 1;
 
     const assignment = assignFirstFailure(entry);
+    const identity = candidateDedupKey(candidate);
+    identityRows.push({
+      identity: identity ? `sha256:${createHash('sha256').update(identity).digest('hex')}` : 'Not Verified',
+      provider: candidate.provider ?? null,
+      source: candidate.source ?? null,
+      postedAt: candidate.postedAt ?? null,
+      observedAt: entry.observedAt ?? candidate.observedAt ?? null,
+      jdHash: candidate.description == null ? null : `sha256:${createHash('sha256').update(String(candidate.description)).digest('hex')}`,
+      evidenceHash: `sha256:${createHash('sha256').update(JSON.stringify(candidate)).digest('hex')}`,
+      provenance: Array.isArray(entry.sourceProvenance) && entry.sourceProvenance.length
+        ? entry.sourceProvenance.map((item) => ({
+          provider: item.provider ?? null,
+          source: item.source ?? null,
+          sourceId: item.sourceId ?? null,
+          observedAt: item.observedAt ?? null,
+          postedAt: item.postedAt ?? null,
+        }))
+        : [{
+          provider: candidate.provider ?? null,
+          source: candidate.source ?? null,
+          observedAt: entry.observedAt ?? candidate.observedAt ?? null,
+          postedAt: candidate.postedAt ?? null,
+        }],
+      bucket: assignment.bucket,
+      reason: assignment.code,
+      alsoFailed: assignment.alsoFailed,
+      verificationRequiredGates: ['experience', 'employment'].filter((gate) =>
+        entry.eligibility?.[gate]?.pass === false && entry.eligibility[gate].verificationRequired === true),
+      selected: entry.selected === true,
+      score: Number.isFinite(candidate.matchScore) ? candidate.matchScore : Number.isFinite(candidate.score) ? candidate.score : null,
+      historicalSuppressed: entry.historicalSuppressed === true || entry.suppression?.code === 'HISTORICAL_SUPPRESSED',
+    });
     firstFailures[assignment.bucket] = (firstFailures[assignment.bucket] || 0) + 1;
     firstFailureCodes[assignment.code] = (firstFailureCodes[assignment.code] || 0) + 1;
     for (const extra of assignment.alsoFailed) {
@@ -226,6 +261,7 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
     firstFailureCodes,
     alsoFailed,
     sourceHealth,
+    identityRows,
     reconciliation: {
       normalized,
       firstFailureTotal,

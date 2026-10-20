@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { loadConfig } from '../../job-pull/config.mjs';
 import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { annotateFreshness } from '../../job-pull/freshness.mjs';
 import { runPipeline } from '../../job-pull/run.mjs';
+import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
+import { openCrawlerStore, crawlRun, finishCrawlRun, persistDailyReceipt } from '../../crawler/run.mjs';
+import { renderLocalLeadReport } from '../../crawler/local-lead-report.mjs';
 import {
   assignFirstFailure,
   buildFunnelReport,
@@ -201,7 +208,7 @@ test('2026-07-24 regression: two stale survivors, four previously-observed backf
   assert.equal(narrative, report.narrative);
 });
 
-test('runPipeline funnel distinguishes backfill-already-seen from cooldown and exposes Workday verify queue', () => {
+test('runPipeline funnel distinguishes backfill-already-seen from cooldown and exposes Workday verify queue', async () => {
   const backfillCandidate = base(201, {
     company: 'Backfill Seen',
     postedAt: '2026-07-14T08:00:00.000Z',
@@ -263,6 +270,121 @@ test('runPipeline funnel distinguishes backfill-already-seen from cooldown and e
   assert.equal(result.counts.workdayUncorroboratedVerifyQueue, 1);
   assert.match(result.funnel.narrative, /cooldown suppressions 0/);
   assert.match(result.funnel.narrative, /Workday uncorroborated 1/);
+
+  const repeated = base(220, { company: 'Same Identity', id: 'shared-220', url: 'https://jobs.example.test/shared-220' });
+  const repeatedResult = runPipeline({
+    config,
+    now,
+    runId: 'repeated-source-provenance',
+    opportunityLedgerRows: [],
+    sources: [
+      { id: 'discovery-source', candidates: [repeated], manifest: { sourceId: 'discovery-source' } },
+      { id: 'enrichment-source', candidates: [{ ...repeated, source: 'enrichment' }], manifest: { sourceId: 'enrichment-source' } },
+    ],
+  });
+  const repeatedRow = repeatedResult.funnel.identityRows.find((row) => row.identity === `sha256:${createHash('sha256').update(candidateDedupKey(repeated)).digest('hex')}`);
+  assert.equal(repeatedResult.funnel.lifecycle.normalized, 1);
+  assert.deepEqual(repeatedRow.provenance.map((item) => item.sourceId).sort(), ['discovery-source', 'enrichment-source']);
+  const repeatedReceipt = buildDailyReceipt({
+    counts: { fetched: 2 }, funnel: repeatedResult.funnel,
+    observations: [repeated, { ...repeated, source: 'enrichment', sourceId: 'enrichment-source' }], modes: {},
+  });
+  assert.equal(repeatedReceipt.scopes.uniqueRequisitions.count, 1);
+  assert.equal(repeatedReceipt.scopes.historySuppression.count, 0);
+  const mergedSources = ['first-source', 'second-source', 'third-source'].map((sourceId, index) => ({
+    id: sourceId,
+    candidates: [base(230 + index, {
+      id: undefined, jobId: undefined, providerJobId: undefined, requisitionId: undefined,
+      canonicalUrl: `https://jobs.example.test/distinct-${index}`,
+      url: `https://jobs.example.test/distinct-${index}`,
+      company: 'Merged Company', title: 'AI Engineer', location: 'Pune', source: sourceId,
+    })],
+    manifest: { sourceId },
+  }));
+  const mergedResult = runPipeline({ config, now, runId: 'deduped-source-provenance', opportunityLedgerRows: [], sources: mergedSources });
+  const mergedRow = mergedResult.funnel.identityRows[0];
+  assert.equal(mergedResult.funnel.lifecycle.normalized, 1);
+  assert.equal(mergedResult.exclusionAudit.duplicate.some((row) => row.code === 'DEDUP_COMPANY_TITLE_LOCATION'), true);
+  assert.deepEqual(mergedRow.provenance.map((item) => item.sourceId).sort(), ['first-source', 'second-source', 'third-source']);
+  const ledgerCandidate = base(240, { id: 'ledger-240', url: 'https://jobs.example.test/ledger-240' });
+  const secondLedgerCandidate = base(241, { id: 'ledger-241', url: 'https://jobs.example.test/ledger-241' });
+  const ledgerSources = ['discovery-ledger', 'enrichment-ledger', 'mirror-ledger'].map((sourceId) => ({
+    id: sourceId,
+    candidates: [ledgerCandidate, secondLedgerCandidate].map((candidate) => ({ ...candidate, source: sourceId, sourceId })),
+    manifest: { sourceId },
+  }));
+  const ledgerResult = runPipeline({
+    config, now, runId: 'committed-ledger-suppression',
+    ledgerRows: [ledgerCandidate, secondLedgerCandidate].map((candidate) => ({
+      dedup_key: candidateDedupKey(candidate), state: 'committed', company: candidate.company,
+    })),
+    opportunityLedgerRows: [], sources: ledgerSources,
+  });
+  assert.equal(ledgerResult.counts.fetched, 6);
+  assert.equal(ledgerResult.counts.deduped, 0);
+  assert.equal(ledgerResult.funnel.lifecycle.normalized, 0);
+  assert.equal(ledgerResult.funnel.identityRows.length, 0);
+  assert.equal(ledgerResult.funnel.reconciliation.ok, true);
+  assert.equal(ledgerResult.funnel.receiptLedgerSuppressions.length, 2);
+  assert.ok(ledgerResult.funnel.receiptLedgerSuppressions.every((row) => row.code === 'DEDUP_EXISTING_LEDGER'));
+  const ledgerModes = Object.fromEntries(['startup', 'normal', 'remote'].map((mode) => [mode, { results: [], shortlist: [] }]));
+  const singleLedgerResult = runPipeline({
+    config, now, runId: 'single-committed-ledger-suppression',
+    ledgerRows: [{ dedup_key: candidateDedupKey(ledgerCandidate), state: 'committed', company: ledgerCandidate.company }],
+    opportunityLedgerRows: [],
+    sources: [{ id: 'single-source', candidates: [{ ...ledgerCandidate, sourceId: 'single-source' }], manifest: { sourceId: 'single-source' } }],
+  });
+  const singleLedgerReceipt = buildDailyReceipt({
+    counts: { fetched: 1, selected: 0 }, funnel: singleLedgerResult.funnel,
+    observations: [{ ...ledgerCandidate, sourceId: 'single-source' }], modes: ledgerModes,
+  });
+  assert.equal(singleLedgerReceipt.scopes.rawObservations.count, 1);
+  assert.equal(singleLedgerReceipt.scopes.uniqueRequisitions.count, 1);
+  assert.equal(singleLedgerReceipt.scopes.historySuppression.count, 1);
+  assert.equal(singleLedgerReceipt.scopes.finalSelection.count, 0);
+  const ledgerReceipt = buildDailyReceipt({
+    runId: 'committed-ledger-suppression', counts: { fetched: 6, selected: 0 },
+    funnel: ledgerResult.funnel, observations: ledgerSources.flatMap((source) => source.candidates), modes: ledgerModes,
+  });
+  assert.equal(ledgerReceipt.scopes.rawObservations.count, 6);
+  assert.equal(ledgerReceipt.scopes.uniqueRequisitions.count, 2);
+  assert.equal(ledgerReceipt.scopes.historySuppression.count, 2);
+  assert.equal(ledgerReceipt.scopes.finalSelection.count, 0);
+  assert.equal(ledgerReceipt.retained.identityRows.every((row) => row.reason === 'DEDUP_EXISTING_LEDGER' && !row.selected), true);
+  for (const row of ledgerReceipt.retained.identityRows) {
+    assert.deepEqual(row.provenance.map((item) => item.sourceId).sort(), ['discovery-ledger', 'enrichment-ledger', 'mirror-ledger']);
+  }
+  const database = path.join(mkdtempSync(path.join(tmpdir(), 'daily-source-provenance-')), 'crawler.sqlite');
+  let store = openCrawlerStore(database);
+  try {
+    await crawlRun({ store, runId: 'source-provenance', sourcePlans: [] });
+    finishCrawlRun(store, 'source-provenance', { telemetry: { workflow: { funnel: repeatedResult.funnel } } });
+    const receipt = buildDailyReceipt({
+      runId: 'source-provenance', runAt: now, counts: { fetched: 2 }, funnel: repeatedResult.funnel,
+      observations: [], modes: {},
+    });
+    assert.equal(receipt.scopes.uniqueRequisitions.count, 1);
+    assert.deepEqual(receipt.retained.identityRows[0].provenance.map((item) => item.sourceId).sort(), ['discovery-source', 'enrichment-source']);
+    assert.equal(persistDailyReceipt(store, 'source-provenance', receipt), true);
+    store.close();
+    store = openCrawlerStore(database);
+    const persisted = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('source-provenance').telemetry_json);
+    const report = renderLocalLeadReport({ dailyReceipt: persisted.workflow.dailyReceipt }, { now });
+    assert.equal(persisted.workflow.dailyReceipt.scopes.uniqueRequisitions.count, 1);
+    assert.deepEqual(persisted.workflow.dailyReceipt.retained.identityRows[0].provenance.map((item) => item.sourceId).sort(), ['discovery-source', 'enrichment-source']);
+    assert.match(report, /discovery-source/);
+    assert.match(report, /enrichment-source/);
+    await crawlRun({ store, runId: 'committed-ledger-suppression', sourcePlans: [] });
+    finishCrawlRun(store, 'committed-ledger-suppression', { telemetry: { workflow: { funnel: ledgerResult.funnel } } });
+    assert.equal(persistDailyReceipt(store, 'committed-ledger-suppression', ledgerReceipt), true);
+    store.close();
+    store = openCrawlerStore(database);
+    const ledgerPersisted = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('committed-ledger-suppression').telemetry_json);
+    assert.equal(ledgerPersisted.workflow.dailyReceipt.scopes.uniqueRequisitions.count, 2);
+    assert.equal(ledgerPersisted.workflow.dailyReceipt.scopes.historySuppression.count, 2);
+    assert.equal(ledgerPersisted.workflow.dailyReceipt.scopes.finalSelection.count, 0);
+    assert.equal(ledgerPersisted.workflow.dailyReceipt.retained.identityRows.length, 2);
+  } finally { store.close(); }
 });
 
 test('funnel reports freshness classes by provider and preserves global tallies', () => {
@@ -314,7 +436,7 @@ test('funnel report defaults new inputs without changing existing fields', () =>
     newlyDated,
     ...legacyLifecycle
   } = report.lifecycle;
-  const { sourceHealth, ...reportWithoutSourceHealth } = report;
+  const { sourceHealth, identityRows, ...reportWithoutSourceHealth } = report;
   const legacyReport = { ...reportWithoutSourceHealth, lifecycle: legacyLifecycle };
 
   assert.equal(newlyDated, 0);
@@ -323,6 +445,8 @@ test('funnel report defaults new inputs without changing existing fields', () =>
   } });
   assert.equal(indiaHiringCompanies, 0);
   assert.deepEqual(sourceHealth, {});
+  assert.equal(identityRows.length, 1);
+  assert.equal(identityRows[0].reason, 'SELECTED');
   assert.deepEqual(legacyReport, {
     schemaVersion: 'LaunchpadFunnelReportV1',
     lifecycle: {
@@ -377,7 +501,7 @@ test('funnel report preserves natural exhaustion and truncation in source health
 test('funnel reconciliation math remains exact for a fixed input', () => {
   const report = buildFunnelReport({ observations: [
     { eligibility: { geo: { pass: false, code: 'GEO_REJECTED' } }, freshness: { window: 'Hot' } },
-    { selected: true, freshness: { window: 'Active' } },
+    { candidate: base('receipt-1'), selected: true, freshness: { window: 'Active' } },
   ] });
 
   assert.deepEqual(report.reconciliation, {
@@ -386,4 +510,7 @@ test('funnel reconciliation math remains exact for a fixed input', () => {
     ok: true,
     delta: 0,
   });
+  assert.match(report.identityRows[1].identity, /^sha256:/);
+  assert.equal(report.identityRows[1].bucket, 'selected');
+  assert.equal(report.identityRows[1].reason, 'SELECTED');
 });

@@ -30,6 +30,8 @@ import { selectNormalApplications, WATERFALL } from '../job-pull/normal-selectio
 import { pickDailyEntries } from '../job-pull/select.mjs';
 import { isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { readHiringEvents } from './hiring-events.mjs';
+import { buildDailyReceipt } from './daily-receipt.mjs';
+import { openCrawlerStore, persistDailyReceipt } from './run.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
 export function dailyShortlistBudget(budgetPath, runAt, runId) {
@@ -1457,7 +1459,32 @@ export async function runDailyNormal(options = {}) {
   const execution = createDailyExecution(options.config ?? {}, runAt);
   try {
     const result = await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
-    return { ...result, hiringEvents };
+    const completed = { ...result, hiringEvents };
+    const dailyReceipt = buildDailyReceipt(completed);
+    let receiptPersistence = 'Not Verified';
+    let receiptPersistenceError = null;
+    const databasePath = options.config?.databasePath;
+    if (options.store || (typeof databasePath === 'string' && databasePath)) {
+      let store = options.store;
+      let ownsStore = false;
+      try {
+        if (!store) {
+          store = openCrawlerStore(databasePath);
+          ownsStore = true;
+        }
+        const runId = completed.runId ?? completed.crawlerV2Telemetry?.run?.runId
+          ?? completed.terminalEnvelope?.runId ?? completed.run?.runId;
+        receiptPersistence = typeof runId === 'string'
+          && (persistDailyReceipt(store, `${runId}-crawler-v2`, dailyReceipt) || persistDailyReceipt(store, runId, dailyReceipt))
+          ? 'persisted' : 'run_missing';
+      } catch (error) {
+        receiptPersistence = 'failed';
+        receiptPersistenceError = error instanceof Error ? error.message : String(error);
+      } finally {
+        if (ownsStore) store.close();
+      }
+    }
+    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError };
   } finally {
     execution.cleanup();
   }
