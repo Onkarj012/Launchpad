@@ -1,7 +1,7 @@
 export const ORIGINAL_LISTING_RESOLVER_VERSION = 'OriginalListingResolverV1';
 import { linkedInPublicJobId, parseLinkedInJobDetail } from '../job-pull/portal-adapters/linkedin.mjs';
 import { remainingDeadlineMs, requestWithDeadline, throwIfNetworkWorkDisallowed } from './deadline.mjs';
-import { candidateRequisitionKey, extractExperienceYears, hiringEmployerConflict, normalizeRequisitionId } from '../job-pull/candidate.mjs';
+import { candidateRequisitionKey, companiesCompatible, extractExperienceYears, hiringEmployerConflict, normalizeRequisitionId, normalizeIdentityKey } from '../job-pull/candidate.mjs';
 import { parseStipend } from '../job-pull/stipend.mjs';
 import { parseCompensation as parseAshbyCompensation } from '../vendor/career-ops/providers/ashby.mjs';
 
@@ -34,6 +34,8 @@ const FIELD_SOURCE_LEAD = 'lead-only';
 
 const text = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const first = (...values) => values.find((value) => text(value) != null) ?? null;
+const firstDateValue = (...values) => values.find((value) => value instanceof Date || typeof value === 'number' && Number.isFinite(value)
+  || typeof value === 'string' && value.trim()) ?? null;
 
 /** Minimal entity decode + tag strip so the resolver stays free of the career-ops import graph. */
 function stripHtmlToText(value) {
@@ -195,9 +197,26 @@ function salaryValue(root) {
 
 function parseDate(value) {
   if (value == null || value === '') return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
   const parsed = typeof value === 'number' ? value : Date.parse(String(value));
   const date = new Date(parsed);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+// Accept only typed timestamps and explicit ISO date forms for publication ranking.
+function parsePublicationDate(value) {
+  if (value instanceof Date || typeof value === 'number') return parseDate(value);
+  if (typeof value !== 'string') return null;
+  const isoDate = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+  const [, yearText, monthText, dayText] = /^(\d{4})-(\d{2})-(\d{2})/.exec(value) || [];
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return (isoDate || isoTimestamp) && month >= 1 && month <= 12
+    && day >= 1 && day <= daysInMonth[month - 1] && !Number.isNaN(Date.parse(value)) ? value : null;
 }
 
 function firstField(root, paths) {
@@ -340,7 +359,7 @@ function registryDetailResponse(response, board, match) {
         : root.location,
     employmentType: board.provider === 'lever' ? root.categories?.commitment
       : board.provider === 'workday' ? workdayEmploymentType(root, description) : root.employmentType,
-    datePosted: board.provider === 'greenhouse' ? root.first_published : board.provider === 'lever' ? parseDate(root.createdAt) : root.publishedAt,
+    datePosted: board.provider === 'greenhouse' ? root.first_published : board.provider === 'lever' ? root.createdAt : root.publishedAt,
     closed: root.closed === true || root.isClosed === true || root.active === false || root.canApply === false || root.isListed === false || root.posted === false,
   } };
 }
@@ -357,7 +376,11 @@ function terminalLinkedInIdentityFailure(response, observation, provider, { allo
   const title = normalize(firstField(identity, ['title', 'name', 'text']));
   const expectedTitle = normalize(allowMissingLeadIdentity && observation.title === 'Not Verified' ? null : observation.title);
   // LinkedIn job IDs and an action target URL do not prove an ATS requisition.
-  const requisition = text(normalizeRequisitionId(provider, firstField(identity, ['requisitionId', 'jobReqId', 'identifier.value', 'identifier'])));
+  const explicitRequisition = firstField(identity, ['requisitionId', 'jobReqId']);
+  const identifier = readPath(identity, 'identifier');
+  const employerNamedIdentifier = identifier && typeof identifier === 'object' && !Array.isArray(identifier)
+    && companiesCompatible(employer, identifier.name) ? identifier.value : null;
+  const requisition = text(normalizeRequisitionId(provider, explicitRequisition ?? employerNamedIdentifier));
   const expectedRequisition = text(normalizeRequisitionId(provider, observation.requisitionId));
   if (expectedRequisition && requisition && requisition !== expectedRequisition) return 'destination-role-identity-mismatch';
   if (allowMissingLeadIdentity && !expectedTitle && title) return null;
@@ -374,7 +397,16 @@ function extractDetails(response, observation, provider) {
     body?.jobPostingInfo?.jobDescription,
   );
   const title = first(posting?.title, firstField(root, ['title', 'name', 'text']));
+  const employer = firstField(posting || root, ['hiringOrganization.name', 'company.name', 'company', 'companyName', 'employer.name', 'employer']);
+  const explicitDestinationRequisition = firstField(posting || root, ['requisitionId', 'jobReqId']);
+  const rawIdentifier = readPath(posting || root, 'identifier');
+  const unscopedIdentifier = rawIdentifier && typeof rawIdentifier === 'object' && !Array.isArray(rawIdentifier)
+    ? rawIdentifier.value : rawIdentifier;
   const location = locationValue(posting?.jobLocation ?? root?.location ?? root?.locations ?? root?.locationsText ?? root?.jobLocation);
+  const identifierNamespace = rawIdentifier && typeof rawIdentifier === 'object' && !Array.isArray(rawIdentifier)
+    ? text(rawIdentifier.name) : null;
+  const destinationRequisition = explicitDestinationRequisition
+    ?? (identifierNamespace && employer && companiesCompatible(identifierNamespace, employer) ? unscopedIdentifier : null);
   const employment = employmentType(posting?.employmentType ?? firstField(root, ['employmentType', 'typeOfEmployment', 'employment', 'jobType']));
   const experienceRaw = firstField(root, ['experience', 'experienceRequired', 'qualifications.experience', 'requirements.experience']);
   const plainDescription = stripHtmlToText(description || '');
@@ -393,18 +425,22 @@ function extractDetails(response, observation, provider) {
   const closed = root?.closed === true || root?.isClosed === true || root?.active === false || /closed|expired|filled|withdrawn|removed/.test(rawStatus);
   const active = !closed && (root?.active === true || root?.isOpen === true || Boolean(posting || description || title));
   const workday = provider === 'workday';
-  const workdayStartDate = parseDate(first(
+  const workdayStartDate = parsePublicationDate(firstDateValue(
     firstField(root, ['startDate', 'jobPostingInfo.startDate']),
     body?.jobPostingInfo?.startDate,
   ));
-  const postedAt = workday ? workdayStartDate : parseDate(first(
+  const rawPublicationDate = workday ? firstDateValue(
+    readPath(root, 'startDate'), readPath(root, 'jobPostingInfo.startDate'), body?.jobPostingInfo?.startDate,
+  ) : firstDateValue(
     posting?.datePosted,
-    firstField(root, ['datePosted', 'publishedAt', 'published_at', 'createdAt', 'created_at', 'postedAt']),
-  ));
+    ...['datePosted', 'publishedAt', 'published_at', 'createdAt', 'created_at', 'postedAt'].map((field) => readPath(root, field)),
+  );
+  const postedAt = parsePublicationDate(rawPublicationDate);
   const hasDetail = Boolean(posting || (description && (title || location || employment || postedAt || validThrough)) || (root && (root.title || root.description || root.jobDescription)));
   if (!hasDetail) return { verified: false, reason: 'job-detail-not-found' };
   const fieldSources = {
     title: title ? FIELD_SOURCE_ORIGINAL : null,
+    company: employer ? FIELD_SOURCE_ORIGINAL : null,
     description: plainDescription ? FIELD_SOURCE_ORIGINAL : null,
     location: location ? FIELD_SOURCE_ORIGINAL : null,
     employment: employment ? FIELD_SOURCE_ORIGINAL : null,
@@ -416,6 +452,10 @@ function extractDetails(response, observation, provider) {
   return {
     verified: true,
     title,
+    employer: text(employer),
+    destinationRequisition: text(normalizeRequisitionId(provider, destinationRequisition)),
+    destinationIdentifier: typeof unscopedIdentifier === 'string' || typeof unscopedIdentifier === 'number'
+      ? String(unscopedIdentifier).slice(0, 128) : null,
     description: plainDescription || null,
     location,
     employment: employment ? { type: employment, paid: null, evidence: employment } : null,
@@ -424,6 +464,21 @@ function extractDetails(response, observation, provider) {
       : { minYears: null, maxYears: null, evidence: null },
     salary: salaryValue(posting || root),
     postedAt,
+    dateEvidence: {
+      originalPublication: rawPublicationDate == null ? null : {
+        value: rawPublicationDate,
+        source: workday ? 'workday-detail-startDate' : 'original-employer-detail',
+        precision: typeof rawPublicationDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawPublicationDate) ? 'date'
+          : typeof rawPublicationDate === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(rawPublicationDate) ? 'timestamp' : 'source-value',
+        timezone: typeof rawPublicationDate === 'string' && /Z$/.test(rawPublicationDate) ? 'UTC'
+          : typeof rawPublicationDate === 'string' && /[+-]\d{2}:\d{2}$/.test(rawPublicationDate) ? rawPublicationDate.slice(-6) : null,
+      },
+      sourcePublication: null,
+      catalogFirstSeen: null,
+      localFirstSeen: null,
+      updatedAt: null,
+      lastObservation: null,
+    },
     validThrough,
     liveness: closed || (validThrough && Date.parse(validThrough) < Date.now())
       ? { status: 'Expired', checkedAt: null, evidence: validThrough ? 'validThrough' : rawStatus || 'closing-status' }
@@ -441,6 +496,8 @@ function extractDetails(response, observation, provider) {
       closing: Boolean(validThrough || closed || rawStatus),
       liveness: active || closed,
       fieldSources,
+      ...(unscopedIdentifier != null ? { destinationIdentifier: { value: String(unscopedIdentifier).slice(0, 128),
+        namespace: destinationRequisition != null ? 'employer' : 'unknown' } } : {}),
     },
   };
 }
@@ -719,21 +776,86 @@ function resolutionFailure(observation, reason, chain = [], extra = {}, telemetr
 }
 
 function mergePatch(observation, details, finalUrl, provider, runAt, fingerprint) {
+  const retainedDateEvidence = observation.evidence?.dateEvidence || observation.dateEvidence || {};
+  const sourcePublication = retainedDateEvidence.sourcePublication || (retainedDateEvidence.originalPublication || observation.postedAt == null ? null : {
+    value: observation.postedAt,
+    source: observation.provider || observation.source || 'discovery-source',
+    precision: typeof observation.postedAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(observation.postedAt) ? 'date' : 'timestamp',
+    timezone: typeof observation.postedAt === 'string' && /Z$/.test(observation.postedAt) ? 'UTC'
+      : typeof observation.postedAt === 'string' && /[+-]\d{2}:\d{2}$/.test(observation.postedAt) ? observation.postedAt.slice(-6) : null,
+  });
+  const priorOriginal = retainedDateEvidence.originalPublication ?? null;
+  const currentOriginal = details.dateEvidence?.originalPublication ?? null;
+  const dateRank = (item) => {
+    const value = item?.value;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const parsed = parsePublicationDate(value);
+    return parsed == null ? null : Date.parse(parsed);
+  };
+  const publicationCandidates = [priorOriginal, currentOriginal].filter((item) => item && dateRank(item) != null);
+  const hasCurrentOriginalEvidence = Object.hasOwn(details.dateEvidence || {}, 'originalPublication');
+  const currentOriginalUsable = currentOriginal && dateRank(currentOriginal) != null;
+  const originalPublication = hasCurrentOriginalEvidence
+    ? currentOriginalUsable
+      ? publicationCandidates.reduce((older, item) => dateRank(item) < dateRank(older) ? item : older)
+      : null
+    : publicationCandidates.length
+      ? publicationCandidates.reduce((older, item) => dateRank(item) < dateRank(older) ? item : older)
+      : priorOriginal;
+  const originalPublicationAlternates = [
+    ...(retainedDateEvidence.originalPublicationAlternates || []),
+    ...(hasCurrentOriginalEvidence && !currentOriginalUsable && priorOriginal ? [priorOriginal] : []),
+    ...(priorOriginal && currentOriginal && priorOriginal.value !== currentOriginal.value ? [priorOriginal, currentOriginal] : []),
+    ...(currentOriginal && dateRank(currentOriginal) == null ? [currentOriginal] : []),
+  ].filter((item, index, items) => items.findIndex((other) => other.value === item.value && other.source === item.source) === index).slice(0, 4);
+  const dateConflicts = [...(retainedDateEvidence.conflicts || []), ...(details.dateEvidence?.conflicts || [])];
+  if (originalPublication?.value != null && sourcePublication?.value != null
+    && originalPublication.value !== sourcePublication.value) dateConflicts.push('originalPublication differs from sourcePublication');
+  if (retainedDateEvidence.originalPublication?.value != null && details.dateEvidence?.originalPublication?.value != null
+    && retainedDateEvidence.originalPublication.value !== details.dateEvidence.originalPublication.value) {
+    dateConflicts.push('originalPublication differs from current employer detail');
+  }
+  if (priorOriginal && currentOriginal && priorOriginal.value !== currentOriginal.value) {
+    dateConflicts.push(`original publication values conflict: ${String(priorOriginal.value).slice(0, 40)}; ${String(currentOriginal.value).slice(0, 40)}`);
+  }
+  const mergedDateEvidence = {
+    ...retainedDateEvidence,
+    ...details.dateEvidence,
+    originalPublication,
+    ...(originalPublicationAlternates.length ? { originalPublicationAlternates } : {}),
+    sourcePublication,
+    catalogFirstSeen: retainedDateEvidence.catalogFirstSeen || (observation.catalogFirstSeenAt ? { value: observation.catalogFirstSeenAt, source: 'catalog-first-seen' } : null),
+    localFirstSeen: retainedDateEvidence.localFirstSeen || (observation.firstSeenAt ? { value: observation.firstSeenAt, source: 'local-first-seen' } : null),
+    updatedAt: retainedDateEvidence.updatedAt || (observation.updatedAt ? { value: observation.updatedAt, source: 'source-update' } : null),
+    lastObservation: { value: runAt, source: 'local-observation' },
+    conflicts: [...new Set(dateConflicts)].slice(0, 8),
+  };
   const patch = {
     identityAliases: [...new Set([...(observation.identityAliases || []), candidateRequisitionKey(observation)].filter(Boolean))],
     originalApplicationUrl: finalUrl,
+    employerDetailUrl: finalUrl,
+    finalApplyUrl: finalUrl,
     originalApplicationEvidence: `original-listing:${provider}-detail`,
     applicationResolution: { status: 'Resolved Original', evidence: `original-listing:${provider}-detail` },
     sourceKind: 'ats-direct',
     provider: provider === 'employer-career' ? observation.provider : provider,
-    ...(fingerprint?.requisitionId ? { jobId: fingerprint.requisitionId, providerJobId: fingerprint.requisitionId, requisitionId: fingerprint.requisitionId } : {}),
+    ...(fingerprint?.requisitionId ? {
+      jobId: normalizeRequisitionId(provider, fingerprint.requisitionId),
+      providerJobId: normalizeRequisitionId(provider, fingerprint.requisitionId),
+      ...(details.destinationRequisition ? { requisitionId: details.destinationRequisition }
+        : observation.requisitionId != null ? { requisitionId: normalizeRequisitionId(provider, fingerprint.requisitionId) } : {}),
+    } : {}),
+    ...(details.destinationRequisition ? { employerRequisitionId: details.destinationRequisition } : {}),
     ...(details.title ? { title: details.title } : {}),
     ...(details.description ? { description: details.description } : {}),
     ...(details.location ? { location: details.location } : {}),
     ...(details.employment ? { employment: details.employment } : {}),
     ...(details.experience ? { experience: details.experience } : {}),
     ...(details.salary ? { salary: details.salary } : {}),
-    ...(details.postedAt ? { postedAt: details.postedAt } : provider === 'workday' ? { postedAt: null } : {}),
+    postedAt: originalPublication?.value ?? (Object.hasOwn(details.dateEvidence || {}, 'originalPublication')
+      && details.dateEvidence.originalPublication == null ? null : details.postedAt ?? null),
+    ...(details.employer ? { company: details.employer } : {}),
+    ...(details.dateEvidence ? { dateEvidence: details.dateEvidence } : {}),
     ...(details.liveness ? { liveness: { ...details.liveness, checkedAt: details.liveness.checkedAt || runAt } } : {}),
     evidence: {
       ...(observation.evidence || {}),
@@ -743,11 +865,13 @@ function mergePatch(observation, details, finalUrl, provider, runAt, fingerprint
       originalApplicationLiveness: details.liveness,
       providerFingerprint: fingerprint,
       fieldSources: details.fieldSources || {},
+      dateEvidence: mergedDateEvidence,
       leadOnly: false,
       ...(details.freshness ? { freshness: details.freshness } : {}),
       resolution: details.evidence,
     },
   };
+  patch.dateEvidence = mergedDateEvidence;
   return { ...observation, ...patch };
 }
 
@@ -768,6 +892,37 @@ export function applyOriginalListingResolution(observation, resolution) {
   }
   const finalUrl = canonical(resolution.originalApplicationUrl ?? resolution.url);
   const finalKind = classifyOriginalListingUrl(finalUrl).kind;
+  const patch = resolution.patch || {};
+  const verifiedIdentityText = (value) => ['not verified', 'unknown', ''].includes(normalizedIdentity(value)) ? '' : normalizedIdentity(value);
+  const expectedEmployer = verifiedIdentityText(observation.company);
+  const observedEmployer = normalizedIdentity(observation.company);
+  const employerEvidence = [resolution.evidence?.registryEmployer?.company,
+    patch.evidence?.fieldSources?.company === 'original-employer-detail' ? patch.company : null]
+    .filter((value) => normalizedIdentity(value));
+  const expectedRole = verifiedIdentityText(observation.title);
+  const actualRole = normalizedIdentity(patch.title ?? resolution.evidence?.resolution?.title);
+  const expectedRequisition = candidateRequisitionKey(observation);
+  const actualRequisition = candidateRequisitionKey(patch);
+  const detailProvider = resolution.evidence?.providerFingerprint?.provider
+    ?? resolution.patch?.evidence?.providerFingerprint?.provider
+    ?? extractProviderFingerprint(finalUrl).provider;
+  const sameProvider = expectedRequisition && actualRequisition
+    && expectedRequisition.split('|')[0] === actualRequisition.split('|')[0];
+  const requisitionMismatch = sameProvider && detailProvider === expectedRequisition.split('|')[0]
+    && normalizeIdentityKey(expectedRequisition) !== normalizeIdentityKey(actualRequisition);
+  const employerMismatch = expectedEmployer && employerEvidence.some((value) => !companiesCompatible(observation.company, value));
+  const roleMismatch = expectedRole && actualRole && expectedRole !== actualRole;
+  if (employerMismatch || requisitionMismatch || (roleMismatch && !sameProvider)) {
+    return {
+      ...observation,
+      discoveryUrl,
+      originalApplicationUrl: null,
+      applicationResolution: { status: 'Needs Verification', evidence: null },
+      shortlistEligible: false,
+      evidence: { ...(observation.evidence || {}), ...(resolution.evidence || {}), leadOnly: true,
+        resolution: { status: 'verification', reason: 'destination-role-identity-mismatch' } },
+    };
+  }
   if (!['ats', 'employer-career'].includes(finalKind)) {
     return {
       ...observation,
@@ -784,7 +939,8 @@ export function applyOriginalListingResolution(observation, resolution) {
       },
     };
   }
-  const merged = { ...observation, ...(resolution.patch || {}), discoveryUrl, originalApplicationUrl: finalUrl };
+  const merged = { ...observation, ...patch, discoveryUrl, employerDetailUrl: patch.employerDetailUrl ?? finalUrl,
+    finalApplyUrl: patch.finalApplyUrl ?? finalUrl, originalApplicationUrl: finalUrl };
   merged.applicationResolution = resolution.applicationResolution || { status: 'Resolved Original', evidence: resolution.evidence?.originalApplication || 'injected-resolver' };
   merged.evidence = { ...(observation.evidence || {}), ...(resolution.evidence || {}), ...(resolution.patch?.evidence || {}) };
   merged.classification = 'direct';
@@ -800,17 +956,11 @@ export function applyOriginalListingResolution(observation, resolution) {
 export function isShortlistEligibleFromResolution(resolution, observation = {}) {
   if (!resolution || typeof resolution !== 'object') return false;
   const resolvedUrl = canonical(resolution.originalApplicationUrl ?? resolution.url);
-  if (resolution.shortlistEligible === true) {
-    return Boolean(resolvedUrl && ['ats', 'employer-career'].includes(classifyOriginalListingUrl(resolvedUrl).kind));
-  }
-  if (resolution.status === 'resolved' && resolvedUrl && ['ats', 'employer-career'].includes(classifyOriginalListingUrl(resolvedUrl).kind)) {
-    const patch = resolution.patch || {};
-    return Boolean(patch.description || resolution.evidence?.resolution?.description);
-  }
   const applied = applyOriginalListingResolution(observation, resolution);
   return applied.shortlistEligible === true
     && applied.applicationResolution?.status === 'Resolved Original'
     && Boolean(applied.originalApplicationUrl)
+    && Boolean(resolvedUrl && ['ats', 'employer-career'].includes(classifyOriginalListingUrl(resolvedUrl).kind))
     && Boolean(applied.description || applied.evidence?.resolution?.description);
 }
 
@@ -1135,6 +1285,12 @@ export function createOriginalListingResolver({
 
       const provider = target.provider;
       const fingerprint = extractProviderFingerprint(current);
+      const expectedRequisition = candidateRequisitionKey(observation);
+      const expectedProvider = expectedRequisition?.split('|')[0];
+      if (expectedProvider === provider && fingerprint.requisitionId
+        && normalizeIdentityKey(expectedRequisition) !== normalizeIdentityKey(`${provider}|${fingerprint.requisitionId}`)) {
+        return fail('destination-role-identity-mismatch', chain, { provider, fingerprint });
+      }
       if (crossMatchBoard) {
         response = registryDetailResponse(response, crossMatchBoard, crossMatchListing);
         if (!response) return fail('destination-role-identity-mismatch', chain, { provider, fingerprint });
@@ -1148,6 +1304,15 @@ export function createOriginalListingResolver({
       }
       if ((crossMatchBoard || publicPortalLead) && (!details.description || details.liveness?.status !== 'Active')) {
         return fail(!details.description ? 'job-detail-not-found' : 'destination-liveness-unverified', chain, { provider, fingerprint });
+      }
+      if (details.employer && normalizedIdentity(observation.company) && normalizedIdentity(observation.company) !== 'not verified'
+        && !companiesCompatible(observation.company, details.employer)) {
+        return fail('destination-employer-identity-mismatch', chain, { provider, fingerprint });
+      }
+      if (details.destinationRequisition && observation.employerRequisitionId
+        && normalizeIdentityKey(`${provider}|${observation.employerRequisitionId}`)
+          !== normalizeIdentityKey(`${provider}|${details.destinationRequisition}`)) {
+        return fail('destination-role-identity-mismatch', chain, { provider, fingerprint });
       }
       if (publicId || hiringPost || crossMatchBoard || publicPortalLead) {
         const identityObservation = crossMatchBoard ? { ...observation, company: crossMatchBoard.company } : observation;

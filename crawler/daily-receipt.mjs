@@ -78,7 +78,8 @@ function observationFingerprint(raw) {
     source: candidate.source ?? null,
     observedAt,
     postedAt: candidate.postedAt ?? null,
-    evidenceContentHash: hash(JSON.stringify({ identityHash, evidenceHashes, postedAt: candidate.postedAt ?? null })),
+    dateEvidence: candidate.dateEvidence ?? candidate.evidence?.dateEvidence ?? null,
+    evidenceContentHash: hash(JSON.stringify({ identityHash, evidenceHashes, postedAt: candidate.postedAt ?? null, dateEvidence: candidate.dateEvidence ?? candidate.evidence?.dateEvidence ?? null })),
     evidenceHashes,
   };
 }
@@ -179,6 +180,7 @@ function receiptIdentityRows(result) {
         sourceId: (candidate?.candidate ?? candidate)?.sourceId ?? (candidate?.candidate ?? candidate)?.discoverySource ?? null,
         observedAt: (candidate?.candidate ?? candidate)?.observedAt ?? null,
         postedAt: (candidate?.candidate ?? candidate)?.postedAt ?? null,
+        dateEvidence: (candidate?.candidate ?? candidate)?.dateEvidence ?? (candidate?.candidate ?? candidate)?.evidence?.dateEvidence ?? null,
       };
       if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(entry))) entries.push(entry);
       observationProvenance.set(keyHash, entries);
@@ -276,6 +278,7 @@ function receiptIdentityRows(result) {
       source: row.source,
       observedAt: row.observedAt,
       postedAt: row.postedAt,
+      dateEvidence: row.dateEvidence ?? null,
       jdHash: row.jdHash,
       evidenceHash: row.evidenceHash,
       stage,
@@ -294,7 +297,7 @@ function receiptIdentityRows(result) {
       provenance: [...new Map([
         ...(Array.isArray(row.provenance) && row.provenance.length
           ? row.provenance.map((item) => ({ ...item }))
-          : [{ provider: row.provider, source: row.source, observedAt: row.observedAt, postedAt: row.postedAt, jdHash: row.jdHash, evidenceHash: row.evidenceHash }]),
+          : [{ provider: row.provider, source: row.source, observedAt: row.observedAt, postedAt: row.postedAt, dateEvidence: row.dateEvidence ?? null, jdHash: row.jdHash, evidenceHash: row.evidenceHash }]),
         ...(observationProvenance.get(row.identity) ?? []),
       ].map((item) => [JSON.stringify({
         provider: item.provider ?? null, source: item.source ?? null, sourceId: item.sourceId ?? null,

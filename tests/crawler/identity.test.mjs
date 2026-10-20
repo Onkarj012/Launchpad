@@ -237,4 +237,9 @@ test('legacy Workday slugs and portal aliases match existing actioned jobs', () 
     assert.equal(result.code, 'SUPPRESSED_APPLIED');
     assert.equal(result.identity.jobKey, 'job-existing');
   }
+  const result = resolveJobIdentity({ ...base, provider: 'workday', providerJobId: 'R-2', identityAliases: ['workday|R-1'] }, {
+    existingJobs: [prior({ provider: 'workday', providerJobId: 'R-1', identityAliases: ['workday|R-1'], lifecycle: 'applied' })],
+  });
+  assert.notEqual(result.code, 'SUPPRESSED_APPLIED');
+  assert.equal(result.novelty, 'new_to_me');
 });

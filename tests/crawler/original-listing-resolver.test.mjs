@@ -104,7 +104,7 @@ test('direct ATS URL resolves immediately with provider fingerprint', async () =
   assert.equal(result.status, 'resolved');
   assert.equal(result.originalApplicationUrl, applicationUrl);
   assert.equal(result.patch.provider, 'greenhouse');
-  assert.equal(result.patch.requisitionId, '12345');
+  assert.equal(result.patch.requisitionId, undefined);
   assert.equal(result.providerFingerprint.requisitionId, '12345');
   assert.equal(result.evidence.fieldSources.description, 'original-employer-detail');
   assert.equal(result.shortlistEligible, true);
@@ -473,8 +473,129 @@ test('uses Workday startDate as freshness evidence and postedAt', async () => {
   const result = await resolve(observation(applicationUrl));
 
   assert.equal(result.status, 'resolved');
-  assert.equal(result.patch.postedAt, '2026-07-22T00:00:00.000Z');
+  assert.equal(result.patch.postedAt, '2026-07-22');
+  assert.equal(result.patch.evidence.dateEvidence.originalPublication.value, '2026-07-22');
+  assert.equal(result.patch.evidence.dateEvidence.originalPublication.precision, 'date');
   assert.deepEqual(result.patch.evidence.freshness, { kind: 'workday-startDate' });
+  const missingDateResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' },
+  }) });
+  const missingDate = await missingDateResolver(observation('https://boards.greenhouse.io/acme/jobs/123', {
+    provider: 'greenhouse', jobId: '123', company: 'Acme', title: 'AI Engineer', postedAt: '2026-10-20',
+    dateEvidence: { originalPublication: { value: '2026-10-20T08:00:00Z', source: 'employer-detail' } },
+  }));
+  assert.equal(missingDate.status, 'resolved');
+  assert.equal(missingDate.patch.postedAt, null);
+  assert.equal(missingDate.patch.dateEvidence.originalPublication, null);
+  assert.equal(missingDate.patch.dateEvidence.originalPublicationAlternates[0].value, '2026-10-20T08:00:00Z');
+  const mismatchedPageResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Other Employer' },
+    identifier: { value: '456' }, datePosted: '2026-10-20',
+  }) });
+  const mismatchedPage = await mismatchedPageResolver(observation('https://boards.greenhouse.io/acme/jobs/123', {
+    provider: 'greenhouse', jobId: '123', company: 'Acme', title: 'AI Engineer',
+  }));
+  assert.equal(mismatchedPage.status, 'verification');
+  assert.equal(mismatchedPage.evidence.resolution.reason, 'destination-employer-identity-mismatch');
+  const genericIdentifierResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, identifier: { value: 456 },
+  }) });
+  const genericIdentifier = await genericIdentifierResolver(observation('https://boards.greenhouse.io/acme/jobs/123', {
+    provider: 'greenhouse', jobId: '123', company: 'Acme', title: 'AI Engineer',
+  }));
+  assert.equal(genericIdentifier.status, 'resolved');
+  assert.equal(genericIdentifier.patch.jobId, '123');
+  assert.deepEqual(genericIdentifier.patch.evidence.resolution.destinationIdentifier, { value: '456', namespace: 'unknown' });
+  const knownEmployerReqResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, jobReqId: 'REQ-99',
+  }) });
+  const knownEmployerReqMismatch = await knownEmployerReqResolver(observation('https://boards.greenhouse.io/acme/jobs/123', {
+    provider: 'greenhouse', jobId: '123', employerRequisitionId: 'REQ-42', company: 'Acme', title: 'AI Engineer',
+  }));
+  assert.equal(knownEmployerReqMismatch.status, 'verification');
+  assert.equal(knownEmployerReqMismatch.evidence.resolution.reason, 'destination-role-identity-mismatch');
+  const retainedDates = normalizeCandidate({
+    url: 'https://boards.greenhouse.io/acme/jobs/123', provider: 'greenhouse', jobId: '123', company: 'Acme', title: 'AI Engineer',
+    postedAt: '2026-10-20T08:00:00Z', dateEvidence: {
+      originalPublication: { value: '2026-09-01', source: 'original-employer-detail', precision: 'date' },
+      sourcePublication: { value: '2026-10-20T08:00:00Z', source: 'catalog' },
+      catalogFirstSeen: { value: '2026-01-01T00:00:00Z', source: 'catalog-first-seen' },
+      updatedAt: { value: '2026-10-19T00:00:00Z', source: 'source-update' },
+      conflicts: ['retained conflict'],
+    },
+  });
+  const retainedResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted: '2026-10-15',
+  }) });
+  const retainedResult = await retainedResolver(retainedDates, { runAt: '2026-10-20T09:00:00Z' });
+  assert.equal(retainedResult.patch.dateEvidence.catalogFirstSeen.value, '2026-01-01T00:00:00Z');
+  assert.equal(retainedResult.patch.dateEvidence.updatedAt.value, '2026-10-19T00:00:00Z');
+  assert.equal(retainedResult.patch.dateEvidence.sourcePublication.value, '2026-10-20T08:00:00Z');
+  assert.ok(retainedResult.patch.dateEvidence.conflicts.includes('retained conflict'));
+  assert.ok(retainedResult.patch.dateEvidence.conflicts.some((item) => item.includes('2026-09-01') && item.includes('2026-10-15')));
+  assert.deepEqual(retainedResult.patch.dateEvidence.originalPublicationAlternates.map((item) => item.value), ['2026-09-01', '2026-10-15']);
+  assert.deepEqual(retainedResult.patch.dateEvidence, retainedResult.patch.evidence.dateEvidence);
+  assert.equal(normalizeCandidate(retainedResult.patch).postedAt, '2026-09-01');
+  const reverseDates = normalizeCandidate({
+    url: 'https://boards.greenhouse.io/acme/jobs/123', provider: 'greenhouse', jobId: '123', company: 'Acme', title: 'AI Engineer',
+    postedAt: '2026-10-15', dateEvidence: { originalPublication: { value: '2026-10-15', source: 'original-employer-detail', precision: 'date' } },
+  });
+  const reverseResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme Inc.' }, datePosted: '2026-09-01',
+  }) });
+  const reverseResult = await reverseResolver(reverseDates, { runAt: '2026-10-20T09:00:00Z' });
+  assert.equal(reverseResult.status, 'resolved');
+  assert.equal(applyOriginalListingResolution(reverseDates, reverseResult).applicationResolution.status, 'Resolved Original');
+  assert.equal(normalizeCandidate(reverseResult.patch).postedAt, '2026-09-01');
+  assert.deepEqual(reverseResult.patch.dateEvidence.originalPublicationAlternates.map((item) => item.value), ['2026-10-15', '2026-09-01']);
+  const numericLeverResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted: 1792483200000,
+  }) });
+  const numericLever = await numericLeverResolver(observation('https://jobs.lever.co/acme/123', { provider: 'lever', jobId: '123', company: 'Acme' }));
+  assert.equal(numericLever.status, 'resolved');
+  assert.equal(numericLever.patch.dateEvidence.originalPublication.value, 1792483200000);
+  assert.equal(normalizeCandidate(numericLever.patch).postedAt, new Date(1792483200000).toISOString());
+  const ambiguousLeverResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted: '2026-10-20 08:00:00',
+  }) });
+  const ambiguousLever = await ambiguousLeverResolver(observation('https://jobs.lever.co/acme/124', { provider: 'lever', jobId: '124', company: 'Acme' }));
+  assert.equal(ambiguousLever.patch.postedAt, null);
+  assert.equal(ambiguousLever.patch.dateEvidence.originalPublication, null);
+  assert.equal(ambiguousLever.patch.dateEvidence.originalPublicationAlternates[0].value, '2026-10-20 08:00:00');
+  assert.equal(normalizeCandidate(ambiguousLever.patch).postedAt, null);
+  for (const datePosted of ['2026-02-30', '2025-02-29', '2026-02-30T08:00:00Z']) {
+    const impossibleDateResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+      title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted,
+    }) });
+    const impossibleDate = await impossibleDateResolver(observation('https://jobs.lever.co/acme/125', { provider: 'lever', jobId: '125', company: 'Acme' }));
+    assert.equal(impossibleDate.patch.postedAt, null, datePosted);
+    assert.equal(impossibleDate.patch.dateEvidence.originalPublication, null, datePosted);
+    assert.equal(impossibleDate.patch.dateEvidence.originalPublicationAlternates[0].value, datePosted);
+  }
+  const leapDayResolver = createOriginalListingResolver({ transport: async () => jsonLdPage({
+    title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme' }, datePosted: '2024-02-29',
+  }) });
+  const leapDay = await leapDayResolver(observation('https://jobs.lever.co/acme/126', { provider: 'lever', jobId: '126', company: 'Acme' }));
+  assert.equal(leapDay.patch.postedAt, '2024-02-29');
+  const lead = observation('https://boards.greenhouse.io/acme/jobs/123', {
+    provider: 'greenhouse', requisitionId: '123', company: 'Acme Labs', title: 'AI Engineer',
+  });
+  const applied = applyOriginalListingResolution(lead, {
+    status: 'resolved', originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/456',
+    shortlistEligible: true,
+    patch: { provider: 'greenhouse', jobId: '456', company: 'Acme Labs', title: 'AI Engineer', description: 'Build AI services.' },
+  });
+  assert.equal(applied.shortlistEligible, false);
+  assert.equal(applied.originalApplicationUrl, null);
+  assert.equal(applied.evidence.resolution.reason, 'destination-role-identity-mismatch');
+  const mismatchedRedirect = createOriginalListingResolver({
+    transport: async (url) => url === 'https://boards.greenhouse.io/acme/jobs/123'
+      ? { status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/456' } }
+      : jsonLdPage({ title: 'AI Engineer', description: 'Build APIs.', hiringOrganization: { name: 'Acme Labs' }, identifier: { value: '456' } }),
+  });
+  const redirected = await mismatchedRedirect(lead);
+  assert.equal(redirected.status, 'verification');
+  assert.equal(redirected.evidence.resolution.reason, 'destination-role-identity-mismatch');
 });
 
 test('keeps malformed job detail in verification', async () => {
@@ -536,7 +657,7 @@ test('resolved aggregator lead becomes normal-eligible like a direct ATS candida
         return { status: 302, headers: { location: applicationUrl } };
       }
       return jsonLdPage({
-        title: 'ML Engineer',
+        title: 'ML Engineer', hiringOrganization: { name: 'Acme Labs' },
         description: '<p>Train models in Pune.</p>',
         jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'IN' } },
         employmentType: 'FULL_TIME',
@@ -546,7 +667,7 @@ test('resolved aggregator lead becomes normal-eligible like a direct ATS candida
   });
 
   const lead = observation(discoveryUrl, {
-    title: 'Indeed snippet title',
+    title: 'ML Engineer', company: 'Acme Labs',
     description: 'Indeed search snippet only',
     classification: 'lead',
     sourceKind: 'aggregator',
@@ -881,7 +1002,7 @@ function crossMatchFixture(provider) {
   if (provider === 'greenhouse') {
     const applyUrl = 'https://job-boards.greenhouse.io/acme/jobs/123';
     const row = { id: 123, title, location: { name: location }, absolute_url: applyUrl };
-    return { board, applyUrl, id: '123', row, list: { jobs: [row] },
+    return { board, applyUrl, id: '123', row, list: { jobs: [row] }, postedAt: '2026-10-12T08:00:00Z',
       listUrl: 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true',
       detailUrl: 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/123',
       detail: { ...row, content: description, first_published: '2026-10-12T08:00:00Z' } };
@@ -890,7 +1011,7 @@ function crossMatchFixture(provider) {
     const applyUrl = `https://jobs.eu.lever.co/acme/${uuid}`;
     board.url = 'https://jobs.eu.lever.co/acme';
     const row = { id: uuid, text: title, categories: { location, commitment: 'Full-time' }, hostedUrl: applyUrl };
-    return { board, applyUrl, id: uuid, row, list: [row], listUrl: 'https://api.eu.lever.co/v0/postings/acme',
+    return { board, applyUrl, id: uuid, row, list: [row], postedAt: '2026-10-12T08:00:00.000Z', listUrl: 'https://api.eu.lever.co/v0/postings/acme',
       detailUrl: `https://api.eu.lever.co/v0/postings/acme/${uuid}`,
       detail: { ...row, categories: { ...row.categories }, descriptionPlain: 'Full-time engineering. Build Python APIs.',
         lists: [{ text: 'Requirements', content: '<li>0-1 years of experience</li>' }],
@@ -901,12 +1022,12 @@ function crossMatchFixture(provider) {
     // The public Ashby feed does not promise an id field.
     const row = { title, location, jobUrl: applyUrl, isListed: true, employmentType: 'FullTime',
       descriptionHtml: description, publishedAt: '2026-10-12T08:00:00Z' };
-    return { board, applyUrl, id: uuid, row, list: { apiVersion: '1', jobs: [row] },
+    return { board, applyUrl, id: uuid, row, list: { apiVersion: '1', jobs: [row] }, postedAt: '2026-10-12T08:00:00Z',
       listUrl: 'https://api.ashbyhq.com/posting-api/job-board/acme?includeCompensation=true', detailUrl: null, detail: row };
   }
   const applyUrl = 'https://acme.wd3.myworkdayjobs.com/External/job/Pune/AI-Engineer_JR123';
   const row = { title, locationsText: location, postedOn: 'Posted Today', bulletFields: ['JR123'], externalPath: '/job/Pune/AI-Engineer_JR123' };
-  return { board, applyUrl, id: 'JR123', row, list: { total: 1, jobPostings: [row] },
+  return { board, applyUrl, id: 'JR123', row, list: { total: 1, jobPostings: [row] }, postedAt: '2026-10-12',
     listUrl: 'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/jobs',
     detailUrl: 'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/job/Pune/AI-Engineer_JR123',
     detail: { jobPostingInfo: { title, location, jobReqId: 'JR123', timeType: 'Full time',
@@ -941,7 +1062,7 @@ test('public JSON cross-matches preserve employer routes and posting identities 
     assert.match(result.patch.description, /Build Python APIs/);
     assert.equal(result.patch.evidence.fieldSources.description, 'original-employer-detail');
     assert.equal(result.patch.evidence.registryEmployer.probeStatus, 'verified');
-    assert.equal(result.patch.postedAt, provider === 'workday' ? '2026-10-12T00:00:00.000Z' : '2026-10-12T08:00:00.000Z');
+    assert.equal(result.patch.postedAt, fixture.postedAt);
     assert.deepEqual(requests.map((request) => request.url), [fixture.listUrl, ...(fixture.detailUrl ? [fixture.detailUrl] : [])]);
     for (const request of requests) assert.equal(request.options.credentials, 'omit');
     assert.equal(result.telemetry.requests, requests.length);

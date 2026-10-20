@@ -188,6 +188,7 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
       provider: candidate.provider ?? null,
       source: candidate.source ?? null,
       postedAt: candidate.postedAt ?? null,
+      dateEvidence: candidate.dateEvidence ?? candidate.evidence?.dateEvidence ?? null,
       observedAt: entry.observedAt ?? candidate.observedAt ?? null,
       jdHash: candidate.description == null ? null : `sha256:${createHash('sha256').update(String(candidate.description)).digest('hex')}`,
       evidenceHash: `sha256:${createHash('sha256').update(JSON.stringify(candidate)).digest('hex')}`,
@@ -198,12 +199,14 @@ export function buildFunnelReport({ observations = [], lifecycle = {}, sourceHea
           sourceId: item.sourceId ?? null,
           observedAt: item.observedAt ?? null,
           postedAt: item.postedAt ?? null,
+          dateEvidence: item.dateEvidence ?? null,
         }))
         : [{
           provider: candidate.provider ?? null,
           source: candidate.source ?? null,
           observedAt: entry.observedAt ?? candidate.observedAt ?? null,
           postedAt: candidate.postedAt ?? null,
+          dateEvidence: candidate.dateEvidence ?? candidate.evidence?.dateEvidence ?? null,
         }],
       bucket: assignment.bucket,
       reason: assignment.code,

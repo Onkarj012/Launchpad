@@ -11,6 +11,20 @@ const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ')
 // Escape text before placing it in the HTML report.
 const html = (value) => String(value ?? 'Not Verified').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
+// Show each date with its source and original precision.
+function dateEvidenceText(evidence) {
+  if (!evidence || typeof evidence !== 'object') return 'Not Verified';
+  return ['originalPublication', 'sourcePublication', 'catalogFirstSeen', 'localFirstSeen', 'updatedAt', 'lastObservation']
+    .map((key) => {
+      const field = evidence[key];
+      return field?.value == null ? `${key}: Not Verified`
+        : `${key}: ${field.value} (${field.source ?? 'Not Verified'}; ${field.precision ?? 'source-value'}; ${field.timezone ?? 'timezone Not Verified'})`;
+    }).join('; ')
+    + (Array.isArray(evidence.originalPublicationAlternates) && evidence.originalPublicationAlternates.length
+      ? `; originalPublication alternatives: ${evidence.originalPublicationAlternates.map((item) => `${item.value} (${item.source ?? 'Not Verified'})`).join(', ')}` : '')
+    + `; conflicts: ${(Array.isArray(evidence.conflicts) && evidence.conflicts.length ? evidence.conflicts.join(', ') : 'None recorded')}`;
+}
+
 // Prefer the final delivery outcome and reconciliation over the discovery envelope.
 function reportRunStatus(result) {
   const normalize = (status) => status === 'fatal' ? 'failed' : status === 'ok' ? 'completed' : ['completed', 'partial', 'degraded', 'failed'].includes(status) ? status : null;
@@ -165,8 +179,8 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const table = (name, rows) => {
     lines.push(`## ${name}`, '');
     if (!rows.length) { lines.push('None.', ''); return; }
-    lines.push('| Role / company | Public URL | JD excerpt | Portal date / freshness | Salary | Experience | Application / liveness / applied | Exact reasons |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    lines.push('| Role / company | Public URL | JD excerpt | Portal date / freshness | Date evidence | Salary | Experience | Application / liveness / applied | Exact reasons |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const row of rows) {
       const { candidate: c, eligibility: e, freshness: f, readiness: r } = row;
       const reasonList = row.reasons.length ? row.reasons : [...r.reasons,
@@ -174,7 +188,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
         ...(!c.description ? ['PORTAL_DESCRIPTION_MISSING'] : []),
         ...(c.evidence?.resolution?.reason ? [c.evidence.resolution.reason] : []),
         ...(f.eligible ? [] : [f.code ?? 'FRESHNESS_NOT_VERIFIED'])];
-      lines.push(`| ${cell(c.title)} / ${cell(c.company)} | ${cell(c.discoveryUrl ?? c.canonicalUrl)} | ${cell(c.description || 'Not Verified').slice(0, 240)} | ${cell(c.postedAt)} / ${cell(f.window)} | ${cell(c.salary?.evidence || 'Not Verified')} | ${cell(e.experience.evidence || 'Not stated; manual review')} | ${cell(c.applicationResolution?.status)} / ${cell(c.liveness?.status)} / Applied?: Not Verified | ${cell([...new Set(reasonList)].join('; ') || 'Ready, unscored')} |`);
+      lines.push(`| ${cell(c.title)} / ${cell(c.company)} | ${cell(c.discoveryUrl ?? c.canonicalUrl)} | ${cell(c.description || 'Not Verified').slice(0, 240)} | ${cell(c.postedAt)} / ${cell(f.window)} | ${cell(dateEvidenceText(c.dateEvidence ?? c.evidence?.dateEvidence))} | ${cell(c.salary?.evidence || 'Not Verified')} | ${cell(e.experience.evidence || 'Not stated; manual review')} | ${cell(c.applicationResolution?.status)} / ${cell(c.liveness?.status)} / Applied?: Not Verified | ${cell([...new Set(reasonList)].join('; ') || 'Ready, unscored')} |`);
     }
     lines.push('');
   };
@@ -282,7 +296,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const applyUrl = typeof rawApplyUrl === 'string' && /^https?:\/\//i.test(rawApplyUrl) ? rawApplyUrl : null;
     const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
-    return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p>${experienceEvidence}${role.selectionTier ? `<p>Selection tier: ${html(role.selectionTier)}</p>` : ''}${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
+    return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p><p>Discovery URL: ${html(role.discoveryUrl ?? role.canonicalUrl ?? 'Not Verified')}; employer detail URL: ${html(role.employerDetailUrl ?? role.evidence?.detailUrl ?? 'Not Verified')}; final apply URL: ${html(role.finalApplyUrl ?? 'Not Verified')}</p><p>Posting date: ${html(role.postedAt ?? 'Not Verified')}; date evidence: ${html(dateEvidenceText(role.dateEvidence ?? role.evidence?.dateEvidence))}</p>${experienceEvidence}${role.selectionTier ? `<p>Selection tier: ${html(role.selectionTier)}</p>` : ''}${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
   };
   const sections = modes.map(([mode, label]) => {
     const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});

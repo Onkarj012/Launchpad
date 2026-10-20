@@ -6,6 +6,7 @@ import { decodeEntities } from '../vendor/career-ops/providers/_html-entities.mj
 export const CANDIDATE_SCHEMA_VERSION = 'CandidateV1';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EMPLOYMENT_TYPES = new Map([
   ['full time', 'full-time'],
   ['full-time', 'full-time'],
@@ -38,6 +39,18 @@ function preserveText(value) {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+function hasValidIsoCalendarDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1];
+}
+
 export function canonicalizeUrl(value) {
   const raw = nonEmptyString(value);
   if (!raw) return null;
@@ -57,16 +70,19 @@ export function canonicalizeUrl(value) {
 
 function normalizePostedAt(value) {
   if (value == null || value === '') return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
   if (typeof value === 'number' && Number.isFinite(value)) {
     const date = new Date(value);
     if (!Number.isNaN(date.getTime())) return date.toISOString();
   }
-  if (typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value))) return value;
-  throw new CandidateValidationError(['postedAt must be a full ISO-8601 timestamp or null']);
+  if (typeof value === 'string' && (ISO_TIMESTAMP.test(value) || ISO_DATE.test(value))
+    && hasValidIsoCalendarDate(value) && !Number.isNaN(Date.parse(value))) return value;
+  throw new CandidateValidationError(['postedAt must be an ISO-8601 date or timestamp, or null']);
 }
 
 function normalizeOptionalTimestamp(value, field) {
   if (value == null || value === '') return null;
+  if (typeof value === 'string' && ISO_DATE.test(value)) throw new CandidateValidationError([`${field} must be a full ISO-8601 timestamp or null`]);
   try {
     return normalizePostedAt(value);
   } catch {
@@ -75,7 +91,76 @@ function normalizeOptionalTimestamp(value, field) {
 }
 
 export function isIsoTimestamp(value) {
-  return value == null || (typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value)));
+  return value == null || (typeof value === 'string' && ISO_TIMESTAMP.test(value)
+    && hasValidIsoCalendarDate(value) && !Number.isNaN(Date.parse(value)));
+}
+
+function isIsoDateOrTimestamp(value) {
+  return value == null || (typeof value === 'string' && (ISO_DATE.test(value) || ISO_TIMESTAMP.test(value))
+    && hasValidIsoCalendarDate(value) && !Number.isNaN(Date.parse(value)));
+}
+
+// Keep the source form and meaning of date fields alongside the ranking date.
+function normalizeDateEvidence(raw, localFirstSeenAt) {
+  const supplied = raw.evidence?.dateEvidence ?? raw.dateEvidence;
+  const bounded = (item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const value = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value
+      : typeof item.value === 'string' ? item.value.slice(0, 128)
+        : item.value instanceof Date && !Number.isNaN(item.value.getTime()) ? item.value.toISOString() : null;
+    const valueText = String(value ?? '');
+    const inferredTimezone = /Z$/.test(valueText) ? 'UTC'
+      : /[+-]\d{2}:\d{2}$/.test(valueText) ? valueText.slice(-6) : null;
+    return value == null ? null : {
+      value,
+      source: typeof item.source === 'string' ? item.source.slice(0, 64) : 'Not Verified',
+      precision: typeof item.precision === 'string' ? item.precision.slice(0, 24)
+        : ISO_DATE.test(valueText) ? 'date' : ISO_TIMESTAMP.test(valueText) || typeof value === 'number' ? 'timestamp' : 'source-value',
+      timezone: typeof item.timezone === 'string' ? item.timezone.slice(0, 16) : inferredTimezone,
+    };
+  };
+  if (supplied && typeof supplied === 'object' && !Array.isArray(supplied)) {
+    const original = bounded(supplied.originalPublication);
+    const sourcePublication = bounded(supplied.sourcePublication);
+    const conflicts = Array.isArray(supplied.conflicts)
+      ? supplied.conflicts.filter((item) => typeof item === 'string').slice(0, 8).map((item) => item.slice(0, 160)) : [];
+    const originalPublicationAlternates = Array.isArray(supplied.originalPublicationAlternates)
+      ? supplied.originalPublicationAlternates.map(bounded).filter(Boolean).slice(0, 4) : [];
+    if (original?.value != null && sourcePublication?.value != null && original.value !== sourcePublication.value
+      && !conflicts.includes('originalPublication differs from sourcePublication')) {
+      conflicts.push('originalPublication differs from sourcePublication');
+    }
+    return {
+      ...Object.fromEntries(['originalPublication', 'sourcePublication', 'catalogFirstSeen', 'localFirstSeen', 'updatedAt', 'lastObservation']
+        .map((key) => [key, bounded(supplied[key])]).filter(([, value]) => value)),
+      ...(originalPublicationAlternates.length ? { originalPublicationAlternates } : {}),
+      ...(Object.hasOwn(supplied, 'originalPublication') && !original ? { originalPublication: null } : {}),
+      ...(conflicts.length ? { conflicts } : {}),
+    };
+  }
+  const field = (value, source) => value == null || value === '' ? null : {
+    value: typeof value === 'number' && Number.isFinite(value) ? value
+      : typeof value === 'string' ? value.slice(0, 128)
+        : value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : null,
+    source: String(source).slice(0, 64),
+    precision: typeof value === 'string' && ISO_DATE.test(value) ? 'date'
+      : typeof value === 'number' || value instanceof Date || typeof value === 'string' && ISO_TIMESTAMP.test(value) ? 'timestamp' : 'source-value',
+    timezone: typeof value === 'string' && /Z$/.test(value) || value instanceof Date ? 'UTC'
+      : typeof value === 'string' && /[+-]\d{2}:\d{2}$/.test(value) ? value.slice(-6) : null,
+  };
+  const originalPublication = field(raw.originalPublicationDate ?? raw.originalPostedAt ?? raw.datePosted ?? raw.firstPublished, raw.originalPublicationSource ?? 'source-original');
+  const sourcePublication = field(raw.sourcePublicationDate ?? raw.postedAt ?? raw.createdAt, raw.sourcePublicationSource ?? raw.provider ?? raw.source ?? 'source-date');
+  const result = {
+    originalPublication,
+    sourcePublication,
+    catalogFirstSeen: field(raw.catalogFirstSeenAt ?? raw.catalogFirstSeen, 'catalog-first-seen'),
+    localFirstSeen: field(raw.firstSeenAt ?? raw.first_seen_at ?? localFirstSeenAt, 'local-first-seen'),
+    updatedAt: field(raw.updatedAt ?? raw.updated_at, 'source-update'),
+    lastObservation: field(raw.lastObservedAt ?? raw.observedAt, 'local-observation'),
+  };
+  const conflicts = originalPublication?.value != null && sourcePublication?.value != null && originalPublication.value !== sourcePublication.value
+    ? ['originalPublication differs from sourcePublication'] : [];
+  return { ...Object.fromEntries(Object.entries(result).filter(([, value]) => value)), ...(conflicts.length ? { conflicts } : {}) };
 }
 
 function normalizeWorkMode(value) {
@@ -739,7 +824,7 @@ export function validateCandidate(candidate) {
     if (!nonEmptyString(candidate[field])) errors.push(`${field} is required`);
   }
   if (candidate.canonicalUrl && !/^https?:\/\//i.test(candidate.canonicalUrl)) errors.push('canonicalUrl must be http(s)');
-  if (!isIsoTimestamp(candidate.postedAt)) errors.push('postedAt must be a full ISO-8601 timestamp or null');
+  if (!isIsoDateOrTimestamp(candidate.postedAt)) errors.push('postedAt must be an ISO-8601 date or timestamp, or null');
   for (const field of ['discoveredAt', 'crawledAt', 'firstSeenAt']) {
     if (!isIsoTimestamp(candidate[field])) errors.push(`${field} must be a full ISO-8601 timestamp or null`);
   }
@@ -771,7 +856,19 @@ export function normalizeCandidate(raw, options = {}) {
   const originalUrl = raw.url ?? raw.canonicalUrl;
   const canonicalUrl = canonicalizeUrl(originalUrl);
   const description = preserveText(raw.description ?? raw.descriptionPlain ?? raw.jd ?? raw.body);
-  const postedAt = normalizePostedAt(raw.postedAt ?? raw.firstPublished ?? raw.createdAt);
+  const dateEvidence = normalizeDateEvidence(raw, raw.firstSeenAt ?? raw.first_seen_at ?? null);
+  const suppliedDateEvidence = raw.evidence?.dateEvidence ?? raw.dateEvidence;
+  const hasExplicitOriginalEvidence = suppliedDateEvidence && Object.hasOwn(suppliedDateEvidence, 'originalPublication');
+  const originalValue = dateEvidence.originalPublication?.value;
+  let postedAt = null;
+  try {
+    postedAt = normalizePostedAt(hasExplicitOriginalEvidence
+      ? originalValue
+      : originalValue ?? raw.originalPublicationDate ?? raw.originalPostedAt ?? raw.datePosted
+        ?? raw.postedAt ?? raw.firstPublished ?? raw.createdAt);
+  } catch {
+    // Keep malformed source values in dateEvidence without ranking them.
+  }
   const experience = normalizeExperience(raw);
   const employment = normalizeEmployment(raw);
   const sourceKind = nonEmptyString(raw.sourceKind ?? options.sourceKind) || 'aggregator';
@@ -780,11 +877,18 @@ export function normalizeCandidate(raw, options = {}) {
     schemaVersion: CANDIDATE_SCHEMA_VERSION,
     canonicalUrl,
     url: nonEmptyString(originalUrl),
+    discoveryUrl: canonicalizeUrl(raw.discoveryUrl ?? originalUrl),
+    employerDetailUrl: canonicalizeUrl(raw.employerDetailUrl ?? raw.detailUrl),
+    finalApplyUrl: canonicalizeUrl(raw.finalApplyUrl),
     source,
     provider,
-    jobId: raw.jobId == null && raw.id == null ? null : String(raw.jobId ?? raw.id),
+    jobId: raw.jobId == null && raw.providerJobId == null && raw.id == null && raw.requisitionId == null
+      ? null : String(raw.providerJobId ?? raw.jobId ?? raw.id ?? raw.requisitionId),
+    ...(raw.employerRequisitionId != null || raw.requisitionId != null && (raw.jobId != null || raw.providerJobId != null)
+      ? { employerRequisitionId: String(raw.employerRequisitionId ?? raw.requisitionId).slice(0, 128) } : {}),
     identityAliases: Array.isArray(raw.identityAliases) ? raw.identityAliases.filter((alias) => typeof alias === 'string' && alias.trim()) : [],
     firstSeenAt: normalizeOptionalTimestamp(raw.firstSeenAt ?? raw.first_seen_at, 'firstSeenAt'),
+    dateEvidence,
     company: nonEmptyString(raw.company ?? raw.companyName),
     title: nonEmptyString(raw.title ?? raw.role),
     location: preserveText(raw.location),
@@ -880,8 +984,12 @@ export function companiesCompatible(left, right) {
 // Match current or retained identities against either ledger generation.
 export function candidateMatchesLedgerRow(candidate, row) {
   if (!companiesCompatible(candidate.company, row.company)) return false;
+  const candidateKey = candidateRequisitionKey(candidate);
+  const rowKey = candidateRequisitionKey({ provider: row.provider, jobId: row.job_id ?? row.jobId ?? row.provider_job_id });
+  if (candidateKey && rowKey && candidateKey !== rowKey
+    && candidateKey.split('|')[0] === rowKey.split('|')[0]) return false;
   const keys = candidateIdentityKeys(candidate);
-  const rowKeys = [row.dedup_key ?? row.dedupKey, candidateRequisitionKey({ provider: row.provider, jobId: row.job_id ?? row.jobId ?? row.provider_job_id })];
+  const rowKeys = [row.dedup_key ?? row.dedupKey, rowKey];
   return rowKeys.some((key) => key && keys.includes(normalizeIdentityKey(key)));
 }
 

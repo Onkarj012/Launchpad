@@ -44,10 +44,80 @@ test('durable identity prefers provider and requisition over company title locat
 
 
 test('candidate normalization retains stored first-seen separately from posting dates', () => {
-  const raw = { url: 'https://jobs.example.test/1', company: 'Acme', title: 'AI Engineer', postedAt: null, first_seen_at: '2026-09-01T12:00:00.000Z' };
+  const raw = {
+    url: 'https://jobs.example.test/1', company: 'Acme', title: 'AI Engineer', postedAt: '2026-10-15',
+    first_seen_at: '2026-09-01T12:00:00.000Z', provider: 'greenhouse', providerJobId: 'REQ-42',
+    identityAliases: ['naukri|portal-9'], originalPublicationDate: '2026-10-15',
+    sourcePublicationDate: '2026-10-20T09:00:00+05:30', catalogFirstSeenAt: '2026-10-18T12:00:00Z',
+    updatedAt: '2026-10-19T10:00:00Z', observedAt: '2026-10-20T09:05:00+05:30',
+  };
   const candidate = normalizeCandidate(raw);
   assert.equal(candidate.firstSeenAt, raw.first_seen_at);
-  assert.equal(candidate.postedAt, null);
+  assert.equal(candidate.jobId, 'REQ-42');
+  assert.equal(candidateDedupKey(candidate), 'greenhouse|req 42');
+  assert.deepEqual(candidate.identityAliases, ['naukri|portal-9']);
+  assert.equal(candidate.postedAt, '2026-10-15');
+  assert.equal(candidate.dateEvidence.originalPublication.value, '2026-10-15');
+  assert.equal(candidate.dateEvidence.originalPublication.precision, 'date');
+  assert.equal(candidate.dateEvidence.sourcePublication.value, '2026-10-20T09:00:00+05:30');
+  assert.equal(candidate.dateEvidence.sourcePublication.timezone, '+05:30');
+  assert.equal(candidate.dateEvidence.catalogFirstSeen.value, '2026-10-18T12:00:00Z');
+  assert.equal(candidate.dateEvidence.updatedAt.value, '2026-10-19T10:00:00Z');
+  assert.equal(candidate.dateEvidence.lastObservation.value, '2026-10-20T09:05:00+05:30');
+  assert.deepEqual(candidate.dateEvidence.conflicts, ['originalPublication differs from sourcePublication']);
+  const providerAndEmployerIds = normalizeCandidate({
+    url: 'https://boards.greenhouse.io/acme/jobs/123', provider: 'greenhouse', jobId: '123', requisitionId: 'REQ-42',
+    company: 'Acme', title: 'AI Engineer', postedAt: '2026-10-20',
+  });
+  assert.equal(providerAndEmployerIds.jobId, '123');
+  assert.equal(providerAndEmployerIds.employerRequisitionId, 'REQ-42');
+  assert.equal(candidateDedupKey(providerAndEmployerIds), 'greenhouse|123');
+  const renormalizedIds = normalizeCandidate(providerAndEmployerIds);
+  assert.equal(renormalizedIds.jobId, '123');
+  assert.equal(renormalizedIds.employerRequisitionId, 'REQ-42');
+  const refreshed = normalizeCandidate({ ...raw, originalPublicationDate: '2026-10-01', sourcePublicationDate: '2026-10-20T09:00:00Z', postedAt: '2026-10-20T09:00:00Z' });
+  assert.equal(refreshed.postedAt, '2026-10-01');
+  assert.equal(refreshed.dateEvidence.sourcePublication.value, '2026-10-20T09:00:00Z');
+  const nestedOriginal = normalizeCandidate({
+    url: 'https://boards.greenhouse.io/acme/jobs/123', company: 'Acme', title: 'AI Engineer', provider: 'greenhouse', jobId: '123',
+    postedAt: '2026-10-20T08:00:00Z', dateEvidence: {
+      originalPublication: { value: '2026-09-01', source: 'original-employer-detail', precision: 'date' },
+      sourcePublication: { value: '2026-10-20T08:00:00Z', source: 'catalog' },
+    },
+  });
+  assert.equal(nestedOriginal.postedAt, '2026-09-01');
+  const unresolvedOriginal = normalizeCandidate({ ...nestedOriginal, postedAt: '2026-10-20T08:00:00Z', dateEvidence: { originalPublication: null } });
+  assert.equal(unresolvedOriginal.postedAt, null);
+  const numericPublication = normalizeCandidate({
+    url: 'https://jobs.lever.co/acme/123', company: 'Acme', title: 'AI Engineer', provider: 'lever',
+    firstPublished: 1792483200000,
+  });
+  assert.equal(numericPublication.postedAt, new Date(1792483200000).toISOString());
+  assert.equal(numericPublication.dateEvidence.originalPublication.value, 1792483200000);
+  const datePublication = normalizeCandidate({
+    url: 'https://jobs.lever.co/acme/124', company: 'Acme', title: 'AI Engineer', provider: 'lever',
+    firstPublished: new Date('2026-10-20T08:00:00Z'),
+  });
+  assert.equal(datePublication.postedAt, '2026-10-20T08:00:00.000Z');
+  const ambiguousPublication = normalizeCandidate({
+    url: 'https://jobs.lever.co/acme/125', company: 'Acme', title: 'AI Engineer', provider: 'lever',
+    firstPublished: '2026-10-20 08:00:00',
+  });
+  assert.equal(ambiguousPublication.postedAt, null);
+  assert.equal(ambiguousPublication.dateEvidence.originalPublication.value, '2026-10-20 08:00:00');
+  for (const value of ['2026-02-30', '2025-02-29', '2026-02-30T08:00:00Z']) {
+    const impossiblePublication = normalizeCandidate({
+      url: 'https://jobs.lever.co/acme/126', company: 'Acme', title: 'AI Engineer', provider: 'lever',
+      firstPublished: value,
+    });
+    assert.equal(impossiblePublication.postedAt, null, value);
+    assert.equal(impossiblePublication.dateEvidence.originalPublication.value, value);
+  }
+  assert.equal(normalizeCandidate({ ...raw, postedAt: '2024-02-29', originalPublicationDate: '2024-02-29' }).postedAt, '2024-02-29');
+  assert.equal(normalizeCandidate({ ...raw, postedAt: '2026-10-20T09:00:00+05:30', originalPublicationDate: '2026-10-20T09:00:00+05:30' }).postedAt, '2026-10-20T09:00:00+05:30');
+  assert.doesNotThrow(() => normalizeCandidate({ ...raw, originalPublicationDate: 'yesterday' }));
+  const differentReq = { provider: 'workday', jobId: 'R-2', identityAliases: ['workday|R-1'], company: 'Acme' };
+  assert.equal(candidateMatchesLedgerRow(differentReq, { provider: 'workday', job_id: 'R-1', company: 'Acme' }), false);
   assert.throws(() => normalizeCandidate({ ...raw, firstSeenAt: 'yesterday' }), /firstSeenAt/);
 });
 

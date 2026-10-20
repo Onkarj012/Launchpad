@@ -101,7 +101,11 @@ export function deduplicateCandidates(candidates, options = {}) {
     let matchEvidence = null;
     for (const prior of kept) {
       const priorKeys = canonicalCandidateKeys(prior);
-      if (keys.providerJob && priorKeys.providerJob && companiesCompatible(candidate.company, prior.company)
+      const sameProviderDistinctRequisition = keys.providerJob && priorKeys.providerJob
+        && keys.providerJob.split('|')[0] === priorKeys.providerJob.split('|')[0]
+        && keys.providerJob !== priorKeys.providerJob;
+      if (keys.providerJob && priorKeys.providerJob && !sameProviderDistinctRequisition
+        && companiesCompatible(candidate.company, prior.company)
         && candidateIdentityKeys(candidate).some((key) => candidateIdentityKeys(prior).includes(key))) {
         winner = prior;
         code = 'DEDUP_PROVIDER_JOB_ID';
