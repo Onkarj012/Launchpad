@@ -602,21 +602,39 @@ test('explicit employer closure sets closed_at while a transport failure does no
   }
 });
 
-test('a job from a completed run survives a failed run on a reopened store with its earlier last_seen_at', async () => {
+test('a job survives a failed workflow run on a reopened store and closes only on explicit closure', async () => {
   const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-crawler-reopen-')), 'crawler.sqlite');
-  let store = openCrawlerStore(file);
-  await crawlRun({ store, runId: 'reopen-first', clock: fixedClock('2026-10-20T06:00:00.000Z'), sourcePlans: [absenceSource([absenceJob('reopened')])] });
-  const seen = jobRow(store, 'reopened');
-  store.close();
-  store = openCrawlerStore(file);
-  try {
-    const failed = await crawlRun({ store, runId: 'reopen-failed', clock: fixedClock('2026-10-21T06:00:00.000Z'), sourcePlans: [absenceSource([], { status: 'failed', errors: ['HTTP 503'] })] });
-    assert.equal(failed.telemetry.sources['absence-source'].status, 'failed');
-    const after = jobRow(store, 'reopened');
-    assert.equal(after.last_seen_at, '2026-10-20T06:00:00.000Z');
-    assert.equal(after.closed_at, null);
-    assert.deepEqual(after, seen);
-  } finally {
-    store.close();
-  }
+  const runWorkflow = async (runId, at, observations, manifest = {}) => {
+    const store = openCrawlerStore(file);
+    try {
+      return await crawlWorkflow({ store, runId, clock: fixedClock(at), sourcePlans: [{
+        id: 'reopen-source', lane: 'ats-direct', trustClass: 'direct', fetch: async () => ({ observations, manifest }),
+      }] });
+    } finally {
+      store.close();
+    }
+  };
+  const storedJob = () => {
+    const store = openCrawlerStore(file);
+    try {
+      return jobRow(store, 'reopened');
+    } finally {
+      store.close();
+    }
+  };
+
+  await runWorkflow('reopen-seen', '2026-10-20T06:00:00.000Z', [fixtureObservation({ providerJobId: 'reopened' })]);
+  const seen = storedJob();
+  assert.equal(seen.closed_at, null);
+
+  const failed = await runWorkflow('reopen-failed', '2026-10-21T06:00:00.000Z', [], { status: 'failed', errors: ['HTTP 503'] });
+  assert.equal(failed.sourceTelemetry['reopen-source'].status, 'failed');
+  const afterFailure = storedJob();
+  assert.equal(afterFailure.last_seen_at, '2026-10-20T06:00:00.000Z');
+  assert.equal(afterFailure.closed_at, null);
+  assert.deepEqual(afterFailure, seen);
+
+  const closed = await runWorkflow('reopen-closed', '2026-10-22T06:00:00.000Z', [fixtureObservation({ providerJobId: 'reopened', status: 'closed' })]);
+  assert.equal(closed.sourceTelemetry['reopen-source'].status, 'succeeded');
+  assert.equal(storedJob().closed_at, '2026-10-22T06:00:00.000Z');
 });

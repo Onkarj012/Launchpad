@@ -141,6 +141,13 @@ function eventDate(value) {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} IST`;
 }
 
+// Name the last successful snapshot of an incomplete source. Unknown snapshots stay Not Verified.
+function snapshotClause(state, snapshot) {
+  if (['ok', 'empty', 'disabled'].includes(state)) return '';
+  if (!snapshot?.lastSuccessfulAt || snapshot.ageHours == null) return 'last successful snapshot Not Verified';
+  return `last successful snapshot ${eventDate(snapshot.lastSuccessfulAt)} (${snapshot.ageHours.toFixed(1)} h old), not current`;
+}
+
 /** Render retained operator observations; never score or persist a lifecycle. */
 export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? new Date().toISOString(), policy = null } = {}) {
   const effectivePolicy = policy ?? { ...loadConfig(), salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
@@ -271,7 +278,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     for (const error of [...new Set([source.error, ...(source.detail?.errors ?? []), ...(source.manifest?.errors ?? [])].filter(Boolean))]) lines.push(`  - ${cell(error)}`);
   }
   for (const [id, endState] of Object.entries(result.sourceEndStates ?? result.terminalEnvelope?.sourceEndStates ?? {})) {
-    if (!['ok', 'empty', 'disabled'].includes(endState.state)) lines.push(`- ${cell(id)}: ${cell(endState.state)}; ${cell(endState.reason)}.`);
+    if (!['ok', 'empty', 'disabled'].includes(endState.state)) lines.push(`- ${cell(id)}: ${cell(endState.state)}; ${cell(endState.reason)}; ${cell(snapshotClause(endState.state, result.sourceSnapshotAges?.[id]))}.`);
   }
   if (result.error) lines.push(`- ${cell(result.error)}`);
   const terminal = result.terminalEnvelope ?? {};
@@ -381,7 +388,11 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   }).join('');
   const durableDetail = Object.entries(lastDurable).filter(([key]) => !coverageGroups.includes(key))
     .map(([id, source]) => `<p>Last durable source state: ${html(id)}: ${html(source?.status)}; fetched ${html(source?.fetched)}.</p>`).join('');
-  const sourceFailures = `<section data-section="source-failures"><h2>Source coverage and end states</h2>${sourceCoverage}${durableDetail}${Object.entries(endStates).map(([id, source]) => `<p>${html(id)}: ${html(source.state)}${source.reason ? `, ${html(source.reason)}` : ''}</p>`).join('') || '<p>Source end states: Not Verified</p>'}</section>`;
+  const endStateLines = Object.entries(endStates).map(([id, source]) => {
+    const clause = snapshotClause(source.state, result.sourceSnapshotAges?.[id]);
+    return `<p>${html(id)}: ${html(source.state)}${source.reason ? `, ${html(source.reason)}` : ''}${clause ? `; ${html(clause)}` : ''}</p>`;
+  }).join('');
+  const sourceFailures = `<section data-section="source-failures"><h2>Source coverage and end states</h2>${sourceCoverage}${durableDetail}${endStateLines || '<p>Source end states: Not Verified</p>'}</section>`;
   const errorItems = result.outcome?.errors ?? [];
   const fatalReason = envelope.fatalReason ?? result.outcome?.fatalReason ?? null;
   const runStatus = reportRunStatus(result);

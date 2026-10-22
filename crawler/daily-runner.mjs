@@ -31,7 +31,7 @@ import { pickDailyEntries } from '../job-pull/select.mjs';
 import { isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { readHiringEvents } from './hiring-events.mjs';
 import { buildDailyReceipt } from './daily-receipt.mjs';
-import { openCrawlerStore, persistDailyReceipt } from './run.mjs';
+import { openCrawlerStore, persistDailyReceipt, readLastSuccessfulSourceRuns } from './run.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
 export function dailyShortlistBudget(budgetPath, runAt, runId) {
@@ -1538,6 +1538,24 @@ async function runDailyNormalImpl({
   };
 }
 
+// Age of each incomplete source's last successful snapshot. Unreadable history returns undefined.
+function sourceSnapshotAgesFor(store, endStates, { runAt, runId }) {
+  try {
+    // The crawler run for this daily run is excluded; its own scans are current, not snapshots.
+    const last = readLastSuccessfulSourceRuns(store, { excludeRunId: runId ? `${runId}-crawler-v2` : null });
+    return Object.fromEntries(Object.entries(endStates)
+      .filter(([, endState]) => !['ok', 'empty', 'disabled'].includes(endState.state))
+      .map(([id, endState]) => {
+        const finished = Date.parse(last[id]?.finishedAt ?? '');
+        const known = Number.isFinite(finished);
+        const ageHours = known ? Math.round(((Date.parse(runAt) - finished) / 3600000) * 10) / 10 : null;
+        return [id, { state: endState.state, lastSuccessfulAt: known ? new Date(finished).toISOString() : null, ageHours: Number.isFinite(ageHours) ? ageHours : null }];
+      }));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runDailyNormal(options = {}) {
   const selectedMode = normalizeDailyMode(options.mode);
   const hiringEvents = readHiringEvents(options.config?.hiringEventsPath);
@@ -1549,6 +1567,7 @@ export async function runDailyNormal(options = {}) {
     const dailyReceipt = buildDailyReceipt(completed);
     let receiptPersistence = 'Not Verified';
     let receiptPersistenceError = null;
+    let sourceSnapshotAges;
     const databasePath = options.config?.databasePath;
     if (options.store || (typeof databasePath === 'string' && databasePath)) {
       let store = options.store;
@@ -1563,6 +1582,7 @@ export async function runDailyNormal(options = {}) {
         receiptPersistence = typeof runId === 'string'
           && (persistDailyReceipt(store, `${runId}-crawler-v2`, dailyReceipt) || persistDailyReceipt(store, runId, dailyReceipt))
           ? 'persisted' : 'run_missing';
+        sourceSnapshotAges = sourceSnapshotAgesFor(store, { ...completed.terminalEnvelope?.sourceEndStates, ...completed.sourceEndStates }, { runAt, runId: completed.terminalEnvelope?.runId });
       } catch (error) {
         receiptPersistence = 'failed';
         receiptPersistenceError = error instanceof Error ? error.message : String(error);
@@ -1570,7 +1590,7 @@ export async function runDailyNormal(options = {}) {
         if (ownsStore) store.close();
       }
     }
-    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError };
+    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError, sourceSnapshotAges };
   } finally {
     execution.cleanup();
   }

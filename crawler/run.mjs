@@ -1507,6 +1507,18 @@ function mapJobRow(row) {
   };
 }
 
+// Latest complete scan per source. Only `succeeded` counts; truncated, interrupted, and failed scans are not snapshots.
+export function readLastSuccessfulSourceRuns(store, { excludeRunId = null } = {}) {
+  const rows = store.prepare(`SELECT source_id, run_id, finished_at FROM (
+    SELECT t.source_id, t.run_id, COALESCE(r.finished_at, r.started_at) AS finished_at,
+      ROW_NUMBER() OVER (PARTITION BY t.source_id ORDER BY COALESCE(r.finished_at, r.started_at) DESC, t.run_id DESC) AS position
+    FROM source_telemetry t
+    JOIN crawl_runs r ON r.run_id = t.run_id
+    WHERE t.status = 'succeeded' AND (? IS NULL OR t.run_id <> ?)
+  ) WHERE position = 1`).all(excludeRunId, excludeRunId);
+  return Object.fromEntries(rows.map((row) => [row.source_id, { runId: row.run_id, finishedAt: row.finished_at }]));
+}
+
 export function readCrawlerRunData(store, runId) {
   return {
     jobs: store.prepare('SELECT * FROM jobs ORDER BY job_key').all().map(mapJobRow),

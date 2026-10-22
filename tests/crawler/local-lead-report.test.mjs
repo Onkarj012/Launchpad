@@ -129,6 +129,17 @@ test('daily terminal envelope source failures remain visible in HTML Markdown an
   assert.match(renderLocalLeadReport(result, { now: result.runAt }), /ats-warm: failed/);
 });
 
+test('an incomplete source without a retained snapshot says the snapshot is Not Verified', () => {
+  const result = { runAt: NOW, modes: {}, sourceEndStates: {
+    'ats-warm': { state: 'failed', reason: 'HTTP_503' },
+    'ats-direct': { state: 'ok' },
+  } };
+  for (const report of [renderLocalLeadReport(result, { now: NOW }), renderLocalDailyHtmlReport(result)]) {
+    assert.match(report, /ats-warm: failed.*last successful snapshot Not Verified/);
+    assert.doesNotMatch(report, /ats-direct: ok; last successful/);
+  }
+});
+
 test('fatal HTML reports show escaped causes, retained coverage, unknown counts, and event dates', () => {
   const result = {
     runAt: NOW,

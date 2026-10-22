@@ -83,6 +83,32 @@ test('a workflow handoff failure retains durable source coverage in the fatal da
   } finally { store?.close(); }
 });
 
+test('a failed source reports its last successful snapshot age after the store is reopened', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'snapshot-board', company: 'Snapshot Company' }] });
+  const firstStore = openCrawlerStore(config.databasePath);
+  const first = await runDailyNormalActual(runOptions(config, fakeTransport({ 'snapshot-board': [greenhouseJob(301, 'snapshot-board')] }), { runId: 'snapshot-first', store: firstStore }));
+  firstStore.close();
+  assert.equal(first.terminalEnvelope.sourceEndStates['ats-warm'].state, 'ok');
+
+  const secondStore = openCrawlerStore(config.databasePath);
+  try {
+    const second = await runDailyNormalActual(runOptions(config, async () => { throw new Error('warm transport failed'); }, {
+      runId: 'snapshot-second',
+      store: secondStore,
+      clock: { now: () => '2026-07-24T12:00:00.000Z', sleep: async () => {} },
+    }));
+    assert.equal(second.terminalEnvelope.sourceEndStates['ats-warm'].state, 'failed');
+    assert.deepEqual(second.sourceSnapshotAges['ats-warm'], { state: 'failed', lastSuccessfulAt: NOW, ageHours: 5.5 });
+    const markdown = renderLocalLeadReport(second, { now: second.runAt });
+    const html = renderLocalDailyHtmlReport(second);
+    const snapshot = /ats-warm: failed.*last successful snapshot 2026-07-24 12:00:00 IST \(5\.5 h old\), not current/;
+    assert.match(markdown, snapshot);
+    assert.match(html, snapshot);
+  } finally {
+    secondStore.close();
+  }
+});
+
 test('one daily crawl routes a Pune startup once and tags its other mode', async () => {
   const { config } = testConfig({ warmBoards: [{ slug: 'routing-startup', company: 'Routing Startup' }] });
   Object.assign(config.sources.atsWarm.boards[0], { startupTagged: true, evidenceRef: 'https://portfolio.example.test/routing-startup' });
