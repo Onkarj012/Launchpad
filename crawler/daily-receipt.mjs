@@ -130,12 +130,36 @@ function hasFinalSelectionEvidence(result) {
   return ['startup', 'normal', 'remote'].every((mode) => Array.isArray(modes[mode]?.shortlist));
 }
 
-// Crawler observations name the real source and query, so a lane-level funnel row for the same posting yields to them.
+// A lane row mirrors an observation of the same posting when it names no source or the same source; a distinct source stays.
 function mergeProvenance(laneItems, observationItems = []) {
   const posting = (item) => JSON.stringify([item.provider ?? null, item.source ?? null, item.observedAt ?? null, item.postedAt ?? null]);
-  const observed = new Set(observationItems.map(posting));
-  const items = [...laneItems.filter((item) => !observed.has(posting(item))), ...observationItems];
-  return [...new Map(items.map((item) => [JSON.stringify([item.provider ?? null, item.source ?? null, item.sourceId ?? null, item.observedAt ?? null, item.postedAt ?? null, item.queryId ?? null, item.recovery ?? null]), item])).values()];
+  const observedPostings = new Set(observationItems.map(posting));
+  const observedSources = new Set(observationItems.map((item) => JSON.stringify([posting(item), item.sourceId ?? null])));
+  const mirrored = (item) => item.sourceId == null ? observedPostings.has(posting(item)) : observedSources.has(JSON.stringify([posting(item), item.sourceId]));
+  const items = [...laneItems.filter((item) => !mirrored(item)), ...observationItems];
+  return [...new Map(items.map((item) => [JSON.stringify([item.provider ?? null, item.source ?? null, item.sourceId ?? null, item.observedAt ?? null, item.postedAt ?? null, item.queryId ?? null, item.recovery ?? null, item.recoveryOutcome ?? null]), item])).values()];
+}
+
+// A recovered lead keeps its original requisition, URL, and aliases, because employer resolution changes its provider identity.
+function observationKeyHashes(raw) {
+  const observed = raw?.candidate ?? raw;
+  const keys = [candidateIdentity(raw)];
+  if (observed?.evidence?.recovery?.kind !== 'held-lead-recovery') return keys.filter(Boolean);
+  const identityUrl = observed.evidence.recovery.identityUrl;
+  const aliases = [observed.evidence.recovery.providerRequisitionKey, ...(Array.isArray(observed.identityAliases) ? observed.identityAliases : [])];
+  for (const alias of aliases) if (typeof alias === 'string' && alias) keys.push(hash(alias));
+  if (typeof identityUrl === 'string' && identityUrl.startsWith('requisition:')) keys.push(hash(identityUrl.slice('requisition:'.length)));
+  const url = canonicalizeUrl(typeof identityUrl === 'string' && identityUrl.startsWith('url:') ? identityUrl.slice('url:'.length) : identityUrl);
+  if (url) keys.push(hash(`url|${url}`));
+  return [...new Set(keys.filter(Boolean))];
+}
+
+// Recovered needs a resolved employer route; without one, a recovered outcome is unknown and other outcomes stay as recorded.
+function recoveryOutcome(observed) {
+  const outcome = observed.evidence?.recovery?.outcome ?? null;
+  const routed = Boolean(observed.originalApplicationUrl);
+  if (outcome === 'recovered') return routed ? 'recovered' : null;
+  return outcome ?? (routed ? 'recovered' : null);
 }
 
 // Keep per-requisition stage and final selection details compact and safe.
@@ -179,20 +203,19 @@ function receiptIdentityRows(result) {
     if (historyKey && keyHash) historyIdentities.set(historyKey, keyHash);
   }
   for (const candidate of result.observations ?? []) {
-    const keyHash = candidateIdentity(candidate);
-    if (keyHash) {
+    const observed = candidate?.candidate ?? candidate;
+    const entry = {
+      provider: observed?.provider ?? null,
+      source: observed?.source ?? null,
+      sourceId: observed?.sourceId ?? observed?.discoverySource ?? null,
+      observedAt: observed?.observedAt ?? null,
+      postedAt: observed?.postedAt ?? null,
+      dateEvidence: observed?.dateEvidence ?? observed?.evidence?.dateEvidence ?? null,
+      ...(observed?.provenance?.queryId ? { queryId: observed.provenance.queryId } : {}),
+      ...(observed?.evidence?.recovery?.kind === 'held-lead-recovery' ? { recovery: true, recoveryOutcome: recoveryOutcome(observed) } : {}),
+    };
+    for (const keyHash of observationKeyHashes(candidate)) {
       const entries = observationProvenance.get(keyHash) ?? [];
-      const observed = candidate?.candidate ?? candidate;
-      const entry = {
-        provider: observed?.provider ?? null,
-        source: observed?.source ?? null,
-        sourceId: observed?.sourceId ?? observed?.discoverySource ?? null,
-        observedAt: observed?.observedAt ?? null,
-        postedAt: observed?.postedAt ?? null,
-        dateEvidence: observed?.dateEvidence ?? observed?.evidence?.dateEvidence ?? null,
-        ...(observed?.provenance?.queryId ? { queryId: observed.provenance.queryId } : {}),
-        ...(observed?.evidence?.recovery?.kind === 'held-lead-recovery' ? { recovery: true } : {}),
-      };
       if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(entry))) entries.push(entry);
       observationProvenance.set(keyHash, entries);
     }
@@ -206,7 +229,7 @@ function receiptIdentityRows(result) {
       addOverlay(overlays, keyHash, (previous) => {
         previous.modes.push(mode);
         previous.score = role.matchScore ?? role.score ?? previous.score;
-        previous.scoreComponents = role.scoreComponents ?? role.components ?? previous.scoreComponents;
+        previous.scoreComponents = role.scoreComponents ?? role.components ?? role.componentScores ?? previous.scoreComponents;
         previous.selectionTier = role.selectionTier ?? previous.selectionTier;
         previous.historicalSuppressed ||= role.historicalSuppressed === true;
       });

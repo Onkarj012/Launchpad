@@ -40,7 +40,7 @@ Already satisfied with no code change: failed, truncated, and interrupted absenc
 
 ## P10 useful source yield, 2026-10-22
 
-Local-verified: the private daily report has a "Useful yield by source" section. Each source and query row counts requisitions that reached JD completeness, hard eligibility, valid scoring, scoring failure, history suppression, verification, and final selection. A requisition counts once per row and once overall, even when discovery and held-lead recovery both find it. Requests, duration, failures, and truncation sit beside each row. A cost stays Not Verified when two queries share one source, because the telemetry cannot be split by query. The section says no allocation is recommended from fetched counts.
+Local-verified: the private daily report has a "Useful yield by source" section. Each source and query row counts requisitions that reached JD completeness, hard eligibility, valid scoring, scoring failure, history suppression, verification, final selection, and a recovered held-lead route. Hard eligibility counts only explicit passes. A requisition counts once per row and once overall, even when discovery and held-lead recovery both find it. Requests, duration, failures, and truncation sit beside each row. A row takes its source's cost only when the source ran one query, or has no query split and one row; otherwise its cost stays Not Verified. The section says no allocation is recommended from fetched counts.
 
 Already satisfied with no code change: the crawler-v2 twenty-minute budget split (1200000, 720000, 300000, 180000 ms). A new test pins those values. No budget, priority, host limit, or cooldown changed.
 
