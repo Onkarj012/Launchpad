@@ -24,6 +24,10 @@ The isolated P03 worktree preserves provider requisition IDs, identity aliases a
 
 The isolated P04 implementation adds an explicit retained-lead input to the existing portal resolver pass. Recovery shares that pass's resolver request and parent deadline limits, and its local receipt/report labels recovered leads separately from new discovery. This is local fixture evidence only. No live probe or operational verification is claimed.
 
+## P05 held-lead recovery resume, 2026-10-20
+
+The isolated P05 implementation resumes due held leads from the existing observation store, keeps retry timing and terminal outcomes, and reserves shared resolver capacity for ordinary discovery. Existing workflow fixtures cover reopen/retry, rate limits, transport failure, success deduplication, identity preservation, terminal outcomes, and visible continuation. This is local fixture evidence only; no live yield or operational verification is claimed.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

@@ -16,6 +16,7 @@ import {
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
 import { openCrawlerStore } from '../../crawler/run.mjs';
 import { HIMALAYAS_SEARCH_URL } from '../../job-pull/remote-adapters/himalayas.mjs';
+import { createOriginalListingResolver } from '../../crawler/original-listing-resolver.mjs';
 
 test('morning trial runs YC India and remote search in each mode and stops after seven IST dates', async () => {
   const config = { sources: {
@@ -547,7 +548,7 @@ test('portal resolution retries retained deadline failures and preserves fresh e
   const recoveryOptions = {
     config: { sources: { portals: { enabled: false, maxCandidates: 10, maxResolverRequests: 30 } } },
     transport: async () => { throw new Error('held recovery must not search portals'); },
-    runAt, clock: { monotonicNow: () => 0 }, schedule: 'morning', heldPortalLeads: heldLeads,
+    runAt, clock: { monotonicNow: () => 0, currentTime: () => runAt }, schedule: 'morning', heldPortalLeads: heldLeads,
     resolver: async (candidate) => {
       const calls = (callsByLead.get(candidate.jobId) ?? 0) + 1;
       callsByLead.set(candidate.jobId, calls);
@@ -578,8 +579,357 @@ test('portal resolution retries retained deadline failures and preserves fresh e
   assert.equal(firstRecovery.manifest.telemetry.heldLeadRecovery.recovered, 1);
   assert.equal(firstRecovery.manifest.telemetry.heldLeadRecovery.blocked, 1);
   assert.equal(checkpointCursor.completedDetails.length, 3);
+  const firstSuccess = firstRecovery.manifest.telemetry.heldLeadRecovery.outcomes.find(({ lead }) => lead === '234567');
+  assert.equal(firstSuccess.attemptCount, 1, 'a successful resolver request counts as an attempt');
+  assert.equal(firstSuccess.reason, 'original-employer-detail');
 
-  const resumedRecovery = await buildSourcePlans(recoveryOptions).find(({ id }) => id === 'portal-discovery').fetch({ cursor: checkpointCursor });
+  const glassdoorLead = {
+    provider: 'glassdoor', providerJobId: 'r2-503', jobId: 'r2-503', company: 'Acme', title: 'AI Engineer',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/r2-503', canonicalUrl: 'https://www.glassdoor.com/job-listing/r2-503',
+  };
+  let glassdoorCalls = 0;
+  let glassdoorCursor;
+  let glassdoorNow = '2026-10-13T10:20:00.000Z';
+  const glassdoorOptions = {
+    ...recoveryOptions,
+    clock: { monotonicNow: () => 0, currentTime: () => glassdoorNow },
+    heldPortalLeads: [glassdoorLead],
+    resolver: async () => {
+      glassdoorCalls += 1;
+      return glassdoorCalls < 3
+        ? { status: 'verification', telemetry: { requests: 1 }, evidence: { httpStatus: 503, resolution: { reason: 'detail-http-503' } } }
+        : { status: 'resolved', telemetry: { requests: 1 }, originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/r2-503', patch: {
+          company: 'Acme', title: 'AI Engineer', location: 'Pune, India', description: 'Build Python APIs.',
+          employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 }, postedAt: '2026-10-20',
+          liveness: { status: 'Active' },
+        } };
+    },
+  };
+  const failedGlassdoor = await buildSourcePlans(glassdoorOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { glassdoorCursor = value; },
+  });
+  assert.equal(failedGlassdoor.manifest.telemetry.heldLeadRecovery.continuation, true);
+  assert.equal(failedGlassdoor.manifest.telemetry.heldLeadRecovery.outcomes[0].recoveryState, 'pending');
+  const firstCursorRecovery = glassdoorCursor.completedDetails[0].evidence.recovery;
+  assert.equal(firstCursorRecovery.attemptCount, 1);
+  assert.equal(firstCursorRecovery.attemptedAt, '2026-10-13T10:20:00.000Z');
+  assert.equal(firstCursorRecovery.nextEligibleAt, '2026-10-13T11:20:00.000Z');
+  glassdoorNow = '2026-10-13T11:20:00.000Z';
+  const secondFailure = await buildSourcePlans({ ...glassdoorOptions, runAt: '2026-10-13T11:20:00.000Z' })
+    .find(({ id }) => id === 'portal-discovery').fetch({ cursor: glassdoorCursor,
+      checkpoint: async ({ cursor: value }) => { glassdoorCursor = value; } });
+  const secondCursorRecovery = glassdoorCursor.completedDetails[0].evidence.recovery;
+  assert.equal(secondFailure.manifest.telemetry.heldLeadRecovery.outcomes[0].attemptCount, 2);
+  assert.equal(secondCursorRecovery.attemptedAt, '2026-10-13T11:20:00.000Z');
+  assert.equal(secondCursorRecovery.nextEligibleAt, '2026-10-13T13:20:00.000Z');
+  glassdoorNow = '2026-10-13T13:20:00.000Z';
+  const resumedGlassdoor = await buildSourcePlans({ ...glassdoorOptions, runAt: '2026-10-13T13:20:00.000Z' })
+    .find(({ id }) => id === 'portal-discovery').fetch({ cursor: glassdoorCursor,
+      checkpoint: async ({ cursor: value }) => { glassdoorCursor = value; } });
+  assert.equal(glassdoorCalls, 3, 'non-LinkedIn retryable details must resume from the provider identity checkpoint');
+  assert.equal(resumedGlassdoor.manifest.telemetry.heldLeadRecovery.recovered, 1);
+  const successfulCursorRecovery = glassdoorCursor.completedDetails[0].evidence.recovery;
+  assert.equal(successfulCursorRecovery.attemptCount, 3);
+  assert.equal(successfulCursorRecovery.nextEligibleAt, null);
+  glassdoorNow = '2026-10-13T14:20:00.000Z';
+  const successfulResume = await buildSourcePlans({ ...glassdoorOptions, runAt: '2026-10-13T14:20:00.000Z' })
+    .find(({ id }) => id === 'portal-discovery').fetch({ cursor: glassdoorCursor });
+  assert.equal(glassdoorCalls, 3, 'a successful checkpoint must be reused without another employer request');
+  assert.equal(successfulResume.manifest.telemetry.heldLeadRecovery.reused, 1);
+
+  let actualResolverRequests = 0;
+  const actualResolver = createOriginalListingResolver({ transport: async (url) => {
+    actualResolverRequests += 1;
+    if (new URL(url).hostname === 'www.glassdoor.com') return {
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/ats-987' }, body: '',
+    };
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-10-12', employmentType: 'FULL_TIME', identifier: { name: 'Acme', value: 'ats-987' },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  } });
+  const actualGlassdoorLead = {
+    provider: 'glassdoor', providerJobId: 'portal-123', jobId: 'portal-123', company: 'Acme', title: 'AI Engineer',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/portal-123', canonicalUrl: 'https://www.glassdoor.com/job-listing/portal-123',
+  };
+  const actualOptions = { ...glassdoorOptions, heldPortalLeads: [actualGlassdoorLead], resolver: actualResolver };
+  const actualFirst = await buildSourcePlans(actualOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { glassdoorCursor = value; },
+  });
+  assert.equal(actualFirst.manifest.telemetry.heldLeadRecovery.recovered, 1);
+  assert.equal(glassdoorCursor.completedDetails[0].provider, 'greenhouse');
+  assert.equal(glassdoorCursor.completedDetails[0].jobId, 'portal-123');
+  assert.equal(glassdoorCursor.completedDetails[0].evidence.recovery.providerRequisitionKey, 'glassdoor|portal 123');
+  const actualResumed = await buildSourcePlans(actualOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    cursor: glassdoorCursor,
+  });
+  assert.equal(actualResolverRequests, 2, 'a saved success after provider change must reuse the original held lead with no more GETs');
+  assert.equal(actualResumed.manifest.telemetry.heldLeadRecovery.reused, 1);
+
+  const fairRequests = [];
+  const fairResolver = createOriginalListingResolver({ runAt, transport: async (url) => {
+    const parsed = new URL(url);
+    fairRequests.push(url);
+    const id = parsed.pathname.split('/').at(-1).replace(/\.html$/, '');
+    if (parsed.hostname === 'www.glassdoor.com') return {
+      status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '',
+    };
+    if (parsed.hostname === 'www.linkedin.com') return {
+      status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '',
+    };
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-10-12', employmentType: 'FULL_TIME', identifier: { name: 'Acme', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  } });
+  const fairConfig = portalPlanConfig();
+  fairConfig.sources.portals.maxResolverRequests = 30;
+  fairConfig.sources.portals.resolverConcurrency = 1;
+  const fairPass = await buildSourcePlans({ ...actualOptions, config: fairConfig, heldPortalLeads: [actualGlassdoorLead],
+    transport: async () => ({ status: 200, body: linkedinCards(1) }), resolver: fairResolver })
+    .find(({ id }) => id === 'portal-discovery').fetch();
+  assert.equal(fairPass.manifest.telemetry.heldLeadRecovery.recovered, 1);
+  assert.equal(fairPass.observations.length, 2);
+  assert.equal(fairPass.observations.filter(({ evidence }) => evidence?.recovery?.kind === 'held-lead-recovery').length, 1);
+  assert.equal(fairRequests.length, 4, 'ordinary discovery and one held lead both receive resolver requests');
+
+  const cursorLeads = Array.from({ length: 11 }, (_, index) => ({
+    provider: 'glassdoor', providerJobId: `cursor-success-${index}`, jobId: `cursor-success-${index}`,
+    company: 'Acme', title: 'AI Engineer',
+    discoveryUrl: `https://www.glassdoor.com/job-listing/cursor-success-${index}`,
+    canonicalUrl: `https://www.glassdoor.com/job-listing/cursor-success-${index}`,
+  }));
+  const cursorCalls = new Map();
+  const cursorResolver = createOriginalListingResolver({ transport: async (url) => {
+    const parsed = new URL(url);
+    const id = parsed.pathname.split('/').at(-1).replace(/\.html$/, '');
+    cursorCalls.set(id, (cursorCalls.get(id) ?? 0) + 1);
+    if (parsed.hostname === 'www.glassdoor.com') return {
+      status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '',
+    };
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-10-12', employmentType: 'FULL_TIME', identifier: { name: 'Acme', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  } });
+  let successCursor;
+  const cursorConfig = portalPlanConfig();
+  cursorConfig.sources.portals.enabled = false;
+  cursorConfig.sources.portals.maxCandidates = 24;
+  cursorConfig.sources.portals.maxResolverRequests = 48;
+  cursorConfig.sources.portals.resolverConcurrency = 1;
+  const cursorOptions = { ...actualOptions, heldPortalLeads: cursorLeads, resolver: cursorResolver,
+    transport: async () => { throw new Error('cursor resume must not search portals'); }, config: cursorConfig };
+  const firstSuccessPass = await buildSourcePlans(cursorOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { successCursor = value; },
+  });
+  assert.equal(firstSuccessPass.manifest.telemetry.heldLeadRecovery.attempted, 10,
+    JSON.stringify(firstSuccessPass.manifest.telemetry.heldLeadRecovery));
+  assert.equal(successCursor.completedDetails.length, 10);
+  assert.equal(cursorLeads.reduce((sum, { jobId }) => sum + (cursorCalls.get(jobId) ?? 0), 0), 20);
+  const resumedSuccessPass = await buildSourcePlans(cursorOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    cursor: successCursor, checkpoint: async ({ cursor: value }) => { successCursor = value; },
+  });
+  assert.equal(cursorLeads.reduce((sum, { jobId }) => sum + (cursorCalls.get(jobId) ?? 0), 0), 22);
+  assert.equal(resumedSuccessPass.manifest.telemetry.heldLeadRecovery.reused, 10);
+  assert.equal(resumedSuccessPass.manifest.telemetry.heldLeadRecovery.attempted, 1);
+  assert.ok(cursorLeads.slice(0, 10).every(({ jobId }) => cursorCalls.get(jobId) === 2),
+    'the ten successful details must be reused without another request');
+  assert.equal(cursorCalls.get(cursorLeads[10].jobId), 2, 'the eleventh held lead must use its resolver slot');
+
+  const rateLimitedLead = { ...cursorLeads[0], providerJobId: 'cursor-429', jobId: 'cursor-429',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/cursor-429', canonicalUrl: 'https://www.glassdoor.com/job-listing/cursor-429' };
+  let rateLimitedRequests = 0;
+  const rateLimitedResolver = createOriginalListingResolver({ runAt, now: () => runAt, transport: async (url) => {
+    rateLimitedRequests += 1;
+    if (rateLimitedRequests === 1) return { status: 429, headers: { 'Retry-After': '86400' }, body: 'slow down' };
+    if (new URL(url).hostname === 'www.glassdoor.com') return {
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/cursor-429' }, body: '',
+    };
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-10-12', employmentType: 'FULL_TIME', identifier: { name: 'Acme', value: 'cursor-429' },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  } });
+  let rateLimitCursor;
+  const rateLimitOptions = { ...cursorOptions, heldPortalLeads: [rateLimitedLead], resolver: rateLimitedResolver };
+  const rateLimitedPass = await buildSourcePlans(rateLimitOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { rateLimitCursor = value; },
+  });
+  const retained429 = rateLimitCursor.completedDetails[0].evidence.recovery;
+  assert.equal(retained429.attemptCount, 1);
+  assert.equal(retained429.nextEligibleAt, '2026-10-14T10:00:00.000Z');
+  const earlyRateLimitedPass = await buildSourcePlans(rateLimitOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    cursor: rateLimitCursor, checkpoint: async ({ cursor: value }) => { rateLimitCursor = value; },
+  });
+  assert.equal(rateLimitedRequests, 1, 'a cursor resume must respect the retained Retry-After deadline');
+  assert.equal(earlyRateLimitedPass.manifest.telemetry.heldLeadRecovery.waiting, 1);
+  assert.equal(earlyRateLimitedPass.manifest.telemetry.heldLeadRecovery.continuation, true);
+  assert.equal(earlyRateLimitedPass.manifest.telemetry.heldLeadRecovery.outcomes[0].attemptCount, 1);
+  assert.equal(earlyRateLimitedPass.manifest.telemetry.heldLeadRecovery.outcomes[0].nextEligibleAt, retained429.nextEligibleAt);
+  assert.equal(rateLimitCursor.completedDetails[0].evidence.recovery.attemptCount, 1);
+  assert.equal(rateLimitCursor.completedDetails[0].evidence.recovery.nextEligibleAt, retained429.nextEligibleAt);
+
+  const rediscoveryConfig = portalPlanConfig();
+  rediscoveryConfig.sources.portals.enabled = true;
+  const rediscoveryLead = { provider: 'linkedin-jobs', providerJobId: '100000', jobId: '100000', company: 'Acme',
+    title: 'AI Engineer', location: 'Pune, India', discoveryUrl: 'https://www.linkedin.com/jobs/view/100000',
+    canonicalUrl: 'https://www.linkedin.com/jobs/view/100000' };
+  let rediscoveryCalls = 0;
+  const rediscoveryRequests = [];
+  const rediscoveryResolver = createOriginalListingResolver({ runAt, now: () => runAt, transport: async (url) => {
+    rediscoveryCalls += 1;
+    rediscoveryRequests.push(url);
+    const parsed = new URL(url);
+    if (parsed.hostname === 'www.linkedin.com') return {
+      status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${parsed.pathname.split('/').at(-1)}` }, body: '',
+    };
+    if (parsed.pathname.endsWith('/100000') && rediscoveryCalls === 2) {
+      return { status: 429, headers: { 'Retry-After': '86400' }, body: 'rate limited' };
+    }
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+        hiringOrganization: { name: 'Company 1' }, description: 'Full-time AI Engineer in Pune, India. Build Python systems. 0-1 years experience.',
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } }, datePosted: '2026-10-12',
+        employmentType: 'FULL_TIME', identifier: { name: 'Company 1', value: '100001' },
+      })}</script>` };
+  } });
+  const rediscoverySearchConfig = portalPlanConfig();
+  rediscoverySearchConfig.sources.portals.enabled = false;
+  const rediscoveryOptions = { ...rateLimitOptions, config: rediscoverySearchConfig, heldPortalLeads: [rediscoveryLead], resolver: rediscoveryResolver };
+  let rediscoveryCursor;
+  const rediscoveryFailure = await buildSourcePlans(rediscoveryOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { rediscoveryCursor = value; },
+  });
+  assert.equal(rediscoveryFailure.manifest.telemetry.heldLeadRecovery.outcomes[0].reason, 'blocked');
+  const rediscoveryPending = rediscoveryCursor.completedDetails[0].evidence.recovery;
+  assert.equal(rediscoveryPending.attemptCount, 1);
+  assert.equal(rediscoveryPending.nextEligibleAt, '2026-10-14T10:00:00.000Z');
+  const rediscoverySearch = async () => ({ status: 200, body: linkedinCards(2) });
+  const rediscoveryRun = await buildSourcePlans({ ...rediscoveryOptions, config: rediscoveryConfig,
+    heldPortalLeads: [], heldPortalRecoveryWaiting: 1, heldPortalRecoveryWaitingCandidates: rediscoveryCursor.completedDetails,
+    transport: rediscoverySearch, runAt: '2026-10-13T10:00:00.000Z' })
+    .find(({ id }) => id === 'portal-discovery').fetch({ cursor: rediscoveryCursor });
+  assert.equal(rediscoveryCalls, 4, 'ordinary discovery may resolve the unrelated role while the held role waits');
+  assert.equal(rediscoveryRequests.filter((url) => url.endsWith('/100000')).length, 2,
+    `the held LinkedIn detail and employer detail are not requested again before Retry-After: ${rediscoveryRequests.join(', ')}`);
+  assert.equal(rediscoveryRun.manifest.telemetry.heldLeadRecovery.waiting, 1);
+  assert.equal(rediscoveryRun.manifest.telemetry.heldLeadRecovery.continuation, true);
+  assert.equal(rediscoveryRun.manifest.telemetry.heldLeadRecovery.outcomes[0].attemptCount, 1);
+  assert.equal(rediscoveryRun.manifest.telemetry.heldLeadRecovery.outcomes[0].nextEligibleAt, rediscoveryPending.nextEligibleAt);
+  assert.equal(rediscoveryRequests.filter((url) => url.endsWith('/100001')).length, 2,
+    'the unrelated ordinary requisition must still resolve');
+
+  const distinctAliasWaiting = { ...rediscoveryLead, providerJobId: '100002', jobId: '100002',
+    discoveryUrl: 'https://www.linkedin.com/jobs/view/100002', canonicalUrl: 'https://www.linkedin.com/jobs/view/100002',
+    evidence: { recovery: { kind: 'held-lead-recovery',
+      identityUrl: 'requisition:linkedin jobs|100000', outcome: 'pending', nextEligibleAt: '2026-10-14T10:00:00.000Z' } } };
+  const distinctAliasPass = await buildSourcePlans({ ...rediscoveryOptions, config: rediscoveryConfig, heldPortalLeads: [],
+    heldPortalRecoveryWaiting: 1, heldPortalRecoveryWaitingCandidates: [distinctAliasWaiting],
+    transport: async () => ({ status: 200, body: linkedinCards(1) }),
+    resolver: createOriginalListingResolver({ transport: async () => ({ status: 302,
+      headers: { location: 'https://boards.greenhouse.io/acme/jobs/100001' }, body: '' }) }) })
+    .find(({ id }) => id === 'portal-discovery').fetch();
+  assert.equal(distinctAliasPass.manifest.telemetry.resolutionRequests, 2,
+    'a matching persisted alias cannot override different requisitions from the same provider');
+  assert.equal(distinctAliasPass.manifest.telemetry.heldLeadRecovery.waiting, 1);
+  const dueRateLimitedPass = await buildSourcePlans({ ...rateLimitOptions, runAt: retained429.nextEligibleAt })
+    .find(({ id }) => id === 'portal-discovery').fetch({
+      cursor: rateLimitCursor, checkpoint: async ({ cursor: value }) => { rateLimitCursor = value; },
+    });
+  assert.equal(rateLimitedRequests, 3);
+  assert.equal(dueRateLimitedPass.manifest.telemetry.heldLeadRecovery.recovered, 1);
+  assert.equal(dueRateLimitedPass.manifest.telemetry.heldLeadRecovery.outcomes[0].attemptCount, 2);
+
+  const budgetConfig = portalPlanConfig();
+  budgetConfig.sources.portals.enabled = false;
+  budgetConfig.sources.portals.maxCandidates = 12;
+  budgetConfig.sources.portals.maxResolverRequests = 4;
+  budgetConfig.sources.portals.resolverConcurrency = 1;
+  const budgetLeads = Array.from({ length: 10 }, (_, index) => ({
+    provider: 'glassdoor', providerJobId: `cursor-budget-${index}`, jobId: `cursor-budget-${index}`,
+    company: 'Acme', title: 'AI Engineer',
+    discoveryUrl: `https://www.glassdoor.com/job-listing/cursor-budget-${index}`,
+    canonicalUrl: `https://www.glassdoor.com/job-listing/cursor-budget-${index}`,
+  }));
+  const budgetCalls = new Map();
+  const budgetResolver = createOriginalListingResolver({ transport: async (url) => {
+    const parsed = new URL(url);
+    const id = parsed.pathname.split('/').at(-1).replace(/\.html$/, '');
+    budgetCalls.set(id, (budgetCalls.get(id) ?? 0) + 1);
+    if (parsed.hostname === 'www.glassdoor.com') {
+      if ((id === 'cursor-budget-1' || id === 'cursor-budget-2') && budgetCalls.get(id) === 1) {
+        return { status: 503, body: 'temporary failure' };
+      }
+      return { status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '' };
+    }
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-10-12', employmentType: 'FULL_TIME', identifier: { name: 'Acme', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  } });
+  let budgetCursor;
+  const budgetOptions = { config: budgetConfig, runAt, clock: { monotonicNow: () => 0, currentTime: () => runAt }, schedule: 'morning',
+    profile: { mode: 'normal' }, heldPortalLeads: budgetLeads, resolver: budgetResolver,
+    transport: async () => { throw new Error('budget cursor recovery must not search portals'); } };
+  const firstBudgetPass = await buildSourcePlans(budgetOptions).find(({ id }) => id === 'portal-discovery').fetch({
+    checkpoint: async ({ cursor: value }) => { budgetCursor = value; },
+  });
+  assert.equal(firstBudgetPass.manifest.telemetry.heldLeadRecovery.recovered, 1);
+  assert.equal(firstBudgetPass.manifest.telemetry.heldLeadRecovery.attempted, 3);
+  const budgetPending = firstBudgetPass.manifest.telemetry.heldLeadRecovery.outcomes
+    .filter(({ lead }) => Number(lead.split('-').at(-1)) >= 3);
+  assert.equal(budgetPending.length, 7);
+  assert.ok(budgetPending.every(({ recoveryState, reason, attemptCount, attemptedAt, nextEligibleAt }) =>
+    recoveryState === 'pending' && reason === 'request-budget-exhausted'
+      && attemptCount === 0 && attemptedAt === null && nextEligibleAt === null));
+  assert.equal(budgetCursor.completedDetails.length, 3);
+  assert.equal(budgetCursor.completedDetails.find(({ jobId }) => jobId === 'cursor-budget-0')
+    .evidence.recovery.outcome, 'recovered');
+
+  budgetConfig.sources.portals.maxResolverRequests = 30;
+  const resumedBudgetPass = await buildSourcePlans({ ...budgetOptions, runAt: '2026-10-13T11:00:00.000Z' })
+    .find(({ id }) => id === 'portal-discovery').fetch({ cursor: budgetCursor,
+      checkpoint: async ({ cursor: value }) => { budgetCursor = value; } });
+  assert.equal(resumedBudgetPass.manifest.telemetry.heldLeadRecovery.recovered, 10,
+    JSON.stringify(resumedBudgetPass.manifest.telemetry.heldLeadRecovery.outcomes));
+  assert.equal(resumedBudgetPass.manifest.telemetry.heldLeadRecovery.reused, 1);
+  assert.equal(budgetCalls.get('cursor-budget-0'), 2, 'checkpoint success reuse must not request the completed lead again');
+  assert.ok(budgetLeads.slice(3).every(({ jobId }) => budgetCalls.get(jobId) === 2),
+    'cursor resume must retry each unattempted budget lead');
+
+  const chainBound = await buildSourcePlans({ ...budgetOptions, heldPortalLeads: [budgetLeads[0]],
+    resolver: createOriginalListingResolver({ maxRedirects: 0, transport: async () => ({
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/chain-bound' }, body: '',
+    }) }) })
+    .find(({ id }) => id === 'portal-discovery').fetch();
+  assert.equal(chainBound.manifest.telemetry.heldLeadRecovery.outcomes[0].reason, 'redirect-limit-exceeded');
+  assert.equal(chainBound.manifest.telemetry.heldLeadRecovery.outcomes[0].requests, 1);
+  assert.equal(chainBound.manifest.telemetry.heldLeadRecovery.outcomes[0].recoveryState, 'unresolved',
+    'an actual resolver chain bound remains terminal when no operator budget claim failed');
+
+  const resumedRecovery = await buildSourcePlans({ ...recoveryOptions, runAt: '2026-10-13T11:00:00.000Z' })
+    .find(({ id }) => id === 'portal-discovery').fetch({ cursor: checkpointCursor });
   const recovery = resumedRecovery.manifest.telemetry.heldLeadRecovery;
   assert.equal(callsByLead.get('123456'), 1);
   assert.equal(callsByLead.get('234567'), 1);

@@ -190,12 +190,12 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const heldRecovery = result.heldLeadRecovery ?? result.crawlerV2Telemetry?.['portal-discovery']?.detail?.telemetry?.heldLeadRecovery;
   if (heldRecovery) {
     lines.push('## Recovery of already known leads', '',
-      `Recovered: ${heldRecovery.recovered ?? 0}. Blocked: ${heldRecovery.blocked ?? 0}. Missing: ${heldRecovery.missing ?? 0}. Mismatched: ${heldRecovery.mismatched ?? 0}. Failed: ${heldRecovery.failed ?? 0}. Unattempted: ${heldRecovery.unattempted ?? 0}.`,
+      `Recovered: ${heldRecovery.recovered ?? 0}. Blocked: ${heldRecovery.blocked ?? 0}. Missing: ${heldRecovery.missing ?? 0}. Mismatched: ${heldRecovery.mismatched ?? 0}. Failed: ${heldRecovery.failed ?? 0}. Unattempted: ${heldRecovery.unattempted ?? 0}. Waiting for retry: ${heldRecovery.waiting ?? 0}.`,
       `Raw requested: ${heldRecovery.rawRequested ?? heldRecovery.requested ?? 0}. Distinct: ${heldRecovery.distinct ?? 'Not Verified'}. Duplicate inputs: ${heldRecovery.duplicates ?? 'Not Verified'}. Already in current discovery: ${heldRecovery.alreadyDiscovered ?? 'Not Verified'}.`,
-      `Request budget exhausted: ${heldRecovery.requestBudgetExhausted === true ? 'Yes' : 'No'}. Deadline exhausted: ${heldRecovery.deadlineExhausted === true ? 'Yes' : 'No'}.`,
+      `Request budget exhausted: ${heldRecovery.requestBudgetExhausted === true ? 'Yes' : 'No'}. Deadline exhausted: ${heldRecovery.deadlineExhausted === true ? 'Yes' : 'No'}. Continuation pending: ${heldRecovery.continuation === true ? 'Yes' : 'No'}.`,
       `Historical V4 snapshot: ${cell(result.v4HistorySnapshot?.status ?? 'Not Verified')}. Recovery alone does not establish history novelty.`,
       'These outcomes describe retained leads. They do not count as new discovery or new market supply.', '');
-    for (const outcome of heldRecovery.outcomes ?? []) lines.push(`- ${cell(outcome.lead)}: ${cell(outcome.outcome)} / ${cell(outcome.reason)}; requests ${outcome.requests ?? 0}; discovery ${cell(outcome.originalDiscoverySource ?? 'Not Verified')} ${cell(outcome.originalDiscoveryUrl ?? 'Not Verified')}; employer route ${cell(outcome.employerDetailUrl ?? 'Not Verified')}; missing facts ${cell(outcome.missingFields?.join(', ') || 'None recorded')}.`);
+    for (const outcome of heldRecovery.outcomes ?? []) lines.push(`- ${cell(outcome.lead)}: ${cell(outcome.outcome)} / ${cell(outcome.reason)}; retained ${cell(outcome.recoveryState ?? 'Not Verified')}, attempts ${outcome.attemptCount ?? 0}, attempted ${cell(outcome.attemptedAt ?? 'Not attempted')}, retry ${cell(outcome.nextEligibleAt ?? 'Not scheduled')}; requests ${outcome.requests ?? 0}; discovery ${cell(outcome.originalDiscoverySource ?? 'Not Verified')} ${cell(outcome.originalDiscoveryUrl ?? 'Not Verified')}; employer route ${cell(outcome.employerDetailUrl ?? 'Not Verified')}; missing facts ${cell(outcome.missingFields?.join(', ') || 'None recorded')}.`);
     if (!heldRecovery.outcomes?.length) lines.push('- No held lead recovery was attempted.');
     lines.push('');
   }

@@ -159,6 +159,13 @@ test('LinkedIn detail lookup keeps its normal request when the employer has no s
   assert.deepEqual(requests, [linkedinUrl]);
   assert.equal(result.portalPatch.description, 'Build AI services in Pune.');
   assert.equal(result.telemetry.requests, 1);
+  const cachedResult = await resolve(observation(linkedinUrl, {
+    provider: 'linkedin-jobs', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune',
+  }));
+  assert.deepEqual(requests, [linkedinUrl]);
+  assert.deepEqual(cachedResult.portalPatch, result.portalPatch);
+  assert.equal(cachedResult.telemetry.requests, 0);
+  assert.equal(cachedResult.telemetry.cacheHits, 1);
 });
 
 test('portal cross-match misses and identity mismatches stay in verification', async (t) => {
@@ -769,7 +776,9 @@ test('resolver claims an invocation shared request budget synchronously across c
   assert.equal(used, 2);
   assert.equal(calls.length, 2);
   assert.equal(results.filter((result) => result.status === 'resolved').length, 2);
-  assert.equal(results.filter((result) => result.evidence.resolution.reason === 'request-budget-exhausted').length, 1);
+  const exhausted = results.find((result) => result.evidence.resolution.reason === 'request-budget-exhausted');
+  assert.equal(Boolean(exhausted), true);
+  assert.equal(exhausted.evidence.requestBudgetExhausted, true);
 });
 
 test('resolver accepts a function-valued injected deadline without using wall-clock math', async () => {
@@ -806,7 +815,9 @@ test('aggregate request budget counts every redirect transport and stops later r
   assert.equal(shared.used, 48);
   assert.equal(calls.length, 48);
   assert.equal(results.filter((result) => result.status === 'resolved').length, 23);
-  assert.equal(results.filter((result) => result.evidence.resolution.reason === 'request-budget-exhausted').length, 1);
+  const exhausted = results.find((result) => result.evidence.resolution.reason === 'request-budget-exhausted');
+  assert.equal(Boolean(exhausted), true);
+  assert.equal(exhausted.evidence.requestBudgetExhausted, true);
 });
 
 test('different discovery hosts serialize requests after converging on one destination host', async () => {
@@ -1038,6 +1049,7 @@ function crossMatchFixture(provider) {
 async function resolveCrossMatch(fixture, options = {}, lead = {}) {
   const requests = [];
   const resolver = createOriginalListingResolver({ runAt: '2026-10-13T08:00:00Z',
+    now: () => '2026-10-13T08:00:00Z',
     config: { boardRegistry: { boards: [fixture.board] } },
     transport: async (url, requestOptions) => {
       requests.push({ url, options: requestOptions });
@@ -1094,6 +1106,20 @@ test('provider detail identity, liveness, and summary-only failures stay closed'
       assert.equal(isShortlistEligibleFromResolution(result), false);
     });
   }
+
+  for (const mismatch of ['employer', 'title', 'requisition']) {
+    const fixture = crossMatchFixture('greenhouse');
+    fixture.detail.active = false;
+    if (mismatch === 'employer') fixture.detail.companyName = 'Other Labs';
+    if (mismatch === 'title') fixture.detail.title = 'Backend Engineer';
+    if (mismatch === 'requisition') fixture.detail.jobReqId = 'different-req';
+    const { result } = await resolveCrossMatch(fixture);
+    assert.equal(result.status, 'verification', mismatch);
+    assert.equal(result.evidence.resolution.reason, mismatch === 'employer'
+      ? 'destination-employer-identity-mismatch' : 'destination-role-identity-mismatch', mismatch);
+    assert.equal(result.evidence.closingState, undefined, `${mismatch} mismatch cannot close the held identity`);
+    assert.equal(isShortlistEligibleFromResolution(result), false);
+  }
 });
 
 test('Workday detail parsing never borrows LIST dates or infers employment from a schedule shell', async () => {
@@ -1141,6 +1167,68 @@ test('registry search and detail preserve blocked, deadline, abort, host, byte, 
     assert.equal(result.evidence.resolution.reason, reason);
     assert.equal(requests.length, calls);
   });
+
+  let registryResponseAt = Date.parse('2026-10-13T08:00:00.000Z');
+  const retryAfterBoard = await resolveCrossMatch(crossMatchFixture('greenhouse'), {
+    now: () => registryResponseAt,
+    transport: async () => {
+      registryResponseAt += 5 * 60_000;
+      return { status: 429, headers: { 'Retry-After': '86400', 'x-private': 'drop-me' }, body: 'rate limited' };
+    },
+  });
+  assert.equal(retryAfterBoard.result.evidence.retryAfterAt, '2026-10-14T08:05:00.000Z');
+  assert.equal(JSON.stringify(retryAfterBoard.result.evidence).includes('drop-me'), false);
+
+  let detailResponseAt = Date.parse('2026-10-20T00:00:00.000Z');
+  const delayedDetail = createOriginalListingResolver({
+    runAt: '2026-10-20T00:00:00.000Z',
+    now: () => detailResponseAt,
+    transport: async () => {
+      detailResponseAt += 5 * 60_000;
+      return { status: 429, headers: { 'Retry-After': '7200' }, body: 'rate limited' };
+    },
+  });
+  const delayedDetailResult = await delayedDetail(observation('https://boards.greenhouse.io/acme/jobs/429'));
+  assert.equal(delayedDetailResult.evidence.retryAfterAt, '2026-10-20T02:05:00.000Z');
+
+  let cachedResponseAt = Date.parse('2026-10-20T10:00:00.000Z');
+  let cachedRequests = 0;
+  const cachedRateLimit = createOriginalListingResolver({
+    runAt: '2026-10-20T10:00:00.000Z',
+    now: () => cachedResponseAt,
+    transport: async () => {
+      cachedRequests += 1;
+      return { status: 429, headers: { 'Retry-After': '3600' }, body: 'rate limited' };
+    },
+  });
+  const cachedRateLimitObservation = observation('https://www.linkedin.com/jobs/view/987654', {
+    provider: 'linkedin-jobs',
+  });
+  const firstCachedRateLimit = await cachedRateLimit(cachedRateLimitObservation);
+  assert.equal(firstCachedRateLimit.evidence.retryAfterAt, '2026-10-20T11:00:00.000Z');
+  cachedResponseAt = Date.parse('2026-10-20T10:30:00.000Z');
+  const beforeDeadlineReuse = await cachedRateLimit(cachedRateLimitObservation);
+  assert.equal(beforeDeadlineReuse.evidence.retryAfterAt, '2026-10-20T11:00:00.000Z');
+  cachedResponseAt = Date.parse('2026-10-20T12:00:00.000Z');
+  const expiredReuse = await cachedRateLimit(cachedRateLimitObservation);
+  assert.equal(expiredReuse.evidence.retryAfterAt, '2026-10-20T11:00:00.000Z');
+  assert.notEqual(expiredReuse.evidence.retryAfterAt, '2026-10-20T13:00:00.000Z');
+  assert.equal(expiredReuse.telemetry.requests, 0);
+  assert.equal(expiredReuse.telemetry.cacheHits, 1);
+  assert.equal(cachedRequests, 1);
+
+  for (const [retryAfter, responseAt, expected] of [
+    ['Wed, 21 Oct 2026 00:00:00 GMT', '2026-10-20T00:05:00.000Z', '2026-10-21T00:00:00.000Z'],
+    ['not-a-date', undefined],
+    ['Tue, 20 Oct 2026 00:04:00 GMT', '2026-10-20T00:05:00.000Z', undefined],
+  ]) {
+    const resolve = createOriginalListingResolver({ runAt: '2026-10-20T00:00:00.000Z',
+      now: () => responseAt ?? '2026-10-20T00:05:00.000Z', transport: async () => ({
+        status: 429, headers: { 'Retry-After': retryAfter }, body: 'rate limited',
+      }) });
+    const result = await resolve(observation('https://boards.greenhouse.io/acme/jobs/429'));
+    assert.equal(result.evidence.retryAfterAt, expected);
+  }
 });
 
 test('disabled, warm, unverified, unsafe, and ambiguous boards cannot establish an employer match', async (t) => {
@@ -1171,11 +1259,17 @@ test('summary-only feeds and expired or unlisted details never prove JD readines
     assert.equal(result.status, 'verification');
     assert.equal(result.originalApplicationUrl, null);
   });
-  for (const [provider, field, value] of [['workday', 'canApply', false], ['ashby', 'isListed', false], ['greenhouse', 'validThrough', '2000-01-01']]) {
+  for (const [provider, field, value] of [['workday', 'canApply', false], ['ashby', 'isListed', false], ['greenhouse', 'validThrough', '2000-01-01'], ['greenhouse', 'isClosed', true]]) {
     const fixture = crossMatchFixture(provider);
     (provider === 'workday' ? fixture.detail.jobPostingInfo : fixture.detail)[field] = value;
     const { result } = await resolveCrossMatch(fixture);
     assert.equal(result.status, 'verification');
+    assert.equal(result.evidence.resolution.reason, 'destination-liveness-unverified');
+    if (provider === 'greenhouse') {
+      assert.equal(result.evidence.closingState.outcome, field === 'validThrough' ? 'expired' : 'confirmed-closed');
+      assert.equal(result.evidence.closingState.evidence.validThrough, field === 'validThrough' ? '2000-01-01T00:00:00.000Z' : undefined);
+      assert.equal(result.originalApplicationUrl, null);
+    }
   }
 });
 

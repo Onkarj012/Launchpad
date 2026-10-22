@@ -85,7 +85,27 @@ function headersOf(response) {
   const get = (name) => typeof headers.get === 'function'
     ? headers.get(name)
     : Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? null;
-  return { location: get('location'), contentType: get('content-type'), cfMitigated: get('cf-mitigated') };
+  return { location: get('location'), contentType: get('content-type'), cfMitigated: get('cf-mitigated'), retryAfter: get('retry-after') };
+}
+
+// Convert a bounded Retry-After value to a deadline anchored to response receipt.
+function retryAfterDeadline(response, responseAt) {
+  const value = headersOf(response).retryAfter;
+  if (typeof value !== 'string' || value.length > 128) return null;
+  const anchor = responseAt instanceof Date ? responseAt.getTime()
+    : typeof responseAt === 'number' ? responseAt : Date.parse(responseAt);
+  if (!Number.isFinite(anchor)) return null;
+  let deadline;
+  if (/^\d{1,13}$/.test(value.trim())) {
+    const seconds = Number(value.trim());
+    deadline = anchor + seconds * 1000;
+  } else {
+    if (!/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value)) return null;
+    deadline = Date.parse(value);
+    if (Number.isFinite(deadline) && new Date(deadline).toUTCString() !== value) return null;
+  }
+  return Number.isSafeInteger(deadline) && deadline > anchor && deadline <= 8.64e15
+    ? new Date(deadline).toISOString() : null;
 }
 
 function bodyOf(response) {
@@ -422,7 +442,14 @@ function extractDetails(response, observation, provider) {
     firstField(root, ['validThrough', 'expiresAt', 'expirationDate', 'closingDate']),
   ));
   const rawStatus = String(firstField(root, ['status', 'state', 'jobStatus']) ?? '').toLowerCase();
-  const closed = root?.closed === true || root?.isClosed === true || root?.active === false || /closed|expired|filled|withdrawn|removed/.test(rawStatus);
+  const closedFlag = root?.closed === true || root?.isClosed === true || root?.active === false;
+  const closedStatus = /closed|expired|filled|withdrawn|removed/.test(rawStatus);
+  const closed = closedFlag || closedStatus;
+  const validThroughExpired = Boolean(validThrough && Date.parse(validThrough) < Date.now());
+  const closingState = validThroughExpired || /expired/.test(rawStatus)
+    ? { outcome: 'expired', reason: validThroughExpired ? 'valid-through-past' : 'source-status-expired' }
+    : closed ? { outcome: 'confirmed-closed', reason: closedFlag ? 'source-closed-flag' : 'source-status-closed' }
+      : null;
   const active = !closed && (root?.active === true || root?.isOpen === true || Boolean(posting || description || title));
   const workday = provider === 'workday';
   const workdayStartDate = parsePublicationDate(firstDateValue(
@@ -481,6 +508,14 @@ function extractDetails(response, observation, provider) {
       lastObservation: null,
     },
     validThrough,
+    closingState: closingState ? {
+      ...closingState,
+      evidence: {
+        ...(validThrough ? { validThrough } : {}),
+        ...(rawStatus ? { status: rawStatus.slice(0, 80) } : {}),
+        ...(closedFlag ? { explicitClosedFlag: true } : {}),
+      },
+    } : null,
     liveness: closed || (validThrough && Date.parse(validThrough) < Date.now())
       ? { status: 'Expired', checkedAt: null, evidence: validThrough ? 'validThrough' : rawStatus || 'closing-status' }
       : active ? { status: 'Active', checkedAt: null, evidence: validThrough ? 'job-detail-and-validThrough' : 'job-detail' }
@@ -1019,6 +1054,7 @@ export function normalizeOriginalListingResolverBudget(input = {}) {
 export function createOriginalListingResolver({
   transport,
   runAt = new Date().toISOString(),
+  now = () => Date.now(),
   maxRedirects,
   maxHosts,
   maxBytes,
@@ -1118,7 +1154,7 @@ export function createOriginalListingResolver({
         if (activeRequestBudget?.claim && !activeRequestBudget.claim()) {
           const reason = sharedBudgetFailureReported ? 'resolver-bound-exhausted' : 'request-budget-exhausted';
           sharedBudgetFailureReported = true;
-          return fail(reason);
+          return fail(reason, [], { requestBudgetExhausted: true });
         }
         telemetry.requests += 1;
         boardRequests += 1;
@@ -1130,16 +1166,20 @@ export function createOriginalListingResolver({
             ...request.options, maxBytes: byteLimit, signal: activeSignal, deadline: activeDeadline,
             remainingMs: remainingDeadlineMs(activeDeadline), purpose: 'portal-registry-cross-match', runAt, budget: limits,
           }, { signal: activeSignal, remainingMs: remainingDeadlineMs(activeDeadline), deadline: activeDeadline, hostLimiter: activeHostLimiter });
+          const responseReceivedAt = now();
           telemetry.bytesObserved += responseBytes(response);
           if (activeSignal?.aborted) return fail('aborted');
           if (remainingDeadlineMs(activeDeadline) <= 0) return fail('deadline-exceeded');
           if (responseBytes(response) > byteLimit || Number(response?.byteLength) > byteLimit) return fail('response-too-large');
           const status = Number(response?.status ?? 200);
-          if (looksBlocked(response, status)) return fail('blocked', [], { httpStatus: status });
+          if (looksBlocked(response, status)) {
+            const retryAfterAt = status === 429 ? retryAfterDeadline(response, responseReceivedAt) : null;
+            return fail('blocked', [], { httpStatus: status, ...(retryAfterAt ? { retryAfterAt } : {}) });
+          }
           if (REDIRECT_STATUSES.has(status) || headersOf(response).location || (response?.redirected && canonical(response.url) !== canonical(request.url))) return fail('redirect-to-unsupported-host');
           if (status < 200 || status >= 300) return fail(`detail-http-${status}`, [], { httpStatus: status });
           if (looksMalformed(response, status)) return fail('malformed-response');
-          for (const match of registryListingMatches(response, board, observation)) matchedRoutes.push({ board, ...match });
+          for (const match of registryListingMatches(response, board, observation)) matchedRoutes.push({ board, ...match, responseReceivedAt });
         } catch (error) {
           const reason = activeSignal?.aborted ? 'aborted' : remainingDeadlineMs(activeDeadline) <= 0 || error?.code === 'DAILY_DEADLINE_EXCEEDED' ? 'deadline-exceeded'
             : error?.message === 'response-too-large' ? 'response-too-large' : 'transport-error';
@@ -1156,7 +1196,10 @@ export function createOriginalListingResolver({
         crossMatchBoard = selected.board;
         crossMatchListing = selected;
         current = canonical(selected.url);
-        if (selected.board.provider === 'ashby') retainedRegistryDetail = { status: 200, body: selected.row };
+        if (selected.board.provider === 'ashby') retainedRegistryDetail = {
+          response: { status: 200, body: selected.row },
+          responseReceivedAt: selected.responseReceivedAt,
+        };
       }
     }
     if (!crossMatchBoard && portalPatch && !retainedTargets.length) return fail('destination-intermediary', [discoveryUrl]);
@@ -1194,13 +1237,16 @@ export function createOriginalListingResolver({
       if (!cached && activeRequestBudget?.claim && !activeRequestBudget.claim()) {
         const reason = sharedBudgetFailureReported ? 'resolver-bound-exhausted' : 'request-budget-exhausted';
         sharedBudgetFailureReported = true;
-        return fail(reason, chain);
+        return fail(reason, chain, { requestBudgetExhausted: true });
       }
       let response;
+      let responseReceivedAt;
       try {
         if (cached) {
           if (!retainedRegistryDetail) telemetry.cacheHits = (telemetry.cacheHits || 0) + 1;
-          response = await cached;
+          const cachedResponse = await cached;
+          response = cachedResponse.response;
+          responseReceivedAt = cachedResponse.responseReceivedAt;
         } else {
           telemetry.requests += 1;
           const pending = boundedTransport(transport, requestUrl, {
@@ -1209,9 +1255,12 @@ export function createOriginalListingResolver({
             signal: activeSignal, deadline: activeDeadline, remainingMs,
             purpose: 'original-listing-resolution', runAt, hop, budget: limits,
             telemetry: { ...telemetry },
-          }, { signal: activeSignal, remainingMs, deadline: activeDeadline, hostLimiter: activeHostLimiter });
+          }, { signal: activeSignal, remainingMs, deadline: activeDeadline, hostLimiter: activeHostLimiter })
+            .then((response) => ({ response, responseReceivedAt: now() }));
           if (cacheKey) publicResponseCache.set(cacheKey, pending);
-          response = await pending;
+          const receivedResponse = await pending;
+          response = receivedResponse.response;
+          responseReceivedAt = receivedResponse.responseReceivedAt;
         }
       } catch (error) {
         const reason = activeSignal?.aborted ? 'aborted' : remainingDeadlineMs(activeDeadline) <= 0 || error?.code === 'DAILY_DEADLINE_EXCEEDED' ? 'deadline-exceeded'
@@ -1249,7 +1298,8 @@ export function createOriginalListingResolver({
       }
 
       if (looksBlocked(response, status)) {
-        return fail('blocked', chain, { httpStatus: status }, telemetry);
+        const retryAfterAt = status === 429 ? retryAfterDeadline(response, responseReceivedAt) : null;
+        return fail('blocked', chain, { httpStatus: status, ...(retryAfterAt ? { retryAfterAt } : {}) }, telemetry);
       }
       if (status < 200 || status >= 300) {
         return fail(`detail-http-${status}`, chain, { httpStatus: status }, telemetry);
@@ -1261,7 +1311,9 @@ export function createOriginalListingResolver({
       // Replace the initial redirect response with the completed public page.
       // A later card using its canonical country-host URL must reuse the page,
       // rather than replaying a redirect to its own URL and reporting a loop.
-      if (publicId && linkedInPublicJobId(current) === publicId) publicResponseCache.set(`linkedin:${publicId}`, Promise.resolve(response));
+      if (publicId && linkedInPublicJobId(current) === publicId) {
+        publicResponseCache.set(`linkedin:${publicId}`, Promise.resolve({ response, responseReceivedAt }));
+      }
 
       const target = classifyOriginalListingUrl(current);
       if (publicId && linkedInPublicJobId(current) === publicId) {
@@ -1329,8 +1381,8 @@ export function createOriginalListingResolver({
           : details.reason;
         return fail(reason, chain, { provider, fingerprint }, telemetry);
       }
-      if ((crossMatchBoard || publicPortalLead) && (!details.description || details.liveness?.status !== 'Active')) {
-        return fail(!details.description ? 'job-detail-not-found' : 'destination-liveness-unverified', chain, { provider, fingerprint });
+      if ((crossMatchBoard || publicPortalLead) && !details.description) {
+        return fail('job-detail-not-found', chain, { provider, fingerprint });
       }
       if (details.employer && normalizedIdentity(observation.company) && normalizedIdentity(observation.company) !== 'not verified'
         && !companiesCompatible(observation.company, details.employer)) {
@@ -1349,6 +1401,13 @@ export function createOriginalListingResolver({
       if ((crossMatchBoard && normalizedIdentity(details.title) !== normalizedIdentity(observation.title))
         || ((crossMatchBoard || (publicPortalLead && text(observation.location))) && !locationsMatch(details.location, observation.location))) {
         return fail('destination-role-identity-mismatch', chain, { provider, fingerprint }, telemetry);
+      }
+      if ((crossMatchBoard || publicPortalLead) && details.liveness?.status !== 'Active') {
+        return fail('destination-liveness-unverified', chain, {
+          provider,
+          fingerprint,
+          ...(details.closingState ? { closingState: details.closingState } : {}),
+        });
       }
       const patched = mergePatch({ ...observation, ...(portalPatch || {}), evidence: { ...observation.evidence, ...portalPatch?.evidence } }, details, current, provider, runAt, fingerprint);
       if (crossMatchBoard || publicPortalLead) {

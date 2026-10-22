@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { performance } from 'node:perf_hooks';
+import { candidateRequisitionKey } from '../job-pull/candidate.mjs';
 import {
   ACTIONED_STATES,
   LIFECYCLE_STATES,
@@ -1524,5 +1525,111 @@ export function readCrawlerRunData(store, runId) {
       classification: row.classification,
       raw: json(row.raw_json, {}),
     })),
+  };
+}
+
+// Return only canonical HTTPS URLs that can prove a held lead's original identity.
+function recoveryUrlKeys(candidate, { includeApplicationUrl = false } = {}) {
+  const recovery = candidate.evidence?.recovery;
+  const values = [recovery?.originalDiscoveryUrl, candidate.discoveryUrl, candidate.canonicalUrl];
+  if (typeof recovery?.identityUrl === 'string' && recovery.identityUrl.startsWith('url:')) {
+    values.push(recovery.identityUrl.slice(4));
+  }
+  if (includeApplicationUrl) values.push(candidate.originalApplicationUrl);
+  return [...new Set(values.flatMap((value) => {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'https:') return [];
+      url.hash = '';
+      return [`url:${url.toString()}`];
+    } catch {
+      return [];
+    }
+  }))];
+}
+
+// Rebuild due held leads from the existing observation log after a store reopen.
+export function readHeldLeadRecoveryState(store, { now = new Date().toISOString() } = {}) {
+  const rows = store.prepare(`SELECT raw_json, observed_at FROM job_observations
+    ORDER BY observed_at DESC, observation_key DESC`).all();
+  const latest = new Map();
+  const ordinarySuccesses = new Map();
+  const ordinaryUrlSuccesses = new Map();
+  for (const row of rows) {
+    const candidate = json(row.raw_json, null);
+    if (!candidate) continue;
+    if (candidate.evidence?.recovery?.kind !== 'held-lead-recovery') {
+      const resolved = candidate.classification === 'direct' && candidate.originalApplicationUrl
+        && candidate.applicationResolution?.status === 'Resolved Original'
+        && candidate.evidence?.fieldSources?.company === 'original-employer-detail';
+      if (!resolved) continue;
+      const keys = [candidateRequisitionKey(candidate), ...(candidate.identityAliases ?? [])]
+        .filter((key) => typeof key === 'string' && key.includes('|'))
+        .map((key) => {
+          const separator = key.indexOf('|');
+          return candidateRequisitionKey({ provider: key.slice(0, separator), jobId: key.slice(separator + 1) });
+        }).filter(Boolean);
+      for (const key of keys) {
+        if (!ordinarySuccesses.has(key)) ordinarySuccesses.set(key, row.observed_at);
+      }
+      for (const key of recoveryUrlKeys(candidate, { includeApplicationUrl: true })) {
+        if (!ordinaryUrlSuccesses.has(key)) ordinaryUrlSuccesses.set(key, row.observed_at);
+      }
+      continue;
+    }
+    const recovery = candidate.evidence.recovery;
+    const requisitionKey = recovery.providerRequisitionKey ?? candidateRequisitionKey(candidate);
+    const identity = requisitionKey ? `requisition:${requisitionKey}`
+      : recovery.identityUrl ?? (() => {
+          try {
+            const url = new URL(recovery.originalDiscoveryUrl ?? candidate.discoveryUrl ?? candidate.canonicalUrl);
+            if (url.protocol !== 'https:') return null;
+            url.hash = '';
+            return `url:${url.toString()}`;
+          } catch { return null; }
+        })();
+    if (!identity) continue;
+    const previous = latest.get(identity);
+    const latestEvaluation = String(recovery.evaluatedAt ?? recovery.attemptedAt ?? row.observed_at);
+    const previousEvaluation = previous && String(previous.recovery.evaluatedAt ?? previous.recovery.attemptedAt ?? previous.observedAt);
+    if (previous && previousEvaluation >= latestEvaluation) continue;
+    latest.set(identity, { candidate, recovery, observedAt: row.observed_at });
+  }
+  const records = [...latest.entries()].map(([identity, value]) => ({ identity, ...value }));
+  const isSuccessful = ({ candidate, recovery }) => recovery.outcome === 'recovered'
+    || (!recovery.outcome && candidate.classification === 'direct' && candidate.originalApplicationUrl
+      && candidate.applicationResolution?.status === 'Resolved Original'
+      && candidate.evidence?.fieldSources?.company === 'original-employer-detail');
+  const completedByOrdinaryDiscovery = (record) => {
+    const requisitionKey = record.recovery.providerRequisitionKey ?? candidateRequisitionKey(record.candidate);
+    const successTimes = requisitionKey
+      ? [ordinarySuccesses.get(requisitionKey)]
+      : !record.recovery.providerRequisitionKey && !candidateRequisitionKey(record.candidate)
+        ? recoveryUrlKeys(record.candidate).map((key) => ordinaryUrlSuccesses.get(key))
+        : [];
+    const latestSuccessAt = successTimes.map((value) => Date.parse(value))
+      .filter(Number.isFinite).reduce((latestAt, value) => Math.max(latestAt, value), Number.NEGATIVE_INFINITY);
+    const evaluatedAt = String(record.recovery.evaluatedAt ?? record.recovery.attemptedAt ?? record.observedAt);
+    const evaluatedTime = Date.parse(evaluatedAt);
+    return Number.isFinite(latestSuccessAt) && Number.isFinite(evaluatedTime) && latestSuccessAt > evaluatedTime;
+  };
+  const eligible = records.filter((record) => {
+    if (completedByOrdinaryDiscovery(record)) return false;
+    if (isSuccessful(record) || (record.recovery.outcome && record.recovery.outcome !== 'pending')) return false;
+    const nextEligibleAt = record.recovery.nextEligibleAt;
+    return !nextEligibleAt || !Number.isFinite(Date.parse(nextEligibleAt)) || Date.parse(nextEligibleAt) <= Date.parse(now);
+  }).sort((left, right) => Number(left.recovery.attemptCount ?? 0) - Number(right.recovery.attemptCount ?? 0)
+    || String(left.recovery.attemptedAt ?? left.observedAt).localeCompare(String(right.recovery.attemptedAt ?? right.observedAt))
+    || left.identity.localeCompare(right.identity));
+  return {
+    eligible: eligible.map(({ candidate }) => candidate),
+    waitingCandidates: records.filter((record) => !completedByOrdinaryDiscovery(record) && record.recovery.outcome === 'pending'
+      && record.recovery.nextEligibleAt && Date.parse(record.recovery.nextEligibleAt) > Date.parse(now))
+      .map(({ candidate }) => candidate),
+    identities: records.map(({ identity }) => identity),
+    terminalIdentities: records.filter((record) => completedByOrdinaryDiscovery(record) || isSuccessful(record)
+      || Boolean(record.recovery.outcome && record.recovery.outcome !== 'pending')).map(({ identity }) => identity),
+    waiting: records.filter((record) => !completedByOrdinaryDiscovery(record) && record.recovery.outcome === 'pending'
+      && record.recovery.nextEligibleAt && Date.parse(record.recovery.nextEligibleAt) > Date.parse(now)).length,
   };
 }

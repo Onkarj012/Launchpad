@@ -11,9 +11,9 @@ import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, re
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
-import { openCrawlerStore, crawlRun, readCrawlerRunData } from '../../crawler/run.mjs';
+import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
-import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
+import { candidateDedupKey, candidateRequisitionKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
 import { loadConfig as loadJobPullConfig } from '../../job-pull/config.mjs';
@@ -1952,6 +1952,7 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(recoveredGood.eligibility.geo.pass, false);
   assert.equal(recoveredGood.eligibility.geo.code, 'GEO_ONSITE_NOT_PUNE');
   const currentIndia = recoveryResult.observations.find((lead) => lead.providerJobId === 'missing-date');
+  assert.ok(currentIndia);
   assert.equal(currentIndia.eligibility.geo.pass, true);
   assert.equal(currentIndia.eligibility.geo.mode, 'onsite');
   assert.equal(currentIndia.location, 'Pune, India');
@@ -2048,6 +2049,781 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(replayedRecovery.sourceYield.totals.fetched, 0);
   assert.equal(replayedRecovery.heldLeadRecovery.requested, 10);
   assert.equal(replayedRecovery.heldLeadRecovery.recovered, 4);
+
+  const { config: resumableConfig } = testConfig();
+  resumableConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const resumableLead = {
+    provider: 'glassdoor', providerJobId: 'resume-429', jobId: 'resume-429', source: 'portal-glassdoor', sourceId: 'portal-discovery',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/resume-429', canonicalUrl: 'https://www.glassdoor.com/job-listing/resume-429',
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India', description: 'Index preview.', postedAt: NOW,
+  };
+  let resumedRequests = 0;
+  const transportFailure = async () => { resumedRequests += 1; throw new Error('ECONNRESET fixture'); };
+  const firstRunStore = openCrawlerStore(resumableConfig.databasePath);
+  const firstRun = await runDailyNormalActual(runOptions(resumableConfig, transportFailure, {
+    runId: 'p05-recovery-first', store: firstRunStore, heldPortalLeads: [resumableLead],
+    clock: { now: () => '2026-07-24T06:00:00.000Z', currentTime: () => '2026-07-24T06:20:00.000Z', sleep: async () => {} },
+  }));
+  firstRunStore.close();
+  assert.equal(resumedRequests, 1);
+  assert.equal(firstRun.dailyReceipt.recovery.heldLeads.outcomes[0].recoveryState, 'pending');
+  assert.equal(firstRun.dailyReceipt.recovery.heldLeads.continuation, true,
+    'a first-pass pending retry must remain visible as continuation work');
+  assert.equal(firstRun.dailyReceipt.recovery.heldLeads.outcomes[0].reason, 'transport-error');
+  assert.equal(firstRun.dailyReceipt.recovery.heldLeads.outcomes[0].attemptCount, 1);
+  assert.equal(firstRun.dailyReceipt.recovery.heldLeads.outcomes[0].attemptedAt, '2026-07-24T06:20:00.000Z');
+  assert.equal(firstRun.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, '2026-07-24T07:20:00.000Z');
+  const firstRetainedStore = openCrawlerStore(resumableConfig.databasePath);
+  const firstStoredRecovery = readCrawlerRunData(firstRetainedStore, 'p05-recovery-first-crawler-v2')
+    .observations.find(({ raw }) => raw.evidence?.recovery?.kind === 'held-lead-recovery').raw.evidence.recovery;
+  assert.equal(firstStoredRecovery.evaluatedAt, '2026-07-24T06:20:00.000Z');
+  assert.equal(firstRetainedStore.prepare('SELECT started_at FROM crawl_runs WHERE run_id = ?')
+    .get('p05-recovery-first-crawler-v2').started_at, '2026-07-24T06:00:00.000Z',
+  'attempt time must not replace the fixed run timestamp');
+  firstRetainedStore.close();
+
+  const waitingStore = openCrawlerStore(resumableConfig.databasePath);
+  const waitingRun = await runDailyNormalActual(runOptions(resumableConfig, transportFailure, {
+    runId: 'p05-recovery-too-early', store: waitingStore,
+    clock: { now: () => '2026-07-24T07:00:00.000Z', currentTime: () => '2026-07-24T07:00:00.000Z', sleep: async () => {} },
+  }));
+  waitingStore.close();
+  assert.equal(resumedRequests, 1, 'the reopened daily run must not fetch before retry time');
+  assert.equal(waitingRun.dailyReceipt.recovery.heldLeads.waiting, 1);
+  assert.equal(waitingRun.dailyReceipt.recovery.heldLeads.continuation, true);
+  assert.match(renderLocalLeadReport(waitingRun, { now: '2026-07-24T07:00:00.000Z' }), /Waiting for retry: 1/);
+
+  const repeatedWaitingStore = openCrawlerStore(resumableConfig.databasePath);
+  const repeatedWaiting = await runDailyNormalActual(runOptions(resumableConfig, transportFailure, {
+    runId: 'p05-recovery-explicit-waiting', store: repeatedWaitingStore,
+    clock: { now: () => '2026-07-24T07:00:00.000Z', currentTime: () => '2026-07-24T07:00:00.000Z', sleep: async () => {} },
+    heldPortalLeads: [resumableLead],
+  }));
+  repeatedWaitingStore.close();
+  assert.equal(resumedRequests, 1, 'repeated explicit input must not bypass persisted backoff');
+  assert.equal(repeatedWaiting.dailyReceipt.recovery.heldLeads.waiting, 1);
+
+  const repeatedFailureStore = openCrawlerStore(resumableConfig.databasePath);
+  const rateLimitedTransport = async () => {
+    resumedRequests += 1;
+    return { status: 429, headers: { 'Retry-After': 'Fri, 24 Jul 2026 10:30:00 GMT' }, body: 'slow down' };
+  };
+  const repeatedFailure = await runDailyNormalActual(runOptions(resumableConfig, rateLimitedTransport, {
+    runId: 'p05-recovery-repeat-429', store: repeatedFailureStore,
+    clock: { now: () => '2026-07-24T07:20:00.000Z', currentTime: () => '2026-07-24T07:25:00.000Z', sleep: async () => {} },
+  }));
+  repeatedFailureStore.close();
+  assert.equal(resumedRequests, 2);
+  assert.equal(repeatedFailure.dailyReceipt.recovery.heldLeads.outcomes[0].attemptCount, 2);
+  assert.equal(repeatedFailure.dailyReceipt.recovery.heldLeads.outcomes[0].attemptedAt, '2026-07-24T07:25:00.000Z');
+  assert.equal(repeatedFailure.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, '2026-07-24T10:30:00.000Z',
+    'the later server deadline must win over the two-hour local backoff from the actual second attempt');
+
+  const localBackoffWaitingStore = openCrawlerStore(resumableConfig.databasePath);
+  const localBackoffWaiting = await runDailyNormalActual(runOptions(resumableConfig, async () => {
+    resumedRequests += 1;
+    throw new Error('the second backoff must not retry early');
+  }, {
+    runId: 'p05-recovery-server-deadline-wait', store: localBackoffWaitingStore,
+    clock: { now: () => '2026-07-24T09:25:00.000Z', currentTime: () => '2026-07-24T09:25:00.000Z', sleep: async () => {} },
+  }));
+  localBackoffWaitingStore.close();
+  assert.equal(resumedRequests, 2, 'no detail request is allowed before the later server deadline');
+  assert.equal(localBackoffWaiting.dailyReceipt.recovery.heldLeads.waiting, 1);
+  assert.equal(localBackoffWaiting.dailyReceipt.recovery.heldLeads.outcomes[0].attemptedAt, '2026-07-24T07:25:00.000Z');
+  assert.equal(localBackoffWaiting.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, '2026-07-24T10:30:00.000Z');
+
+  const successTransport = async (url) => {
+    resumedRequests += 1;
+    if (new URL(url).hostname === 'www.glassdoor.com') return {
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/ats-987' }, body: '',
+    };
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: 'ats-987' },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  };
+  const retryStore = openCrawlerStore(resumableConfig.databasePath);
+  const retryRun = await runDailyNormalActual(runOptions(resumableConfig, successTransport, {
+    runId: 'p05-recovery-after-wait', store: retryStore,
+    clock: { now: () => '2026-07-24T10:30:00.000Z', currentTime: () => '2026-07-24T10:35:00.000Z', sleep: async () => {} },
+  }));
+  retryStore.close();
+  assert.equal(resumedRequests, 4);
+  assert.equal(retryRun.dailyReceipt.recovery.heldLeads.attempted, 1);
+  assert.equal(retryRun.dailyReceipt.recovery.heldLeads.recovered, 1);
+  assert.equal(retryRun.dailyReceipt.recovery.heldLeads.outcomes[0].attemptCount, 3);
+  assert.equal(retryRun.dailyReceipt.recovery.heldLeads.outcomes[0].attemptedAt, '2026-07-24T10:35:00.000Z');
+  assert.equal(retryRun.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, null);
+  assert.equal(retryRun.observations.filter((candidate) => candidate.evidence?.recovery?.kind === 'held-lead-recovery').length, 1);
+  const noRepeatStore = openCrawlerStore(resumableConfig.databasePath);
+  const noRepeatRun = await runDailyNormalActual(runOptions(resumableConfig, async () => {
+    resumedRequests += 1;
+    throw new Error('successful evidence must not be fetched again');
+  }, {
+    runId: 'p05-recovery-no-repeat', store: noRepeatStore,
+    clock: { now: () => '2026-07-25T10:00:00.000Z', sleep: async () => {} },
+    heldPortalLeads: [resumableLead],
+  }));
+  const firstRecoveryRow = readCrawlerRunData(noRepeatStore, 'p05-recovery-first-crawler-v2').observations
+    .find(({ raw }) => raw.providerJobId === 'resume-429');
+  const finalRecoveryRow = readCrawlerRunData(noRepeatStore, 'p05-recovery-after-wait-crawler-v2').observations
+    .find(({ raw }) => raw.jobId === 'resume-429');
+  const noRepeatRows = readCrawlerRunData(noRepeatStore, 'p05-recovery-no-repeat-crawler-v2').observations;
+  assert.ok(firstRecoveryRow);
+  assert.ok(finalRecoveryRow);
+  assert.equal(finalRecoveryRow.raw.provider, 'greenhouse');
+  assert.equal(finalRecoveryRow.raw.jobId, 'resume-429');
+  assert.equal(finalRecoveryRow.jobKey, firstRecoveryRow.jobKey, 'recovery must preserve the durable job identity');
+  assert.equal(finalRecoveryRow.raw.evidence.recovery.providerRequisitionKey, 'glassdoor|resume 429',
+    'the successful provider change must retain the original provider-qualified identity');
+  assert.equal(finalRecoveryRow.raw.evidence.recovery.identityUrl, 'requisition:glassdoor|resume 429');
+  assert.ok(readHeldLeadRecoveryState(noRepeatStore, { now: '2026-07-25T10:00:00.000Z' })
+    .terminalIdentities.includes('requisition:glassdoor|resume 429'),
+  'the reopened store must index success under the original held-lead identity');
+  assert.equal(noRepeatRows.some(({ raw }) => raw.providerJobId === 'resume-429'
+    && raw.evidence?.recovery?.kind === 'held-lead-recovery'), false,
+    'old success must not be surfaced as current liveness evidence');
+  noRepeatStore.close();
+  assert.equal(resumedRequests, 4, 'explicitly resubmitted successful leads must be suppressed from recovery');
+
+  const { config: terminalConfig } = testConfig();
+  terminalConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const terminalLeads = ['expired', 'closed', 'unresolved', 'policy-rejected',
+    'other-employer-expired', 'other-title-expired', 'other-requisition-expired', 'other-employer-closed',
+    'other-title-closed', 'other-requisition-closed'].map((id) => ({
+    provider: 'glassdoor', providerJobId: `terminal-${id}`, jobId: `terminal-${id}`,
+    discoveryUrl: `https://www.glassdoor.com/job-listing/terminal-${id}`,
+    canonicalUrl: `https://www.glassdoor.com/job-listing/terminal-${id}`,
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+    ...(['other-requisition-expired', 'other-requisition-closed'].includes(id)
+      ? { requisitionId: 'expected-req', employerRequisitionId: 'expected-req' } : {}),
+  }));
+  const terminalStore = openCrawlerStore(terminalConfig.databasePath);
+  let terminalDetailRequests = 0;
+  const terminalRun = await runDailyNormalActual(runOptions(terminalConfig, async (url) => {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'www.glassdoor.com') {
+      const id = parsed.pathname.split('/').at(-1);
+      if (id === 'terminal-policy-rejected') return { status: 403, body: 'access denied' };
+      if (id === 'terminal-unresolved') return { status: 404, body: 'not found' };
+      return { status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '' };
+    }
+    terminalDetailRequests += 1;
+    const id = parsed.pathname.split('/').at(-1);
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting',
+      title: ['terminal-other-title-expired', 'terminal-other-title-closed'].includes(id) ? 'Different Role' : 'AI Engineer',
+      hiringOrganization: { name: ['terminal-other-employer-expired', 'terminal-other-employer-closed'].includes(id) ? 'Different Employer' : 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+      ...(['terminal-expired', 'terminal-other-employer-expired', 'terminal-other-title-expired', 'terminal-other-requisition-expired']
+        .includes(id) ? { validThrough: '2026-07-23' } : {}),
+      ...(id === 'terminal-other-requisition-expired' ? { jobReqId: 'different-req' } : {}),
+      ...(['terminal-closed', 'terminal-other-employer-closed', 'terminal-other-title-closed', 'terminal-other-requisition-closed']
+        .includes(id) ? { isClosed: true } : {}),
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  }, {
+    runId: 'p05-recovery-terminal-states', store: terminalStore, heldPortalLeads: terminalLeads,
+  }));
+  const terminalRows = readCrawlerRunData(terminalStore, 'p05-recovery-terminal-states-crawler-v2').observations
+    .map(({ raw }) => raw).filter((candidate) => candidate.evidence?.recovery?.kind === 'held-lead-recovery');
+  terminalStore.close();
+  assert.equal(terminalDetailRequests, terminalLeads.length - 2, '403 and 404 leads do not request employer detail');
+  assert.equal(terminalRows.find((candidate) => candidate.jobId === 'terminal-expired')
+    .evidence.closingState.reason, 'valid-through-past');
+  assert.equal(terminalRows.find((candidate) => candidate.jobId === 'terminal-closed')
+    .evidence.closingState.reason, 'source-closed-flag');
+  for (const id of ['terminal-other-employer-expired', 'terminal-other-title-expired', 'terminal-other-requisition-expired',
+    'terminal-other-employer-closed', 'terminal-other-title-closed', 'terminal-other-requisition-closed']) {
+    const candidate = terminalRows.find((item) => item.jobId === id);
+    assert.equal(candidate.evidence.closingState, undefined, `${id} cannot close a different held identity`);
+    assert.equal(candidate.evidence.recovery.outcome, 'superseded');
+    assert.notEqual(candidate.liveness?.status, 'Active', `${id} cannot become falsely active`);
+  }
+  assert.deepEqual(Object.fromEntries(terminalRows.map((candidate) => [candidate.jobId, candidate.evidence.recovery.outcome])), {
+    'terminal-expired': 'expired', 'terminal-closed': 'confirmed-closed',
+    'terminal-unresolved': 'unresolved',
+    'terminal-policy-rejected': 'policy-rejected',
+    'terminal-other-employer-expired': 'superseded', 'terminal-other-title-expired': 'superseded',
+    'terminal-other-requisition-expired': 'superseded', 'terminal-other-employer-closed': 'superseded',
+    'terminal-other-title-closed': 'superseded', 'terminal-other-requisition-closed': 'superseded',
+  });
+  assert.deepEqual(Object.fromEntries(terminalRun.dailyReceipt.recovery.heldLeads.outcomes
+    .map(({ lead, recoveryState }) => [lead, recoveryState])), {
+    'terminal-expired': 'expired', 'terminal-closed': 'confirmed-closed',
+    'terminal-unresolved': 'unresolved',
+    'terminal-policy-rejected': 'policy-rejected',
+    'terminal-other-employer-expired': 'superseded', 'terminal-other-title-expired': 'superseded',
+    'terminal-other-requisition-expired': 'superseded', 'terminal-other-employer-closed': 'superseded',
+    'terminal-other-title-closed': 'superseded', 'terminal-other-requisition-closed': 'superseded',
+  });
+  assert.equal(terminalRun.shortlist.some((candidate) => terminalRows.some((terminal) => terminal.jobId === candidate.jobId)), false);
+  assert.equal((terminalRun.scoringQueue ?? []).some((item) => terminalRows.some((terminal) => terminal.jobId === (item.candidate ?? item).jobId)), false);
+  let terminalResumeRequests = 0;
+  const terminalResumeStore = openCrawlerStore(terminalConfig.databasePath);
+  await runDailyNormalActual(runOptions(terminalConfig, async () => {
+    terminalResumeRequests += 1;
+    throw new Error('terminal outcomes must not be retried');
+  }, {
+    runId: 'p05-recovery-terminal-no-retry', store: terminalResumeStore,
+    clock: { now: () => '2026-07-25T09:32:00.000Z', sleep: async () => {} },
+  }));
+  terminalResumeStore.close();
+  assert.equal(terminalResumeRequests, 0, 'policy rejection and terminal outcomes must not be retried on reopen');
+
+  const { config: legacyConfig } = testConfig();
+  legacyConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const legacyLeads = ['legacy-transient-id', 'legacy-success-id'].map((id) => ({
+    provider: 'glassdoor', providerJobId: id, jobId: id,
+    discoveryUrl: `https://www.glassdoor.com/job-listing/${id}`,
+    canonicalUrl: `https://www.glassdoor.com/job-listing/${id}`,
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  }));
+  const legacyStore = openCrawlerStore(legacyConfig.databasePath);
+  const legacyInitial = await runDailyNormalActual(runOptions(legacyConfig, async (url) => {
+    const parsed = new URL(url);
+    const id = parsed.pathname.split('/').at(-1);
+    if (parsed.hostname === 'www.glassdoor.com') return {
+      status: 200, body: `<html><h1>AI Engineer</h1><a href="https://boards.greenhouse.io/acme/jobs/${id}">Apply</a></html>`,
+    };
+    if (id === 'legacy-transient-id') throw new Error('ECONNRESET legacy P04 fixture');
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  }, { runId: 'p05-legacy-p04-recovery', store: legacyStore, heldPortalLeads: legacyLeads }));
+  assert.equal(legacyInitial.dailyReceipt.recovery.heldLeads.outcomes.length, 2);
+  const legacyRows = legacyStore.prepare('SELECT observation_key, raw_json FROM job_observations WHERE run_id = ?')
+    .all('p05-legacy-p04-recovery-crawler-v2');
+  const legacyResolvedRows = new Map(legacyInitial.observations.map((candidate) => [candidate.jobId, candidate]));
+  for (const { observation_key, raw_json } of legacyRows) {
+    const raw = JSON.parse(raw_json);
+    if (!['legacy-transient-id', 'legacy-success-id'].includes(raw.jobId)) continue;
+    const resolved = legacyResolvedRows.get(raw.jobId);
+    if (!resolved) continue;
+    const legacyRow = { ...resolved, evidence: { ...resolved.evidence, recovery: {
+      kind: 'held-lead-recovery', originalDiscoveryUrl: resolved.discoveryUrl,
+    } } };
+    if (raw.jobId === 'legacy-transient-id') {
+      legacyRow.originalApplicationUrl = null;
+      legacyRow.applicationResolution = { status: 'Needs Verification', evidence: null };
+      legacyRow.evidence.portalDetail = { status: 'extracted', applicationTargets: [
+        'https://boards.greenhouse.io/acme/jobs/legacy-transient-id',
+      ] };
+      legacyRow.evidence.resolution = { status: 'verification', reason: 'transport-error' };
+    }
+    legacyStore.prepare('UPDATE job_observations SET raw_json = ? WHERE observation_key = ?')
+      .run(JSON.stringify(legacyRow), observation_key);
+  }
+  assert.deepEqual(readHeldLeadRecoveryState(legacyStore, { now: '2026-07-24T08:00:00.000Z' }).eligible
+    .map(({ jobId }) => jobId), ['legacy-transient-id']);
+  assert.equal(candidateRequisitionKey({ provider: 'glassdoor', jobId: 'legacy-transient-id' }), 'glassdoor|legacy transient id');
+  legacyStore.close();
+  const reopenedLegacyStore = openCrawlerStore(legacyConfig.databasePath);
+  let legacyRetryRequests = 0;
+  const legacyRetry = await runDailyNormalActual(runOptions(legacyConfig, async (url) => {
+    legacyRetryRequests += 1;
+    const parsed = new URL(url);
+    const id = parsed.pathname.split('/').at(-1);
+    if (parsed.hostname === 'www.glassdoor.com') return {
+      status: 200, body: `<html><h1>AI Engineer</h1><a href="https://boards.greenhouse.io/acme/jobs/${id}">Apply</a></html>`,
+    };
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  }, {
+    runId: 'p05-legacy-p04-reopened', store: reopenedLegacyStore,
+    clock: { now: () => '2026-07-24T08:00:00.000Z', sleep: async () => {} },
+  }));
+  reopenedLegacyStore.close();
+  assert.equal(legacyRetryRequests, 1, 'only the failed employer target should be requested, without another discovery fetch');
+  assert.equal(legacyRetry.dailyReceipt.recovery.heldLeads.requested, 1);
+  assert.equal(legacyRetry.dailyReceipt.recovery.heldLeads.outcomes[0].lead, 'legacy-transient-id');
+  assert.equal(legacyRetry.dailyReceipt.recovery.heldLeads.recovered, 1);
+  const finalLegacyStore = openCrawlerStore(legacyConfig.databasePath);
+  const finalLegacyState = readHeldLeadRecoveryState(finalLegacyStore, { now: '2026-07-25T08:00:00.000Z' });
+  assert.deepEqual(finalLegacyState.eligible, [], 'a newer success must suppress the legacy transient failure after reopen');
+  assert.ok(finalLegacyState.terminalIdentities.includes(`requisition:${candidateRequisitionKey(legacyLeads[0])}`));
+  let legacySuccessRequests = 0;
+  await runDailyNormalActual(runOptions(legacyConfig, async () => {
+    legacySuccessRequests += 1;
+    throw new Error('newer recovery success must suppress its legacy failure');
+  }, {
+    runId: 'p05-legacy-p04-success-no-repeat', store: finalLegacyStore,
+    clock: { now: () => '2026-07-25T08:00:00.000Z', sleep: async () => {} },
+    heldPortalLeads: [legacyLeads[0]],
+  }));
+  finalLegacyStore.close();
+  assert.equal(legacySuccessRequests, 0, 'reopened successful recovery must not request the old failed lead again');
+
+  const { config: overlapConfig } = testConfig();
+  overlapConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const overlapLead = {
+    provider: 'linkedin-jobs', providerJobId: '765432', jobId: '765432',
+    source: 'portal-linkedin-jobs', sourceId: 'portal-discovery',
+    discoveryUrl: 'https://www.linkedin.com/jobs/view/765432', canonicalUrl: 'https://www.linkedin.com/jobs/view/765432',
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  };
+  const overlapStore = openCrawlerStore(overlapConfig.databasePath);
+  let overlapFirstRequests = 0;
+  await runDailyNormalActual(runOptions(overlapConfig, async () => {
+    overlapFirstRequests += 1;
+    return { status: 503, body: 'temporary failure' };
+  }, {
+    runId: 'p05-ordinary-overlap-failure', store: overlapStore, heldPortalLeads: [overlapLead],
+    clock: { now: () => '2026-07-24T08:00:00.000Z', sleep: async () => {} },
+  }));
+  overlapStore.close();
+  assert.equal(overlapFirstRequests, 1);
+  overlapConfig.sources.portals = {
+    enabled: true, maxCandidates: 12, maxResolverRequests: 30, resolverConcurrency: 1, resolverMaxDurationMs: 90_000,
+    http: { providers: ['linkedin-jobs'] }, linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] },
+  };
+  const reopenedOverlapStore = openCrawlerStore(overlapConfig.databasePath);
+  const overlapRequests = [];
+  const overlapCard = '<li><h3 class="base-search-card__title">AI Engineer</h3><h4 class="base-search-card__subtitle"><a>Acme Labs</a></h4><span class="job-search-card__location">Pune, India</span><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/765432"></a><time datetime="2026-07-23"></time></li>';
+  const overlapRun = await runDailyNormalActual(runOptions(overlapConfig, async (url) => {
+    overlapRequests.push(url);
+    const parsed = new URL(url);
+    if (parsed.pathname.includes('jobs-guest')) return { status: 200, body: overlapCard };
+    if (parsed.hostname === 'www.linkedin.com') return {
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/765432' }, body: '',
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: '765432' },
+    })}</script>` };
+  }, {
+    runId: 'p05-ordinary-overlap-success', store: reopenedOverlapStore,
+    clock: { now: () => '2026-07-24T10:00:00.000Z', sleep: async () => {} },
+  }));
+  assert.equal(overlapRun.heldLeadRecovery.alreadyDiscovered, 1);
+  assert.equal(overlapRequests.filter((url) => url.includes('/jobs/view/765432')).length, 1,
+    'ordinary discovery should resolve the overlapping lead once without a separate held-lead fetch');
+  assert.equal(overlapRun.sourceYield.totals.fetched, 1, 'ordinary discovery remains in discovery yield');
+  const overlapResolved = overlapRun.observations.find((candidate) => candidate.jobId === '765432');
+  assert.equal(overlapResolved.provider, 'greenhouse');
+  assert.ok(overlapResolved.identityAliases.includes('linkedin jobs|765432'),
+    'the current resolver provider change must retain the original normalized provider identity');
+  assert.equal(overlapRun.observations.some((candidate) => candidate.jobId === '765432'
+    && candidate.evidence?.recovery?.kind === 'held-lead-recovery'), false);
+  reopenedOverlapStore.close();
+  const completedOverlapStore = openCrawlerStore(overlapConfig.databasePath);
+  const completedOverlapState = readHeldLeadRecoveryState(completedOverlapStore, { now: '2026-07-24T10:01:00.000Z' });
+  assert.deepEqual(completedOverlapState.eligible, []);
+  assert.equal(completedOverlapState.waiting, 0);
+  assert.ok(completedOverlapState.terminalIdentities.includes('requisition:linkedin jobs|765432'));
+  completedOverlapStore.close();
+  let overlapRepeatRequests = 0;
+  const noRepeatOverlapStore = openCrawlerStore(overlapConfig.databasePath);
+  await runDailyNormalActual(runOptions({ ...overlapConfig, sources: { ...overlapConfig.sources, portals: { enabled: false } } }, async () => {
+    overlapRepeatRequests += 1;
+    throw new Error('completed ordinary overlap must not be retried');
+  }, {
+    runId: 'p05-ordinary-overlap-no-repeat', store: noRepeatOverlapStore,
+    clock: { now: () => '2026-07-24T10:02:00.000Z', sleep: async () => {} },
+  }));
+  noRepeatOverlapStore.close();
+  assert.equal(overlapRepeatRequests, 0);
+
+  const { config: failedOrdinaryConfig } = testConfig();
+  failedOrdinaryConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const failedOrdinaryLead = { ...overlapLead, providerJobId: '765433', jobId: '765433',
+    discoveryUrl: 'https://www.linkedin.com/jobs/view/765433', canonicalUrl: 'https://www.linkedin.com/jobs/view/765433' };
+  const failedOrdinaryStore = openCrawlerStore(failedOrdinaryConfig.databasePath);
+  await runDailyNormalActual(runOptions(failedOrdinaryConfig, async () => ({ status: 503, body: 'temporary failure' }), {
+    runId: 'p05-ordinary-overlap-failed-held', store: failedOrdinaryStore, heldPortalLeads: [failedOrdinaryLead],
+    clock: { now: () => '2026-07-24T08:00:00.000Z', sleep: async () => {} },
+  }));
+  failedOrdinaryStore.close();
+  failedOrdinaryConfig.sources.portals = {
+    enabled: true, maxCandidates: 12, maxResolverRequests: 30, resolverConcurrency: 1, resolverMaxDurationMs: 90_000,
+    http: { providers: ['linkedin-jobs'] }, linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] },
+  };
+  const reopenedFailedOrdinaryStore = openCrawlerStore(failedOrdinaryConfig.databasePath);
+  const failedOrdinaryCard = '<li><h3 class="base-search-card__title">AI Engineer</h3><h4 class="base-search-card__subtitle"><a>Acme Labs</a></h4><span class="job-search-card__location">Pune, India</span><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/765433"></a><time datetime="2026-07-23"></time></li>';
+  const failedOrdinaryRun = await runDailyNormalActual(runOptions(failedOrdinaryConfig, async (url) =>
+    new URL(url).pathname.includes('jobs-guest')
+      ? { status: 200, body: failedOrdinaryCard }
+      : { status: 503, body: 'temporary failure' }, {
+    runId: 'p05-ordinary-overlap-failed-current', store: reopenedFailedOrdinaryStore,
+    clock: { now: () => '2026-07-24T10:00:00.000Z', sleep: async () => {} },
+  }));
+  assert.equal(failedOrdinaryRun.sourceYield.totals.fetched, 1);
+  const failedOrdinaryState = readHeldLeadRecoveryState(reopenedFailedOrdinaryStore, { now: '2026-07-24T10:01:00.000Z' });
+  assert.deepEqual(failedOrdinaryState.eligible.map(({ jobId }) => jobId), ['765433'],
+    'a failed ordinary resolution must leave the older held failure pending');
+  const failedOrdinaryRows = readCrawlerRunData(reopenedFailedOrdinaryStore, 'p05-ordinary-overlap-failed-current-crawler-v2')
+    .observations.map(({ raw }) => raw);
+  assert.equal(failedOrdinaryRows.some((candidate) => candidate.jobId === '765433'
+    && candidate.evidence?.recovery?.kind === 'held-lead-recovery'), false);
+  reopenedFailedOrdinaryStore.close();
+
+  const { config: retryAfterConfig } = testConfig();
+  retryAfterConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const retryAfterLead = { ...overlapLead, provider: 'glassdoor', providerJobId: 'retry-after', jobId: 'retry-after',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/retry-after', canonicalUrl: 'https://www.glassdoor.com/job-listing/retry-after' };
+  const retryAfterStore = openCrawlerStore(retryAfterConfig.databasePath);
+  const retryAfterRun = await runDailyNormalActual(runOptions(retryAfterConfig, async () => ({
+    status: 429, headers: { 'Retry-After': '172800', 'x-private': 'must-not-be-retained' }, body: 'rate limited',
+  }), {
+    runId: 'p05-retry-after-delta', store: retryAfterStore, heldPortalLeads: [retryAfterLead],
+    clock: { now: () => '2026-07-24T06:30:00.000Z', sleep: async () => {} },
+  }));
+  const retryAfterOutcome = retryAfterRun.dailyReceipt.recovery.heldLeads.outcomes[0];
+  assert.equal(retryAfterOutcome.nextEligibleAt, '2026-07-26T06:30:00.000Z');
+  const retryAfterStored = readCrawlerRunData(retryAfterStore, 'p05-retry-after-delta-crawler-v2')
+    .observations.find(({ raw }) => raw.jobId === 'retry-after').raw;
+  assert.equal(retryAfterStored.evidence.retryAfterAt, '2026-07-26T06:30:00.000Z');
+  assert.equal(JSON.stringify(retryAfterStored).includes('must-not-be-retained'), false);
+  retryAfterStore.close();
+  const pastRetryAfterStore = openCrawlerStore(retryAfterConfig.databasePath);
+  const pastRetryAfterLead = { ...retryAfterLead, providerJobId: 'retry-after-past', jobId: 'retry-after-past',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/retry-after-past', canonicalUrl: 'https://www.glassdoor.com/job-listing/retry-after-past' };
+  const pastRetryAfterRun = await runDailyNormalActual(runOptions(retryAfterConfig, async () => ({
+    status: 429, headers: { 'Retry-After': 'Wed, 22 Jul 2026 06:30:00 GMT' }, body: 'rate limited',
+  }), {
+    runId: 'p05-retry-after-past', store: pastRetryAfterStore, heldPortalLeads: [pastRetryAfterLead],
+    clock: { now: () => '2026-07-24T06:30:00.000Z', sleep: async () => {} },
+  }));
+  assert.equal(pastRetryAfterRun.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, '2026-07-24T07:30:00.000Z');
+  pastRetryAfterStore.close();
+
+  const { config: reopenedRateLimitConfig } = testConfig();
+  reopenedRateLimitConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const reopenedRateLimitLead = { ...retryAfterLead, providerJobId: 'retry-after-reopened', jobId: 'retry-after-reopened',
+    discoveryUrl: 'https://www.glassdoor.com/job-listing/retry-after-reopened',
+    canonicalUrl: 'https://www.glassdoor.com/job-listing/retry-after-reopened' };
+  let reopenedRateLimitRequests = 0;
+  const reopenedRateLimitTransport = async () => {
+    reopenedRateLimitRequests += 1;
+    return { status: 429, headers: { 'Retry-After': '86400' }, body: 'rate limited' };
+  };
+  const reopenedRateLimitFirstStore = openCrawlerStore(reopenedRateLimitConfig.databasePath);
+  const reopenedRateLimitFirst = await runDailyNormalActual(runOptions(reopenedRateLimitConfig, reopenedRateLimitTransport, {
+    runId: 'p05-retry-after-store-first', store: reopenedRateLimitFirstStore,
+    heldPortalLeads: [reopenedRateLimitLead],
+    clock: { now: () => '2026-10-20T09:00:00.000Z', sleep: async () => {} },
+  }));
+  reopenedRateLimitFirstStore.close();
+  const firstRetryOutcome = reopenedRateLimitFirst.dailyReceipt.recovery.heldLeads.outcomes[0];
+  assert.equal(reopenedRateLimitRequests, 1);
+  assert.equal(firstRetryOutcome.attemptCount, 1);
+  assert.equal(firstRetryOutcome.nextEligibleAt, '2026-10-21T09:00:00.000Z');
+
+  const reopenedRateLimitWaitingStore = openCrawlerStore(reopenedRateLimitConfig.databasePath);
+  const reopenedRateLimitWaiting = await runDailyNormalActual(runOptions(reopenedRateLimitConfig, async () => {
+    reopenedRateLimitRequests += 1;
+    throw new Error('stored Retry-After must prevent an early request');
+  }, {
+    runId: 'p05-retry-after-store-waiting', store: reopenedRateLimitWaitingStore,
+    heldPortalLeads: [reopenedRateLimitLead],
+    clock: { now: () => '2026-10-21T08:59:59.000Z', sleep: async () => {} },
+  }));
+  assert.equal(reopenedRateLimitRequests, 1);
+  assert.equal(reopenedRateLimitWaiting.dailyReceipt.recovery.heldLeads.waiting, 1);
+  assert.equal(reopenedRateLimitWaiting.dailyReceipt.recovery.heldLeads.continuation, true);
+  assert.equal(readHeldLeadRecoveryState(reopenedRateLimitWaitingStore, { now: '2026-10-21T08:59:59.000Z' }).eligible.length, 0);
+  assert.equal(readHeldLeadRecoveryState(reopenedRateLimitWaitingStore, { now: '2026-10-21T08:59:59.000Z' }).waiting, 1);
+  assert.equal(readHeldLeadRecoveryState(reopenedRateLimitWaitingStore, { now: '2026-10-21T08:59:59.000Z' })
+    .waitingCandidates[0].evidence.recovery.nextEligibleAt, firstRetryOutcome.nextEligibleAt);
+  const retainedRetryRow = reopenedRateLimitWaitingStore.prepare('SELECT raw_json FROM job_observations WHERE raw_json LIKE ? ORDER BY observed_at DESC LIMIT 1')
+    .get('%retry-after-reopened%');
+  const retainedRetry = JSON.parse(retainedRetryRow.raw_json).evidence.recovery;
+  assert.equal(retainedRetry.attemptCount, 1);
+  assert.equal(retainedRetry.attemptedAt, '2026-10-20T09:00:00.000Z');
+  assert.equal(retainedRetry.nextEligibleAt, firstRetryOutcome.nextEligibleAt);
+  reopenedRateLimitWaitingStore.close();
+
+  const reopenedRateLimitDueStore = openCrawlerStore(reopenedRateLimitConfig.databasePath);
+  const reopenedRateLimitDue = await runDailyNormalActual(runOptions(reopenedRateLimitConfig, reopenedRateLimitTransport, {
+    runId: 'p05-retry-after-store-due', store: reopenedRateLimitDueStore,
+    clock: { now: () => '2026-10-21T09:00:00.000Z', sleep: async () => {} },
+  }));
+  reopenedRateLimitDueStore.close();
+  assert.equal(reopenedRateLimitRequests, 2, 'the store should retry at its saved Retry-After deadline');
+  assert.equal(reopenedRateLimitDue.dailyReceipt.recovery.heldLeads.outcomes[0].attemptCount, 2);
+  assert.equal(reopenedRateLimitDue.dailyReceipt.recovery.heldLeads.outcomes[0].attemptedAt, '2026-10-21T09:00:00.000Z');
+  assert.equal(reopenedRateLimitDue.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, '2026-10-22T09:00:00.000Z');
+
+  const { config: rediscoveredRateLimitConfig } = testConfig();
+  rediscoveredRateLimitConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const rediscoveredRateLimitLead = {
+    provider: 'linkedin-jobs', providerJobId: '100000', jobId: '100000', source: 'portal-linkedin-jobs',
+    sourceId: 'portal-discovery', discoveryUrl: 'https://www.linkedin.com/jobs/view/100000',
+    canonicalUrl: 'https://www.linkedin.com/jobs/view/100000', company: 'Acme Labs', title: 'AI Engineer',
+    location: 'Pune, India', description: 'Index text only.', liveness: { status: 'Active' }, postedAt: '2026-10-20',
+  };
+  let rediscoveredNow = Date.parse('2026-10-20T09:00:00.000Z');
+  let employerDetailRequests = 0;
+  const resolverDetailUrls = [];
+  const rediscoveredTransport = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'www.linkedin.com' && parsed.pathname.includes('jobs-guest')) return { status: 200, body: '' };
+    resolverDetailUrls.push(url);
+    if (parsed.hostname === 'www.linkedin.com') return { status: 302,
+      headers: { location: `https://boards.greenhouse.io/acme/jobs/${parsed.pathname.split('/').at(-1)}` }, body: '' };
+    employerDetailRequests += 1;
+    if (parsed.pathname.endsWith('/100000') && employerDetailRequests === 1) {
+      rediscoveredNow += 5 * 60_000;
+      return { status: 429, headers: { 'Retry-After': '7200' }, body: 'rate limited' };
+    }
+    const id = parsed.pathname.split('/').at(-1);
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+        hiringOrganization: { name: 'Acme Labs' },
+        description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        datePosted: '2026-10-20', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+      })}</script>` };
+  };
+  const rediscoveredFirstStore = openCrawlerStore(rediscoveredRateLimitConfig.databasePath);
+  const rediscoveredFirst = await runDailyNormalActual(runOptions(rediscoveredRateLimitConfig, rediscoveredTransport, {
+    runId: 'p05-linkedIn-employer-host-429-first', store: rediscoveredFirstStore,
+    heldPortalLeads: [rediscoveredRateLimitLead],
+    clock: { now: () => new Date(rediscoveredNow).toISOString(), sleep: async () => {} },
+  }));
+  const rediscoveredFirstOutcome = rediscoveredFirst.dailyReceipt.recovery.heldLeads.outcomes[0];
+  assert.equal(employerDetailRequests, 1);
+  assert.equal(rediscoveredFirstOutcome.reason, 'blocked');
+  assert.equal(rediscoveredFirstOutcome.attemptCount, 1);
+  assert.equal(rediscoveredFirstOutcome.nextEligibleAt, '2026-10-20T11:05:00.000Z');
+  const firstStoredCandidate = readCrawlerRunData(rediscoveredFirstStore, 'p05-linkedIn-employer-host-429-first-crawler-v2')
+    .observations.map(({ raw }) => raw).find((candidate) => candidate.jobId === '100000');
+  assert.equal(firstStoredCandidate.evidence.retryAfterAt, '2026-10-20T11:05:00.000Z');
+  rediscoveredFirstStore.close();
+  const firstHeldDetailUrls = resolverDetailUrls.filter((url) => url.endsWith('/100000'));
+  assert.equal(firstHeldDetailUrls.length, 2);
+
+  rediscoveredRateLimitConfig.sources.portals = {
+    enabled: true, maxCandidates: 12, maxResolverRequests: 30, resolverConcurrency: 1, resolverMaxDurationMs: 90_000,
+    http: { providers: ['linkedin-jobs'] }, linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] },
+  };
+  rediscoveredNow = Date.parse('2026-10-20T11:00:00.000Z');
+  let ordinarySearches = 0;
+  const rediscoveredCards = [100000, 100001].map((id) => `<li><h3 class="base-search-card__title">AI Engineer</h3><h4 class="base-search-card__subtitle"><a>Acme Labs</a></h4><span class="job-search-card__location">Pune, India</span><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/${id}"></a><time datetime="2026-10-20"></time></li>`).join('');
+  const rediscoveredWaitingStore = openCrawlerStore(rediscoveredRateLimitConfig.databasePath);
+  const rediscoveredScorerInputs = [];
+  const rediscoveredWaiting = await runDailyNormalActual(runOptions(rediscoveredRateLimitConfig, async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.includes('jobs-guest')) {
+      ordinarySearches += 1;
+      return { status: 200, body: rediscoveredCards };
+    }
+    return rediscoveredTransport(url);
+  }, {
+    runId: 'p05-linkedIn-employer-host-429-waiting', store: rediscoveredWaitingStore,
+    scorer: async (rows) => { rediscoveredScorerInputs.push(...rows); return { scored: [] }; },
+    clock: { now: () => new Date(rediscoveredNow).toISOString(), sleep: async () => {} },
+  }));
+  assert.equal(ordinarySearches, 1, 'ordinary LinkedIn discovery still runs after reopening the SQLite store');
+  assert.equal(employerDetailRequests, 2, 'only the unrelated ordinary requisition reaches employer detail');
+  assert.deepEqual(resolverDetailUrls.filter((url) => url.endsWith('/100000')), firstHeldDetailUrls,
+    'ordinary rediscovery makes no portal detail or employer detail GET for the waiting requisition');
+  assert.equal(rediscoveredWaiting.sourceYield.totals.fetched, 2,
+    'ordinary discovery yield still records both returned jobs while one waits');
+  assert.equal(rediscoveredWaiting.dailyReceipt.recovery.heldLeads.waiting, 1);
+  assert.equal(rediscoveredWaiting.dailyReceipt.recovery.heldLeads.continuation, true);
+  assert.equal(rediscoveredWaiting.dailyReceipt.recovery.heldLeads.outcomes[0].attemptCount, 1);
+  assert.equal(rediscoveredWaiting.dailyReceipt.recovery.heldLeads.outcomes[0].attemptedAt, '2026-10-20T09:00:00.000Z');
+  assert.equal(rediscoveredWaiting.dailyReceipt.recovery.heldLeads.outcomes[0].nextEligibleAt, '2026-10-20T11:05:00.000Z');
+  const waitingCandidate = rediscoveredWaiting.observations.find((candidate) => candidate.jobId === '100000');
+  assert.notEqual(waitingCandidate.liveness?.status, 'Active', 'a retry wait cannot reuse stale Active liveness');
+  assert.notEqual(waitingCandidate.evidence?.fieldSources?.liveness, 'original-employer-detail');
+  assert.equal(rediscoveredScorerInputs.some(({ jobId }) => jobId === '100000'), false);
+  assert.equal(rediscoveredWaiting.results.some(({ jobId }) => jobId === '100000'), false);
+  assert.equal(rediscoveredWaiting.shortlist.some(({ jobId }) => jobId === '100000'), false);
+  const waitingStoredState = readHeldLeadRecoveryState(rediscoveredWaitingStore, { now: '2026-10-20T11:00:00.000Z' });
+  assert.equal(waitingStoredState.waiting, 1);
+  assert.equal(waitingStoredState.waitingCandidates[0].evidence.recovery.attemptCount, 1);
+  assert.equal(waitingStoredState.waitingCandidates[0].evidence.recovery.nextEligibleAt, '2026-10-20T11:05:00.000Z');
+  assert.notEqual(waitingStoredState.waitingCandidates[0].liveness?.status, 'Active');
+  rediscoveredWaitingStore.close();
+
+  rediscoveredNow = Date.parse('2026-10-20T11:05:00.000Z');
+  const rediscoveredDueStore = openCrawlerStore(rediscoveredRateLimitConfig.databasePath);
+  const rediscoveredDue = await runDailyNormalActual(runOptions(rediscoveredRateLimitConfig, async (url) => {
+    return new URL(url).pathname.includes('jobs-guest') ? { status: 200, body: rediscoveredCards } : rediscoveredTransport(url);
+  }, {
+    runId: 'p05-linkedIn-employer-host-429-due', store: rediscoveredDueStore,
+    clock: { now: () => new Date(rediscoveredNow).toISOString(), sleep: async () => {} },
+  }));
+  assert.equal(employerDetailRequests, 4, 'at the deadline, the held requisition receives its current employer detail retry');
+  assert.equal(resolverDetailUrls.filter((url) => url.endsWith('/100000')).length, 4,
+    'the held portal and employer detail GETs are allowed at the saved deadline');
+  assert.equal(rediscoveredDue.observations.some((candidate) => candidate.jobId === '100000'
+    && candidate.provider === 'greenhouse' && candidate.originalApplicationUrl), true,
+    'ordinary discovery must retain the successful due employer detail result');
+  const rediscoveredDueState = readHeldLeadRecoveryState(rediscoveredDueStore, { now: '2026-10-20T11:06:00.000Z' });
+  assert.deepEqual(rediscoveredDueState.eligible, []);
+  assert.equal(rediscoveredDueState.waiting, 0);
+  rediscoveredDueStore.close();
+
+  const { config: urlFallbackConfig } = testConfig();
+  urlFallbackConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const urlOnlyLead = {
+    provider: 'glassdoor', source: 'portal-glassdoor', sourceId: 'portal-discovery',
+    discoveryUrl: 'https://boards.greenhouse.io/acme/jobs/url-only#portal',
+    canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/url-only#portal',
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  };
+  const urlOnlyStore = openCrawlerStore(urlFallbackConfig.databasePath);
+  let urlOnlyEmployerRequests = 0;
+  const urlOnlyFailure = await runDailyNormalActual(runOptions(urlFallbackConfig, async (url) => {
+    urlOnlyEmployerRequests += 1;
+    return { status: 503, body: 'temporary employer detail failure' };
+  }, {
+    runId: 'p05-url-fallback-idless-failure', store: urlOnlyStore, heldPortalLeads: [urlOnlyLead],
+    clock: { now: () => '2026-10-20T09:00:00.000Z', sleep: async () => {} },
+  }));
+  assert.equal(urlOnlyEmployerRequests, 1);
+  assert.equal(urlOnlyFailure.dailyReceipt.recovery.heldLeads.outcomes[0].recoveryState, 'pending');
+  assert.equal(urlOnlyFailure.dailyReceipt.recovery.heldLeads.outcomes[0].attemptCount, 1);
+  const urlOnlyFailureRow = readCrawlerRunData(urlOnlyStore, 'p05-url-fallback-idless-failure-crawler-v2')
+    .observations.map(({ raw }) => raw).find((candidate) => candidate.evidence?.recovery?.kind === 'held-lead-recovery');
+  assert.equal(urlOnlyFailureRow.evidence.recovery.providerRequisitionKey, null);
+  assert.equal(urlOnlyFailureRow.evidence.recovery.identityUrl, 'url:https://boards.greenhouse.io/acme/jobs/url-only');
+  urlOnlyStore.close();
+
+  const urlOnlyOrdinaryStore = openCrawlerStore(urlFallbackConfig.databasePath);
+  const urlOnlyOrdinarySuccess = {
+    provider: 'greenhouse', jobId: 'resolved-ordinary-id', providerJobId: 'resolved-ordinary-id',
+    source: 'ordinary-discovery', sourceId: 'ordinary-discovery',
+    discoveryUrl: 'https://boards.greenhouse.io/acme/jobs/url-only#ordinary',
+    canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/url-only#ordinary',
+    originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/url-only#apply',
+    applicationResolution: { status: 'Resolved Original' }, classification: 'direct',
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+    evidence: { fieldSources: { company: 'original-employer-detail' } },
+  };
+  await crawlRun({ store: urlOnlyOrdinaryStore, runId: 'p05-url-fallback-ordinary-success-crawler-v2',
+    clock: { now: () => '2026-10-20T11:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'ordinary-discovery', fetch: async () => ({ observations: [urlOnlyOrdinarySuccess] }) }] });
+  urlOnlyOrdinaryStore.close();
+
+  const urlOnlyReopenedStore = openCrawlerStore(urlFallbackConfig.databasePath);
+  const urlOnlyState = readHeldLeadRecoveryState(urlOnlyReopenedStore, { now: '2026-10-20T11:01:00.000Z' });
+  assert.deepEqual(urlOnlyState.eligible, [], 'later employer-detail success retires an ID-less held failure by normalized URL');
+  assert.equal(urlOnlyState.waiting, 0);
+  assert.equal(urlOnlyState.terminalIdentities.includes('url:https://boards.greenhouse.io/acme/jobs/url-only'), true);
+  let urlOnlyRedundantRequests = 0;
+  const urlOnlyNoRepeat = await runDailyNormalActual(runOptions(urlFallbackConfig, async () => {
+    urlOnlyRedundantRequests += 1;
+    throw new Error('ordinary employer-detail success must suppress the old held URL retry');
+  }, {
+    runId: 'p05-url-fallback-success-no-repeat', store: urlOnlyReopenedStore,
+    clock: { now: () => '2026-10-20T11:01:00.000Z', sleep: async () => {} },
+  }));
+  assert.equal(urlOnlyNoRepeat.dailyReceipt.recovery?.heldLeads?.requested ?? 0, 0);
+  assert.equal(urlOnlyRedundantRequests, 0);
+  urlOnlyReopenedStore.close();
+
+  const urlControlStore = openCrawlerStore(urlFallbackConfig.databasePath);
+  const urlHeldControl = (sourceRecordKey, options = {}) => ({
+    sourceRecordKey, provider: 'glassdoor', source: 'portal-glassdoor', sourceId: 'portal-discovery',
+    discoveryUrl: `https://example.org/jobs/${options.path ?? sourceRecordKey}#held`,
+    canonicalUrl: `https://example.org/jobs/${options.path ?? sourceRecordKey}#held`,
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+    evidence: { recovery: { kind: 'held-lead-recovery', outcome: 'pending', reason: 'detail-http-503',
+      originalDiscoveryUrl: `https://example.org/jobs/${options.path ?? sourceRecordKey}#held`, evaluatedAt: options.evaluatedAt,
+      providerRequisitionKey: options.providerRequisitionKey ?? null,
+      identityUrl: options.providerRequisitionKey ? `requisition:${options.providerRequisitionKey}`
+        : `url:https://example.org/jobs/${options.path ?? sourceRecordKey}` } },
+  });
+  const urlControlObservations = [
+    urlHeldControl('different-req', { path: 'url-control', providerRequisitionKey: 'glassdoor|different req', evaluatedAt: '2026-10-20T10:00:00.000Z' }),
+    urlHeldControl('failed-ordinary', { path: 'failed-control', evaluatedAt: '2026-10-20T12:00:00.000Z' }),
+    urlHeldControl('equal-failure', { path: 'equal-control', evaluatedAt: '2026-10-20T11:00:00.000Z' }),
+  ];
+  await crawlRun({ store: urlControlStore, runId: 'p05-url-fallback-controls',
+    clock: { now: () => '2026-10-20T10:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'url-fallback-controls', fetch: async () => ({ observations: urlControlObservations }) }] });
+  await crawlRun({ store: urlControlStore, runId: 'p05-url-fallback-ordinary-success',
+    clock: { now: () => '2026-10-20T11:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'url-fallback-ordinary-success', fetch: async () => ({ observations: [
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'url-control-success',
+        discoveryUrl: 'https://example.org/jobs/url-control#success', canonicalUrl: 'https://example.org/jobs/url-control#success',
+        originalApplicationUrl: 'https://example.org/jobs/url-control#apply' },
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'older-success', discoveryUrl: 'https://example.org/jobs/older-control#success',
+        canonicalUrl: 'https://example.org/jobs/older-control#success', originalApplicationUrl: 'https://example.org/jobs/older-control#apply' },
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'equal-success', discoveryUrl: 'https://example.org/jobs/equal-control#success',
+        canonicalUrl: 'https://example.org/jobs/equal-control#success', originalApplicationUrl: 'https://example.org/jobs/equal-control#apply' },
+      { sourceRecordKey: 'failed-ordinary-row', provider: 'greenhouse', discoveryUrl: 'https://example.org/jobs/failed-control#success',
+        canonicalUrl: 'https://example.org/jobs/failed-control#success', classification: 'direct',
+        originalApplicationUrl: 'https://example.org/jobs/failed-control#apply', applicationResolution: { status: 'Resolved Original' },
+        evidence: { fieldSources: { company: 'portal-index' } } },
+    ] }) }] });
+  await crawlRun({ store: urlControlStore, runId: 'p05-url-fallback-older-failure',
+    clock: { now: () => '2026-10-20T12:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'url-fallback-older-failure', fetch: async () => ({ observations: [
+      urlHeldControl('older-failure', { path: 'older-control', evaluatedAt: '2026-10-20T12:00:00.000Z' }),
+    ] }) }] });
+  const urlControls = readHeldLeadRecoveryState(urlControlStore, { now: '2026-10-20T13:00:00.000Z' });
+  assert.deepEqual(urlControls.eligible.map(({ sourceRecordKey }) => sourceRecordKey).sort(),
+    ['different-req', 'equal-failure', 'failed-ordinary', 'older-failure'].sort(),
+    'URL evidence cannot override a different proven requisition, older or equal success, or failed ordinary evidence');
+  urlControlStore.close();
+
+  const { config: urlOrderConfig } = testConfig();
+  const urlOrderStore = openCrawlerStore(urlOrderConfig.databasePath);
+  const urlOrderHeld = (sourceRecordKey, discoveryUrl, canonicalUrl) => ({
+    sourceRecordKey, provider: 'glassdoor', source: 'portal-glassdoor', sourceId: 'portal-discovery',
+    discoveryUrl, canonicalUrl, company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+    evidence: { recovery: { kind: 'held-lead-recovery', outcome: 'pending', reason: 'transport-error',
+      originalDiscoveryUrl: discoveryUrl, evaluatedAt: '2026-10-20T09:00:00.000Z' } },
+  });
+  await crawlRun({ store: urlOrderStore, runId: 'p05-url-order-old-success',
+    clock: { now: () => '2026-10-20T08:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'url-order-old-success', fetch: async () => ({ observations: [
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'url-order-old-success',
+        discoveryUrl: 'https://example.org/jobs/old-route#success', canonicalUrl: 'https://example.org/jobs/old-route#success',
+        originalApplicationUrl: 'https://example.org/jobs/old-route#apply' },
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'url-order-reverse-current-success',
+        discoveryUrl: 'https://example.org/jobs/reverse-current#success', canonicalUrl: 'https://example.org/jobs/reverse-current#success',
+        originalApplicationUrl: 'https://example.org/jobs/reverse-current#apply' },
+    ] }) }],
+  });
+  await crawlRun({ store: urlOrderStore, runId: 'p05-url-order-held',
+    clock: { now: () => '2026-10-20T09:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'url-order-held', fetch: async () => ({ observations: [
+      urlOrderHeld('old-first', 'https://example.org/jobs/old-route#held', 'https://example.org/jobs/current-route#held'),
+      urlOrderHeld('current-first', 'https://example.org/jobs/reverse-current#held', 'https://example.org/jobs/reverse-old#held'),
+    ] }) }],
+  });
+  await crawlRun({ store: urlOrderStore, runId: 'p05-url-order-current-success',
+    clock: { now: () => '2026-10-20T11:00:00.000Z', sleep: async () => {} },
+    sourcePlans: [{ id: 'url-order-current-success', fetch: async () => ({ observations: [
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'url-order-current-success',
+        discoveryUrl: 'https://example.org/jobs/current-route#success', canonicalUrl: 'https://example.org/jobs/current-route#success',
+        originalApplicationUrl: 'https://example.org/jobs/current-route#apply' },
+      { ...urlOnlyOrdinarySuccess, sourceRecordKey: 'url-order-reverse-old-success',
+        discoveryUrl: 'https://example.org/jobs/reverse-old#success', canonicalUrl: 'https://example.org/jobs/reverse-old#success',
+        originalApplicationUrl: 'https://example.org/jobs/reverse-old#apply' },
+    ] }) }],
+  });
+  assert.deepEqual(readHeldLeadRecoveryState(urlOrderStore, { now: '2026-10-20T12:00:00.000Z' }).eligible, [],
+    'a later canonical URL success retires the ID-less held lead regardless of URL key order');
+  urlOrderStore.close();
+
   const reopenedGood = reopenedRunData.observations.find((row) => row.raw.providerJobId === 'good')?.raw;
   assert.match(reopenedGood.description, /Build Python systems/);
   assert.deepEqual(normalizeCandidate(reopenedGood).salary, {
@@ -2186,9 +2962,11 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.duplicates, 1);
   assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.alreadyDiscovered, 1);
   assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.outcomes.length, 1);
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.attempted, 1, 'recovery must make progress beside current discovery');
+  assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.recovered, 1);
   assert.equal(duplicateCurrentDiscovery.heldLeadRecovery.outcomes[0].lead, 'different-requisition');
   assert.equal(currentDiscoveryRequests.filter((url) => url.includes('/jobs/view/123456')).length, 1);
-  assert.equal(duplicateCurrentDiscovery.sourceYield.totals.fetched, 1, 'only the current discovery role contributes to yield');
+  assert.equal(duplicateCurrentDiscovery.sourceYield.totals.fetched, 1, 'known held leads must stay outside discovery yield');
   assert.equal(duplicateCurrentDiscovery.sourceYield.sources.reduce((sum, row) => sum + row.fetched, 0), 1);
   const reopenedCurrentDiscoveryStore = openCrawlerStore(currentDiscoveryConfig.databasePath);
   const persistedCurrentDiscovery = JSON.parse(reopenedCurrentDiscoveryStore.prepare(
@@ -2197,6 +2975,140 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   reopenedCurrentDiscoveryStore.close();
   assert.deepEqual(persistedCurrentDiscovery.workflow.sourceYield, duplicateCurrentDiscovery.sourceYield);
   assert.equal(persistedCurrentDiscovery.workflow.sourceYield.totals.fetched, 1);
+
+  const { config: sharedBudgetConfig } = testConfig();
+  sharedBudgetConfig.sources.portals = {
+    enabled: true, maxCandidates: 12, maxResolverRequests: 4, resolverConcurrency: 2, resolverMaxDurationMs: 90_000,
+    http: { providers: ['linkedin-jobs'] },
+    linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] },
+  };
+  const budgetHeldLeads = Array.from({ length: 10 }, (_, index) => ({
+    provider: index % 2 === 0 ? 'glassdoor' : 'wellfound', providerJobId: `shared-budget-${index}`, jobId: `shared-budget-${index}`,
+    discoveryUrl: `https://${index % 2 === 0 ? 'www.glassdoor.com' : 'wellfound.com'}/job-listing/shared-budget-${index}`,
+    canonicalUrl: `https://${index % 2 === 0 ? 'www.glassdoor.com' : 'wellfound.com'}/job-listing/shared-budget-${index}`,
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  }));
+  const budgetDailyStore = openCrawlerStore(sharedBudgetConfig.databasePath);
+  const firstBudgetRequests = [];
+  const firstBudgetTransport = async (url) => {
+    firstBudgetRequests.push(url);
+    const parsed = new URL(url);
+    if (parsed.hostname === 'www.linkedin.com' && parsed.pathname.includes('jobs-guest')) {
+      return { status: 200, body: linkedinDetail.replaceAll('123456', '765432') };
+    }
+    if (['www.glassdoor.com', 'wellfound.com'].includes(parsed.hostname)) return {
+      status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${parsed.pathname.split('/').at(-1)}` }, body: '',
+    };
+    if (parsed.hostname === 'www.linkedin.com') return {
+      status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/ordinary-budget' }, body: '',
+    };
+    const id = parsed.pathname.split('/').at(-1);
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  };
+  const firstBudgetRun = await runDailyNormalActual(runOptions(sharedBudgetConfig, firstBudgetTransport, {
+    runId: 'p05-recovery-shared-budget-first', store: budgetDailyStore, heldPortalLeads: budgetHeldLeads,
+  }));
+  assert.equal(firstBudgetRequests.filter((url) => new URL(url).hostname === 'boards.greenhouse.io').length, 1,
+    'ordinary discovery should use the two requests left after the recovery reservation');
+  assert.equal(firstBudgetRun.dailyReceipt.recovery.heldLeads.requested, 10);
+  assert.equal(firstBudgetRun.dailyReceipt.recovery.heldLeads.attempted, 2);
+  assert.equal(firstBudgetRun.dailyReceipt.recovery.heldLeads.continuation, true);
+  assert.ok(firstBudgetRun.observations.some((candidate) =>
+    candidate.originalApplicationUrl === 'https://boards.greenhouse.io/acme/jobs/ordinary-budget'),
+  'the ordinary discovery candidate should still resolve beside held-lead recovery');
+  const persistedBudgetRows = readCrawlerRunData(budgetDailyStore, 'p05-recovery-shared-budget-first-crawler-v2')
+    .observations.map(({ raw }) => raw).filter((candidate) => candidate.evidence?.recovery?.kind === 'held-lead-recovery');
+  for (const lead of budgetHeldLeads.slice(0, 2)) {
+    const sourceHost = new URL(lead.discoveryUrl).hostname;
+    const receiptOutcome = firstBudgetRun.dailyReceipt.recovery.heldLeads.outcomes
+      .find(({ lead: id }) => id === lead.jobId);
+    const returned = firstBudgetRun.observations.find((candidate) => candidate.jobId === lead.jobId);
+    const persisted = persistedBudgetRows.find((candidate) => candidate.jobId === lead.jobId);
+    assert.equal(receiptOutcome.requests, 1);
+    assert.equal(firstBudgetRequests.filter((url) => new URL(url).hostname === sourceHost
+      && new URL(url).pathname.endsWith(lead.jobId)).length, 1);
+    assert.equal(receiptOutcome.recoveryState, 'pending');
+    assert.equal(receiptOutcome.reason, 'request-budget-exhausted');
+    assert.equal(receiptOutcome.attemptCount, 1);
+    assert.equal(receiptOutcome.attemptedAt, '2026-07-24T06:30:00.000Z');
+    assert.equal(receiptOutcome.nextEligibleAt, '2026-07-24T07:30:00.000Z');
+    assert.equal(returned.evidence.recovery.outcome, receiptOutcome.recoveryState);
+    assert.equal(returned.evidence.recovery.reason, receiptOutcome.reason);
+    assert.equal(returned.evidence.recovery.attemptCount, receiptOutcome.attemptCount);
+    assert.equal(returned.evidence.recovery.attemptedAt, receiptOutcome.attemptedAt);
+    assert.equal(returned.evidence.recovery.nextEligibleAt, receiptOutcome.nextEligibleAt);
+    assert.equal(persisted.evidence.recovery.outcome, receiptOutcome.recoveryState);
+    assert.equal(persisted.evidence.recovery.reason, receiptOutcome.reason);
+    assert.equal(persisted.evidence.recovery.attemptCount, receiptOutcome.attemptCount);
+    assert.equal(persisted.evidence.recovery.attemptedAt, receiptOutcome.attemptedAt);
+    assert.equal(persisted.evidence.recovery.nextEligibleAt, receiptOutcome.nextEligibleAt);
+  }
+  for (const lead of budgetHeldLeads.slice(2)) {
+    const sourceHost = new URL(lead.discoveryUrl).hostname;
+    const receiptOutcome = firstBudgetRun.dailyReceipt.recovery.heldLeads.outcomes
+      .find(({ lead: id }) => id === lead.jobId);
+    const returned = firstBudgetRun.observations.find((candidate) => candidate.jobId === lead.jobId);
+    const persisted = persistedBudgetRows.find((candidate) => candidate.jobId === lead.jobId);
+    assert.equal(receiptOutcome.recoveryState, 'pending');
+    assert.equal(receiptOutcome.reason, 'request-budget-exhausted');
+    assert.equal(receiptOutcome.requests, 0);
+    assert.equal(receiptOutcome.attemptCount, 0);
+    assert.equal(receiptOutcome.attemptedAt, null);
+    assert.equal(receiptOutcome.nextEligibleAt, null);
+    assert.equal(firstBudgetRequests.filter((url) => new URL(url).hostname === sourceHost
+      && new URL(url).pathname.endsWith(lead.jobId)).length, 0);
+    assert.equal(returned.evidence.recovery.outcome, receiptOutcome.recoveryState);
+    assert.equal(returned.evidence.recovery.reason, receiptOutcome.reason);
+    assert.equal(returned.evidence.recovery.attemptCount, receiptOutcome.attemptCount);
+    assert.equal(returned.evidence.recovery.attemptedAt, undefined);
+    assert.equal(returned.evidence.recovery.nextEligibleAt, null);
+    assert.equal(persisted.evidence.recovery.outcome, receiptOutcome.recoveryState);
+    assert.equal(persisted.evidence.recovery.reason, receiptOutcome.reason);
+    assert.equal(persisted.evidence.recovery.attemptCount, receiptOutcome.attemptCount);
+    assert.equal(persisted.evidence.recovery.attemptedAt, undefined);
+    assert.equal(persisted.evidence.recovery.nextEligibleAt, null);
+  }
+  budgetDailyStore.close();
+  const reopenedBudgetStore = openCrawlerStore(sharedBudgetConfig.databasePath);
+  const dueBudgetState = readHeldLeadRecoveryState(reopenedBudgetStore, { now: '2026-07-24T07:31:00.000Z' });
+  assert.deepEqual(new Set(dueBudgetState.eligible.map(({ jobId }) => jobId)),
+    new Set(budgetHeldLeads.map(({ jobId }) => jobId)), 'budget exhaustion must keep every lead eligible after reopen');
+  sharedBudgetConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const retriedBudgetRequests = new Map();
+  const reopenedBudgetRun = await runDailyNormalActual(runOptions(sharedBudgetConfig, async (url) => {
+    const parsed = new URL(url);
+    const id = parsed.pathname.split('/').at(-1);
+    if (['www.glassdoor.com', 'wellfound.com'].includes(parsed.hostname)) {
+      retriedBudgetRequests.set(id, (retriedBudgetRequests.get(id) ?? 0) + 1);
+      return { status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '' };
+    }
+    const posting = {
+      '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+      hiringOrganization: { name: 'Acme Labs' },
+      description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+      jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+      datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+    };
+    return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+  }, {
+    runId: 'p05-recovery-shared-budget-reopened', store: reopenedBudgetStore,
+    clock: { now: () => '2026-07-24T07:31:00.000Z', sleep: async () => {} },
+  }));
+  reopenedBudgetStore.close();
+  assert.equal(retriedBudgetRequests.size, 10);
+  assert.ok(budgetHeldLeads.every(({ jobId }) => retriedBudgetRequests.has(jobId)),
+    'the reopened daily workflow must retry all budget-exhausted identities without terminal discard');
+  assert.equal(reopenedBudgetRun.dailyReceipt.recovery.heldLeads.requested, 10);
+  assert.equal(reopenedBudgetRun.dailyReceipt.recovery.heldLeads.recovered, 10);
+  assert.ok(reopenedBudgetRun.dailyReceipt.recovery.heldLeads.outcomes
+    .every(({ recoveryState, attemptCount }) => recoveryState === 'recovered' && attemptCount >= 1));
 
   const { config: requestConfig } = testConfig();
   requestConfig.sources.portals = { enabled: false, maxResolverRequests: 1, resolverMaxDurationMs: 90_000 };
@@ -2239,6 +3151,87 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   assert.equal(leadCapped.dailyReceipt.recovery.heldLeads.unattempted, 1);
   assert.equal(leadCapped.crawlerV2Telemetry['portal-discovery'].detail.telemetry.resolutionRequests, 20);
   assert.match(renderLocalLeadReport(leadCapped, { now: '2026-07-24T06:30:00Z' }), /Unattempted: 1/);
+  const leadCapResumeStore = openCrawlerStore(leadCapConfig.databasePath);
+  const leadCapResume = await runDailyNormalActual(runOptions(leadCapConfig, recoveryTransport, {
+    runId: 'p05-held-recovery-lead-cap-resume', store: leadCapResumeStore,
+    clock: { now: () => '2026-07-24T07:30:00.000Z', sleep: async () => {} },
+  }));
+  leadCapResumeStore.close();
+  assert.equal(leadCapResume.dailyReceipt.recovery.heldLeads.requested, 1);
+  assert.equal(leadCapResume.dailyReceipt.recovery.heldLeads.attempted, 1);
+  assert.equal(leadCapResume.dailyReceipt.recovery.heldLeads.recovered, 1);
+
+  const { config: overflowConfig } = testConfig();
+  overflowConfig.sources.portals = { enabled: false, maxResolverRequests: 30, resolverMaxDurationMs: 90_000 };
+  const overflowLeads = Array.from({ length: 31 }, (_, index) => ({
+    provider: 'glassdoor', providerJobId: `overflow-${index + 1}`, jobId: `overflow-${index + 1}`,
+    discoveryUrl: `https://www.glassdoor.com/job-listing/overflow-${index + 1}`,
+    canonicalUrl: `https://www.glassdoor.com/job-listing/overflow-${index + 1}`,
+    company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  }));
+  const overflowStore = openCrawlerStore(overflowConfig.databasePath);
+  const overflowRequested = [];
+  let overflowNetworkRequests = 0;
+  for (const [index, at] of ['2026-07-24T07:00:00.000Z', '2026-07-24T08:01:00.000Z',
+    '2026-07-24T09:02:00.000Z', '2026-07-24T10:03:00.000Z'].entries()) {
+    const overflowRun = await runDailyNormalActual(runOptions(overflowConfig, async (url) => {
+      overflowNetworkRequests += 1;
+      const parsed = new URL(url);
+      const id = parsed.pathname.split('/').at(-1);
+      if (parsed.hostname === 'www.glassdoor.com') return {
+        status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '',
+      };
+      const posting = {
+        '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+        hiringOrganization: { name: 'Acme Labs' },
+        description: `Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience. ${id}`,
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        datePosted: '2026-07-23', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+      };
+      return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+    }, {
+      runId: `p05-recovery-overflow-${index + 1}`, store: overflowStore,
+      clock: { now: () => at, sleep: async () => {} },
+      ...(index === 0 ? { heldPortalLeads: overflowLeads } : {}),
+    }));
+    for (const outcome of overflowRun.dailyReceipt.recovery.heldLeads.outcomes) {
+      if (outcome.requests > 0) overflowRequested.push(outcome.lead);
+    }
+    if (index === 0) {
+      assert.equal(overflowRun.dailyReceipt.recovery.heldLeads.requested, 31);
+      assert.equal(overflowRun.dailyReceipt.recovery.heldLeads.attempted, 10);
+      assert.equal(overflowRun.dailyReceipt.recovery.heldLeads.unattempted, 21);
+      assert.equal(overflowRun.dailyReceipt.recovery.heldLeads.continuation, true);
+      const cappedLead = overflowLeads[10];
+      const cappedRaw = overflowRun.observations.find(({ jobId }) => jobId === cappedLead.jobId);
+      const cappedOutcome = overflowRun.dailyReceipt.recovery.heldLeads.outcomes
+        .find(({ lead }) => lead === cappedLead.jobId);
+      const storedCappedRaw = overflowStore.prepare('SELECT raw_json FROM job_observations WHERE run_id = ? AND raw_json LIKE ?')
+        .all('p05-recovery-overflow-1-crawler-v2', `%${cappedLead.jobId}%`)
+        .map(({ raw_json }) => JSON.parse(raw_json))
+        .find((candidate) => candidate.evidence?.recovery?.kind === 'held-lead-recovery');
+      assert.equal(cappedRaw.evidence.recovery.outcome, 'pending');
+      assert.equal(cappedRaw.evidence.recovery.reason, 'candidate-cap-exceeded');
+      assert.equal(cappedRaw.evidence.recovery.attemptedAt, undefined);
+      assert.equal(cappedRaw.evidence.recovery.attemptCount, 0);
+      assert.equal(cappedOutcome.recoveryState, 'pending');
+      assert.equal(cappedOutcome.reason, 'candidate-cap-exceeded');
+      assert.equal(cappedOutcome.attemptedAt, null);
+      assert.equal(cappedOutcome.attemptCount, 0);
+      assert.equal(storedCappedRaw.evidence.recovery.outcome, cappedRaw.evidence.recovery.outcome);
+      assert.equal(storedCappedRaw.evidence.recovery.reason, cappedRaw.evidence.recovery.reason);
+      assert.equal(storedCappedRaw.evidence.recovery.attemptCount, cappedRaw.evidence.recovery.attemptCount);
+    }
+  }
+  const overflowRows = overflowStore.prepare('SELECT raw_json FROM job_observations').all()
+    .map(({ raw_json }) => JSON.parse(raw_json))
+    .filter((candidate) => candidate.evidence?.recovery?.kind === 'held-lead-recovery');
+  overflowStore.close();
+  assert.equal(new Set(overflowRows.map((candidate) => candidate.jobId)).size, 31,
+    'all admitted leads must remain in the reopened observation history');
+  assert.equal(overflowRequested.length, 31, 'bounded reopened runs must request each admitted lead once');
+  assert.equal(new Set(overflowRequested).size, 31, 'each admitted lead must be requested in only one run');
+  assert.equal(overflowNetworkRequests, 62, 'each lead should use one portal and one employer request across bounded runs');
 
   const { config: experienceConfig } = testConfig();
   const hidden = rawPortalJob(1961, {
