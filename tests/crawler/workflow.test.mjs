@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openCrawlerStore, readCrawlerState, updateJobLifecycle } from '../../crawler/run.mjs';
+import { crawlRun, openCrawlerStore, readCrawlerState, updateJobLifecycle } from '../../crawler/run.mjs';
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
 
 function fixedClock(start = '2026-07-23T10:00:00.000Z') {
@@ -539,6 +539,83 @@ test('stored aliases preserve crawler history and first-seen across later portal
     assert.equal(second.observations[0].firstSeenAt, '2026-07-01T10:00:00.000Z');
     assert.equal(second.observations[0].postedAt, null);
     assert.deepEqual(second.jobs[0].identityAliases, ['naukri|portal 9']);
+  } finally {
+    store.close();
+  }
+});
+
+function absenceJob(providerJobId, overrides = {}) {
+  return {
+    provider: 'greenhouse', providerJobId, canonicalUrl: `https://boards.example.test/fixture/${providerJobId}`,
+    company: 'Fixture Co', title: `AI Engineer ${providerJobId}`, location: 'Pune, India', postedAt: '2026-10-19T00:00:00.000Z',
+    classification: 'direct', sourceKind: 'ats-direct', ...overrides,
+  };
+}
+
+function absenceSource(observations, manifest = {}) {
+  return { id: 'absence-source', fetch: async () => ({ observations, manifest }) };
+}
+
+function jobRow(store, providerJobId) {
+  return store.prepare('SELECT * FROM jobs WHERE provider_job_id = ?').get(providerJobId);
+}
+
+test('failed, truncated, or interrupted absence never closes a job seen in an earlier run', async () => {
+  const scans = [
+    { status: 'failed', manifest: { status: 'failed', errors: ['HTTP 503'] } },
+    { status: 'truncated', manifest: { truncated: true } },
+    { status: 'interrupted', manifest: { interrupted: true } },
+  ];
+  for (const scan of scans) {
+    const store = database();
+    try {
+      await crawlRun({ store, runId: `${scan.status}-seen`, clock: fixedClock('2026-10-20T06:00:00.000Z'), sourcePlans: [absenceSource([absenceJob('kept')])] });
+      const seen = jobRow(store, 'kept');
+      const scanned = await crawlRun({ store, runId: `${scan.status}-absent`, clock: fixedClock('2026-10-21T06:00:00.000Z'), sourcePlans: [absenceSource([], scan.manifest)] });
+      assert.equal(scanned.telemetry.sources['absence-source'].status, scan.status);
+      assert.equal(jobRow(store, 'kept').closed_at, null, scan.status);
+      assert.deepEqual(jobRow(store, 'kept'), seen, scan.status);
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test('explicit employer closure sets closed_at while a transport failure does not', async () => {
+  const store = database();
+  try {
+    await crawlRun({ store, runId: 'closure-seen', clock: fixedClock('2026-10-20T06:00:00.000Z'), sourcePlans: [absenceSource([
+      absenceJob('closed-by-status'), absenceJob('closed-by-liveness'),
+    ])] });
+    await crawlRun({ store, runId: 'closure-transport-failure', clock: fixedClock('2026-10-21T06:00:00.000Z'), sourcePlans: [absenceSource([], { status: 'failed', errors: ['connection reset'] })] });
+    assert.equal(jobRow(store, 'closed-by-status').closed_at, null, 'transport failure is not closure');
+    assert.equal(jobRow(store, 'closed-by-liveness').closed_at, null, 'transport failure is not closure');
+    const closed = await crawlRun({ store, runId: 'closure-explicit', clock: fixedClock('2026-10-22T06:00:00.000Z'), sourcePlans: [absenceSource([
+      absenceJob('closed-by-status', { status: 'closed' }),
+      absenceJob('closed-by-liveness', { liveness: { status: 'Expired', checkedAt: '2026-10-22T06:00:00.000Z', evidence: 'fixture' } }),
+    ])] });
+    assert.equal(closed.telemetry.sources['absence-source'].status, 'succeeded');
+    assert.equal(jobRow(store, 'closed-by-status').closed_at, '2026-10-22T06:00:00.000Z');
+    assert.equal(jobRow(store, 'closed-by-liveness').closed_at, '2026-10-22T06:00:00.000Z');
+  } finally {
+    store.close();
+  }
+});
+
+test('a job from a completed run survives a failed run on a reopened store with its earlier last_seen_at', async () => {
+  const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'launchpad-crawler-reopen-')), 'crawler.sqlite');
+  let store = openCrawlerStore(file);
+  await crawlRun({ store, runId: 'reopen-first', clock: fixedClock('2026-10-20T06:00:00.000Z'), sourcePlans: [absenceSource([absenceJob('reopened')])] });
+  const seen = jobRow(store, 'reopened');
+  store.close();
+  store = openCrawlerStore(file);
+  try {
+    const failed = await crawlRun({ store, runId: 'reopen-failed', clock: fixedClock('2026-10-21T06:00:00.000Z'), sourcePlans: [absenceSource([], { status: 'failed', errors: ['HTTP 503'] })] });
+    assert.equal(failed.telemetry.sources['absence-source'].status, 'failed');
+    const after = jobRow(store, 'reopened');
+    assert.equal(after.last_seen_at, '2026-10-20T06:00:00.000Z');
+    assert.equal(after.closed_at, null);
+    assert.deepEqual(after, seen);
   } finally {
     store.close();
   }

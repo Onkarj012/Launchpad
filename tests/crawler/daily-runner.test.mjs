@@ -1275,6 +1275,46 @@ test('enterprise deadline returns a no-write partial envelope and resumes the sa
   assert.ok(calls >= 3);
 });
 
+test('a run with a not-started source is partial, reports it as not_started, and emits no delivery', async () => {
+  const { config } = testConfig();
+  config.sources.enterprise = {
+    boards: [{ provider: 'workday', company: 'Resumable Enterprise', url: 'https://resumable.wd1.myworkdayjobs.com/jobs' }],
+    maxPages: 2, maxJobsPerBoard: 10, enrichDetails: false,
+  };
+  config.execution = {
+    wholeRunDeadlineMs: 1_000, discoveryBudgetMs: 600, handoffReserveMs: 100, downstreamReserveMs: 100,
+    perSourceMaxDurationMs: 600, minimumSourceStartAllocationMs: 1,
+  };
+  let calls = 0;
+  const transport = async () => {
+    calls += 1;
+    if (calls === 2) {
+      const error = new Error('injected daily discovery deadline');
+      error.code = 'DAILY_DEADLINE_EXCEEDED';
+      throw error;
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ total: 2, jobPostings: [{ title: 'AI Engineer', externalPath: '/job/1', locations: ['Pune, India'], postedOn: NOW, jobReqId: 'WD-1' }] }) };
+  };
+  let factoryCalls = 0;
+  let prohibited = 0;
+  const gateway = createFakeTransactionalGateway();
+  const partial = await runDailyNormal(runOptions(config, transport, {
+    runId: 'not-started-partial-no-delivery',
+    executeWrites: true,
+    notionGatewayFactory: () => { factoryCalls += 1; return gateway; },
+    opportunityLedgerWriter: () => { prohibited += 1; return { path: config.opportunityLedgerPath, rows: [] }; },
+    notionGateway: { planWrites({ operations }) { prohibited += 1; return operations; } },
+    scorer: async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })) }),
+  }));
+  assert.equal(partial.terminalEnvelope.status, 'partial');
+  assert.ok(partial.terminalEnvelope.sourceCoverage.not_started.includes('tracked-ats'));
+  assert.equal(partial.terminalEnvelope.sourceEndStates['tracked-ats'].state, 'not_started');
+  assert.equal(partial.deliveryCanary, null);
+  assert.equal(partial.surfaced, 0);
+  assert.equal(factoryCalls, 0);
+  assert.equal(prohibited, 0);
+});
+
 test('Indian portal lanes are optional and explain why each one produced nothing', async () => {
   const { config } = testConfig();
   const result = await runDailyNormal(runOptions(config, fakeTransport({}), {

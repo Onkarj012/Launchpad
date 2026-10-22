@@ -621,7 +621,7 @@ function trackedFixture(result) {
     candidates: result.observations,
     manifest: {
       ...result.manifest,
-      status: fixtureStatus(result.observations, result.failures),
+      status: result.manifest.status === 'not_started' ? 'not_started' : fixtureStatus(result.observations, result.failures),
       errors: failureMessages(result.failures),
     },
   };

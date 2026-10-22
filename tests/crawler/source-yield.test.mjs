@@ -33,6 +33,43 @@ test('nonzero fetched counts never turn source failures or incomplete scans into
   assert.deepEqual(states.empty, { state: 'empty', reason: 'no-records-returned' });
 });
 
+test('succeeded, failed, truncated, interrupted, and not-started sources stay distinct in end states', () => {
+  const states = buildSourceEndStates({
+    succeeded: { status: 'succeeded', fetched: 2 },
+    failed: { status: 'failed', fetched: 0, error: 'HTTP 503' },
+    truncated: { status: 'truncated', fetched: 1 },
+    interrupted: { status: 'interrupted', fetched: 0 },
+    'ats-warm': { status: 'not_started', fetched: 0 },
+    x: { status: 'pending', fetched: 0 },
+    notStarted: { status: 'notStarted', fetched: 0 },
+    unattempted: { status: 'unattempted', fetched: 0 },
+    omitted: { status: 'omitted_by_runtime', fetched: 0, detail: { reason: 'runtime-allowance-unavailable' } },
+    'lane-parent': { status: 'pending', fetched: 0, detail: { telemetry: { lanes: [
+      { sourceId: 'lane-failed', status: 'failed', fetched: 0, error: 'HTTP 429' },
+      { sourceId: 'lane-pending', status: 'pending', fetched: 0 },
+    ] } } },
+  });
+  assert.deepEqual(states.succeeded, { state: 'ok' });
+  assert.deepEqual(states.failed, { state: 'failed', reason: 'HTTP 503' });
+  assert.deepEqual(states.truncated, { state: 'truncated', reason: 'source-truncated' });
+  assert.deepEqual(states.interrupted, { state: 'interrupted', reason: 'source-interrupted' });
+  assert.deepEqual(states['ats-warm'], { state: 'not_started', reason: 'source-not-started' });
+  assert.equal(states.x.state, 'not_started');
+  assert.equal(states.notStarted.state, 'not_started');
+  assert.equal(states.unattempted.state, 'not_started');
+  assert.deepEqual(states.omitted, { state: 'not_started', reason: 'runtime-allowance-unavailable' });
+  assert.equal(states['lane-failed'].state, 'failed');
+  assert.equal(states['lane-pending'].state, 'not_started');
+  assert.equal(states['lane-parent'].state, 'failed', 'a failed child outranks a pending sibling in the parent state');
+});
+
+test('every planned source gets a terminal state even when it has no telemetry', () => {
+  const states = buildSourceEndStates({}, { atsWarm: { enabled: true }, careerSites: [{ url: 'https://careers.example.test' }] });
+  assert.equal(states['ats-warm'].state, 'not_started');
+  assert.equal(states['ats-warm'].reason, 'source-not-planned');
+  assert.equal(states['career-sites'].state, 'not_started');
+});
+
 test('seven-day trial evidence excludes nested failure and truncation despite successful outer status', () => {
   for (const detail of [
     { status: 'failed' },

@@ -28,6 +28,12 @@ The isolated P04 implementation adds an explicit retained-lead input to the exis
 
 The isolated P05 implementation resumes due held leads from the existing observation store, keeps retry timing and terminal outcomes, and reserves shared resolver capacity for ordinary discovery. Existing workflow fixtures cover reopen/retry, rate limits, transport failure, success deduplication, identity preservation, terminal outcomes, and visible continuation. This is local fixture evidence only; no live yield or operational verification is claimed.
 
+## P09 source states, 2026-10-22
+
+Sources that never ran now end as `not_started` instead of `empty`. This covers pending, not-started, unattempted, and omitted statuses, configured sources that were not planned, and portal lanes that did not run. A failed child lane stays `failed` even when a sibling lane is pending. The daily partial path no longer turns a never-run `tracked-ats` into a completed `empty` scan, and a new daily test pins that a partial run with a not-started source emits no delivery.
+
+Already satisfied with no code change: failed, truncated, and interrupted absence never closes a job, and a reopened store keeps the earlier `last_seen_at` for a job the failed run did not see. Explicit employer closure sets `closed_at`, while a transport failure does not. New tests pin these rules. Local fixture evidence only; no live source run.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`
