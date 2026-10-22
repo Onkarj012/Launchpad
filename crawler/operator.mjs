@@ -441,6 +441,9 @@ function recoveryAttemptState(candidate, resolved, now, requested) {
   };
 }
 
+// Ordinary retained details retry only budget and deadline stops.
+const retryableResolutionReasons = ['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded'];
+
 // Retry only transient resolver failures; policy blocks stay terminal.
 function isRetryableHeldResolution(candidate) {
   const evidence = candidate.evidence ?? {};
@@ -1357,8 +1360,8 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       const retainedDetail = retainedByIdentity.get(heldLeadRecoveryIdentity(candidate))
         ?? retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl));
       const retainedReason = retainedDetail?.evidence?.resolution?.reason;
-      if (retainedReason && !isRetryableHeldResolution(retainedDetail)) return candidate;
       const isHeldRecovery = candidate.evidence?.recovery?.kind === 'held-lead-recovery';
+      if (retainedReason && !(isHeldRecovery ? isRetryableHeldResolution(retainedDetail) : retryableResolutionReasons.includes(retainedReason))) return candidate;
       const attemptDeadline = isHeldRecovery ? recoveryDeadline : resolverDeadline;
       const attemptCandidate = withoutStaleAttemptEvidence(candidate);
       if (sourceSignal?.aborted) {
