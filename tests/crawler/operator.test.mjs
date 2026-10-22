@@ -1596,3 +1596,108 @@ test('HTTP transport omits credentials when resolving pasted hiring posts', asyn
   assert.equal(requests[0].options.redirect, 'manual');
   assert.equal(requests[0].options.headers, undefined);
 });
+
+const heldOverlapLead = {
+  provider: 'linkedin-jobs', providerJobId: '765433', jobId: '765433', company: 'Acme Labs', title: 'AI Engineer',
+  location: 'Pune, India', discoveryUrl: 'https://www.linkedin.com/jobs/view/765433', canonicalUrl: 'https://www.linkedin.com/jobs/view/765433',
+};
+const heldOverlapCard = '<li><h3 class="base-search-card__title">AI Engineer</h3><h4 class="base-search-card__subtitle"><a>Acme Labs</a></h4><span class="job-search-card__location">Pune, India</span><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/765433"></a><time datetime="2026-10-20"></time></li>';
+
+test('an ordinary 429 on a due held lead keeps its Retry-After backoff for the next reopened run', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'held-ordinary-backoff-'));
+  const config = { schemaVersion: 'LaunchpadCrawlerConfigV1', databasePath: path.join(root, 'crawler.sqlite'),
+    opportunityLedgerPath: path.join(root, 'absent-ledger.tsv'),
+    sources: { portals: { enabled: false, maxResolverRequests: 30, resolverConcurrency: 1 } } };
+  const clockAt = (now) => ({ now: () => now, sleep: async () => {} });
+  await runCrawlerOperator({ config, schedule: 'morning', runId: 'held-503', heldPortalLeads: [heldOverlapLead],
+    clock: clockAt('2026-10-20T08:00:00.000Z'), transport: async () => ({ status: 503, body: 'temporary failure' }) });
+  config.sources.portals = { enabled: true, maxResolverRequests: 30, resolverConcurrency: 1,
+    http: { providers: ['linkedin-jobs'] }, linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] } };
+  await runCrawlerOperator({ config, schedule: 'morning', runId: 'ordinary-429', clock: clockAt('2026-10-20T10:00:00.000Z'),
+    transport: async (url) => {
+      if (url.includes('jobs-guest')) return { status: 200, body: heldOverlapCard };
+      if (new URL(url).hostname === 'www.linkedin.com') return { status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/765433' }, body: '' };
+      return { status: 429, headers: { 'Retry-After': '86400' }, body: 'rate limited' };
+    } });
+  config.sources.portals.enabled = false;
+  const requests = [];
+  await runCrawlerOperator({ config, schedule: 'morning', runId: 'held-one-minute-later', clock: clockAt('2026-10-20T10:01:00.000Z'),
+    transport: async (url) => {
+      requests.push(url);
+      if (new URL(url).hostname === 'www.linkedin.com') return { status: 302, headers: { location: 'https://boards.greenhouse.io/acme/jobs/765433' }, body: '' };
+      return { status: 503, body: 'temporary failure' };
+    } });
+  assert.deepEqual(requests, [], 'an ordinary attempt Retry-After must hold the held lead back');
+});
+
+const retainedRateLimitedLead = {
+  provider: 'linkedin-jobs', providerJobId: '765433', jobId: '765433', company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+  discoveryUrl: 'https://www.linkedin.com/jobs/view/765433', canonicalUrl: 'https://www.linkedin.com/jobs/view/765433',
+  evidence: { httpStatus: 429, retryAfterAt: '2026-10-20T09:00:00.000Z',
+    portalDetail: { status: 'extracted', applicationTargets: ['https://boards.greenhouse.io/acme/jobs/765433'] },
+    recovery: { kind: 'held-lead-recovery', outcome: 'pending', attemptCount: 1, nextEligibleAt: '2026-10-20T09:00:00.000Z' } },
+};
+
+async function retryRetainedHeldLead(response) {
+  const result = await buildSourcePlans({ config: { sources: { portals: { enabled: false } } }, runAt: '2026-10-20T10:00:00.000Z',
+    schedule: 'morning', clock: { currentTime: () => '2026-10-20T10:00:00.000Z' }, heldPortalLeads: [retainedRateLimitedLead],
+    transport: async () => { throw new Error('unexpected discovery'); },
+    resolver: createOriginalListingResolver({ transport: async () => response }) })
+    .find(({ id }) => id === 'portal-discovery').fetch();
+  return result.observations[0];
+}
+
+test('a fresh 403 after a retained 429 is policy-rejected instead of pending', async () => {
+  const row = await retryRetainedHeldLead({ status: 403, body: 'access denied' });
+  assert.equal(row.evidence.httpStatus, 403);
+  assert.equal(row.evidence.recovery.outcome, 'policy-rejected');
+});
+
+test('a fresh 503 after a retained 429 stays pending with a new backoff deadline', async () => {
+  const row = await retryRetainedHeldLead({ status: 503, body: 'temporary failure' });
+  assert.equal(row.evidence.httpStatus, 503);
+  assert.equal(row.evidence.recovery.outcome, 'pending');
+  assert.equal(row.evidence.recovery.attemptCount, 2);
+  assert.ok(Date.parse(row.evidence.recovery.nextEligibleAt) > Date.parse('2026-10-20T10:00:00.000Z'));
+});
+
+test('slow held-lead recovery leaves ordinary discovery its share of the resolver phase', async () => {
+  const runAt = '2026-10-20T10:00:00.000Z';
+  let monotonic = 0;
+  const resolverUrls = [];
+  const posting = (id) => `<script type="application/ld+json">${JSON.stringify({
+    '@context': 'https://schema.org', '@type': 'JobPosting', title: 'AI Engineer',
+    hiringOrganization: { name: 'Acme Labs' },
+    description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+    jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+    datePosted: '2026-10-19', employmentType: 'FULL_TIME', identifier: { name: 'Acme Labs', value: id },
+  })}</script>`;
+  const resolver = createOriginalListingResolver({ runAt, transport: async (url) => {
+    const parsed = new URL(url);
+    const id = parsed.pathname.split('/').at(-1);
+    resolverUrls.push(url);
+    if (id === 'slow-1') monotonic += 31_000;
+    if (parsed.hostname === 'www.glassdoor.com' || parsed.hostname === 'www.linkedin.com') {
+      return { status: 302, headers: { location: `https://boards.greenhouse.io/acme/jobs/${id}` }, body: '' };
+    }
+    return { status: 200, body: posting(id) };
+  } });
+  const heldLead = (id) => ({ provider: 'glassdoor', providerJobId: id, jobId: id, company: 'Acme Labs', title: 'AI Engineer',
+    discoveryUrl: `https://www.glassdoor.com/job-listing/${id}`, canonicalUrl: `https://www.glassdoor.com/job-listing/${id}` });
+  const config = { sources: { portals: { enabled: true, maxCandidates: 12, maxResolverRequests: 30, resolverConcurrency: 1,
+    resolverMaxDurationMs: 60_000, http: { providers: ['linkedin-jobs'] }, linkedin: { queries: [{ keywords: 'AI Engineer', location: 'Pune' }] } } } };
+  const result = await buildSourcePlans({ config, runAt, schedule: 'morning', clock: { monotonicNow: () => monotonic, currentTime: () => runAt },
+    transport: async (url) => url.includes('jobs-guest') ? { status: 200, body: heldOverlapCard } : { status: 500, body: '' },
+    resolver, heldPortalLeads: [heldLead('slow-1'), heldLead('slow-2')] })
+    .find(({ id }) => id === 'portal-discovery').fetch();
+  const ordinary = result.observations.find(({ jobId }) => jobId === '765433');
+  assert.ok(resolverUrls.some((url) => url.includes('/765433')), 'ordinary discovery must get a resolver request');
+  assert.notEqual(ordinary.evidence.resolution.reason, 'deadline-exceeded', JSON.stringify(ordinary.evidence.resolution));
+  assert.match(ordinary.originalApplicationUrl ?? '', /765433/, JSON.stringify(ordinary.evidence.resolution));
+  assert.equal(resolverUrls.some((url) => url.includes('slow-2')), false, 'a held lead not started within the recovery share must wait');
+  const heldTelemetry = result.manifest.telemetry.heldLeadRecovery;
+  assert.equal(heldTelemetry.unattempted, 1);
+  assert.equal(heldTelemetry.failed, 0);
+  assert.equal(heldTelemetry.continuation, true);
+  assert.equal(heldTelemetry.outcomes.find(({ lead }) => lead === 'slow-2').recoveryState, 'pending');
+});
