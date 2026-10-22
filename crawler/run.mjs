@@ -731,6 +731,26 @@ export function persistDailyReceipt(store, runId, receipt) {
   return true;
 }
 
+// Attach the scoring retry state to the run envelope beside the daily receipt.
+export function persistScoringRetryState(store, runId, state) {
+  const row = runRow(store, runId);
+  if (!row) return false;
+  const telemetry = cloneWorkflowTelemetry({
+    ...row.telemetry,
+    workflow: { ...(row.telemetry.workflow ?? {}), scoringRetry: state },
+  }, 'scoring retry telemetry');
+  store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), runId);
+  return true;
+}
+
+// Read the newest retained scoring retry state from an earlier run, skipping the excluded run.
+export function readScoringRetryState(store, { excludeRunId = null } = {}) {
+  const row = store.prepare(`SELECT json_extract(telemetry_json, '$.workflow.scoringRetry') AS state FROM crawl_runs
+    WHERE run_id IS NOT ? AND json_extract(telemetry_json, '$.workflow.scoringRetry') IS NOT NULL
+    ORDER BY started_at DESC LIMIT 1`).get(excludeRunId);
+  return json(row?.state, null);
+}
+
 export function failCrawlRun(store, runId, error, { clock } = {}) {
   const message = error instanceof Error ? error.message : String(error);
   const current = runRow(store, runId);
@@ -1562,33 +1582,47 @@ function recoveryUrlKeys(candidate, { includeApplicationUrl = false } = {}) {
 
 // Rebuild due held leads from the existing observation log after a store reopen.
 export function readHeldLeadRecoveryState(store, { now = new Date().toISOString() } = {}) {
+  // Held rows, and ordinary rows that carry a failed held attempt under evidence.heldAttempt.
   const rows = store.prepare(`SELECT raw_json, observed_at FROM job_observations
+    WHERE json_extract(raw_json, '$.evidence.recovery.kind') = 'held-lead-recovery'
+      OR json_extract(raw_json, '$.evidence.heldAttempt.kind') = 'held-lead-recovery'
     ORDER BY observed_at DESC, observation_key DESC`).all();
-  const latest = new Map();
+  // Only rows shaped like a resolved ordinary success can retire a held lead. Identity
+  // matching stays in JS: requisition keys are normalized there, so raw-column IN lists would miss some matches.
+  const successRows = store.prepare(`SELECT raw_json, observed_at FROM job_observations
+    WHERE classification = 'direct'
+      AND json_extract(raw_json, '$.applicationResolution.status') = 'Resolved Original'
+      AND json_extract(raw_json, '$.evidence.fieldSources.company') = 'original-employer-detail'
+      AND json_extract(raw_json, '$.evidence.recovery.kind') IS NOT 'held-lead-recovery'
+    ORDER BY observed_at DESC, observation_key DESC`).all();
   const ordinarySuccesses = new Map();
   const ordinaryUrlSuccesses = new Map();
-  for (const row of rows) {
+  for (const row of successRows) {
     const candidate = json(row.raw_json, null);
     if (!candidate) continue;
-    if (candidate.evidence?.recovery?.kind !== 'held-lead-recovery') {
-      const resolved = candidate.classification === 'direct' && candidate.originalApplicationUrl
-        && candidate.applicationResolution?.status === 'Resolved Original'
-        && candidate.evidence?.fieldSources?.company === 'original-employer-detail';
-      if (!resolved) continue;
-      const keys = [candidateRequisitionKey(candidate), ...(candidate.identityAliases ?? [])]
-        .filter((key) => typeof key === 'string' && key.includes('|'))
-        .map((key) => {
-          const separator = key.indexOf('|');
-          return candidateRequisitionKey({ provider: key.slice(0, separator), jobId: key.slice(separator + 1) });
-        }).filter(Boolean);
-      for (const key of keys) {
-        if (!ordinarySuccesses.has(key)) ordinarySuccesses.set(key, row.observed_at);
-      }
-      for (const key of recoveryUrlKeys(candidate, { includeApplicationUrl: true })) {
-        if (!ordinaryUrlSuccesses.has(key)) ordinaryUrlSuccesses.set(key, row.observed_at);
-      }
-      continue;
+    const resolved = candidate.classification === 'direct' && candidate.originalApplicationUrl
+      && candidate.applicationResolution?.status === 'Resolved Original'
+      && candidate.evidence?.fieldSources?.company === 'original-employer-detail';
+    if (!resolved) continue;
+    const keys = [candidateRequisitionKey(candidate), ...(candidate.identityAliases ?? [])]
+      .filter((key) => typeof key === 'string' && key.includes('|'))
+      .map((key) => {
+        const separator = key.indexOf('|');
+        return candidateRequisitionKey({ provider: key.slice(0, separator), jobId: key.slice(separator + 1) });
+      }).filter(Boolean);
+    for (const key of keys) {
+      if (!ordinarySuccesses.has(key)) ordinarySuccesses.set(key, row.observed_at);
     }
+    for (const key of recoveryUrlKeys(candidate, { includeApplicationUrl: true })) {
+      if (!ordinaryUrlSuccesses.has(key)) ordinaryUrlSuccesses.set(key, row.observed_at);
+    }
+  }
+  const latest = new Map();
+  for (const row of rows) {
+    const stored = json(row.raw_json, null);
+    if (!stored) continue;
+    const candidate = stored.evidence?.recovery?.kind === 'held-lead-recovery' ? stored
+      : { ...stored, evidence: { ...stored.evidence, recovery: stored.evidence.heldAttempt } };
     const recovery = candidate.evidence.recovery;
     const requisitionKey = recovery.providerRequisitionKey ?? candidateRequisitionKey(candidate);
     const identity = requisitionKey ? `requisition:${requisitionKey}`
