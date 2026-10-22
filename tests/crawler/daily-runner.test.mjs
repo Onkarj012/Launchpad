@@ -4392,3 +4392,17 @@ test('P11 item 7: a daily run shows each reason and next safe action for contrad
   assert.match(markdown, /FRESHNESS_OLDER_THAN_14D.*Find the original posting date/);
   assert.doesNotMatch(markdown, /Applied\?/);
 });
+
+test('P11 r1 finding 7: the requested count is the limit the run used after the remaining daily budget clamp', async () => {
+  const { config } = testConfig();
+  const earlier = Array.from({ length: 18 }, (_, index) => ({ key: `earlier-${index}`, company: `Earlier ${index}`, family: 'adjacent-engineering', tier: 'Fallback', primaryMode: 'normal' }));
+  writeFileSync(`${config.databasePath}.daily-shortlist.json`, `${JSON.stringify({ schemaVersion: 'DailyShortlistBudgetV1', days: { '2026-07-24': { 'earlier-run': earlier } } })}\n`);
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+    shortlistLimit: 5,
+  }));
+  assert.equal(result.requestedShortlistLimit, 2);
+  const html = renderLocalDailyHtmlReport(result);
+  assert.match(html, /<li>Requested: 2<\/li>/);
+  assert.match(html, /<li>Shortfall this run: 2<\/li>/);
+});

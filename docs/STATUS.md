@@ -50,13 +50,23 @@ Local fixture evidence only; no live yield claimed.
 
 ## P11 private report evidence, 2026-10-23
 
-Local-verified: the private daily HTML report gives each role card a state (`Ready and scored`, `Promising, needs verification`, or `Rejected`), its exact reason codes, a missing-fields list, and one next safe action. Cards sit under Pune and Pune-metro, India-eligible remote, or other-location headings inside each mode. Each card also shows the country or residency constraint, liveness with its check time, one novelty label, and an application-readiness line. The counts line near the top shows requested, eligible, selected, confirmed delivered, and shortfall as separate numbers. The stage-loss receipt table gets state and next-action columns. The Markdown handoff gets the counts line and state and next-action columns too. The Markdown table no longer prints the `Applied?` placeholder.
+Local-verified: the private daily HTML report gives each role card a state (`Ready and scored`, `Promising, needs verification`, or `Rejected`), its exact reason codes, a missing-fields list, and one next safe action. The state comes from the retained gate outcome. Reason-code wording is a fallback that applies only when no gate ran. Cards sit under Pune and Pune-metro, India-eligible remote, or other-location headings. A role that a geography gate rejected never sits under the remote heading. Each card shows the country or residency constraint, liveness with its check time when retained, one novelty label, and an application-readiness line. A card is application-ready only with ready status, a usable match score, and loaded history. History counts as loaded only with status `loaded`, a valid `generatedAt`, and at least one row. Stale snapshots carry status `stale`, so they never count.
 
-Already satisfied: the HTML report never showed `Applied?` or `Make Resume`, and its only action link was the employer apply link. The Markdown table did print an `Applied?: Not Verified` placeholder, which this change removed. A guard test now pins both reports.
+The counts line shows requested, eligible, selected, confirmed delivered, and `Shortfall this run` as separate numbers. Requested is the limit the run used after the remaining daily capacity clamp. Roles that name the same employer apply route each keep their own card. Both cards carry `SHARED_APPLY_ROUTE` with the next step "Verify each role's own employer listing". Cards for ready roles show the experience decision and requirement excerpt from the role's eligibility. Card titles render larger than body text.
 
-Not done: no card shows `Already surfaced`, because ledger state is not on daily rows. No duplicate-route reason code exists, so a shared apply route is shown but not named as a reason. In the daily flow, rejected roles appear only as receipt rows with a requisition hash and no title. Observations reach the result only on partial and fatal paths. The daily result now carries `requestedShortlistLimit`, which the counts line reads.
+The stage-loss receipt table gets state and next-action columns. The Markdown handoff gets the same counts line and state and next-action columns. Roles that only wait on verification now sit under Needs verification in Markdown, not Rejected. The Markdown table no longer prints the `Applied?` placeholder.
 
-Local fixture evidence only; no live run. Desktop and mobile visual check by the orchestrator.
+Already satisfied: the HTML report never showed `Applied?` or `Make Resume`, and its only action link was the employer apply link. A guard test pins both reports.
+
+Not done, needs `job-pull/normal-selection.mjs` or `job-pull/normal-mode.mjs`:
+- Normal-path hard rejections have no cards. The selection result holds only scored, ready rows, so rejected roles appear only as receipt rows.
+- VerifyQueue cards show `Not Verified` for the country or residency constraint and the liveness check time. The queue record keeps neither.
+
+Not done, unreachable from retained data: `Already surfaced`. No daily result row carries a per-role surfaced flag. The label code stays, so a future producer can set it.
+
+Not done in Markdown: rows do not name `SHARED_APPLY_ROUTE`. Only the HTML cards do.
+
+Local fixture evidence only; no live run. No visual check of this slice in a browser.
 
 ## Checkout identity and warning
 

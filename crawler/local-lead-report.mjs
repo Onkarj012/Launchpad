@@ -6,6 +6,7 @@ import { loadConfig, loadConversionPlan } from '../job-pull/config.mjs';
 import { classifyCandidate, isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
+import { hasUsableMatchScore } from '../job-pull/mode-scoring.mjs';
 
 const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
 // Escape text before placing it in the HTML report.
@@ -188,8 +189,8 @@ function snapshotClause(state, snapshot) {
   return `last successful snapshot ${eventDate(snapshot.lastSuccessfulAt)} (${snapshot.ageHours.toFixed(1)} h old), not current`;
 }
 
-// Reason codes for evidence that is missing. Any other code is a hard rejection.
-const MISSING_EVIDENCE = /NOT_VERIFIED|NOT_STATED|MISSING|NOT_RESOLVED|UNRESOLVED|INCOMPLETE|MANUAL_REVIEW|^ORIGINAL_APPLICATION_/;
+// Reason codes for evidence that is missing. Used only when no retained gate outcome decides the card.
+const MISSING_EVIDENCE = /NOT_VERIFIED|UNVERIFIED|NOT_STATED|MISSING|NOT_RESOLVED|UNRESOLVED|INCOMPLETE|MANUAL_REVIEW|^ORIGINAL_APPLICATION_|^SHARED_APPLY_ROUTE$/;
 // One next step per reason. Reasons without a step go to manual review.
 const NEXT_SAFE_ACTIONS = [
   [/^LIVENESS_/, 'Re-check the employer page'],
@@ -198,19 +199,40 @@ const NEXT_SAFE_ACTIONS = [
   [/^EXPERIENCE_/, 'Read the full JD requirement'],
   [/^SCORE_NOT_VERIFIED$/, 'Re-run scoring'],
   [/^HISTORY_NOT_VERIFIED$/, 'Check the history snapshot'],
+  [/^SHARED_APPLY_ROUTE$/, "Verify each role's own employer listing"],
 ];
 // Location headings inside each mode section, in display order.
 const LOCATION_GROUPS = [['pune', 'Pune and Pune-metro'], ['remote', 'India-eligible remote'], ['other', 'Other location evidence']];
 
-// Name a role's reason codes, missing evidence and card state. Any hard reason makes it Rejected.
-function assessRole(role) {
+// The gates classifyCandidate records on role.eligibility, in evaluation order.
+const ELIGIBILITY_GATES = ['company', 'geo', 'employment', 'salary', 'experience', 'title', 'liveness'];
+
+// Read the retained gate outcome: 'rejected' after a hard failure, 'review' while only checks remain, 'passed' when every gate passed, null when no gate ran.
+function gateOutcome(role, inVerificationQueue = false) {
+  if (inVerificationQueue) return 'review';
+  const { eligibility, freshness } = role;
+  if (typeof eligibility?.eligible !== 'boolean' && typeof freshness?.eligible !== 'boolean') return null;
+  const failedGates = ELIGIBILITY_GATES.map((key) => eligibility?.[key]).filter((gate) => gate?.pass === false);
+  const freshnessOpen = freshness?.verifyQueue === true || freshness?.window === 'VerifyQueue';
+  const hardFailure = failedGates.some((gate) => gate.verificationRequired !== true)
+    || (eligibility?.eligible === false && failedGates.length === 0 && !freshnessOpen)
+    || (freshness?.eligible === false && !freshnessOpen);
+  if (hardFailure) return 'rejected';
+  return eligibility?.eligible === false || freshness?.eligible === false ? 'review' : 'passed';
+}
+
+// Name a role's reason codes, missing evidence and card state. The gate outcome decides first; reason codes are the fallback.
+function assessRole(role, { inVerificationQueue = false, sharedRoute = false } = {}) {
   const freshnessCode = role.freshness?.eligible === false ? (role.freshness.code ?? 'FRESHNESS_NOT_VERIFIED') : null;
-  const codes = [...new Set([...(role.reasons ?? []), ...(role.eligibility?.reasons ?? []), freshnessCode].filter((code) => typeof code === 'string'))];
-  const missing = codes.filter((code) => MISSING_EVIDENCE.test(code));
-  const rejected = codes.some((code) => !MISSING_EVIDENCE.test(code));
-  const ready = !rejected && missing.length === 0
+  const codes = [...new Set([...(role.reasons ?? []), ...(role.eligibility?.reasons ?? []), freshnessCode, sharedRoute ? 'SHARED_APPLY_ROUTE' : null]
+    .filter((code) => typeof code === 'string'))];
+  const gate = gateOutcome(role, inVerificationQueue);
+  // An open check makes every reason it carries a missing item.
+  const missing = gate === 'review' ? codes : codes.filter((code) => MISSING_EVIDENCE.test(code));
+  const rejected = gate === 'rejected' || (gate === null && codes.some((code) => !MISSING_EVIDENCE.test(code)));
+  const ready = !rejected && codes.length === 0
     && (role.applicationReady === true || role.applicationReadiness === 'Ready' || role.readiness?.ready === true);
-  const scored = Number.isFinite(role.matchScore) || Number.isFinite(role.score);
+  const scored = hasUsableMatchScore(role);
   const state = rejected ? 'Rejected' : ready && scored ? 'Ready and scored' : 'Promising, needs verification';
   return { state, codes, missing, ready, scored };
 }
@@ -231,9 +253,10 @@ function nextSafeAction(blockers) {
   return [...new Set(actions)].join('; ');
 }
 
-// Read whether the run had loaded v4 history. Only loaded history backs New-market or application-ready labels.
+// Read whether the run had loaded, dated, non-empty v4 history. Stale or empty snapshots never back New-market or application-ready labels.
 function historyLoadedFor(result) {
-  return result.v4HistorySnapshot?.status === 'loaded';
+  const snapshot = result.v4HistorySnapshot;
+  return snapshot?.status === 'loaded' && Number.isFinite(Date.parse(snapshot.generatedAt)) && snapshot.rowCount > 0;
 }
 
 // Read a stage-loss receipt row. Its reason is stored as text, so the codes are matched out of it.
@@ -261,7 +284,7 @@ function dailyCounts(result, selected) {
 
 // Write the counts as one Markdown line, one sentence per count.
 function countsLine({ requested, eligible, selected, delivered, shortfall }) {
-  return `Requested: ${requested}. Eligible: ${eligible}. Selected: ${selected}. Confirmed delivered: ${delivered}. Shortfall: ${shortfall}.`;
+  return `Requested: ${requested}. Eligible: ${eligible}. Selected: ${selected}. Confirmed delivered: ${delivered}. Shortfall this run: ${shortfall}.`;
 }
 
 // Pick the one novelty label. Only loaded history can support New-market verified.
@@ -271,12 +294,24 @@ function noveltyLabel(role, historyLoaded) {
   return historyLoaded ? 'New-market verified' : 'First seen locally';
 }
 
-// Sort a role under its location heading. Pune-metro is checked first, then remote evidence.
+// Sort a role under its location heading. Pune-metro is checked first. A geography rejection never reads as remote.
 function locationGroup(role, policy) {
   if (role.eligibility?.geo?.code === 'GEO_PUNE_METRO' || isPuneMetroLocation(role.location, policy)) return 'pune';
-  const remote = role.remote === true || /remote/i.test(role.workplaceType ?? '') || role.eligibility?.geo?.mode === 'remote'
+  const geoRejected = role.eligibility?.geo?.pass === false || (role.eligibility?.reasons ?? []).some((code) => /^GEO_/.test(code));
+  const remoteEvidence = role.remote === true || /remote/i.test(role.workplaceType ?? '') || role.eligibility?.geo?.mode === 'remote'
     || (role.eligibility?.labels ?? []).some((label) => /remote/i.test(label)) || /remote/i.test(role.location ?? '');
-  return remote ? 'remote' : 'other';
+  return remoteEvidence && !geoRejected ? 'remote' : 'other';
+}
+
+// Find apply routes that more than one requisition names. Those roles keep their own cards.
+function sharedApplyRoutes(roles) {
+  const requisitionsByRoute = new Map();
+  for (const role of roles) {
+    const route = role.originalApplicationUrl;
+    if (typeof route !== 'string' || !/^https?:\/\//i.test(route)) continue;
+    requisitionsByRoute.set(route, (requisitionsByRoute.get(route) ?? new Set()).add(role.key ?? candidateDedupKey(role)));
+  }
+  return new Set([...requisitionsByRoute].filter(([, requisitions]) => requisitions.size > 1).map(([route]) => route));
 }
 
 // Collect the reason codes an observation row shows, in the order the Markdown report always used.
@@ -340,7 +375,7 @@ function classifyObservations(result, now, effectivePolicy) {
       row.verificationReasons = missingRecoveryFacts;
       buckets.verification.push(row);
     }
-    else if (reasons.length) buckets.rejected.push(row);
+    else if (reasons.length && gateOutcome(observationRole(row)) !== 'review') buckets.rejected.push(row);
     else if (readiness.ready && freshness.eligible) buckets[eligibility.strict ? 'strictReady' : 'fallbackReady'].push(row);
     else buckets.verification.push(row);
   }
@@ -392,7 +427,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
       '## Separate lanes outside daily role targets', '',
       `This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.`, '');
   }
-  const table = (name, rows) => {
+  const table = (name, rows, inVerificationQueue = false) => {
     lines.push(`## ${name}`, '');
     if (!rows.length) { lines.push('None.', ''); return; }
     lines.push('| Role / company | Public URL | JD excerpt | Portal date / freshness | Date evidence | Salary | Experience | Application / liveness | State | Exact reasons | Next safe action |',
@@ -400,7 +435,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     for (const row of rows) {
       const { candidate: c, eligibility: e, freshness: f } = row;
       const role = observationRole(row);
-      const assessment = assessRole(role);
+      const assessment = assessRole(role, { inVerificationQueue });
       const blockers = applicationBlockers(assessment, historyLoaded);
       lines.push(`| ${cell(c.title)} / ${cell(c.company)} | ${cell(c.discoveryUrl ?? c.canonicalUrl)} | ${cell(c.description || 'Not Verified').slice(0, 240)} | ${cell(c.postedAt)} / ${cell(f.window)} | ${cell(dateEvidenceText(c.dateEvidence ?? c.evidence?.dateEvidence))} | ${cell(c.salary?.evidence || 'Not Verified')} | ${cell(e.experience.evidence || 'Not stated; manual review')} | ${cell(c.applicationResolution?.status)} / ${cell(c.liveness?.status)} | ${cell(assessment.state)} | ${cell(role.reasons.join('; ') || 'Ready, unscored')} | ${cell(nextSafeAction(blockers))} |`);
     }
@@ -408,7 +443,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   };
   table('Strict ready, unscored', buckets.strictReady);
   table('Shortage fallback ready, unscored', buckets.fallbackReady);
-  table('Needs verification', buckets.verification);
+  table('Needs verification', buckets.verification, true);
   table('Rejected', buckets.rejected);
   if (result.experienceDecisions?.length) {
     lines.push('## Experience decisions', '', '| Role / company | Decision | Selected track | Requirement evidence |', '| --- | --- | --- | --- |');
@@ -512,17 +547,17 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     ['Strict', strictCount],
   ];
   // Render one role card with its evidence, labels, and employer apply link.
-  const roleCard = (role, isShortlist) => {
+  const roleCard = (role, isShortlist, inVerificationQueue = false) => {
     const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
-    const experienceDecision = role.evidence?.experienceDecision;
+    const experienceDecision = role.evidence?.experienceDecision ?? role.eligibility?.experience;
     const experienceEvidence = experienceDecision
       ? `<p>Experience: ${html(experienceDecision.code)}; selected track ${html(experienceDecision.selectedTrack || 'Not Verified')}. ${html(experienceDecision.evidence || '')} ${html((experienceDecision.requirements || []).map((item) => item.excerpt).filter(Boolean).join(' | '))}</p>`
       : '';
-    const rawApplyUrl = role.originalApplicationUrl ?? null;
-    const applyUrl = typeof rawApplyUrl === 'string' && /^https?:\/\//i.test(rawApplyUrl) ? rawApplyUrl : null;
+    const applyUrl = typeof role.originalApplicationUrl === 'string' && /^https?:\/\//i.test(role.originalApplicationUrl) ? role.originalApplicationUrl : null;
+    const sharedRoute = applyUrl != null && sharedRoutes.has(applyUrl);
     const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
-    const assessment = assessRole(role);
+    const assessment = assessRole(role, { inVerificationQueue, sharedRoute });
     const blockers = applicationBlockers(assessment, historyLoaded);
     const geo = role.eligibility?.geo;
     const geoCodes = [...new Set([geo?.code, ...(role.eligibility?.reasons ?? [])].filter((code) => /GEO|RESIDEN/i.test(code ?? '')))];
@@ -539,12 +574,16 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     return LOCATION_GROUPS.filter(([key]) => groups[key].length)
       .map(([key, heading]) => `<h4>${heading}</h4>${groups[key].map((role) => roleCard(role, isShortlist)).join('')}`).join('');
   };
+  const runFor = (mode) => modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
+  // Roles on one apply route are named on every card, so the shared route is computed over every rendered role first.
+  const sharedRoutes = sharedApplyRoutes([...modes.flatMap(([mode]) => [...(runFor(mode).results ?? []), ...(runFor(mode).shortlist ?? [])]),
+    ...(result.stretch ?? []), ...(result.verificationQueue ?? [])]);
   const sections = modes.map(([mode, label]) => {
-    const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
+    const run = runFor(mode);
     return `<section data-mode="${mode}"><h2>${label}</h2><h3>Full results</h3>${byLocation(run.results ?? [], false) || '<p>None.</p>'}<h3>Shortlist</h3>${byLocation(run.shortlist ?? [], true) || '<p>None.</p>'}</section>`;
   }).join('');
   const { requested, eligible, selected, delivered, shortfall } = dailyCounts(result, units.runRoles.length);
-  const countsSection = `<section data-section="counts"><h2>Counts</h2><ul><li>Requested: ${requested}</li><li>Eligible: ${eligible}</li><li>Selected: ${selected}</li><li>Confirmed delivered: ${delivered}</li><li>Shortfall: ${shortfall}</li></ul></section>`;
+  const countsSection = `<section data-section="counts"><h2>Counts</h2><ul><li>Requested: ${requested}</li><li>Eligible: ${eligible}</li><li>Selected: ${selected}</li><li>Confirmed delivered: ${delivered}</li><li>Shortfall this run: ${shortfall}</li></ul></section>`;
   const targetRows = units.modes.map((mode) => {
     return `<tr><td>${mode.label}</td><td>${mode.roles ?? 'Not Verified'}/${mode.roleTarget}</td><td>${mode.employers ?? 'Not Verified'}/${mode.employerTarget}</td><td>${mode.strict ?? 'Not Verified'}</td><td>${targetShortfall(mode)}</td></tr>`;
   }).join('');
@@ -565,7 +604,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const phaseTargets = phaseRollup ? `<section data-section="phase-target-rollup"><h2>Phase target, 5 of 7 consecutive IST days</h2><p>Seven-day window ending ${html(phaseRollup.endDate)}. Each day's counts combine completed allocations. Target attainment requires two Strict roles across modes and verified historical suppression evidence.</p><table><thead><tr><th>Mode</th><th>Days met / 7</th><th>Phase status</th></tr></thead><tbody>${phaseSummaryRows}</tbody></table><table><thead><tr><th>IST date</th><th>Pune</th><th>Startup</th><th>Remote</th><th>Strict across modes</th><th>Historical suppression evidence</th></tr></thead><tbody>${phaseDayRows}</tbody></table></section>` : '';
   const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
   const separate = `<section data-section="separate-lanes"><h2>Separate lanes outside daily role targets</h2><p>This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.</p></section>`;
-  const verification = `<section data-section="verification"><h2>VerifyQueue</h2><p>These roles do not count toward daily targets.</p>${(result.verificationQueue ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}</section>`;
+  const verification = `<section data-section="verification"><h2>VerifyQueue</h2><p>These roles do not count toward daily targets.</p>${(result.verificationQueue ?? []).map((role) => roleCard(role, false, true)).join('') || '<p>None.</p>'}</section>`;
   const experienceDecisions = `<section data-section="experience-decisions"><h2>Experience decisions</h2>${(result.experienceDecisions ?? []).map(({ candidate, eligibility }) => {
     const decision = eligibility.experience;
     const excerpts = [...new Set((decision.requirements ?? []).map((item) => item.excerpt).filter(Boolean))];
@@ -616,7 +655,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const read = receiptRead(row);
     return `<tr><td>${html(row.identityHash)}</td><td>${html(row.stage)}</td><td>${html(row.reason)}</td><td>${html(row.provider)}</td><td>${html(provenance)}</td><td>${row.selected ? 'Yes' : 'No'}</td><td>${html(read.state)}</td><td>${html(read.action)}</td></tr>`;
   }).join('') || '<tr><td colspan="8">Not Verified</td></tr>'}</tbody></table></section>` : '';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${countsSection}${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${scoringRecovery}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${usefulYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}article h5{font-size:1.05rem;margin:.25rem 0}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${countsSection}${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${scoringRecovery}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${usefulYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.

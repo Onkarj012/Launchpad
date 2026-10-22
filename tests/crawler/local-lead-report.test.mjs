@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { renderLocalLeadReport, renderLocalDailyHtmlReport } from '../../crawler/local-lead-report.mjs';
 
 const NOW = '2026-10-12T20:00:00.000Z';
+const LOADED_HISTORY = { status: 'loaded', generatedAt: NOW, rowCount: 3 };
+
+// A score in the shape the mode-scoring boundary accepts as scored output.
+function scored(matchScore) {
+  return { matchScore, score: matchScore, scoreOrigin: 'explicit-scored-input', responseLikelihood: 10 };
+}
+
+// Return the one card for a role id, from its article to the next article.
+function cardFor(html, id) {
+  return html.split('<article>').find((card) => card.includes(`<h5>${id} Engineer at `)) ?? '';
+}
 
 // Make a retained role with a stable identity for report counting.
 function role(id, company, overrides = {}) {
@@ -341,7 +352,7 @@ test('P11 item 2: cards show the country or residency constraint and liveness wi
 });
 
 test('P11 item 3: each card names its state, exact reasons, missing fields and next safe action', () => {
-  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 82 });
+  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', ...scored(82) });
   const promising = role('promising', 'Promising Labs', { reasons: ['LIVENESS_NOT_VERIFIED', 'ORIGINAL_APPLICATION_URL_MISSING'] });
   const rejected = role('rejected', 'Rejected Labs', { eligibility: { reasons: ['GEO_ONSITE_NOT_PUNE'] } });
   const html = renderLocalDailyHtmlReport({ runAt: NOW,
@@ -365,7 +376,7 @@ test('P11 item 4: each card shows exactly one novelty label, and New-market veri
   const render = (v4HistorySnapshot) => renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot,
     modes: { normal: { results: [recovered, surfaced, fresh], shortlist: [] } } });
 
-  assert.deepEqual(labelsPerCard(render({ status: 'loaded' })), [['Recovered existing lead'], ['Already surfaced'], ['New-market verified']]);
+  assert.deepEqual(labelsPerCard(render(LOADED_HISTORY)),[['Recovered existing lead'], ['Already surfaced'], ['New-market verified']]);
   for (const snapshot of [{ status: 'stale' }, { status: 'missing' }, undefined]) {
     const cards = labelsPerCard(render(snapshot));
     assert.deepEqual(cards, [['Recovered existing lead'], ['Already surfaced'], ['First seen locally']]);
@@ -377,27 +388,29 @@ test('P11 item 5: counts show requested, eligible, selected, confirmed delivered
     role('a', 'A Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 80 }),
     role('b', 'B Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 81 }),
   ];
-  const html = renderLocalDailyHtmlReport({ runAt: NOW, requestedShortlistLimit: 5, counts: { eligible: 14 },
+  const result = { runAt: NOW, requestedShortlistLimit: 5, counts: { eligible: 14 },
     modes: { normal: { results: picked, shortlist: picked } },
     deliveryReconciliation: { counts: { deliveredKeys: 2 } },
-  });
-  assert.match(html, /<section data-section="counts"><h2>Counts<\/h2><ul><li>Requested: 5<\/li><li>Eligible: 14<\/li><li>Selected: 2<\/li><li>Confirmed delivered: 2<\/li><li>Shortfall: 3<\/li><\/ul><\/section>/);
+  };
+  const html = renderLocalDailyHtmlReport(result);
+  assert.match(html, /<section data-section="counts"><h2>Counts<\/h2><ul><li>Requested: 5<\/li><li>Eligible: 14<\/li><li>Selected: 2<\/li><li>Confirmed delivered: 2<\/li><li>Shortfall this run: 3<\/li><\/ul><\/section>/);
+  assert.match(renderLocalLeadReport(result, { now: NOW }), /Requested: 5\. Eligible: 14\. Selected: 2\. Confirmed delivered: 2\. Shortfall this run: 3\./);
 
   const empty = renderLocalDailyHtmlReport({ runAt: NOW, modes: {} });
-  assert.match(empty, /<li>Requested: 20<\/li><li>Eligible: Not Verified<\/li><li>Selected: 0<\/li><li>Confirmed delivered: Not Verified<\/li><li>Shortfall: 20<\/li>/);
+  assert.match(empty, /<li>Requested: 20<\/li><li>Eligible: Not Verified<\/li><li>Selected: 0<\/li><li>Confirmed delivered: Not Verified<\/li><li>Shortfall this run: 20<\/li>/);
 });
 
 test('P11 item 5: a card is Application-ready only with ready status, a valid score and loaded history', () => {
-  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 82 });
+  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', ...scored(82) });
   const unscored = role('unscored', 'Unscored Labs', { applicationReady: true, applicationReadiness: 'Ready' });
   const withoutHistory = renderLocalDailyHtmlReport({ runAt: NOW, modes: { normal: { results: [ready], shortlist: [] } } });
   assert.match(withoutHistory, /Application readiness: Not application-ready: HISTORY_NOT_VERIFIED/);
   assert.doesNotMatch(withoutHistory, /Application readiness: Application-ready/);
 
-  const withHistory = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: { status: 'loaded' }, modes: { normal: { results: [ready], shortlist: [] } } });
+  const withHistory = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: { normal: { results: [ready], shortlist: [] } } });
   assert.match(withHistory, /Application readiness: Application-ready/);
 
-  const unscoredHtml = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: { status: 'loaded' }, modes: { normal: { results: [unscored], shortlist: [] } } });
+  const unscoredHtml = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: { normal: { results: [unscored], shortlist: [] } } });
   assert.match(unscoredHtml, /Application readiness: Not application-ready: SCORE_NOT_VERIFIED/);
   assert.doesNotMatch(unscoredHtml, /Application readiness: Application-ready/);
 });
@@ -418,4 +431,104 @@ test('P11 item 6: reports never show Applied? or Make Resume values, and the onl
   }
   assert.doesNotMatch(html, /<(button|form|input|select|textarea)\b|mailto:|Send|Message/);
   assert.equal(html.match(/<a /g)?.length ?? 0, html.match(/>Apply at employer<\/a>/g)?.length ?? 0);
+});
+
+test('P11 r1 finding 1: the retained gate outcome decides Rejected or Promising for the four reason codes', () => {
+  const cases = [
+    ['undated', 'Promising, needs verification', role('undated', 'Undated Labs', {
+      eligibility: { eligible: true, reasons: [] },
+      freshness: { eligible: false, window: 'VerifyQueue', verifyQueue: true, code: 'FRESHNESS_UNDATED_VERIFY_QUEUE' } })],
+    ['contract', 'Promising, needs verification', role('contract', 'Contract Labs', {
+      eligibility: { eligible: false, reasons: ['EMPLOYMENT_CONTRACT_TERMS_UNVERIFIED'],
+        employment: { pass: false, code: 'EMPLOYMENT_CONTRACT_TERMS_UNVERIFIED', verificationRequired: true } } })],
+    ['stipend', 'Rejected', role('stipend', 'Stipend Labs', {
+      eligibility: { eligible: false, reasons: ['STIPEND_MISSING'], employment: { pass: false, code: 'STIPEND_MISSING' } } })],
+    ['ppo', 'Rejected', role('ppo', 'PPO Labs', {
+      eligibility: { eligible: false, reasons: ['INTERNSHIP_PPO_NOT_STATED'], employment: { pass: false, code: 'INTERNSHIP_PPO_NOT_STATED' } } })],
+  ];
+  for (const [id, state, item] of cases) {
+    const card = cardFor(renderLocalDailyHtmlReport({ runAt: NOW, modes: { normal: { results: [item], shortlist: [] } } }), id);
+    assert.match(card, new RegExp(`State: ${state}<`), `${id} state`);
+  }
+});
+
+test('P11 r1 finding 1: a contract role with unverified terms waits in Needs verification, not Rejected', () => {
+  const observation = { title: 'AI Engineer', company: 'Contract Labs', location: 'Remote, India', workplaceType: 'Remote', canonicalUrl: 'https://jobs.example.test/contract',
+    description: 'Contract role for 12 months, fixed monthly pay, direct hire, full-time.', postedAt: NOW, employment: { type: 'contract', evidence: 'Contract' },
+    experience: { minYears: 0, maxYears: 1 }, liveness: { status: 'Active' } };
+  const markdown = renderLocalLeadReport({ runAt: NOW, mode: 'normal', observations: [observation], modes: {} }, { now: NOW });
+  const review = markdown.slice(markdown.indexOf('## Needs verification'), markdown.indexOf('## Rejected'));
+  assert.match(review, /Contract Labs \|/);
+  assert.match(review, /Promising, needs verification \| EMPLOYMENT_CONTRACT_TERMS_UNVERIFIED/);
+});
+
+test('P11 r1 finding 2: only a usable match score makes a card Ready and scored', () => {
+  const item = (id, extra) => role(id, `${id} Labs`, { applicationReady: true, applicationReadiness: 'Ready', ...extra });
+  const usable = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: { normal: { results: [item('usable', scored(82))], shortlist: [] } } });
+  assert.match(cardFor(usable, 'usable'), /State: Ready and scored<\/p>[\s\S]*Application readiness: Application-ready/);
+
+  const unusable = [
+    ['negative', { matchScore: -1, score: -1, scoreOrigin: 'explicit-scored-input', responseLikelihood: 10 }],
+    ['over', { matchScore: 101, score: 101, scoreOrigin: 'explicit-scored-input', responseLikelihood: 10 }],
+    ['failed', { ...scored(82), scoringFailed: true }],
+  ];
+  for (const [id, extra] of unusable) {
+    const card = cardFor(renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: { normal: { results: [item(id, extra)], shortlist: [] } } }), id);
+    assert.doesNotMatch(card, /State: Ready and scored/, `${id} is not scored`);
+    assert.doesNotMatch(card, /Application readiness: Application-ready/, `${id} is not application-ready`);
+  }
+});
+
+test('P11 r1 finding 3: history counts as loaded only with a valid generation time and retained rows', () => {
+  const ready = role('history', 'History Labs', { applicationReady: true, applicationReadiness: 'Ready', ...scored(82) });
+  const render = (v4HistorySnapshot) => cardFor(renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot,
+    modes: { normal: { results: [ready], shortlist: [] } } }), 'history');
+  assert.match(render(LOADED_HISTORY), /Novelty: New-market verified/);
+  for (const snapshot of [{ status: 'loaded' }, { status: 'loaded', rowCount: 0 }, { status: 'loaded', generatedAt: 'not-a-date', rowCount: 3 },
+    { ...LOADED_HISTORY, status: 'stale' }]) {
+    const card = render(snapshot);
+    assert.match(card, /Novelty: First seen locally/, JSON.stringify(snapshot));
+    assert.doesNotMatch(card, /Application readiness: Application-ready/, JSON.stringify(snapshot));
+  }
+});
+
+test('P11 r1 finding 4: a role rejected on geography never sits under the India-eligible remote heading', () => {
+  const canada = role('canada', 'Canada Labs', { location: 'Remote', workplaceType: 'Remote',
+    eligibility: { eligible: false, reasons: ['GEO_REMOTE_REGION_RESTRICTED'], geo: { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', mode: 'remote', evidence: 'Candidates must reside in Canada' } } });
+  const india = role('india', 'India Labs', { location: 'Remote', workplaceType: 'Remote',
+    eligibility: { eligible: true, reasons: [], geo: { pass: true, code: 'GEO_REMOTE_INDIA_COMPATIBLE', mode: 'remote' } } });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { remote: { results: [canada, india], shortlist: [] } } });
+  const section = html.slice(html.indexOf('<section data-mode="remote">'), html.indexOf('<section data-mode="eorContract">'));
+  const remoteHeading = section.indexOf('<h4>India-eligible remote</h4>');
+  const otherHeading = section.indexOf('<h4>Other location evidence</h4>');
+  assert.ok(remoteHeading >= 0 && otherHeading > remoteHeading, 'both headings render');
+  assert.ok(section.indexOf('<h5>india Engineer at ') > remoteHeading && section.indexOf('<h5>india Engineer at ') < otherHeading);
+  assert.ok(section.indexOf('<h5>canada Engineer at ') > otherHeading, 'Canada-only role sits under other location evidence');
+});
+
+test('P11 r1 finding 5: card titles render at least as large as body text', () => {
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: {} });
+  assert.match(html, /article h5\{font-size:1\.05rem;margin:\.25rem 0\}/);
+});
+
+test('P11 r1 finding 6: roles that share one apply route keep separate cards and name the shared route', () => {
+  const route = 'https://careers.example.test/apply';
+  const shared = [role('route-a', 'Route Labs', { originalApplicationUrl: route }), role('route-b', 'Route Two Labs', { originalApplicationUrl: route })];
+  const own = role('route-c', 'Own Labs', { originalApplicationUrl: 'https://own.example.test/apply' });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { normal: { results: [...shared, own], shortlist: [] } } });
+  const cards = html.split('<article>').slice(1);
+  assert.equal(cards.length, 3, 'no card is merged');
+  for (const id of ['route-a', 'route-b']) {
+    assert.match(cardFor(html, id), /SHARED_APPLY_ROUTE/, `${id} names the shared route`);
+    assert.match(cardFor(html, id), /Verify each role&#39;s own employer listing/, `${id} next step`);
+  }
+  assert.doesNotMatch(cardFor(html, 'route-c'), /SHARED_APPLY_ROUTE/);
+});
+
+test('P11 r1 finding 8: a ready card shows the requirement excerpt from the retained experience decision', () => {
+  const ready = role('excerpt', 'Excerpt Labs', { applicationReady: true, applicationReadiness: 'Ready', ...scored(82),
+    eligibility: { eligible: true, reasons: [], experience: { pass: true, code: 'EXPERIENCE_EARLY_CAREER', selectedTrack: 'early-career',
+      evidence: 'Early-career track', requirements: [{ excerpt: 'Requires 0-1 years of experience' }] } } });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: { normal: { results: [ready], shortlist: [] } } });
+  assert.match(cardFor(html, 'excerpt'), /Experience: EXPERIENCE_EARLY_CAREER[^<]*Requires 0-1 years of experience/);
 });
