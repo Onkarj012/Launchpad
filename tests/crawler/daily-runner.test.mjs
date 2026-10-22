@@ -4007,3 +4007,44 @@ test('local report CLI writes HTML when given a local .html output path', () => 
   execFileSync(process.execPath, ['crawler/local-lead-report.mjs', input, output], { cwd: process.cwd() });
   assert.match(readFileSync(output, 'utf8'), /<!doctype html>/i);
 });
+
+// Fail every row with a scorer timeout, as a stalled scorer does.
+const timedOutScorer = async () => {
+  const error = new Error('scorer timed out');
+  error.reasonCode = 'SCORER_TIMEOUT';
+  throw error;
+};
+
+// Score every row with five valid components that sum to the total.
+const validScorer = async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })), failures: [], chunks: 1 });
+
+// Return one unscored Greenhouse role, which reaches the scorer.
+function retryConfigAndTransport() {
+  const { config } = testConfig({ warmBoards: [{ slug: 'retry-board', company: 'Retry Company' }] });
+  return { config, transport: fakeTransport({ 'retry-board': [greenhouseJob(1902, 'retry-board')] }) };
+}
+
+test('C: a scorer timeout leaves a retry record that a later run on the reopened store selects', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetryPersistence, 'persisted', first.scoringRetryPersistenceError);
+
+  const reopened = openCrawlerStore(config.databasePath);
+  const persisted = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('scoring-retry-first-crawler-v2').telemetry_json);
+  reopened.close();
+  assert.deepEqual(persisted.workflow.scoringRetry.records.map((record) => [record.outcome, record.reason, record.attemptCount]), [['pending', 'SCORER_TIMEOUT', 1]]);
+
+  const second = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-second', scorer: validScorer }));
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.attemptCount]), [['selected', 2]]);
+  assert.equal(second.shortlist.length, 1);
+});
+
+test('D: a re-score missing componentScores keeps the role pending on a second attempt, outside the shortlist', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-invalid-first', scorer: timedOutScorer }));
+  const missingComponents = async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills' })), failures: [], chunks: 1 });
+
+  const second = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-invalid-second', scorer: missingComponents }));
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.attemptCount, record.reason]), [['pending', 2, 'SCORER_INVALID_COMPONENTS']]);
+  assert.equal(second.shortlist.length, 0);
+});

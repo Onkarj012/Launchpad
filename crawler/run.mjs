@@ -731,6 +731,29 @@ export function persistDailyReceipt(store, runId, receipt) {
   return true;
 }
 
+// Attach the scoring retry state to the run envelope beside the daily receipt.
+export function persistScoringRetryState(store, runId, state) {
+  const row = runRow(store, runId);
+  if (!row) return false;
+  const telemetry = cloneWorkflowTelemetry({
+    ...row.telemetry,
+    workflow: { ...(row.telemetry.workflow ?? {}), scoringRetry: state },
+  }, 'scoring retry telemetry');
+  store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), runId);
+  return true;
+}
+
+// Read the newest retained scoring retry state from an earlier run, skipping the excluded run.
+export function readScoringRetryState(store, { excludeRunId = null } = {}) {
+  const rows = store.prepare("SELECT run_id, telemetry_json FROM crawl_runs WHERE telemetry_json LIKE '%\"scoringRetry\"%' ORDER BY started_at DESC").all();
+  for (const row of rows) {
+    if (row.run_id === excludeRunId) continue;
+    const state = json(row.telemetry_json, {})?.workflow?.scoringRetry;
+    if (state) return state;
+  }
+  return null;
+}
+
 export function failCrawlRun(store, runId, error, { clock } = {}) {
   const message = error instanceof Error ? error.message : String(error);
   const current = runRow(store, runId);

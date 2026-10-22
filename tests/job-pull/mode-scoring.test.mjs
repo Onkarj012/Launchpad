@@ -4,7 +4,9 @@ import {
   buildDeliveryPlan,
   buildDeliveryReconciliation,
   finalizeDeliveryReconciliation,
+  nextScoringRetryState,
 } from '../../job-pull/mode-scoring.mjs';
+import { candidateDedupKey, candidateRequisitionKey } from '../../job-pull/candidate.mjs';
 
 function deliveryPlan() {
   return buildDeliveryPlan({
@@ -103,4 +105,75 @@ test('notification finalization preserves transaction and ledger repair counts',
   assert.equal(finalized.counts.opportunityLedgerSurfaced, 0);
   assert.equal(finalized.counts.opportunityLedgerRepaired, 1);
   assert.ok(finalized.mismatchReasons.includes('NOTIFICATION_FAILED'));
+});
+
+const RUN_AT = '2026-10-22T06:00:00.000Z';
+
+// Build one scoring-failed queue row the way scoringQueueRecord emits it, plus a payload field that must never be stored.
+function failedRow(providerJobId, reason = 'SCORER_TIMEOUT') {
+  return {
+    company: 'Acme', title: 'AI Engineer', canonicalUrl: `https://jobs.example.test/${providerJobId}`,
+    provider: 'greenhouse', providerJobId, scoringStatus: 'scoring-failed', scoringFailureReason: reason,
+    matchScore: null, rationale: 'payload that must not be stored',
+  };
+}
+
+test('A: a scoring-failed role gets a pending retry record, then terminal after three failed attempts', () => {
+  const first = nextScoringRetryState({ prior: null, result: { scoringQueue: [failedRow('acme-1')] }, runAt: RUN_AT });
+  assert.equal(first.schemaVersion, 1);
+  assert.deepEqual(first.records, [{
+    dedupKey: candidateDedupKey(failedRow('acme-1')),
+    requisitionKey: candidateRequisitionKey(failedRow('acme-1')),
+    canonicalUrl: 'https://jobs.example.test/acme-1',
+    company: 'Acme', title: 'AI Engineer', reason: 'SCORER_TIMEOUT',
+    attemptCount: 1, firstFailedAt: RUN_AT, attemptedAt: RUN_AT,
+    nextEligibleAt: '2026-10-22T08:00:00.000Z', outcome: 'pending', outcomeReason: 'scoring-failed', carried: false,
+  }]);
+
+  const second = nextScoringRetryState({ prior: first, result: { scoringQueue: [failedRow('acme-1')] }, runAt: '2026-10-22T09:00:00.000Z' });
+  assert.equal(second.records[0].attemptCount, 2);
+  assert.equal(second.records[0].firstFailedAt, RUN_AT);
+  assert.equal(second.records[0].nextEligibleAt, '2026-10-22T13:00:00.000Z');
+
+  const third = nextScoringRetryState({ prior: second, result: { scoringQueue: [failedRow('acme-1')] }, runAt: '2026-10-22T18:00:00.000Z' });
+  assert.equal(third.records[0].attemptCount, 3);
+  assert.equal(third.records[0].outcome, 'terminal');
+  assert.equal(third.records[0].outcomeReason, 'scoring-retry-exhausted');
+  assert.equal(third.records[0].nextEligibleAt, null);
+  assert.doesNotMatch(JSON.stringify(third), /matchScore|componentScores|rationale|"score"/);
+});
+
+test('B: absent pending roles wait or go stale, gate-stopped roles end terminal, and requisitions never merge', () => {
+  const pending = {
+    dedupKey: candidateDedupKey(failedRow('acme-1')), requisitionKey: candidateRequisitionKey(failedRow('acme-1')),
+    canonicalUrl: 'https://jobs.example.test/acme-1', company: 'Acme', title: 'AI Engineer', reason: 'SCORER_TIMEOUT',
+    attemptCount: 1, firstFailedAt: '2026-10-21T06:00:00.000Z', attemptedAt: '2026-10-21T06:00:00.000Z',
+    nextEligibleAt: '2026-10-21T08:00:00.000Z', outcome: 'pending', outcomeReason: 'scoring-failed', carried: false,
+  };
+  const prior = (record) => ({ schemaVersion: 1, records: [record] });
+
+  const absent = nextScoringRetryState({ prior: prior(pending), result: {}, runAt: RUN_AT });
+  assert.deepEqual(absent.records[0], { ...pending, outcomeReason: 'awaiting-current-evidence' });
+
+  const stale = nextScoringRetryState({ prior: prior({ ...pending, firstFailedAt: '2026-10-14T05:59:00.000Z' }), result: {}, runAt: RUN_AT });
+  assert.equal(stale.records[0].outcome, 'terminal');
+  assert.equal(stale.records[0].outcomeReason, 'stale-without-current-evidence');
+
+  const suppressed = nextScoringRetryState({
+    prior: prior(pending),
+    result: { historicalSuppressions: [{ dedupKey: pending.dedupKey, canonicalUrl: pending.canonicalUrl, code: 'SUPPRESSED_ACTIONED' }] },
+    runAt: RUN_AT,
+  });
+  assert.equal(suppressed.records[0].outcome, 'terminal');
+  assert.equal(suppressed.records[0].outcomeReason, 'current-gate-rejected:SUPPRESSED_ACTIONED');
+
+  // Same company, title and URL, different requisition: the prior record must not match it.
+  const otherRequisition = { ...failedRow('acme-2'), canonicalUrl: pending.canonicalUrl };
+  const separate = nextScoringRetryState({ prior: prior(pending), result: { scoringQueue: [otherRequisition] }, runAt: RUN_AT });
+  const waiting = separate.records.find((record) => record.dedupKey === pending.dedupKey);
+  const fresh = separate.records.find((record) => record.dedupKey !== pending.dedupKey);
+  assert.equal(waiting.outcomeReason, 'awaiting-current-evidence');
+  assert.equal(waiting.attemptCount, 1);
+  assert.equal(fresh.attemptCount, 1);
+  assert.equal(fresh.firstFailedAt, RUN_AT);
 });
