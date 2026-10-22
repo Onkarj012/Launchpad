@@ -294,13 +294,13 @@ function noveltyLabel(role, historyLoaded) {
   return historyLoaded ? 'New-market verified' : 'First seen locally';
 }
 
-// Sort a role under its location heading. Pune-metro is checked first. A geography rejection never reads as remote.
+// Sort a role under its location heading. Pune-metro is checked first. Remote needs a passing geography gate.
 function locationGroup(role, policy) {
   if (role.eligibility?.geo?.code === 'GEO_PUNE_METRO' || isPuneMetroLocation(role.location, policy)) return 'pune';
   const geoRejected = role.eligibility?.geo?.pass === false || (role.eligibility?.reasons ?? []).some((code) => /^GEO_/.test(code));
   const remoteEvidence = role.remote === true || /remote/i.test(role.workplaceType ?? '') || role.eligibility?.geo?.mode === 'remote'
     || (role.eligibility?.labels ?? []).some((label) => /remote/i.test(label)) || /remote/i.test(role.location ?? '');
-  return remoteEvidence && !geoRejected ? 'remote' : 'other';
+  return remoteEvidence && !geoRejected && role.eligibility?.geo?.pass === true ? 'remote' : 'other';
 }
 
 // Find apply routes that more than one requisition names. Those roles keep their own cards.

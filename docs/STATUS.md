@@ -60,7 +60,7 @@ Already satisfied: the HTML report never showed `Applied?` or `Make Resume`, and
 
 Not done, needs `job-pull/normal-selection.mjs` or `job-pull/normal-mode.mjs`:
 - Normal-path hard rejections have no cards. The selection result holds only scored, ready rows, so rejected roles appear only as receipt rows.
-- VerifyQueue cards show `Not Verified` for the country or residency constraint and the liveness check time. The queue record keeps neither.
+- VerifyQueue cards show `Not Verified` for the liveness check time, which the queue record drops. They also show `Not Verified` for the country or residency constraint, although the queue record keeps it under `evidence.location`; the renderer does not read that field yet.
 
 Not done, unreachable from retained data: `Already surfaced`. No daily result row carries a per-role surfaced flag. The label code stays, so a future producer can set it.
 

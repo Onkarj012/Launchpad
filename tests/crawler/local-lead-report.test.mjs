@@ -324,7 +324,8 @@ test('G: a selection carried from an earlier run is not counted as this run sele
 
 test('P11 item 1: cards sit under Pune, India-eligible remote, or other-location headings inside each mode', () => {
   const pune = role('pune', 'Pune Labs', { location: 'Pune, India' });
-  const remote = role('remote', 'Remote Labs', { location: 'Remote, India', workplaceType: 'Remote' });
+  const remote = role('remote', 'Remote Labs', { location: 'Remote, India', workplaceType: 'Remote',
+    eligibility: { eligible: true, reasons: [], geo: { pass: true, code: 'GEO_REMOTE_INDIA_COMPATIBLE', mode: 'remote' } } });
   const other = role('other', 'Bengaluru Labs', { location: 'Bengaluru, India' });
   const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { normal: { results: [other, remote, pune], shortlist: [pune] } } });
   const section = html.slice(html.indexOf('<section data-mode="normal">'), html.indexOf('<section data-mode="startup">'));
@@ -497,13 +498,15 @@ test('P11 r1 finding 4: a role rejected on geography never sits under the India-
     eligibility: { eligible: false, reasons: ['GEO_REMOTE_REGION_RESTRICTED'], geo: { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED', mode: 'remote', evidence: 'Candidates must reside in Canada' } } });
   const india = role('india', 'India Labs', { location: 'Remote', workplaceType: 'Remote',
     eligibility: { eligible: true, reasons: [], geo: { pass: true, code: 'GEO_REMOTE_INDIA_COMPATIBLE', mode: 'remote' } } });
-  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { remote: { results: [canada, india], shortlist: [] } } });
+  const unknown = role('unknown', 'Unknown Labs', { location: 'Remote', workplaceType: 'Remote' });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { remote: { results: [canada, india, unknown], shortlist: [] } } });
   const section = html.slice(html.indexOf('<section data-mode="remote">'), html.indexOf('<section data-mode="eorContract">'));
   const remoteHeading = section.indexOf('<h4>India-eligible remote</h4>');
   const otherHeading = section.indexOf('<h4>Other location evidence</h4>');
   assert.ok(remoteHeading >= 0 && otherHeading > remoteHeading, 'both headings render');
   assert.ok(section.indexOf('<h5>india Engineer at ') > remoteHeading && section.indexOf('<h5>india Engineer at ') < otherHeading);
   assert.ok(section.indexOf('<h5>canada Engineer at ') > otherHeading, 'Canada-only role sits under other location evidence');
+  assert.ok(section.indexOf('<h5>unknown Engineer at ') > otherHeading, 'remote wording without a passing geography gate is not India-eligible');
 });
 
 test('P11 r1 finding 5: card titles render at least as large as body text', () => {
