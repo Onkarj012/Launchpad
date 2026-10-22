@@ -11,7 +11,7 @@ import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, re
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
-import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState } from '../../crawler/run.mjs';
+import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState, readScoringRetryState } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
 import { candidateDedupKey, candidateRequisitionKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
@@ -2612,8 +2612,10 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   }));
   assert.equal(failedOrdinaryRun.sourceYield.totals.fetched, 1);
   const failedOrdinaryState = readHeldLeadRecoveryState(reopenedFailedOrdinaryStore, { now: '2026-07-24T10:01:00.000Z' });
-  assert.deepEqual(failedOrdinaryState.eligible.map(({ jobId }) => jobId), ['765433'],
-    'a failed ordinary resolution must leave the older held failure pending');
+  assert.deepEqual(failedOrdinaryState.eligible, [],
+    'a failed ordinary resolution must back off the held lead it overlaps, not leave it due');
+  assert.equal(failedOrdinaryState.waiting, 1);
+  assert.equal(failedOrdinaryState.identities.length, 1);
   const failedOrdinaryRows = readCrawlerRunData(reopenedFailedOrdinaryStore, 'p05-ordinary-overlap-failed-current-crawler-v2')
     .observations.map(({ raw }) => raw);
   assert.equal(failedOrdinaryRows.some((candidate) => candidate.jobId === '765433'
@@ -4148,4 +4150,129 @@ test('local report CLI writes HTML when given a local .html output path', () => 
   writeFileSync(input, JSON.stringify({ runAt: NOW, modes: { normal: { results: [], shortlist: [] }, startup: { results: [], shortlist: [] }, remote: { results: [], shortlist: [] } } }));
   execFileSync(process.execPath, ['crawler/local-lead-report.mjs', input, output], { cwd: process.cwd() });
   assert.match(readFileSync(output, 'utf8'), /<!doctype html>/i);
+});
+
+// Fail every row with a scorer timeout, as a stalled scorer does.
+const timedOutScorer = async () => {
+  const error = new Error('scorer timed out');
+  error.reasonCode = 'SCORER_TIMEOUT';
+  throw error;
+};
+
+// Score every row with five valid components that sum to the total.
+const validScorer = async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills', componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } })), failures: [], chunks: 1 });
+
+// Return one unscored Greenhouse role, which reaches the scorer.
+function retryConfigAndTransport() {
+  const { config } = testConfig({ warmBoards: [{ slug: 'retry-board', company: 'Retry Company' }] });
+  return { config, transport: fakeTransport({ 'retry-board': [greenhouseJob(1902, 'retry-board')] }) };
+}
+
+test('C: a scorer timeout leaves a retry record that a later run on the reopened store selects', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetryPersistence, 'persisted', first.scoringRetryPersistenceError);
+
+  const reopened = openCrawlerStore(config.databasePath);
+  const persisted = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('scoring-retry-first-crawler-v2').telemetry_json);
+  reopened.close();
+  assert.deepEqual(persisted.workflow.scoringRetry.records.map((record) => [record.outcome, record.reason, record.attemptCount]), [['pending', 'SCORER_TIMEOUT', 1]]);
+
+  const second = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-second', scorer: validScorer }));
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.attemptCount]), [['selected', 2]]);
+  assert.equal(second.shortlist.length, 1);
+});
+
+test('D: a re-score missing componentScores keeps the role pending on a second attempt, outside the shortlist', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-invalid-first', scorer: timedOutScorer }));
+  const missingComponents = async (rows) => ({ scored: rows.map((row) => ({ ...row, matchScore: 80, responseLikelihood: 15, descriptionAvailable: true, rationale: 'Python overlap', strongestHook: 'Python skills' })), failures: [], chunks: 1 });
+
+  const second = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-invalid-second', scorer: missingComponents }));
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.attemptCount, record.reason]), [['pending', 2, 'SCORER_INVALID_COMPONENTS']]);
+  assert.equal(second.shortlist.length, 0);
+});
+
+test('a retried role that now fails a history gate ends terminal and never reaches the scorer', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-gate-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].outcome, 'pending');
+
+  const scoredRows = [];
+  const second = await runDailyNormalActual(runOptions(config, transport, {
+    runId: 'scoring-retry-gate-second',
+    historicalV4Rows: [{ company: 'Retry Company', title: 'AI Engineer', location: 'Pune, India', state: 'applied' }],
+    scorer: async (rows) => {
+      scoredRows.push(...rows);
+      return { scored: [], failures: [], chunks: 1 };
+    },
+  }));
+  assert.deepEqual(scoredRows, []);
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason]), [['terminal', 'current-gate-rejected:SUPPRESSED_HISTORICAL']]);
+});
+
+test('readScoringRetryState returns the newest earlier run state and skips the excluded run', () => {
+  const store = openCrawlerStore();
+  const insertRun = (runId, startedAt, workflow) => store.prepare('INSERT INTO crawl_runs(run_id, status, stage, started_at, telemetry_json) VALUES (?, ?, ?, ?, ?)')
+    .run(runId, 'completed', 'complete', startedAt, JSON.stringify({ workflow }));
+  const stateFor = (runId) => ({ schemaVersion: 1, records: [{ dedupKey: runId }] });
+  insertRun('older', '2026-10-20T06:00:00.000Z', { scoringRetry: stateFor('older') });
+  insertRun('newer', '2026-10-21T06:00:00.000Z', { scoringRetry: stateFor('newer') });
+  insertRun('current', '2026-10-22T06:00:00.000Z', { scoringRetry: stateFor('current') });
+  insertRun('no-state', '2026-10-22T07:00:00.000Z', { dailyReceipt: {} });
+
+  assert.deepEqual(readScoringRetryState(store), stateFor('current'));
+  assert.deepEqual(readScoringRetryState(store, { excludeRunId: 'current' }), stateFor('newer'));
+  store.close();
+});
+
+test('held-lead recovery reads only recovery rows and their matching ordinary successes', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'held-recovery-read-'));
+  const store = openCrawlerStore(path.join(root, 'crawler.sqlite'));
+  const clock = (now) => ({ now: () => now });
+  const longDescription = 'Build Python services for a Pune team. '.repeat(300);
+  const unrelated = Array.from({ length: 300 }, (_, index) => ({
+    provider: 'greenhouse', providerJobId: `other-${index}`, jobId: `other-${index}`, company: `Other ${index}`, title: 'Engineer',
+    location: 'Pune, India', discoveryUrl: `https://boards.greenhouse.io/other/jobs/${index}`,
+    canonicalUrl: `https://boards.greenhouse.io/other/jobs/${index}`, description: longDescription,
+  }));
+  const held = (jobId, recovery) => ({
+    provider: 'linkedin-jobs', providerJobId: jobId, jobId, company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+    discoveryUrl: `https://www.linkedin.com/jobs/view/${jobId}`, canonicalUrl: `https://www.linkedin.com/jobs/view/${jobId}`,
+    evidence: { recovery: { kind: 'held-lead-recovery', providerRequisitionKey: `linkedin jobs|${jobId}`,
+      identityUrl: `requisition:linkedin jobs|${jobId}`, attemptCount: 1, attemptedAt: '2026-10-20T08:00:00.000Z',
+      evaluatedAt: '2026-10-20T08:00:00.000Z', ...recovery } },
+  });
+  await crawlRun({ store, runId: 'recovery-read-unrelated', clock: clock('2026-10-20T08:00:00.000Z'),
+    sourcePlans: [{ id: 'ats-warm', fetch: async () => ({ observations: unrelated }) }] });
+  await crawlRun({ store, runId: 'recovery-read-held', clock: clock('2026-10-20T08:00:00.000Z'),
+    sourcePlans: [{ id: 'portal-discovery', fetch: async () => ({ observations: [
+      held('1001', { outcome: 'pending', nextEligibleAt: '2026-10-20T09:00:00.000Z' }),
+      held('1002', { outcome: 'pending', nextEligibleAt: '2026-10-21T09:00:00.000Z' }),
+      held('1003', { outcome: 'pending', nextEligibleAt: '2026-10-20T09:00:00.000Z' }),
+      held('1004', { outcome: 'policy-rejected', nextEligibleAt: null }),
+    ] }) }] });
+  await crawlRun({ store, runId: 'recovery-read-ordinary-success', clock: clock('2026-10-20T09:30:00.000Z'),
+    sourcePlans: [{ id: 'ats-warm', fetch: async () => ({ observations: [{
+      provider: 'greenhouse', providerJobId: 'gh-1003', jobId: '1003', identityAliases: ['linkedin jobs|1003'],
+      company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+      discoveryUrl: 'https://www.linkedin.com/jobs/view/1003', canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/1003',
+      originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/1003', classification: 'direct',
+      applicationResolution: { status: 'Resolved Original' }, evidence: { fieldSources: { company: 'original-employer-detail' } },
+    }] }) }] });
+
+  const prepared = [];
+  const prepare = store.prepare.bind(store);
+  store.prepare = (sql) => { prepared.push(sql); return prepare(sql); };
+  const state = readHeldLeadRecoveryState(store, { now: '2026-10-20T10:00:00.000Z' });
+  store.prepare = prepare;
+
+  assert.deepEqual(state.eligible.map(({ jobId }) => jobId), ['1001']);
+  assert.equal(state.waiting, 1);
+  assert.deepEqual(state.identities.sort(), ['requisition:linkedin jobs|1001', 'requisition:linkedin jobs|1002',
+    'requisition:linkedin jobs|1003', 'requisition:linkedin jobs|1004']);
+  assert.deepEqual(state.terminalIdentities.sort(), ['requisition:linkedin jobs|1003', 'requisition:linkedin jobs|1004']);
+  const unfilteredRowScans = prepared.filter((sql) => /raw_json/.test(sql) && /FROM job_observations/.test(sql) && !/\bWHERE\b/.test(sql));
+  assert.deepEqual(unfilteredRowScans, [], 'recovery state must not parse every historical observation');
+  store.close();
 });
