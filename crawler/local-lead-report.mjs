@@ -96,6 +96,11 @@ function targetShortfall(mode) {
   return roles || employers ? `${roles} roles, ${employers} employers` : 'None';
 }
 
+// Summarize one source's funnel stages for a single report cell.
+function usefulStagesText(stages) {
+  return `JD ${stages.jdPresent}; hard-eligible ${stages.hardEligibilityPassed}; valid score ${stages.validScore}; scoring failed ${stages.scoringFailed}; suppressed ${stages.historySuppressed}; verification ${stages.verification}; selected ${stages.selected}`;
+}
+
 // Read request counts from source telemetry without inferring missing requests.
 function sourceRequests(source) {
   const details = source.detail ?? source;
@@ -287,6 +292,15 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const runCause = terminal.fatalReason ?? result.outcome?.fatalReason ?? (errors.map((error) => error?.message ?? error).filter(Boolean).join('; ') || 'Not Verified');
   lines.push('', '## Run status', '', `Status: ${cell(runStatus)}.`, `Cause: ${cell(runCause)}.`);
   for (const error of errors) lines.push(`- ${cell(error?.message ?? error)}`);
+  if (result.usefulSourceYield) {
+    lines.push('', '## Useful yield by source', '', `Allocation: ${cell(result.usefulSourceYield.allocationRecommendation)}`, '',
+      '| Source | Query | Kind | References | Requisitions | Stages | End state | End reason | Requests | Duration ms | Failures | Truncated |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const row of result.usefulSourceYield.sources) {
+      lines.push(`| ${cell(row.sourceId)} | ${cell(row.queryId)} | ${cell(row.kind)} | ${row.referenceCount} | ${row.uniqueRequisitions} | ${cell(usefulStagesText(row.stages))} | ${cell(row.endState)} | ${cell(row.endReason)} | ${cell(row.cost.requests)} | ${cell(row.cost.durationMs)} | ${cell(row.cost.failures)} | ${cell(row.cost.truncated)} |`);
+    }
+    lines.push('');
+  }
   const coverage = terminal.sourceCoverage ?? result.sourceCoverage ?? {};
   const durable = terminal.lastDurableSourceState ?? result.lastDurableSourceState ?? {};
   for (const group of ['completed', 'interrupted', 'failed', 'not_started']) {
@@ -410,6 +424,9 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     return `<tr><td>${html(row.sourceId)}</td><td>${row.fetched ?? 0}</td><td>${row.applicationReady ?? 0}</td><td>${requests ?? 'Not Verified'}</td><td>${rate}</td></tr>`;
   }).join('');
   const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${result.sourceYieldScope === 'crawler-discovery' ? '<p>Discovery counts precede final enrichment and scoring. They exclude later tracked-source reads and do not measure delivered roles.</p>' : ''}${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
+  const useful = result.usefulSourceYield;
+  const usefulRows = (useful?.sources ?? []).map((row) => `<tr><td>${html(row.sourceId)}</td><td>${html(row.queryId)}</td><td>${html(row.kind)}</td><td>${html(row.referenceCount)}</td><td>${html(row.uniqueRequisitions)}</td><td>${html(usefulStagesText(row.stages))}</td><td>${html(row.endState)}${row.endReason === 'Not Verified' ? '' : `, ${html(row.endReason)}`}</td><td>${html(row.cost.requests)}</td><td>${html(row.cost.durationMs)}</td><td>${html(row.cost.failures)}</td><td>${html(row.cost.truncated)}</td></tr>`).join('');
+  const usefulYield = useful ? `<section data-section="useful-yield"><h2>Useful yield by source</h2><p>Distinct requisitions in this run: ${html(useful.identityCount)}. A requisition counts once per source and query, and once overall.</p>${usefulRows ? `<table><thead><tr><th>Source</th><th>Query</th><th>Kind</th><th>References</th><th>Requisitions</th><th>Stages</th><th>End state</th><th>Requests</th><th>Duration ms</th><th>Failures</th><th>Truncated</th></tr></thead><tbody>${usefulRows}</tbody></table>` : '<p>Not Verified</p>'}<p>Allocation: ${html(useful.allocationRecommendation)}</p></section>` : '';
   const driftSignals = dailyDriftSignals(result);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
   const receipt = result.dailyReceipt;
@@ -417,7 +434,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const provenance = row.provenance?.map((item) => [item.source, item.sourceId].filter(Boolean).join(' / ')).filter(Boolean).join(', ') || row.source;
     return `<tr><td>${html(row.identityHash)}</td><td>${html(row.stage)}</td><td>${html(row.reason)}</td><td>${html(row.provider)}</td><td>${html(provenance)}</td><td>${row.selected ? 'Yes' : 'No'}</td></tr>`;
   }).join('') || '<tr><td colspan="6">Not Verified</td></tr>'}</tbody></table></section>` : '';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${usefulYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.

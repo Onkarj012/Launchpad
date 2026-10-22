@@ -130,6 +130,14 @@ function hasFinalSelectionEvidence(result) {
   return ['startup', 'normal', 'remote'].every((mode) => Array.isArray(modes[mode]?.shortlist));
 }
 
+// Crawler observations name the real source and query, so a lane-level funnel row for the same posting yields to them.
+function mergeProvenance(laneItems, observationItems = []) {
+  const posting = (item) => JSON.stringify([item.provider ?? null, item.source ?? null, item.observedAt ?? null, item.postedAt ?? null]);
+  const observed = new Set(observationItems.map(posting));
+  const items = [...laneItems.filter((item) => !observed.has(posting(item))), ...observationItems];
+  return [...new Map(items.map((item) => [JSON.stringify([item.provider ?? null, item.source ?? null, item.sourceId ?? null, item.observedAt ?? null, item.postedAt ?? null, item.queryId ?? null, item.recovery ?? null]), item])).values()];
+}
+
 // Keep per-requisition stage and final selection details compact and safe.
 function receiptIdentityRows(result) {
   const funnelRows = result.funnel?.identityRows;
@@ -174,13 +182,16 @@ function receiptIdentityRows(result) {
     const keyHash = candidateIdentity(candidate);
     if (keyHash) {
       const entries = observationProvenance.get(keyHash) ?? [];
+      const observed = candidate?.candidate ?? candidate;
       const entry = {
-        provider: (candidate?.candidate ?? candidate)?.provider ?? null,
-        source: (candidate?.candidate ?? candidate)?.source ?? null,
-        sourceId: (candidate?.candidate ?? candidate)?.sourceId ?? (candidate?.candidate ?? candidate)?.discoverySource ?? null,
-        observedAt: (candidate?.candidate ?? candidate)?.observedAt ?? null,
-        postedAt: (candidate?.candidate ?? candidate)?.postedAt ?? null,
-        dateEvidence: (candidate?.candidate ?? candidate)?.dateEvidence ?? (candidate?.candidate ?? candidate)?.evidence?.dateEvidence ?? null,
+        provider: observed?.provider ?? null,
+        source: observed?.source ?? null,
+        sourceId: observed?.sourceId ?? observed?.discoverySource ?? null,
+        observedAt: observed?.observedAt ?? null,
+        postedAt: observed?.postedAt ?? null,
+        dateEvidence: observed?.dateEvidence ?? observed?.evidence?.dateEvidence ?? null,
+        ...(observed?.provenance?.queryId ? { queryId: observed.provenance.queryId } : {}),
+        ...(observed?.evidence?.recovery?.kind === 'held-lead-recovery' ? { recovery: true } : {}),
       };
       if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(entry))) entries.push(entry);
       observationProvenance.set(keyHash, entries);
@@ -294,15 +305,12 @@ function receiptIdentityRows(result) {
       selectionTier: overlay?.selectionTier ?? null,
       modes: overlay?.modes ?? [],
       historicalSuppressed: overlay?.historicalSuppressed === true || row.historicalSuppressed,
-      provenance: [...new Map([
-        ...(Array.isArray(row.provenance) && row.provenance.length
+      provenance: mergeProvenance(
+        Array.isArray(row.provenance) && row.provenance.length
           ? row.provenance.map((item) => ({ ...item }))
-          : [{ provider: row.provider, source: row.source, observedAt: row.observedAt, postedAt: row.postedAt, dateEvidence: row.dateEvidence ?? null, jdHash: row.jdHash, evidenceHash: row.evidenceHash }]),
-        ...(observationProvenance.get(row.identity) ?? []),
-      ].map((item) => [JSON.stringify({
-        provider: item.provider ?? null, source: item.source ?? null, sourceId: item.sourceId ?? null,
-        observedAt: item.observedAt ?? null, postedAt: item.postedAt ?? null,
-      }), item])).values()],
+          : [{ provider: row.provider, source: row.source, observedAt: row.observedAt, postedAt: row.postedAt, dateEvidence: row.dateEvidence ?? null, jdHash: row.jdHash, evidenceHash: row.evidenceHash }],
+        observationProvenance.get(row.identity) ?? [],
+      ),
     };
   });
   const rank = { finalSelection: 8, hardRejection: 7, verification: 6, historySuppression: 5, scoringFailure: 4, eligible: 3, unknown: 0 };
@@ -311,11 +319,7 @@ function receiptIdentityRows(result) {
     const previous = unique.get(row.identityHash);
     if (!previous) unique.set(row.identityHash, row);
     else {
-      previous.provenance.push(...row.provenance);
-      previous.provenance = [...new Map(previous.provenance.map((item) => [JSON.stringify({
-        provider: item.provider ?? null, source: item.source ?? null, sourceId: item.sourceId ?? null,
-        observedAt: item.observedAt ?? null, postedAt: item.postedAt ?? null,
-      }), item])).values()];
+      previous.provenance = mergeProvenance([...previous.provenance, ...row.provenance]);
       if ((rank[row.stage] ?? 0) > (rank[previous.stage] ?? 0)) {
         previous.stage = row.stage;
         previous.reason = row.reason;

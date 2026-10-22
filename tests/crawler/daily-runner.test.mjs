@@ -13,6 +13,7 @@ import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELI
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
 import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
+import { buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
 import { candidateDedupKey, candidateRequisitionKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
@@ -693,6 +694,81 @@ test('crawlerV2Telemetry is diagnostic-only and leaves the shortlist unchanged',
     first.shortlist.map(({ canonicalUrl, normalLaneId }) => ({ canonicalUrl, normalLaneId })),
     beforeInspection,
   );
+});
+
+test('a bounded run with one deadline-cut source gives every source an end state and a useful-yield row', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'yield-board', company: 'Yield Company' }] });
+  config.sources.enterprise = {
+    boards: [{ provider: 'workday', company: 'Deadline Enterprise', url: 'https://deadline.wd1.myworkdayjobs.com/jobs' }],
+    maxPages: 1,
+    maxJobsPerBoard: 10,
+    enrichDetails: false,
+  };
+  config.execution = {
+    wholeRunDeadlineMs: 1_000,
+    discoveryBudgetMs: 600,
+    handoffReserveMs: 100,
+    downstreamReserveMs: 100,
+    perSourceMaxDurationMs: 600,
+    minimumSourceStartAllocationMs: 1,
+  };
+  const greenhouse = fakeTransport({ 'yield-board': [greenhouseJob(601, 'yield-board')] });
+  const transport = async (url) => {
+    if (String(url).includes('myworkdayjobs')) {
+      const error = new Error('injected daily discovery deadline');
+      error.code = 'DAILY_DEADLINE_EXCEEDED';
+      throw error;
+    }
+    return greenhouse(url);
+  };
+  const result = await runDailyNormal(runOptions(config, transport, { runId: 'daily-useful-yield-deadline' }));
+  const TERMINAL_STATES = new Set(['ok', 'empty', 'failed', 'interrupted', 'truncated', 'degraded', 'disabled', 'not_started']);
+  const endStates = result.terminalEnvelope.sourceEndStates;
+  assert.equal(endStates['ats-enterprise'].state, 'interrupted');
+  for (const [sourceId, endState] of Object.entries(endStates)) {
+    assert.ok(TERMINAL_STATES.has(endState.state), `${sourceId} has terminal state ${endState.state}`);
+  }
+  assert.ok(result.usefulSourceYield, 'usefulSourceYield is attached to the run result');
+  for (const sourceId of Object.keys(endStates)) {
+    assert.ok(result.usefulSourceYield.sources.some((row) => row.sourceId === sourceId), `${sourceId} keeps its useful-yield row`);
+  }
+  assert.equal(result.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-enterprise').endState, 'interrupted');
+  const warmRows = result.usefulSourceYield.sources.filter((row) => row.sourceId === 'ats-warm');
+  assert.equal(warmRows.length, 1, 'one requisition is not counted under both the crawler source and its normal lane');
+  assert.equal(warmRows[0].uniqueRequisitions, 1);
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  assert.match(markdown, /## Useful yield by source/);
+  assert.match(markdown, /Not provided; fetched row volume does not establish marginal useful yield\./);
+  assert.match(renderLocalDailyHtmlReport(result), /data-section="useful-yield"/);
+});
+
+test('the receipt keeps query and recovery marks per observation and the useful yield counts the requisition once', () => {
+  const job = normalizeCandidate(rawPortalJob(1301, { provider: 'theirstack', source: 'theirstack' }));
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+  const observed = (queryId) => ({ candidate: { ...job, sourceId: 'theirstack', provenance: { queryId } } });
+  const recovered = { candidate: { ...job, source: 'portal-naukri', sourceId: 'portal-discovery', observedAt: '2026-07-24T07:00:00.000Z', evidence: { recovery: { kind: 'held-lead-recovery' } } } };
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 3 }, requestedCount: 3, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: 'theirstack', source: 'theirstack', postedAt: job.postedAt, evidenceHash: 'sha256:a' },
+    ] },
+    observations: [observed('q-ai'), observed('q-ml'), recovered],
+    modes: {},
+  });
+  assert.equal(receipt.retained.identityRows.length, 1);
+  const provenance = receipt.retained.identityRows[0].provenance;
+  assert.deepEqual(provenance.filter((item) => item.sourceId === 'theirstack').map((item) => item.queryId).sort(), ['q-ai', 'q-ml']);
+  assert.equal(provenance.some((item) => item.sourceId == null), false, 'the bare lane row yields to the crawler observation');
+  assert.equal(provenance.find((item) => item.recovery === true).sourceId, 'portal-discovery');
+
+  const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows, sourceTelemetry: {}, sourceEndStates: {} });
+  assert.equal(usefulYield.identityCount, 1);
+  const groups = usefulYield.sources.map(({ sourceId, queryId, kind, uniqueRequisitions }) => ({ sourceId, queryId, kind, uniqueRequisitions }));
+  assert.deepEqual(groups, [
+    { sourceId: 'portal-discovery', queryId: 'Not Verified', kind: 'recovery', uniqueRequisitions: 1 },
+    { sourceId: 'theirstack', queryId: 'q-ai', kind: 'discovery', uniqueRequisitions: 1 },
+    { sourceId: 'theirstack', queryId: 'q-ml', kind: 'discovery', uniqueRequisitions: 1 },
+  ]);
 });
 
 test('historicalV4Rows suppress crawler-fed duplicates before Normal shortlist planning', async () => {

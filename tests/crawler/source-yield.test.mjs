@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates } from '../../crawler/source-yield.mjs';
+import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates, buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
 import { runCrawlerOperator } from '../../crawler/operator.mjs';
 import { main } from '../../crawler/cli.mjs';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -196,4 +196,117 @@ test('local trial report command reads retained public crawler output without li
     { sourceId: 'hn-discovery', daysObserved: 1, requests: 1, decision: 'insufficient-evidence' },
     { sourceId: 'yc-discovery', daysObserved: 1, requests: 1, decision: 'insufficient-evidence' },
   ]);
+});
+
+// Build a retained identity row with the fields the daily receipt keeps per requisition.
+function identityRow(identityHash, overrides = {}) {
+  return {
+    identityHash, stage: 'eligible', reason: 'Not Verified', selected: false, historicalSuppressed: false,
+    jdHash: 'sha256:jd', score: 80, scoreComponents: { skillMatch: 30 }, provenance: [], ...overrides,
+  };
+}
+
+test('per-source and per-query rows count JD, eligibility, scoring, suppression and selection', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:selected', { stage: 'finalSelection', selected: true, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:hard', { stage: 'hardRejection', jdHash: null, score: null, scoreComponents: null, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:suppressed', { stage: 'historySuppression', historicalSuppressed: true, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:scored-out', { stage: 'scoringFailure', score: null, scoreComponents: null, provenance: [{ sourceId: 'ats-warm' }] }),
+      identityRow('sha256:held', { stage: 'verification', provenance: [{ sourceId: 'ats-warm' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: { theirstack: { state: 'ok' }, 'ats-warm': { state: 'truncated', reason: 'source-truncated' } },
+  });
+  const theirstack = report.sources.find(({ sourceId, queryId }) => sourceId === 'theirstack' && queryId === 'q-ai');
+  assert.equal(theirstack.kind, 'discovery');
+  assert.equal(theirstack.uniqueRequisitions, 3);
+  assert.deepEqual(theirstack.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 1, scoringFailed: 0, historySuppressed: 1, verification: 0, selected: 1 });
+  assert.equal(theirstack.endState, 'ok');
+  const warm = report.sources.find(({ sourceId }) => sourceId === 'ats-warm');
+  assert.equal(warm.queryId, 'Not Verified');
+  assert.deepEqual(warm.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 0, scoringFailed: 1, historySuppressed: 0, verification: 1, selected: 0 });
+  assert.equal(warm.endState, 'truncated');
+  assert.equal(warm.endReason, 'source-truncated');
+  assert.equal(report.schemaVersion, 'LaunchpadUsefulSourceYieldV1');
+  assert.equal(report.scope, 'final-selection');
+  assert.equal(buildSourceYieldReport([]).schemaVersion, 'LaunchpadSourceYieldV1', 'the discovery-only report keeps its label');
+});
+
+test('a requisition found by discovery and by recovery appears in both groups but counts once', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:shared', { stage: 'finalSelection', selected: true, provenance: [
+        { sourceId: 'theirstack', queryId: 'q-ai' },
+        { sourceId: 'portal-discovery', recovery: true },
+      ] }),
+      identityRow('sha256:recovery-only', { provenance: [{ sourceId: 'held-lead-recovery' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  assert.equal(report.identityCount, 2);
+  const discovery = report.sources.find(({ sourceId }) => sourceId === 'theirstack');
+  const recovery = report.sources.find(({ sourceId }) => sourceId === 'portal-discovery');
+  assert.equal(discovery.kind, 'discovery');
+  assert.equal(recovery.kind, 'recovery');
+  assert.equal(discovery.uniqueRequisitions, 1);
+  assert.equal(recovery.uniqueRequisitions, 1);
+  assert.equal(report.sources.find(({ sourceId }) => sourceId === 'held-lead-recovery').kind, 'recovery');
+});
+
+test('request, duration, truncation and failure cost accompany each row, and shared-query cost stays Not Verified', () => {
+  const sourceTelemetry = {
+    theirstack: { requests: 4, durationMs: 1200, truncated: true, failures: ['HTTP 429'] },
+    'ats-warm': { detail: { telemetry: { requests: 2 } }, durationMs: 300 },
+  };
+  const shared = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:b', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ml' }] }),
+      identityRow('sha256:c', { provenance: [{ sourceId: 'ats-warm' }] }),
+    ],
+    sourceTelemetry,
+    sourceEndStates: {},
+  });
+  assert.deepEqual(shared.sources.find(({ sourceId }) => sourceId === 'ats-warm').cost, { requests: 2, durationMs: 300, failures: 'Not Verified', truncated: 'Not Verified' });
+  for (const row of shared.sources.filter(({ sourceId }) => sourceId === 'theirstack')) {
+    assert.deepEqual(row.cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
+  }
+  const single = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
+    sourceTelemetry,
+    sourceEndStates: {},
+  });
+  assert.deepEqual(single.sources.find(({ sourceId }) => sourceId === 'theirstack').cost, { requests: 4, durationMs: 1200, failures: 1, truncated: true });
+  const recovery = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:r', { provenance: [{ sourceId: 'portal-discovery', recovery: true }] })],
+    sourceTelemetry,
+    sourceEndStates: {},
+    heldLeadRecovery: { outcomes: [{ requests: 2 }, { requests: 1 }] },
+  });
+  const recoveryRow = recovery.sources.find(({ sourceId }) => sourceId === 'portal-discovery');
+  assert.equal(recoveryRow.kind, 'recovery');
+  assert.equal(recoveryRow.cost.requests, 3, 'recovery requests come from held-lead outcomes, not the shared portal source');
+});
+
+test('a source with no useful rows keeps its row, end state and cost in the output', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'ats-warm' }] })],
+    sourceTelemetry: { 'ats-batch-1': { status: 'succeeded', fetched: 0, requests: 3, durationMs: 900 } },
+    sourceEndStates: { 'ats-batch-1': { state: 'empty', reason: 'no-records-returned' }, 'career-sites': { state: 'not_started', reason: 'source-not-planned' } },
+  });
+  const batch = report.sources.find(({ sourceId }) => sourceId === 'ats-batch-1');
+  assert.deepEqual([batch.referenceCount, batch.uniqueRequisitions, batch.endState, batch.endReason, batch.cost.requests], [0, 0, 'empty', 'no-records-returned', 3]);
+  const careers = report.sources.find(({ sourceId }) => sourceId === 'career-sites');
+  assert.deepEqual([careers.uniqueRequisitions, careers.endState, careers.cost.requests], [0, 'not_started', 'Not Verified']);
+  assert.equal(report.identityCount, 1);
+});
+
+test('the crawler-v2 budget split stays at its twenty-minute contract', () => {
+  const { execution } = JSON.parse(readFileSync(new URL('../../config/crawler-v2.json', import.meta.url), 'utf8'));
+  assert.deepEqual(
+    [execution.wholeRunDeadlineMs, execution.discoveryBudgetMs, execution.downstreamReserveMs, execution.handoffReserveMs],
+    [1200000, 720000, 300000, 180000],
+  );
 });

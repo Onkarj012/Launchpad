@@ -190,4 +190,96 @@ export function buildSourceYieldReport(records = [], sourceTelemetry = {}, optio
   return { schemaVersion: 'LaunchpadSourceYieldV1', sources, totals, calibration: { minimumRunsForPause: minimumRuns, automaticPause: false } };
 }
 
+const NOT_VERIFIED = 'Not Verified';
+const RECOVERY_SOURCE_ID = 'held-lead-recovery';
+const STAGE_FIELDS = ['jdPresent', 'hardEligibilityPassed', 'validScore', 'scoringFailed', 'historySuppressed', 'verification', 'selected'];
+const ALLOCATION_NOTE = 'Not provided; fetched row volume does not establish marginal useful yield.';
+
+// Keep a recorded number, or the explicit gap when the run did not record it.
+const recordedNumber = (value) => (Number.isFinite(value) ? value : NOT_VERIFIED);
+const unknownCost = () => ({ requests: NOT_VERIFIED, durationMs: NOT_VERIFIED, failures: NOT_VERIFIED, truncated: NOT_VERIFIED });
+const zeroStages = () => Object.fromEntries(STAGE_FIELDS.map((field) => [field, 0]));
+
+// Read one source's cost from telemetry without splitting it across queries.
+function sourceCost(telemetry) {
+  const detail = telemetry?.detail ?? {};
+  const failures = Array.isArray(telemetry?.failures) ? telemetry.failures.length : telemetry?.failures;
+  return {
+    requests: recordedNumber([telemetry?.requests, detail.requests, detail.telemetry?.requests].find(Number.isFinite)),
+    durationMs: recordedNumber(telemetry?.durationMs),
+    failures: recordedNumber(failures),
+    truncated: typeof telemetry?.truncated === 'boolean' ? telemetry.truncated : NOT_VERIFIED,
+  };
+}
+
+// Map one requisition's receipt stage onto the funnel stages it reached.
+function identityStages(row) {
+  const stage = row.stage;
+  return {
+    jdPresent: row.jdHash != null,
+    hardEligibilityPassed: stage !== 'hardRejection' && stage !== 'unknown',
+    validScore: ['finalSelection', 'eligible'].includes(stage) && Number.isFinite(row.score) && row.scoreComponents != null,
+    scoringFailed: stage === 'scoringFailure',
+    historySuppressed: stage === 'historySuppression',
+    verification: stage === 'verification',
+    selected: row.selected === true,
+  };
+}
+
+// Attribute useful outcomes to each source and query. A requisition counts once per group and once overall.
+export function buildUsefulSourceYield({ identityRows = [], sourceTelemetry = {}, sourceEndStates = {}, heldLeadRecovery = null } = {}) {
+  const rows = Array.isArray(identityRows) ? identityRows : [];
+  const groups = new Map();
+  for (const row of rows) {
+    const stages = identityStages(row);
+    for (const item of row.provenance ?? []) {
+      const sourceId = item.sourceId ?? item.source ?? NOT_VERIFIED;
+      const kind = item.sourceId === RECOVERY_SOURCE_ID || item.source === RECOVERY_SOURCE_ID || item.recovery === true ? 'recovery' : 'discovery';
+      const queryId = item.queryId ?? NOT_VERIFIED;
+      const key = JSON.stringify([sourceId, queryId, kind]);
+      if (!groups.has(key)) groups.set(key, { sourceId, queryId, kind, referenceCount: 0, identities: new Set(), stages: zeroStages() });
+      const group = groups.get(key);
+      group.referenceCount += 1;
+      if (group.identities.has(row.identityHash)) continue;
+      group.identities.add(row.identityHash);
+      for (const field of STAGE_FIELDS) if (stages[field]) group.stages[field] += 1;
+    }
+  }
+  const groupList = [...groups.values()];
+  const groupsBySource = new Map();
+  for (const group of groupList) groupsBySource.set(group.sourceId, (groupsBySource.get(group.sourceId) ?? 0) + 1);
+  const recoveryGroups = groupList.filter((group) => group.kind === 'recovery');
+  const recoveryRequests = Array.isArray(heldLeadRecovery?.outcomes)
+    ? heldLeadRecovery.outcomes.reduce((sum, outcome) => sum + (Number.isFinite(outcome?.requests) ? outcome.requests : 0), 0)
+    : null;
+  // Recovery requests come from held-lead outcomes, and only when one recovery group owns them.
+  const costFor = (group) => {
+    if (group.kind === 'recovery') return recoveryGroups.length === 1 && recoveryRequests != null ? { ...unknownCost(), requests: recoveryRequests } : unknownCost();
+    if (groupsBySource.get(group.sourceId) > 1) return unknownCost();
+    return sourceCost(sourceTelemetry[group.sourceId]);
+  };
+  // Sources with telemetry or an end state but no useful rows still get a row.
+  const groupedSources = new Set(groupList.map((group) => group.sourceId));
+  const idleSources = [...new Set([...Object.keys(sourceTelemetry ?? {}), ...Object.keys(sourceEndStates)])]
+    .filter((sourceId) => !groupedSources.has(sourceId))
+    .map((sourceId) => ({ sourceId, queryId: NOT_VERIFIED, kind: 'discovery', referenceCount: 0, identities: new Set(), stages: zeroStages() }));
+  const sources = [...groupList, ...idleSources]
+    .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId)) || String(a.queryId).localeCompare(String(b.queryId)) || a.kind.localeCompare(b.kind))
+    .map((group) => ({
+      sourceId: group.sourceId,
+      queryId: group.queryId,
+      kind: group.kind,
+      referenceCount: group.referenceCount,
+      uniqueRequisitions: group.identities.size,
+      stages: group.stages,
+      endState: sourceEndStates[group.sourceId]?.state ?? NOT_VERIFIED,
+      endReason: sourceEndStates[group.sourceId]?.reason ?? NOT_VERIFIED,
+      cost: costFor(group),
+    }));
+  const identityCount = Array.isArray(identityRows)
+    ? new Set(rows.map((row) => row.identityHash).filter((hash) => hash && hash !== NOT_VERIFIED)).size
+    : NOT_VERIFIED;
+  return { schemaVersion: 'LaunchpadUsefulSourceYieldV1', scope: 'final-selection', identityCount, sources, allocationRecommendation: ALLOCATION_NOTE };
+}
+
 export default buildSourceYieldReport;
