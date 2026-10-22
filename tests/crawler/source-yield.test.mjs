@@ -221,11 +221,11 @@ test('per-source and per-query rows count JD, eligibility, scoring, suppression 
   const theirstack = report.sources.find(({ sourceId, queryId }) => sourceId === 'theirstack' && queryId === 'q-ai');
   assert.equal(theirstack.kind, 'discovery');
   assert.equal(theirstack.uniqueRequisitions, 3);
-  assert.deepEqual(theirstack.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 1, scoringFailed: 0, historySuppressed: 1, verification: 0, selected: 1 });
+  assert.deepEqual(theirstack.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 1, scoringFailed: 0, historySuppressed: 1, verification: 0, selected: 1, routeRecovered: 0 });
   assert.equal(theirstack.endState, 'ok');
   const warm = report.sources.find(({ sourceId }) => sourceId === 'ats-warm');
   assert.equal(warm.queryId, 'Not Verified');
-  assert.deepEqual(warm.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 0, scoringFailed: 1, historySuppressed: 0, verification: 1, selected: 0 });
+  assert.deepEqual(warm.stages, { jdPresent: 2, hardEligibilityPassed: 1, validScore: 0, scoringFailed: 1, historySuppressed: 0, verification: 1, selected: 0, routeRecovered: 0 });
   assert.equal(warm.endState, 'truncated');
   assert.equal(warm.endReason, 'source-truncated');
   assert.equal(report.schemaVersion, 'LaunchpadUsefulSourceYieldV1');
@@ -257,7 +257,7 @@ test('a requisition found by discovery and by recovery appears in both groups bu
 
 test('request, duration, truncation and failure cost accompany each row, and shared-query cost stays Not Verified', () => {
   const sourceTelemetry = {
-    theirstack: { requests: 4, durationMs: 1200, truncated: true, failures: ['HTTP 429'] },
+    theirstack: { requests: 4, durationMs: 1200, truncated: true, failures: ['HTTP 429'], detail: { telemetry: { queryDiagnostics: [{ queryIndex: 0 }] } } },
     'ats-warm': { detail: { telemetry: { requests: 2 } }, durationMs: 300 },
   };
   const shared = buildUsefulSourceYield({
@@ -301,6 +301,63 @@ test('a source with no useful rows keeps its row, end state and cost in the outp
   const careers = report.sources.find(({ sourceId }) => sourceId === 'career-sites');
   assert.deepEqual([careers.uniqueRequisitions, careers.endState, careers.cost.requests], [0, 'not_started', 'Not Verified']);
   assert.equal(report.identityCount, 1);
+});
+
+test('a verification row is hard-eligible only when its reason is a known non-gate reason', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:employment', { stage: 'verification', reason: 'EMPLOYMENT_NOT_VERIFIED', provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:review', { stage: 'verification', reason: 'SOURCE_CONFLICT_REVIEW', provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:unknown', { stage: 'verification', reason: 'Not Verified', provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  const theirstack = report.sources.find(({ sourceId }) => sourceId === 'theirstack');
+  assert.equal(theirstack.stages.verification, 3);
+  assert.equal(theirstack.stages.hardEligibilityPassed, 1);
+});
+
+test('validScore reads componentScores as well as scoreComponents', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:scored', { stage: 'finalSelection', selected: true, scoreComponents: null, componentScores: { skillMatch: 30 }, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  assert.equal(report.sources[0].stages.validScore, 1);
+});
+
+test('a source that ran two queries gives no query row its cost, even when one query returned the role', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
+    sourceTelemetry: { theirstack: { requests: 5, durationMs: 100, detail: { telemetry: { queryDiagnostics: [{ queryIndex: 0, rowsReturned: 1 }, { queryIndex: 1, rowsReturned: 0 }] } } } },
+    sourceEndStates: {},
+  });
+  assert.deepEqual(report.sources[0].cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
+});
+
+test('a query row with no query telemetry keeps its cost Not Verified', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
+    sourceTelemetry: { theirstack: { requests: 4, durationMs: 1200 } },
+    sourceEndStates: {},
+  });
+  assert.equal(report.sources[0].cost.requests, 'Not Verified');
+});
+
+test('route recovered counts only recovered attempts, never blocked or pending ones', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:won', { provenance: [{ sourceId: 'portal-discovery', recovery: true, recoveryOutcome: 'recovered' }] }),
+      identityRow('sha256:blocked', { provenance: [{ sourceId: 'portal-discovery', recovery: true, recoveryOutcome: 'blocked' }] }),
+      identityRow('sha256:pending', { provenance: [{ sourceId: 'portal-discovery', recovery: true, recoveryOutcome: 'pending' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  const recovery = report.sources.find(({ sourceId, kind }) => sourceId === 'portal-discovery' && kind === 'recovery');
+  assert.equal(recovery.uniqueRequisitions, 3);
+  assert.equal(recovery.stages.routeRecovered, 1);
 });
 
 test('the crawler-v2 budget split stays at its twenty-minute contract', () => {

@@ -771,6 +771,73 @@ test('the receipt keeps query and recovery marks per observation and the useful 
   ]);
 });
 
+test('a completed run credits the crawler source with the requisition it observed', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'crawler-board', company: 'Crawler Company' }] });
+  const result = await runDailyNormal(runOptions(
+    config,
+    fakeTransport({ 'crawler-board': [greenhouseJob(101, 'crawler-board')] }),
+    { scores: { scores: [{ canonicalUrl: 'https://job-boards.greenhouse.io/crawler-board/jobs/101', matchScore: 80, responseLikelihood: 14 }] } },
+  ));
+  assert.equal(result.shortlist.length, 1, 'the warm role is selected, so the lane row alone would hide the crawler source');
+  const warm = result.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-warm');
+  assert.equal(warm?.uniqueRequisitions, 1);
+  assert.equal(warm?.stages.selected, 1);
+});
+
+test('lane provenance with distinct source ids survives next to a crawler observation of the same posting', () => {
+  const job = normalizeCandidate(rawPortalJob(1303, { provider: 'greenhouse', source: 'https://boards.greenhouse.io/acme' }));
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+  const lane = (sourceId) => ({ provider: job.provider, source: job.source, sourceId, observedAt: null, postedAt: job.postedAt });
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 2 }, requestedCount: 2, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: job.provider, source: job.source, postedAt: job.postedAt, provenance: [lane('reverse-ats-warm'), lane('tracked-ats')] },
+    ] },
+    observations: [{ candidate: { ...job, sourceId: 'ats-warm' } }],
+    modes: {},
+  });
+  const sourceIds = receipt.retained.identityRows[0].provenance.map((item) => item.sourceId).sort();
+  assert.deepEqual(sourceIds, ['ats-warm', 'reverse-ats-warm', 'tracked-ats']);
+});
+
+test('a recovered held lead keeps its recovery mark after employer resolution changes its identity', () => {
+  const lead = normalizeCandidate(rawPortalJob(1302, { provider: 'glassdoor', source: 'portal-glassdoor', jobId: '1302' }));
+  const leadIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(lead)).digest('hex')}`;
+  const resolved = normalizeCandidate(rawPortalJob(4302, { provider: 'greenhouse', source: 'https://boards.greenhouse.io/acme', jobId: '4302' }));
+  const requisition = candidateRequisitionKey(lead);
+  const recovered = { candidate: { ...resolved, sourceId: 'portal-discovery', originalApplicationUrl: resolved.canonicalUrl, identityAliases: [requisition], evidence: { recovery: { kind: 'held-lead-recovery', outcome: 'recovered', providerRequisitionKey: requisition } } } };
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 1 }, requestedCount: 1, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity: leadIdentity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: lead.provider, source: lead.source, postedAt: lead.postedAt, provenance: [{ provider: lead.provider, source: lead.source, sourceId: 'portal-glassdoor', observedAt: null, postedAt: lead.postedAt }] },
+    ] },
+    observations: [recovered],
+    modes: {},
+  });
+  const provenance = receipt.retained.identityRows[0].provenance;
+  assert.deepEqual(provenance.filter((item) => item.recovery === true).map((item) => item.recoveryOutcome), ['recovered']);
+  const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows, sourceTelemetry: {}, sourceEndStates: {} });
+  assert.equal(usefulYield.sources.find((row) => row.kind === 'recovery').stages.routeRecovered, 1);
+});
+
+test('a selected role with a valid score and component scores counts as validly scored in the useful yield', () => {
+  const job = normalizeCandidate(rawPortalJob(1304, { provider: 'theirstack', source: 'theirstack' }));
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+  const role = { ...job, matchScore: 80, componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } };
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 1 }, requestedCount: 1, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity, bucket: 'selected', reason: 'SELECTED', provider: job.provider, source: job.source, postedAt: job.postedAt, provenance: [{ provider: job.provider, source: job.source, sourceId: 'theirstack', observedAt: null, postedAt: job.postedAt }] },
+    ] },
+    observations: [],
+    modes: { startup: { shortlist: [] }, normal: { results: [role], shortlist: [role] }, remote: { shortlist: [] } },
+  });
+  const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows, sourceTelemetry: {}, sourceEndStates: {} });
+  const theirstack = usefulYield.sources.find((row) => row.sourceId === 'theirstack');
+  assert.equal(theirstack.stages.selected, 1);
+  assert.equal(theirstack.stages.validScore, 1);
+});
+
 test('historicalV4Rows suppress crawler-fed duplicates before Normal shortlist planning', async () => {
   const { config } = testConfig({
     warmBoards: [{ slug: 'historical-board', company: 'Historical Company' }],

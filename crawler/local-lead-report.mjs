@@ -98,7 +98,7 @@ function targetShortfall(mode) {
 
 // Summarize one source's funnel stages for a single report cell.
 function usefulStagesText(stages) {
-  return `JD ${stages.jdPresent}; hard-eligible ${stages.hardEligibilityPassed}; valid score ${stages.validScore}; scoring failed ${stages.scoringFailed}; suppressed ${stages.historySuppressed}; verification ${stages.verification}; selected ${stages.selected}`;
+  return `JD ${stages.jdPresent}; hard-eligible ${stages.hardEligibilityPassed}; valid score ${stages.validScore}; scoring failed ${stages.scoringFailed}; suppressed ${stages.historySuppressed}; verification ${stages.verification}; selected ${stages.selected}; route recovered ${stages.routeRecovered}`;
 }
 
 // Read request counts from source telemetry without inferring missing requests.

@@ -192,8 +192,12 @@ export function buildSourceYieldReport(records = [], sourceTelemetry = {}, optio
 
 const NOT_VERIFIED = 'Not Verified';
 const RECOVERY_SOURCE_ID = 'held-lead-recovery';
-const STAGE_FIELDS = ['jdPresent', 'hardEligibilityPassed', 'validScore', 'scoringFailed', 'historySuppressed', 'verification', 'selected'];
+const STAGE_FIELDS = ['jdPresent', 'hardEligibilityPassed', 'validScore', 'scoringFailed', 'historySuppressed', 'verification', 'selected', 'routeRecovered'];
 const ALLOCATION_NOTE = 'Not provided; fetched row volume does not establish marginal useful yield.';
+// Upstream buckets that are hard eligibility gates. A row that stopped at one of them has not passed it.
+const HARD_GATE_BUCKETS = ['geo', 'title', 'experience', 'employment', 'salary', 'liveness', 'freshnessRejected'];
+// Verification reasons that say a hard gate could not be confirmed. Only other reasons count as eligibility passed.
+const HARD_GATE_UNVERIFIED = /NOT_VERIFIED|NOT_EXPLICIT|UNCLEAR|Not Verified/;
 
 // Keep a recorded number, or the explicit gap when the run did not record it.
 const recordedNumber = (value) => (Number.isFinite(value) ? value : NOT_VERIFIED);
@@ -212,18 +216,30 @@ function sourceCost(telemetry) {
   };
 }
 
+// Count hard eligibility only from explicit pass evidence; a gate that stayed unverified or unknown is not a pass.
+function passedHardGates(row) {
+  if (row.stage === 'verification') return !HARD_GATE_UNVERIFIED.test(row.reason ?? NOT_VERIFIED);
+  return ['finalSelection', 'eligible', 'scoringFailure', 'historySuppression'].includes(row.stage)
+    && !HARD_GATE_BUCKETS.includes(row.upstreamStage);
+}
+
 // Map one requisition's receipt stage onto the funnel stages it reached.
 function identityStages(row) {
-  const stage = row.stage;
   return {
     jdPresent: row.jdHash != null,
-    hardEligibilityPassed: stage !== 'hardRejection' && stage !== 'unknown',
-    validScore: ['finalSelection', 'eligible'].includes(stage) && Number.isFinite(row.score) && row.scoreComponents != null,
-    scoringFailed: stage === 'scoringFailure',
-    historySuppressed: stage === 'historySuppression',
-    verification: stage === 'verification',
+    hardEligibilityPassed: passedHardGates(row),
+    validScore: ['finalSelection', 'eligible'].includes(row.stage) && Number.isFinite(row.score) && (row.scoreComponents ?? row.componentScores) != null,
+    scoringFailed: row.stage === 'scoringFailure',
+    historySuppressed: row.stage === 'historySuppression',
+    verification: row.stage === 'verification',
     selected: row.selected === true,
   };
+}
+
+// Count the queries a source ran from its execution telemetry, including zero-result queries; null when telemetry does not say.
+function queriesRun(telemetry) {
+  const diagnostics = telemetry?.detail?.telemetry?.queryDiagnostics;
+  return Array.isArray(diagnostics) ? diagnostics.length : null;
 }
 
 // Attribute useful outcomes to each source and query. A requisition counts once per group and once overall.
@@ -242,12 +258,13 @@ export function buildUsefulSourceYield({ identityRows = [], sourceTelemetry = {}
       group.referenceCount += 1;
       if (group.identities.has(row.identityHash)) continue;
       group.identities.add(row.identityHash);
-      for (const field of STAGE_FIELDS) if (stages[field]) group.stages[field] += 1;
+      const itemStages = { ...stages, routeRecovered: item.recoveryOutcome === 'recovered' };
+      for (const field of STAGE_FIELDS) if (itemStages[field]) group.stages[field] += 1;
     }
   }
   const groupList = [...groups.values()];
-  const groupsBySource = new Map();
-  for (const group of groupList) groupsBySource.set(group.sourceId, (groupsBySource.get(group.sourceId) ?? 0) + 1);
+  const rowsBySource = new Map();
+  for (const group of groupList) rowsBySource.set(group.sourceId, (rowsBySource.get(group.sourceId) ?? 0) + 1);
   const recoveryGroups = groupList.filter((group) => group.kind === 'recovery');
   const recoveryRequests = Array.isArray(heldLeadRecovery?.outcomes)
     ? heldLeadRecovery.outcomes.reduce((sum, outcome) => sum + (Number.isFinite(outcome?.requests) ? outcome.requests : 0), 0)
@@ -255,8 +272,12 @@ export function buildUsefulSourceYield({ identityRows = [], sourceTelemetry = {}
   // Recovery requests come from held-lead outcomes, and only when one recovery group owns them.
   const costFor = (group) => {
     if (group.kind === 'recovery') return recoveryGroups.length === 1 && recoveryRequests != null ? { ...unknownCost(), requests: recoveryRequests } : unknownCost();
-    if (groupsBySource.get(group.sourceId) > 1) return unknownCost();
-    return sourceCost(sourceTelemetry[group.sourceId]);
+    // A source's cost belongs to one row only when it ran one query, or has no query split and one row; otherwise it is Not Verified.
+    const telemetry = sourceTelemetry[group.sourceId];
+    const queries = queriesRun(telemetry);
+    const onlyRow = (rowsBySource.get(group.sourceId) ?? 0) <= 1;
+    const ownsCost = onlyRow && (queries === 1 || (queries === null && group.queryId === NOT_VERIFIED));
+    return ownsCost ? sourceCost(telemetry) : unknownCost();
   };
   // Sources with telemetry or an end state but no useful rows still get a row.
   const groupedSources = new Set(groupList.map((group) => group.sourceId));

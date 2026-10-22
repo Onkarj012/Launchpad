@@ -1351,6 +1351,7 @@ async function runDailyNormalImpl({
     const finalEnvelope = { ...envelope, deliveryReconciliation };
     return {
       ...result,
+      crawlerObservations: crawlerResult.observations,
       heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
       terminalEnvelope: finalEnvelope,
       deliveryReconciliation,
@@ -1523,6 +1524,7 @@ async function runDailyNormalImpl({
   const finalEnvelope = { ...envelope, deliveryReconciliation };
   return {
     ...result,
+    crawlerObservations: crawlerResult.observations,
     heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
     terminalEnvelope: finalEnvelope,
     deliveryReconciliation,
@@ -1605,7 +1607,8 @@ export async function runDailyNormal(options = {}) {
     const priorRetry = readPriorScoringRetry(options, `${ownRunId}-crawler-v2`);
     const result = await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
     const completed = { ...result, hiringEvents };
-    const dailyReceipt = buildDailyReceipt(completed);
+    // Crawler observations name their real source and query, so the receipt needs them beside the lane rows.
+    const dailyReceipt = buildDailyReceipt({ ...completed, observations: [...(completed.observations ?? []), ...(completed.crawlerObservations ?? [])] });
     const usefulSourceYield = buildUsefulSourceYield({
       identityRows: dailyReceipt.retained.identityRows,
       sourceTelemetry: completed.crawlerV2Telemetry ?? completed.sourceTelemetry ?? {},
