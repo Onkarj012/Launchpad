@@ -1641,7 +1641,7 @@ export async function runDailyNormal(options = {}) {
     const retryPersistence = scoringRetry
       ? persistScoringRetry(options, completed, scoringRetry)
       : { scoringRetryPersistence: 'failed', scoringRetryPersistenceError: priorRetry.error };
-    return { ...completed, dailyReceipt, usefulSourceYield, receiptPersistence, receiptPersistenceError, sourceSnapshotAges, scoringRetry, ...retryPersistence };
+    return { ...completed, dailyReceipt, usefulSourceYield, receiptPersistence, receiptPersistenceError, sourceSnapshotAges, scoringRetry, requestedShortlistLimit: options.shortlistLimit ?? 20, ...retryPersistence };
   } finally {
     execution.cleanup();
   }

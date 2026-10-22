@@ -46,6 +46,16 @@ Already satisfied with no code change: the crawler-v2 twenty-minute budget split
 
 Local fixture evidence only; no live yield claimed.
 
+## P11 private report evidence, 2026-10-23
+
+Local-verified: the private daily HTML report gives each role card a state (`Ready and scored`, `Promising, needs verification`, or `Rejected`), its exact reason codes, a missing-fields list, and one next safe action. Cards sit under Pune and Pune-metro, India-eligible remote, or other-location headings inside each mode. Each card also shows the country or residency constraint, liveness with its check time, one novelty label, and an application-readiness line. The counts line near the top shows requested, eligible, selected, confirmed delivered, and shortfall as separate numbers. The stage-loss receipt table gets state and next-action columns. The Markdown handoff gets the counts line and state and next-action columns too. The Markdown table no longer prints the `Applied?` placeholder.
+
+Already satisfied: the HTML report never showed `Applied?` or `Make Resume`, and its only action link was the employer apply link. The Markdown table did print an `Applied?: Not Verified` placeholder, which this change removed. A guard test now pins both reports.
+
+Not done: no card shows `Already surfaced`, because ledger state is not on daily rows. No duplicate-route reason code exists, so a shared apply route is shown but not named as a reason. In the daily flow, rejected roles appear only as receipt rows with a requisition hash and no title. Observations reach the result only on partial and fatal paths. The daily result now carries `requestedShortlistLimit`, which the counts line reads.
+
+Local fixture evidence only; no live run. Desktop and mobile visual check by the orchestrator.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

@@ -310,3 +310,112 @@ test('G: a selection carried from an earlier run is not counted as this run sele
   assert.match(html, /Recovered: 0\. Selected: 0\./);
   assert.match(html, /<td>previous run: shortlisted<\/td>/);
 });
+
+test('P11 item 1: cards sit under Pune, India-eligible remote, or other-location headings inside each mode', () => {
+  const pune = role('pune', 'Pune Labs', { location: 'Pune, India' });
+  const remote = role('remote', 'Remote Labs', { location: 'Remote, India', workplaceType: 'Remote' });
+  const other = role('other', 'Bengaluru Labs', { location: 'Bengaluru, India' });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { normal: { results: [other, remote, pune], shortlist: [pune] } } });
+  const section = html.slice(html.indexOf('<section data-mode="normal">'), html.indexOf('<section data-mode="startup">'));
+  let last = -1;
+  for (const marker of ['<h4>Pune and Pune-metro</h4>', 'pune Engineer', '<h4>India-eligible remote</h4>', 'remote Engineer', '<h4>Other location evidence</h4>', 'other Engineer']) {
+    const index = section.indexOf(marker, last + 1);
+    assert.ok(index > last, `${marker} appears after the previous group inside the normal section`);
+    last = index;
+  }
+});
+
+test('P11 item 2: cards show the country or residency constraint and liveness with its check time', () => {
+  const restricted = role('restricted', 'Scope Labs', {
+    location: 'Remote',
+    workplaceType: 'Remote',
+    eligibility: { geo: { code: 'GEO_REMOTE_REGION_RESTRICTED', evidence: 'Candidates must reside in Canada' }, reasons: [] },
+    liveness: { status: 'Active', checkedAt: '2026-10-22T10:00:00.000Z' },
+  });
+  const bare = role('bare', 'Bare Labs', {});
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, modes: { remote: { results: [restricted, bare], shortlist: [] } } });
+  assert.match(html, /Country or residency constraint: GEO_REMOTE_REGION_RESTRICTED \(Candidates must reside in Canada\)/);
+  assert.match(html, /Liveness: Active; checked 2026-10-22 15:30:00 IST/);
+  assert.match(html, /Country or residency constraint: Not Verified/);
+  assert.match(html, /Liveness: Not Verified; checked Not Verified/);
+});
+
+test('P11 item 3: each card names its state, exact reasons, missing fields and next safe action', () => {
+  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 82 });
+  const promising = role('promising', 'Promising Labs', { reasons: ['LIVENESS_NOT_VERIFIED', 'ORIGINAL_APPLICATION_URL_MISSING'] });
+  const rejected = role('rejected', 'Rejected Labs', { eligibility: { reasons: ['GEO_ONSITE_NOT_PUNE'] } });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW,
+    modes: { normal: { results: [ready, rejected], shortlist: [] } },
+    verificationQueue: [promising],
+  });
+  assert.match(html, /<h5>ready Engineer at Ready Labs<\/h5>[\s\S]*State: Ready and scored[\s\S]*Reasons: None recorded[\s\S]*Next safe action: Check the history snapshot/);
+  assert.match(html, /<h5>rejected Engineer at Rejected Labs<\/h5>[\s\S]*State: Rejected[\s\S]*Reasons: GEO_ONSITE_NOT_PUNE[\s\S]*Next safe action: Manual review/);
+  assert.match(html, /<h5>promising Engineer at Promising Labs<\/h5>[\s\S]*State: Promising, needs verification[\s\S]*Reasons: LIVENESS_NOT_VERIFIED, ORIGINAL_APPLICATION_URL_MISSING/);
+  assert.match(html, /<details><summary>Missing fields<\/summary><ul><li>LIVENESS_NOT_VERIFIED<\/li><li>ORIGINAL_APPLICATION_URL_MISSING<\/li><\/ul><\/details>/);
+  assert.match(html, /Next safe action: Re-check the employer page; Find the employer apply route/);
+});
+
+test('P11 item 4: each card shows exactly one novelty label, and New-market verified needs loaded history', () => {
+  const recovered = role('recovered', 'Held Labs', { evidence: { recovery: { kind: 'held-lead-recovery' } } });
+  const surfaced = role('surfaced', 'Ledger Labs', { ledgerSurfaced: true });
+  const fresh = role('fresh', 'Verified Labs', {});
+  const labels = ['New-market verified', 'First seen locally', 'Recovered existing lead', 'Already surfaced'];
+  const labelsPerCard = (html) => (html.match(/<article>[\s\S]*?<\/article>/g) ?? [])
+    .map((card) => labels.filter((label) => card.includes(`Novelty: ${label}`)));
+  const render = (v4HistorySnapshot) => renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot,
+    modes: { normal: { results: [recovered, surfaced, fresh], shortlist: [] } } });
+
+  assert.deepEqual(labelsPerCard(render({ status: 'loaded' })), [['Recovered existing lead'], ['Already surfaced'], ['New-market verified']]);
+  for (const snapshot of [{ status: 'stale' }, { status: 'missing' }, undefined]) {
+    const cards = labelsPerCard(render(snapshot));
+    assert.deepEqual(cards, [['Recovered existing lead'], ['Already surfaced'], ['First seen locally']]);
+  }
+});
+
+test('P11 item 5: counts show requested, eligible, selected, confirmed delivered and shortfall separately', () => {
+  const picked = [
+    role('a', 'A Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 80 }),
+    role('b', 'B Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 81 }),
+  ];
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, requestedShortlistLimit: 5, counts: { eligible: 14 },
+    modes: { normal: { results: picked, shortlist: picked } },
+    deliveryReconciliation: { counts: { deliveredKeys: 2 } },
+  });
+  assert.match(html, /<section data-section="counts"><h2>Counts<\/h2><ul><li>Requested: 5<\/li><li>Eligible: 14<\/li><li>Selected: 2<\/li><li>Confirmed delivered: 2<\/li><li>Shortfall: 3<\/li><\/ul><\/section>/);
+
+  const empty = renderLocalDailyHtmlReport({ runAt: NOW, modes: {} });
+  assert.match(empty, /<li>Requested: 20<\/li><li>Eligible: Not Verified<\/li><li>Selected: 0<\/li><li>Confirmed delivered: Not Verified<\/li><li>Shortfall: 20<\/li>/);
+});
+
+test('P11 item 5: a card is Application-ready only with ready status, a valid score and loaded history', () => {
+  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 82 });
+  const unscored = role('unscored', 'Unscored Labs', { applicationReady: true, applicationReadiness: 'Ready' });
+  const withoutHistory = renderLocalDailyHtmlReport({ runAt: NOW, modes: { normal: { results: [ready], shortlist: [] } } });
+  assert.match(withoutHistory, /Application readiness: Not application-ready: HISTORY_NOT_VERIFIED/);
+  assert.doesNotMatch(withoutHistory, /Application readiness: Application-ready/);
+
+  const withHistory = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: { status: 'loaded' }, modes: { normal: { results: [ready], shortlist: [] } } });
+  assert.match(withHistory, /Application readiness: Application-ready/);
+
+  const unscoredHtml = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: { status: 'loaded' }, modes: { normal: { results: [unscored], shortlist: [] } } });
+  assert.match(unscoredHtml, /Application readiness: Not application-ready: SCORE_NOT_VERIFIED/);
+  assert.doesNotMatch(unscoredHtml, /Application readiness: Application-ready/);
+});
+
+test('P11 item 6: reports never show Applied? or Make Resume values, and the only action link is the employer apply link', () => {
+  const ready = role('ready', 'Ready Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 82, originalApplicationUrl: 'https://careers.example.test/ready' });
+  const noRoute = role('noroute', 'No Route Labs', { reasons: ['ORIGINAL_APPLICATION_URL_MISSING'] });
+  const observation = { title: 'AI Engineer', company: 'Gate Labs', location: 'Bengaluru, India', canonicalUrl: 'https://jobs.example.test/gate',
+    description: 'Full-time AI Engineer role.', postedAt: NOW, employment: { type: 'full-time' }, experience: { minYears: 0, maxYears: 1 },
+    liveness: { status: 'Expired' } };
+  const result = { runAt: NOW, mode: 'normal', shortlist: [ready], observations: [observation],
+    modes: { normal: { results: [ready, noRoute], shortlist: [ready] } }, verificationQueue: [noRoute] };
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  const html = renderLocalDailyHtmlReport(result);
+  for (const report of [markdown, html]) {
+    assert.doesNotMatch(report, /Applied\?/);
+    assert.doesNotMatch(report, /Make Resume/);
+  }
+  assert.doesNotMatch(html, /<(button|form|input|select|textarea)\b|mailto:|Send|Message/);
+  assert.equal(html.match(/<a /g)?.length ?? 0, html.match(/>Apply at employer<\/a>/g)?.length ?? 0);
+});

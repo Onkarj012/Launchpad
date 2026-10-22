@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { candidateDedupKey, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { loadConfig, loadConversionPlan } from '../job-pull/config.mjs';
-import { classifyCandidate } from '../job-pull/eligibility.mjs';
+import { classifyCandidate, isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 
@@ -188,9 +188,121 @@ function snapshotClause(state, snapshot) {
   return `last successful snapshot ${eventDate(snapshot.lastSuccessfulAt)} (${snapshot.ageHours.toFixed(1)} h old), not current`;
 }
 
-/** Render retained operator observations; never score or persist a lifecycle. */
-export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? new Date().toISOString(), policy = null } = {}) {
-  const effectivePolicy = policy ?? { ...loadConfig(), salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
+// Reason codes for evidence that is missing. Any other code is a hard rejection.
+const MISSING_EVIDENCE = /NOT_VERIFIED|NOT_STATED|MISSING|NOT_RESOLVED|UNRESOLVED|INCOMPLETE|MANUAL_REVIEW|^ORIGINAL_APPLICATION_/;
+// One next step per reason. Reasons without a step go to manual review.
+const NEXT_SAFE_ACTIONS = [
+  [/^LIVENESS_/, 'Re-check the employer page'],
+  [/^FRESHNESS_/, 'Find the original posting date'],
+  [/^ORIGINAL_APPLICATION_/, 'Find the employer apply route'],
+  [/^EXPERIENCE_/, 'Read the full JD requirement'],
+  [/^SCORE_NOT_VERIFIED$/, 'Re-run scoring'],
+  [/^HISTORY_NOT_VERIFIED$/, 'Check the history snapshot'],
+];
+// Location headings inside each mode section, in display order.
+const LOCATION_GROUPS = [['pune', 'Pune and Pune-metro'], ['remote', 'India-eligible remote'], ['other', 'Other location evidence']];
+
+// Name a role's reason codes, missing evidence and card state. Any hard reason makes it Rejected.
+function assessRole(role) {
+  const freshnessCode = role.freshness?.eligible === false ? (role.freshness.code ?? 'FRESHNESS_NOT_VERIFIED') : null;
+  const codes = [...new Set([...(role.reasons ?? []), ...(role.eligibility?.reasons ?? []), freshnessCode].filter((code) => typeof code === 'string'))];
+  const missing = codes.filter((code) => MISSING_EVIDENCE.test(code));
+  const rejected = codes.some((code) => !MISSING_EVIDENCE.test(code));
+  const ready = !rejected && missing.length === 0
+    && (role.applicationReady === true || role.applicationReadiness === 'Ready' || role.readiness?.ready === true);
+  const scored = Number.isFinite(role.matchScore) || Number.isFinite(role.score);
+  const state = rejected ? 'Rejected' : ready && scored ? 'Ready and scored' : 'Promising, needs verification';
+  return { state, codes, missing, ready, scored };
+}
+
+// List what keeps a role from being application-ready. No blockers means ready, scored and history-backed.
+function applicationBlockers(assessment, historyLoaded) {
+  return [...new Set([
+    ...(assessment.ready ? [] : assessment.codes.length ? assessment.codes : ['READINESS_NOT_VERIFIED']),
+    ...(assessment.scored ? [] : ['SCORE_NOT_VERIFIED']),
+    ...(historyLoaded ? [] : ['HISTORY_NOT_VERIFIED']),
+  ])];
+}
+
+// Name the next safe step for each blocker. With no blocker, the role only needs its listing reviewed.
+function nextSafeAction(blockers) {
+  if (!blockers.length) return 'Review the employer listing';
+  const actions = blockers.map((code) => NEXT_SAFE_ACTIONS.find(([pattern]) => pattern.test(code))?.[1] ?? 'Manual review');
+  return [...new Set(actions)].join('; ');
+}
+
+// Read whether the run had loaded v4 history. Only loaded history backs New-market or application-ready labels.
+function historyLoadedFor(result) {
+  return result.v4HistorySnapshot?.status === 'loaded';
+}
+
+// Read a stage-loss receipt row. Its reason is stored as text, so the codes are matched out of it.
+function receiptRead(row) {
+  const codes = [...new Set(String(row.reason ?? '').match(/\b[A-Z]{2,}(?:_[A-Z0-9]+)*\b/g) ?? [])].filter((code) => code !== 'SELECTED');
+  const selected = row.selected === true;
+  const state = selected ? 'Ready and scored'
+    : row.stage === 'hardRejection' || row.stage === 'historySuppression' ? 'Rejected' : 'Promising, needs verification';
+  const action = selected ? 'Review the employer listing' : codes.length ? nextSafeAction(codes) : 'Manual review';
+  return { state, codes, action };
+}
+
+// Build the counts line. Each count stays separate, and a missing count stays Not Verified.
+function dailyCounts(result, selected) {
+  const requested = result.requestedShortlistLimit ?? 20;
+  const eligible = [result.counts?.eligible, result.funnel?.lifecycle?.eligible].find((value) => Number.isFinite(value));
+  return {
+    requested,
+    eligible: eligible ?? 'Not Verified',
+    selected,
+    delivered: result.deliveryReconciliation?.counts?.deliveredKeys ?? 'Not Verified',
+    shortfall: Math.max(0, requested - selected),
+  };
+}
+
+// Write the counts as one Markdown line, one sentence per count.
+function countsLine({ requested, eligible, selected, delivered, shortfall }) {
+  return `Requested: ${requested}. Eligible: ${eligible}. Selected: ${selected}. Confirmed delivered: ${delivered}. Shortfall: ${shortfall}.`;
+}
+
+// Pick the one novelty label. Only loaded history can support New-market verified.
+function noveltyLabel(role, historyLoaded) {
+  if (role.ledgerSurfaced === true) return 'Already surfaced';
+  if (role.evidence?.recovery?.kind === 'held-lead-recovery') return 'Recovered existing lead';
+  return historyLoaded ? 'New-market verified' : 'First seen locally';
+}
+
+// Sort a role under its location heading. Pune-metro is checked first, then remote evidence.
+function locationGroup(role, policy) {
+  if (role.eligibility?.geo?.code === 'GEO_PUNE_METRO' || isPuneMetroLocation(role.location, policy)) return 'pune';
+  const remote = role.remote === true || /remote/i.test(role.workplaceType ?? '') || role.eligibility?.geo?.mode === 'remote'
+    || (role.eligibility?.labels ?? []).some((label) => /remote/i.test(label)) || /remote/i.test(role.location ?? '');
+  return remote ? 'remote' : 'other';
+}
+
+// Collect the reason codes an observation row shows, in the order the Markdown report always used.
+function observationReasons({ candidate: c, eligibility: e, freshness: f, readiness: r, reasons, verificationReasons = [] }) {
+  return [...new Set([...reasons, ...verificationReasons, ...(!reasons.length ? r.reasons : []),
+    ...(e.experience.manualReview ? [e.experience.code] : []),
+    ...(!c.description ? ['PORTAL_DESCRIPTION_MISSING'] : []),
+    ...(c.evidence?.resolution?.reason ? [c.evidence.resolution.reason] : []),
+    ...(f.eligible ? [] : [f.code ?? 'FRESHNESS_NOT_VERIFIED'])])];
+}
+
+// Flatten a classified observation into the role shape a card renders.
+function observationRole(row) {
+  const { candidate, eligibility, freshness, readiness } = row;
+  return { ...candidate, eligibility, freshness, readiness,
+    evidence: { ...(candidate.evidence ?? {}), experienceDecision: eligibility.experience },
+    reasons: observationReasons(row) };
+}
+
+// Read the job policy and salary floor that both report formats apply.
+function defaultPolicy() {
+  return { ...loadConfig(), salaryFloorLpa: loadConversionPlan().salaryFloorLpa };
+}
+
+// Classify retained observations into buckets. Markdown and HTML share these rules.
+function classifyObservations(result, now, effectivePolicy) {
   const buckets = { strictReady: [], fallbackReady: [], verification: [], rejected: [] };
   for (const raw of result.observations ?? []) {
     const missingRecoveryIdentity = raw.evidence?.recovery?.kind === 'held-lead-recovery'
@@ -232,8 +344,16 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     else if (readiness.ready && freshness.eligible) buckets[eligibility.strict ? 'strictReady' : 'fallbackReady'].push(row);
     else buckets.verification.push(row);
   }
+  return buckets;
+}
+
+/** Render retained operator observations; never score or persist a lifecycle. */
+export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? new Date().toISOString(), policy = null } = {}) {
+  const buckets = classifyObservations(result, now, policy ?? defaultPolicy());
+  const historyLoaded = historyLoadedFor(result);
   const lines = ['# Local lead handoff', '', `Observed at ${now}. Public evidence only. No scores, applications, outreach or store delivery.`, '',
-    `Strict ready: ${buckets.strictReady.length}. Shortage fallback ready: ${buckets.fallbackReady.length}. Needs verification: ${buckets.verification.length}. Rejected: ${buckets.rejected.length}.`, ''];
+    `Strict ready: ${buckets.strictReady.length}. Shortage fallback ready: ${buckets.fallbackReady.length}. Needs verification: ${buckets.verification.length}. Rejected: ${buckets.rejected.length}.`, '',
+    countsLine(dailyCounts(result, dailyReportUnits(result, now).runRoles.length)), ''];
   const heldRecovery = result.heldLeadRecovery ?? result.crawlerV2Telemetry?.['portal-discovery']?.detail?.telemetry?.heldLeadRecovery;
   if (heldRecovery) {
     lines.push('## Recovery of already known leads', '',
@@ -275,17 +395,14 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const table = (name, rows) => {
     lines.push(`## ${name}`, '');
     if (!rows.length) { lines.push('None.', ''); return; }
-    lines.push('| Role / company | Public URL | JD excerpt | Portal date / freshness | Date evidence | Salary | Experience | Application / liveness / applied | Exact reasons |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+    lines.push('| Role / company | Public URL | JD excerpt | Portal date / freshness | Date evidence | Salary | Experience | Application / liveness | State | Exact reasons | Next safe action |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const row of rows) {
-      const { candidate: c, eligibility: e, freshness: f, readiness: r } = row;
-      const reasonList = [...row.reasons, ...(row.verificationReasons ?? []),
-        ...(!row.reasons.length ? r.reasons : []),
-        ...(e.experience.manualReview ? [e.experience.code] : []),
-        ...(!c.description ? ['PORTAL_DESCRIPTION_MISSING'] : []),
-        ...(c.evidence?.resolution?.reason ? [c.evidence.resolution.reason] : []),
-        ...(f.eligible ? [] : [f.code ?? 'FRESHNESS_NOT_VERIFIED'])];
-      lines.push(`| ${cell(c.title)} / ${cell(c.company)} | ${cell(c.discoveryUrl ?? c.canonicalUrl)} | ${cell(c.description || 'Not Verified').slice(0, 240)} | ${cell(c.postedAt)} / ${cell(f.window)} | ${cell(dateEvidenceText(c.dateEvidence ?? c.evidence?.dateEvidence))} | ${cell(c.salary?.evidence || 'Not Verified')} | ${cell(e.experience.evidence || 'Not stated; manual review')} | ${cell(c.applicationResolution?.status)} / ${cell(c.liveness?.status)} / Applied?: Not Verified | ${cell([...new Set(reasonList)].join('; ') || 'Ready, unscored')} |`);
+      const { candidate: c, eligibility: e, freshness: f } = row;
+      const role = observationRole(row);
+      const assessment = assessRole(role);
+      const blockers = applicationBlockers(assessment, historyLoaded);
+      lines.push(`| ${cell(c.title)} / ${cell(c.company)} | ${cell(c.discoveryUrl ?? c.canonicalUrl)} | ${cell(c.description || 'Not Verified').slice(0, 240)} | ${cell(c.postedAt)} / ${cell(f.window)} | ${cell(dateEvidenceText(c.dateEvidence ?? c.evidence?.dateEvidence))} | ${cell(c.salary?.evidence || 'Not Verified')} | ${cell(e.experience.evidence || 'Not stated; manual review')} | ${cell(c.applicationResolution?.status)} / ${cell(c.liveness?.status)} | ${cell(assessment.state)} | ${cell(role.reasons.join('; ') || 'Ready, unscored')} | ${cell(nextSafeAction(blockers))} |`);
     }
     lines.push('');
   };
@@ -356,12 +473,13 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     lines.push('## Daily stage-loss receipt', '',
       `Raw observations: ${receipt.scopes.rawObservations.count}. Unique requisitions: ${receipt.scopes.uniqueRequisitions.count}. Verification: ${receipt.scopes.verification.count}. Hard rejection: ${receipt.scopes.hardRejection.count}. Scoring failure: ${receipt.scopes.scoringFailure.count}. History suppression: ${receipt.scopes.historySuppression.count}. Final selection: ${receipt.scopes.finalSelection.count}. Confirmed delivery: ${receipt.scopes.confirmedDelivery.count}.`,
       `Implementation state: ${receipt.provenance.implementationState}. Implementation hash: ${receipt.provenance.implementationHash}. Retained input hash: ${receipt.provenance.retainedInputHash}. Release claim: none.`, '',
-      '| Requisition hash | Stage | Reason | Provider | Source provenance | Selected |', '| --- | --- | --- | --- | --- | --- |');
+      '| Requisition hash | Stage | Reason | Provider | Source provenance | Selected | State | Next safe action |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const row of receipt.retained.identityRows === 'Not Verified' ? [] : receipt.retained.identityRows) {
       const provenance = row.provenance?.map((item) => [item.source, item.sourceId].filter(Boolean).join(' / ')).filter(Boolean).join(', ') || row.source;
-      lines.push(`| ${cell(row.identityHash)} | ${cell(row.stage)} | ${cell(row.reason)} | ${cell(row.provider)} | ${cell(provenance)} | ${row.selected ? 'Yes' : 'No'} |`);
+      const read = receiptRead(row);
+      lines.push(`| ${cell(row.identityHash)} | ${cell(row.stage)} | ${cell(row.reason)} | ${cell(row.provider)} | ${cell(provenance)} | ${row.selected ? 'Yes' : 'No'} | ${cell(read.state)} | ${cell(read.action)} |`);
     }
-    if (receipt.retained.identityRows === 'Not Verified') lines.push('| Not Verified | Not Verified | Not Verified | Not Verified | Not Verified | Not Verified |');
+    if (receipt.retained.identityRows === 'Not Verified') lines.push('| Not Verified | Not Verified | Not Verified | Not Verified | Not Verified | Not Verified | Not Verified | Not Verified |');
     lines.push('', `Source coverage: ${cell(JSON.stringify(receipt.run.sourceCoverage ?? result.terminalEnvelope?.sourceCoverage ?? 'Not Verified'))}.`, '');
   }
   return lines.join('\n');
@@ -379,6 +497,8 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const counts = result.counts ?? {};
   // Choose the first available count without inferring missing values.
   const readCount = (...values) => values.find((value) => Number.isFinite(value)) ?? null;
+  const historyLoaded = historyLoadedFor(result);
+  const policy = defaultPolicy();
   const strictCount = uniqueShortlist.filter((role) => role.selectionTier === 'Strict' || role.eligibility?.strict === true).length;
   const employers = new Set(uniqueShortlist.map((role) => String(role.company ?? '').trim().toLowerCase()).filter(Boolean));
   const funnel = [
@@ -402,12 +522,29 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const applyUrl = typeof rawApplyUrl === 'string' && /^https?:\/\//i.test(rawApplyUrl) ? rawApplyUrl : null;
     const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
-    return `<article><h4>${html(role.title)} at ${html(role.company)}</h4><p>${html(role.location)}</p><p>Discovery URL: ${html(role.discoveryUrl ?? role.canonicalUrl ?? 'Not Verified')}; employer detail URL: ${html(role.employerDetailUrl ?? role.evidence?.detailUrl ?? 'Not Verified')}; final apply URL: ${html(role.finalApplyUrl ?? 'Not Verified')}</p><p>Posting date: ${html(role.postedAt ?? 'Not Verified')}; date evidence: ${html(dateEvidenceText(role.dateEvidence ?? role.evidence?.dateEvidence))}</p>${experienceEvidence}${role.selectionTier ? `<p>Selection tier: ${html(role.selectionTier)}</p>` : ''}${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
+    const assessment = assessRole(role);
+    const blockers = applicationBlockers(assessment, historyLoaded);
+    const geo = role.eligibility?.geo;
+    const geoCodes = [...new Set([geo?.code, ...(role.eligibility?.reasons ?? [])].filter((code) => /GEO|RESIDEN/i.test(code ?? '')))];
+    const constraint = geoCodes.length || geo?.evidence ? `${geoCodes.join(', ') || 'Not Verified'}${geo?.evidence ? ` (${geo.evidence})` : ''}` : 'Not Verified';
+    const checkedAt = Number.isFinite(Date.parse(role.liveness?.checkedAt)) ? eventDate(role.liveness.checkedAt) : 'Not Verified';
+    const constraintLines = `<p>Country or residency constraint: ${html(constraint)}</p><p>Liveness: ${html(role.liveness?.status ?? 'Not Verified')}; checked ${html(checkedAt)}</p>`;
+    const stateLines = `<p>Novelty: ${html(noveltyLabel(role, historyLoaded))}</p><p>State: ${html(assessment.state)}</p><p>Reasons: ${html(assessment.codes.join(', ') || 'None recorded')}</p>${assessment.missing.length ? `<details><summary>Missing fields</summary><ul>${assessment.missing.map((code) => `<li>${html(code)}</li>`).join('')}</ul></details>` : ''}<p>Next safe action: ${html(nextSafeAction(blockers))}</p><p>Application readiness: ${html(blockers.length ? `Not application-ready: ${blockers.join(', ')}` : 'Application-ready')}</p>`;
+    return `<article><h5>${html(role.title)} at ${html(role.company)}</h5><p>${html(role.location)}</p><p>Discovery URL: ${html(role.discoveryUrl ?? role.canonicalUrl ?? 'Not Verified')}; employer detail URL: ${html(role.employerDetailUrl ?? role.evidence?.detailUrl ?? 'Not Verified')}; final apply URL: ${html(role.finalApplyUrl ?? 'Not Verified')}</p><p>Posting date: ${html(role.postedAt ?? 'Not Verified')}; date evidence: ${html(dateEvidenceText(role.dateEvidence ?? role.evidence?.dateEvidence))}</p>${constraintLines}${experienceEvidence}${role.selectionTier ? `<p>Selection tier: ${html(role.selectionTier)}</p>` : ''}${isShortlist ? `<p><strong>Why it fits:</strong> ${html(String(why || 'Not Verified').replace(/\s+/g, ' ').trim())}</p>` : ''}${labels.length ? `<p>Labels: ${labels.map(html).join(', ')}</p>` : ''}${extraModes.length ? `<p>Other modes: ${extraModes.map(html).join(', ')}</p>` : ''}${stateLines}${applyUrl ? `<p><a href="${html(applyUrl)}">Apply at employer</a></p>` : '<p>Apply link: Not Verified</p>'}</article>`;
+  };
+  // Split cards under a location heading each. Empty headings are left out.
+  const byLocation = (roles, isShortlist) => {
+    const groups = Object.fromEntries(LOCATION_GROUPS.map(([key]) => [key, []]));
+    for (const role of roles) groups[locationGroup(role, policy)].push(role);
+    return LOCATION_GROUPS.filter(([key]) => groups[key].length)
+      .map(([key, heading]) => `<h4>${heading}</h4>${groups[key].map((role) => roleCard(role, isShortlist)).join('')}`).join('');
   };
   const sections = modes.map(([mode, label]) => {
     const run = modeRuns[mode] ?? (result.mode === mode ? { results: result.results ?? [], shortlist: result.shortlist ?? [] } : {});
-    return `<section data-mode="${mode}"><h2>${label}</h2><h3>Full results</h3>${(run.results ?? []).map((role) => roleCard(role, false)).join('') || '<p>None.</p>'}<h3>Shortlist</h3>${(run.shortlist ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
+    return `<section data-mode="${mode}"><h2>${label}</h2><h3>Full results</h3>${byLocation(run.results ?? [], false) || '<p>None.</p>'}<h3>Shortlist</h3>${byLocation(run.shortlist ?? [], true) || '<p>None.</p>'}</section>`;
   }).join('');
+  const { requested, eligible, selected, delivered, shortfall } = dailyCounts(result, units.runRoles.length);
+  const countsSection = `<section data-section="counts"><h2>Counts</h2><ul><li>Requested: ${requested}</li><li>Eligible: ${eligible}</li><li>Selected: ${selected}</li><li>Confirmed delivered: ${delivered}</li><li>Shortfall: ${shortfall}</li></ul></section>`;
   const targetRows = units.modes.map((mode) => {
     return `<tr><td>${mode.label}</td><td>${mode.roles ?? 'Not Verified'}/${mode.roleTarget}</td><td>${mode.employers ?? 'Not Verified'}/${mode.employerTarget}</td><td>${mode.strict ?? 'Not Verified'}</td><td>${targetShortfall(mode)}</td></tr>`;
   }).join('');
@@ -474,11 +611,12 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   const scoringRecovery = scoringRecoveryHtml(result.scoringRetry?.records ?? []);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
   const receipt = result.dailyReceipt;
-  const receiptSection = receipt ? `<section data-section="daily-stage-loss-receipt"><h2>Daily stage-loss receipt</h2><p>Raw observations: ${html(receipt.scopes.rawObservations.count)}. Unique requisitions: ${html(receipt.scopes.uniqueRequisitions.count)}. Verification: ${html(receipt.scopes.verification.count)}. Hard rejection: ${html(receipt.scopes.hardRejection.count)}. Scoring failure: ${html(receipt.scopes.scoringFailure.count)}. History suppression: ${html(receipt.scopes.historySuppression.count)}. Final selection: ${html(receipt.scopes.finalSelection.count)}. Confirmed delivery: ${html(receipt.scopes.confirmedDelivery.count)}.</p><p>Implementation state: ${html(receipt.provenance.implementationState)}. Implementation hash: ${html(receipt.provenance.implementationHash)}. Retained input hash: ${html(receipt.provenance.retainedInputHash)}. Release claim: none.</p><table><thead><tr><th>Requisition hash</th><th>Stage</th><th>Reason</th><th>Provider</th><th>Source provenance</th><th>Selected</th></tr></thead><tbody>${(Array.isArray(receipt.retained.identityRows) ? receipt.retained.identityRows : []).map((row) => {
+  const receiptSection = receipt ? `<section data-section="daily-stage-loss-receipt"><h2>Daily stage-loss receipt</h2><p>Raw observations: ${html(receipt.scopes.rawObservations.count)}. Unique requisitions: ${html(receipt.scopes.uniqueRequisitions.count)}. Verification: ${html(receipt.scopes.verification.count)}. Hard rejection: ${html(receipt.scopes.hardRejection.count)}. Scoring failure: ${html(receipt.scopes.scoringFailure.count)}. History suppression: ${html(receipt.scopes.historySuppression.count)}. Final selection: ${html(receipt.scopes.finalSelection.count)}. Confirmed delivery: ${html(receipt.scopes.confirmedDelivery.count)}.</p><p>Implementation state: ${html(receipt.provenance.implementationState)}. Implementation hash: ${html(receipt.provenance.implementationHash)}. Retained input hash: ${html(receipt.provenance.retainedInputHash)}. Release claim: none.</p><table><thead><tr><th>Requisition hash</th><th>Stage</th><th>Reason</th><th>Provider</th><th>Source provenance</th><th>Selected</th><th>State</th><th>Next safe action</th></tr></thead><tbody>${(Array.isArray(receipt.retained.identityRows) ? receipt.retained.identityRows : []).map((row) => {
     const provenance = row.provenance?.map((item) => [item.source, item.sourceId].filter(Boolean).join(' / ')).filter(Boolean).join(', ') || row.source;
-    return `<tr><td>${html(row.identityHash)}</td><td>${html(row.stage)}</td><td>${html(row.reason)}</td><td>${html(row.provider)}</td><td>${html(provenance)}</td><td>${row.selected ? 'Yes' : 'No'}</td></tr>`;
-  }).join('') || '<tr><td colspan="6">Not Verified</td></tr>'}</tbody></table></section>` : '';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${scoringRecovery}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${usefulYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
+    const read = receiptRead(row);
+    return `<tr><td>${html(row.identityHash)}</td><td>${html(row.stage)}</td><td>${html(row.reason)}</td><td>${html(row.provider)}</td><td>${html(provenance)}</td><td>${row.selected ? 'Yes' : 'No'}</td><td>${html(read.state)}</td><td>${html(read.action)}</td></tr>`;
+  }).join('') || '<tr><td colspan="8">Not Verified</td></tr>'}</tbody></table></section>` : '';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${countsSection}${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${scoringRecovery}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${usefulYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.
