@@ -2470,8 +2470,10 @@ test('an unresolved portal lead stays in verification and cannot be selected', a
   }));
   assert.equal(failedOrdinaryRun.sourceYield.totals.fetched, 1);
   const failedOrdinaryState = readHeldLeadRecoveryState(reopenedFailedOrdinaryStore, { now: '2026-07-24T10:01:00.000Z' });
-  assert.deepEqual(failedOrdinaryState.eligible.map(({ jobId }) => jobId), ['765433'],
-    'a failed ordinary resolution must leave the older held failure pending');
+  assert.deepEqual(failedOrdinaryState.eligible, [],
+    'a failed ordinary resolution must back off the held lead it overlaps, not leave it due');
+  assert.equal(failedOrdinaryState.waiting, 1);
+  assert.equal(failedOrdinaryState.identities.length, 1);
   const failedOrdinaryRows = readCrawlerRunData(reopenedFailedOrdinaryStore, 'p05-ordinary-overlap-failed-current-crawler-v2')
     .observations.map(({ raw }) => raw);
   assert.equal(failedOrdinaryRows.some((candidate) => candidate.jobId === '765433'
@@ -4079,5 +4081,56 @@ test('readScoringRetryState returns the newest earlier run state and skips the e
 
   assert.deepEqual(readScoringRetryState(store), stateFor('current'));
   assert.deepEqual(readScoringRetryState(store, { excludeRunId: 'current' }), stateFor('newer'));
+  store.close();
+});
+
+test('held-lead recovery reads only recovery rows and their matching ordinary successes', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'held-recovery-read-'));
+  const store = openCrawlerStore(path.join(root, 'crawler.sqlite'));
+  const clock = (now) => ({ now: () => now });
+  const longDescription = 'Build Python services for a Pune team. '.repeat(300);
+  const unrelated = Array.from({ length: 300 }, (_, index) => ({
+    provider: 'greenhouse', providerJobId: `other-${index}`, jobId: `other-${index}`, company: `Other ${index}`, title: 'Engineer',
+    location: 'Pune, India', discoveryUrl: `https://boards.greenhouse.io/other/jobs/${index}`,
+    canonicalUrl: `https://boards.greenhouse.io/other/jobs/${index}`, description: longDescription,
+  }));
+  const held = (jobId, recovery) => ({
+    provider: 'linkedin-jobs', providerJobId: jobId, jobId, company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+    discoveryUrl: `https://www.linkedin.com/jobs/view/${jobId}`, canonicalUrl: `https://www.linkedin.com/jobs/view/${jobId}`,
+    evidence: { recovery: { kind: 'held-lead-recovery', providerRequisitionKey: `linkedin jobs|${jobId}`,
+      identityUrl: `requisition:linkedin jobs|${jobId}`, attemptCount: 1, attemptedAt: '2026-10-20T08:00:00.000Z',
+      evaluatedAt: '2026-10-20T08:00:00.000Z', ...recovery } },
+  });
+  await crawlRun({ store, runId: 'recovery-read-unrelated', clock: clock('2026-10-20T08:00:00.000Z'),
+    sourcePlans: [{ id: 'ats-warm', fetch: async () => ({ observations: unrelated }) }] });
+  await crawlRun({ store, runId: 'recovery-read-held', clock: clock('2026-10-20T08:00:00.000Z'),
+    sourcePlans: [{ id: 'portal-discovery', fetch: async () => ({ observations: [
+      held('1001', { outcome: 'pending', nextEligibleAt: '2026-10-20T09:00:00.000Z' }),
+      held('1002', { outcome: 'pending', nextEligibleAt: '2026-10-21T09:00:00.000Z' }),
+      held('1003', { outcome: 'pending', nextEligibleAt: '2026-10-20T09:00:00.000Z' }),
+      held('1004', { outcome: 'policy-rejected', nextEligibleAt: null }),
+    ] }) }] });
+  await crawlRun({ store, runId: 'recovery-read-ordinary-success', clock: clock('2026-10-20T09:30:00.000Z'),
+    sourcePlans: [{ id: 'ats-warm', fetch: async () => ({ observations: [{
+      provider: 'greenhouse', providerJobId: 'gh-1003', jobId: '1003', identityAliases: ['linkedin jobs|1003'],
+      company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+      discoveryUrl: 'https://www.linkedin.com/jobs/view/1003', canonicalUrl: 'https://boards.greenhouse.io/acme/jobs/1003',
+      originalApplicationUrl: 'https://boards.greenhouse.io/acme/jobs/1003', classification: 'direct',
+      applicationResolution: { status: 'Resolved Original' }, evidence: { fieldSources: { company: 'original-employer-detail' } },
+    }] }) }] });
+
+  const prepared = [];
+  const prepare = store.prepare.bind(store);
+  store.prepare = (sql) => { prepared.push(sql); return prepare(sql); };
+  const state = readHeldLeadRecoveryState(store, { now: '2026-10-20T10:00:00.000Z' });
+  store.prepare = prepare;
+
+  assert.deepEqual(state.eligible.map(({ jobId }) => jobId), ['1001']);
+  assert.equal(state.waiting, 1);
+  assert.deepEqual(state.identities.sort(), ['requisition:linkedin jobs|1001', 'requisition:linkedin jobs|1002',
+    'requisition:linkedin jobs|1003', 'requisition:linkedin jobs|1004']);
+  assert.deepEqual(state.terminalIdentities.sort(), ['requisition:linkedin jobs|1003', 'requisition:linkedin jobs|1004']);
+  const unfilteredRowScans = prepared.filter((sql) => /raw_json/.test(sql) && /FROM job_observations/.test(sql) && !/\bWHERE\b/.test(sql));
+  assert.deepEqual(unfilteredRowScans, [], 'recovery state must not parse every historical observation');
   store.close();
 });

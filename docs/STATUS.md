@@ -26,7 +26,7 @@ The isolated P04 implementation adds an explicit retained-lead input to the exis
 
 ## P05 held-lead recovery resume, 2026-10-20
 
-The isolated P05 implementation resumes due held leads from the existing observation store, keeps retry timing and terminal outcomes, and reserves shared resolver capacity for ordinary discovery. Existing workflow fixtures cover reopen/retry, rate limits, transport failure, success deduplication, identity preservation, terminal outcomes, and visible continuation. This is local fixture evidence only; no live yield or operational verification is claimed.
+The isolated P05 implementation resumes due held leads from the existing observation store and keeps retry timing and terminal outcomes. Existing workflow fixtures cover reopen/retry, rate limits, fresh-versus-stale HTTP status, transport failure, success deduplication, identity preservation and terminal outcomes. Open after two review rounds: recovery's half share of the resolver deadline ignores a short parent allowance, so ordinary discovery can still be starved; the recovery-state read still parses every historical ordinary success; and a held lead retried through ordinary discovery is missing from the recovery receipt and continuation. This is local fixture evidence only; no live yield or operational verification is claimed.
 
 ## P06 scoring retry, 2026-10-22
 

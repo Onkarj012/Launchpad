@@ -381,6 +381,13 @@ function waitingHeldRecoveryCandidate(candidate) {
   };
 }
 
+// Drop the last attempt's failure status so a new failure reports only its own evidence.
+function withoutStaleAttemptEvidence(candidate) {
+  if (candidate.evidence?.recovery?.kind !== 'held-lead-recovery') return candidate;
+  const { httpStatus: _staleStatus, retryAfterAt: _staleRetryAfter, ...evidence } = candidate.evidence;
+  return { ...candidate, evidence };
+}
+
 // Read the current recovery clock without changing the run's fixed timestamp.
 function currentRecoveryTime(clock) {
   const value = typeof clock?.currentTime === 'function' ? clock.currentTime()
@@ -389,14 +396,18 @@ function currentRecoveryTime(clock) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString();
 }
 
+// Failures that leave a held lead pending: retry later, never give up on it.
+const TRANSIENT_HELD_REASONS = ['aborted', 'candidate-cap-exceeded', 'deadline-exceeded', 'recovery-deferred',
+  'request-budget-exhausted', 'request-budget-exceeded', 'transport-error'];
+
 // Keep temporary transport failures pending and give rate limits their stated delay.
 function recoveryAttemptState(candidate, resolved, now, requested) {
   const prior = candidate.evidence?.recovery ?? {};
   const reason = resolved.evidence?.resolution?.reason ?? 'unresolved';
   const status = Number(resolved.evidence?.httpStatus);
   const terminalState = resolved.evidence?.closingState?.outcome;
-  const transient = ['aborted', 'candidate-cap-exceeded', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded', 'transport-error']
-    .includes(reason) || (reason === 'blocked' && status === 429) || (reason.startsWith('detail-http-') && status >= 500);
+  const transient = TRANSIENT_HELD_REASONS.includes(reason) || (reason === 'blocked' && status === 429)
+    || (reason.startsWith('detail-http-') && status >= 500);
   const expired = terminalState === 'expired';
   const closed = terminalState === 'confirmed-closed';
   const policyRejected = reason === 'target-screen-rejected'
@@ -430,13 +441,16 @@ function recoveryAttemptState(candidate, resolved, now, requested) {
   };
 }
 
+// Ordinary retained details retry only budget and deadline stops.
+const retryableResolutionReasons = ['aborted', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded'];
+
 // Retry only transient resolver failures; policy blocks stay terminal.
 function isRetryableHeldResolution(candidate) {
   const evidence = candidate.evidence ?? {};
   if (evidence.recovery?.outcome === 'pending') return true;
   const reason = evidence.resolution?.reason ?? '';
   const status = Number(evidence.httpStatus);
-  return ['aborted', 'candidate-cap-exceeded', 'deadline-exceeded', 'request-budget-exhausted', 'request-budget-exceeded', 'transport-error'].includes(reason)
+  return TRANSIENT_HELD_REASONS.includes(reason)
     || (reason === 'blocked' && status === 429)
     || (reason.startsWith('detail-http-') && status >= 500 && status < 600);
 }
@@ -1097,6 +1111,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       return candidateIdentityKeys(left).some((key) => rightKeys.has(key));
     };
     const seenRecoveryLeads = [];
+    const overlappingHeldLeads = [];
     const recoveredInputs = [];
     const reusedRecoveryDetails = new WeakSet();
     const waitingRecoveryDetails = new WeakSet();
@@ -1136,10 +1151,6 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         waitingRecoveryDetails.add(retainedWaiting);
         continue;
       }
-      if (currentDiscoveryCandidates.some((candidate) => sameLeadIdentity(lead, candidate))) {
-        recoveryAlreadyDiscovered += 1;
-        continue;
-      }
       const recoveryInput = {
         ...lead,
         sourceRecordKey: heldLeadRecoveryIdentity(lead) ?? lead.sourceRecordKey,
@@ -1155,6 +1166,12 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
           identityUrl: lead.evidence?.recovery?.identityUrl ?? heldLeadRecoveryIdentity(lead),
         } },
       };
+      if (currentDiscoveryCandidates.some((candidate) => sameLeadIdentity(lead, candidate))) {
+        recoveryAlreadyDiscovered += 1;
+        // Its ordinary attempt records the held outcome in checkpointResolution.
+        overlappingHeldLeads.push(recoveryInput);
+        continue;
+      }
       const recoveryIdentity = heldLeadRecoveryIdentity(recoveryInput);
       const retainedDetail = retainedByIdentity.get(recoveryIdentity)
         ?? retained.get(linkedInPublicJobId(recoveryInput.discoveryUrl ?? recoveryInput.canonicalUrl));
@@ -1238,6 +1255,10 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const resolverDeadline = resolverPhaseDeadline({
       clock, sourceDeadline, maxDurationMs: portalLimits.maxDurationMs, handoffReserveMs: portalLimits.handoffReserveMs,
     });
+    // Held recovery gets half the phase when ordinary discovery also has work, mirroring its request share.
+    const recoveryDeadline = discoveryHasWork
+      ? resolverPhaseDeadline({ clock, sourceDeadline, maxDurationMs: portalLimits.maxDurationMs / 2, handoffReserveMs: portalLimits.handoffReserveMs })
+      : resolverDeadline;
     const initialTelemetry = {
       candidatesFetched: candidates.length,
       targetScreened: targetCandidates.length,
@@ -1302,14 +1323,18 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
     const completedIndexes = new Set();
     const recoveryRequestsByUrl = new Map();
     // Retain each completed portal resolution and advance its durable cursor.
-    const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true, requested = false, attemptedAt } = {}) => {
+    const checkpointResolution = async (candidate, resolved, candidateIndex, { advance = true, requested = false, attemptedAt, heldLead = null } = {}) => {
       const stableIdentity = heldLeadRecoveryIdentity(candidate);
+      const recoveryAt = attemptedAt ?? currentRecoveryTime(clock);
       const recovery = candidate.evidence?.recovery?.kind === 'held-lead-recovery'
-        ? recoveryAttemptState(candidate, resolved, attemptedAt ?? currentRecoveryTime(clock), requested) : null;
+        ? recoveryAttemptState(candidate, resolved, recoveryAt, requested) : null;
       const waitingCandidate = recovery?.outcome === 'pending' ? waitingHeldRecoveryCandidate(resolved) : resolved;
+      // An ordinary row stays ordinary; its held outcome rides along under heldAttempt.
       const observed = recovery
         ? { ...waitingCandidate, evidence: { ...waitingCandidate.evidence, recovery } }
-        : resolved;
+        : heldLead
+          ? { ...resolved, evidence: { ...resolved.evidence, heldAttempt: recoveryAttemptState(heldLead, resolved, recoveryAt, requested) } }
+          : resolved;
       if (stableIdentity && (requested || resolved.evidence?.portalDetail?.status === 'extracted')) completedDetails.set(stableIdentity, observed);
       if (typeof checkpoint !== 'function') return observed;
       if (advance) {
@@ -1335,24 +1360,29 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       const retainedDetail = retainedByIdentity.get(heldLeadRecoveryIdentity(candidate))
         ?? retained.get(linkedInPublicJobId(candidate.discoveryUrl ?? candidate.canonicalUrl));
       const retainedReason = retainedDetail?.evidence?.resolution?.reason;
-      if (retainedReason && !isRetryableHeldResolution(retainedDetail)) return candidate;
+      const isHeldRecovery = candidate.evidence?.recovery?.kind === 'held-lead-recovery';
+      if (retainedReason && !(isHeldRecovery ? isRetryableHeldResolution(retainedDetail) : retryableResolutionReasons.includes(retainedReason))) return candidate;
+      const attemptDeadline = isHeldRecovery ? recoveryDeadline : resolverDeadline;
+      const attemptCandidate = withoutStaleAttemptEvidence(candidate);
       if (sourceSignal?.aborted) {
         resolution = verificationResolution(candidate, null, 'aborted');
       } else if (resolverDeadline.remainingMs() <= 0) {
         initialTelemetry.deadlineExhausted = true;
         resolution = verificationResolution(candidate, null, 'deadline-exceeded');
+      } else if (attemptDeadline.remainingMs() <= 0) {
+        resolution = verificationResolution(candidate, null, 'recovery-deferred');
       } else if (sharedRequestBudget.used >= portalLimits.maxRequests) {
         initialTelemetry.requestBudgetExhausted = true;
         resolution = verificationResolution(candidate, null, 'request-budget-exhausted');
       } else {
         try {
-          throwIfNetworkWorkDisallowed(sourceSignal, resolverDeadline);
+          throwIfNetworkWorkDisallowed(sourceSignal, attemptDeadline);
           resolution = typeof resolver === 'function'
-            ? await resolver(candidate, { signal: sourceSignal, deadline: resolverDeadline,
-              requestBudget: candidate.evidence?.recovery?.kind === 'held-lead-recovery' ? recoveryRequestBudget : sharedRequestBudget,
+            ? await resolver(attemptCandidate, { signal: sourceSignal, deadline: attemptDeadline,
+              requestBudget: isHeldRecovery ? recoveryRequestBudget : sharedRequestBudget,
               hostLimiter })
             : verificationResolution(candidate, null, 'resolver-unavailable');
-          if (candidate.evidence?.recovery?.kind === 'held-lead-recovery'
+          if (isHeldRecovery
             && resolution.evidence?.requestBudgetExhausted === true
             && resolution.evidence?.resolution?.reason === 'resolver-bound-exhausted') {
             resolution = { ...resolution, evidence: { ...resolution.evidence,
@@ -1361,17 +1391,18 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         } catch (error) {
           resolution = verificationResolution(candidate, error, sourceSignal?.aborted
             ? 'aborted'
-            : resolverDeadline.remainingMs() <= 0 ? 'deadline-exceeded' : 'resolver-error');
+            : attemptDeadline.remainingMs() <= 0 ? 'deadline-exceeded' : 'resolver-error');
         }
       }
-      const resolved = applyOriginalListingResolution(candidate, resolution);
+      const resolved = applyOriginalListingResolution(attemptCandidate, resolution);
       if (candidate.evidence?.recovery?.kind === 'held-lead-recovery') {
         recoveryRequestsByUrl.set(candidate, resolution.telemetry?.requests ?? 0);
       }
       const eligibility = classifyCandidate(resolved, loadJobPullPolicy());
       resolved.eligibility = eligibility;
       if (!eligibility.eligible) resolved.shortlistEligible = false;
-      if (resolved.evidence?.resolution?.reason === 'deadline-exceeded') initialTelemetry.deadlineExhausted = true;
+      // A held recovery that used its half-phase window does not exhaust the whole source.
+      if (resolved.evidence?.resolution?.reason === 'deadline-exceeded' && (!isHeldRecovery || resolverDeadline.remainingMs() <= 0)) initialTelemetry.deadlineExhausted = true;
       if (resolved.evidence?.resolution?.reason === 'request-budget-exhausted') initialTelemetry.requestBudgetExhausted = true;
       initialTelemetry.resolutionRequests = sharedRequestBudget.used;
       if (resolved.classification === 'direct' && resolved.originalApplicationUrl) initialTelemetry.resolved += 1;
@@ -1379,9 +1410,16 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
       if (reason && !['destination-intermediary', 'original-listing-not-found'].includes(reason)) {
         initialTelemetry.detailErrors.push({ jobId: candidate.jobId ?? null, url: candidate.discoveryUrl ?? candidate.canonicalUrl, reason, error: resolved.evidence?.error ?? null });
       }
+      const requested = resolution.telemetry?.requests > 0;
+      // A failed ordinary attempt on a due held lead records its outcome on that held lead.
+      // A success needs no record: the ordinary success index already retires the held lead.
+      const heldLead = requested && !isHeldRecovery && !(resolved.classification === 'direct' && resolved.originalApplicationUrl)
+        ? overlappingHeldLeads.find((lead) => sameLeadIdentity(lead, candidate)) ?? null
+        : null;
       const observed = await checkpointResolution(candidate, resolved, candidateIndex, {
-        requested: resolution.telemetry?.requests > 0,
+        requested,
         attemptedAt: recoveryAttemptedAt,
+        heldLead,
         advance: !['aborted', 'deadline-exceeded', 'request-budget-exhausted'].includes(reason),
       });
       return observed;
@@ -1413,7 +1451,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         const outcome = resolved?.classification === 'direct' && resolved.originalApplicationUrl ? 'recovered'
           : /mismatch|identity/.test(reason) ? 'mismatched'
             : /not-found|missing|http-404/.test(reason) ? 'missing'
-              : /unsupported|blocked|budget|deadline|cap-exceeded|aborted/.test(reason) ? 'blocked' : 'failed';
+              : /unsupported|blocked|budget|deadline|deferred|cap-exceeded|aborted/.test(reason) ? 'blocked' : 'failed';
         const missingFields = resolved?.originalApplicationUrl ? [
           !resolved.company ? 'employer' : null,
           !resolved.title ? 'role' : null,
