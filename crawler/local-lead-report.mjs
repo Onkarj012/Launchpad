@@ -130,24 +130,39 @@ function dailyDriftSignals(result) {
   return [...new Set(signals)];
 }
 
-// Count scoring retry records by the outcome the report names.
+const FAILED_SCORING_REASONS = new Set(['scoring-failed', 'scoring-retry-exhausted']);
+
+// Count scoring retry records by the outcome the report names. Carried rows came from an earlier run.
 function scoringRecoveryCounts(records) {
-  const count = (test) => records.filter(test).length;
+  const current = records.filter((record) => !record.carried);
+  const count = (test) => current.filter(test).length;
+  const failed = (record) => FAILED_SCORING_REASONS.has(record.outcomeReason);
   return {
     recovered: count((record) => record.outcome === 'recovered'),
     selected: count((record) => record.outcome === 'selected'),
-    failedAgain: count((record) => record.outcome === 'pending' && record.outcomeReason === 'scoring-failed'),
+    scoringFailed: count((record) => failed(record) && record.attemptCount === 1),
+    failedAgain: count((record) => failed(record) && record.attemptCount > 1),
     waiting: count((record) => record.outcome === 'pending' && record.outcomeReason === 'awaiting-current-evidence'),
     terminal: count((record) => record.outcome === 'terminal'),
   };
 }
 
+// Write the scoring recovery counts as one sentence.
+function scoringRecoverySummary(records) {
+  const counts = scoringRecoveryCounts(records);
+  return `Recovered: ${counts.recovered}. Selected: ${counts.selected}. Scoring failed: ${counts.scoringFailed}. Failed again: ${counts.failedAgain}. Waiting for current evidence: ${counts.waiting}. Terminal: ${counts.terminal}.`;
+}
+
+// Name a retry row's reason, and say so when the row came from an earlier run.
+function recoveryReason(record) {
+  return record.carried ? `previous run: ${record.outcomeReason.replace(/-previous-run$/, '')}` : record.outcomeReason;
+}
+
 // Render the scoring recovery counts and one row per retry record, or nothing without records.
 function scoringRecoveryHtml(records) {
   if (!records.length) return '';
-  const counts = scoringRecoveryCounts(records);
-  const rows = records.map((record) => `<tr><td>${html(record.company)}</td><td>${html(record.title)}</td><td>${html(record.outcome)}</td><td>${html(record.outcomeReason)}</td><td>${html(record.attemptCount)}</td><td>${html(record.attemptedAt)}</td><td>${html(record.nextEligibleAt)}</td></tr>`).join('');
-  return `<section data-section="scoring-recovery"><h2>Scoring recovery</h2><p>Recovered: ${counts.recovered}. Selected: ${counts.selected}. Failed again: ${counts.failedAgain}. Waiting for current evidence: ${counts.waiting}. Terminal: ${counts.terminal}.</p><table><thead><tr><th>Company</th><th>Title</th><th>Outcome</th><th>Reason</th><th>Attempts</th><th>Attempted</th><th>Next retry</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  const rows = records.map((record) => `<tr><td>${html(record.company)}</td><td>${html(record.title)}</td><td>${html(record.outcome)}</td><td>${html(recoveryReason(record))}</td><td>${html(record.attemptCount)}</td><td>${html(record.attemptedAt)}</td><td>${html(record.nextEligibleAt)}</td></tr>`).join('');
+  return `<section data-section="scoring-recovery"><h2>Scoring recovery</h2><p>${html(scoringRecoverySummary(records))}</p><table><thead><tr><th>Company</th><th>Title</th><th>Outcome</th><th>Reason</th><th>Attempts</th><th>Attempted</th><th>Earliest retry (not enforced)</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
 // Display timezone-backed timestamps in IST and preserve date-only precision.
@@ -221,12 +236,10 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   }
   const scoringRecords = result.scoringRetry?.records ?? [];
   if (scoringRecords.length) {
-    const counts = scoringRecoveryCounts(scoringRecords);
-    lines.push('## Scoring recovery', '',
-      `Recovered: ${counts.recovered}. Selected: ${counts.selected}. Failed again: ${counts.failedAgain}. Waiting for current evidence: ${counts.waiting}. Terminal: ${counts.terminal}.`, '',
-      '| Company | Title | Outcome | Reason | Attempts | Attempted | Next retry |',
+    lines.push('## Scoring recovery', '', scoringRecoverySummary(scoringRecords), '',
+      '| Company | Title | Outcome | Reason | Attempts | Attempted | Earliest retry (not enforced) |',
       '| --- | --- | --- | --- | ---: | --- | --- |');
-    for (const record of scoringRecords) lines.push(`| ${cell(record.company)} | ${cell(record.title)} | ${cell(record.outcome)} | ${cell(record.outcomeReason)} | ${cell(record.attemptCount)} | ${cell(record.attemptedAt)} | ${cell(record.nextEligibleAt)} |`);
+    for (const record of scoringRecords) lines.push(`| ${cell(record.company)} | ${cell(record.title)} | ${cell(record.outcome)} | ${cell(recoveryReason(record))} | ${cell(record.attemptCount)} | ${cell(record.attemptedAt)} | ${cell(record.nextEligibleAt)} |`);
     lines.push('');
   }
   if (result.modes && typeof result.modes === 'object') {

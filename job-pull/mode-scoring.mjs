@@ -1,4 +1,4 @@
-import { candidateDedupKey, candidateRequisitionKey } from './candidate.mjs';
+import { candidateDedupKey, candidateIdentityKeys, candidateRequisitionKey } from './candidate.mjs';
 import { integerInRange, mergeScoreRow } from './match-scorer.mjs';
 
 export const BROKEN_SCORER_REASON_CODES = new Set([
@@ -164,11 +164,14 @@ const RETRY_BACKOFF_BASE_MS = 2 * 3_600_000;
 const RETRY_BACKOFF_CAP_MS = 24 * 3_600_000;
 const RETRY_STALE_MS = 7 * 86_400_000;
 const RETRY_RECORD_LIMIT = 200;
+const PREVIOUS_RUN_REASON = { 'shortlisted-this-run': 'shortlisted-previous-run', 'scored-this-run': 'scored-previous-run' };
 
-// Compare two roles by dedup key, and by requisition when both carry one.
+// Match a role by any shared identity, but never across two different requisitions.
 function sameRetryRole(record, role) {
-  return record.dedupKey === role.dedupKey
-    && (!record.requisitionKey || !role.requisitionKey || record.requisitionKey === role.requisitionKey);
+  if (record.requisitionKey && role.requisitionKey && record.requisitionKey !== role.requisitionKey) return false;
+  if (record.canonicalUrl && record.canonicalUrl === role.canonicalUrl) return true;
+  const recordKeys = new Set([record.dedupKey, ...(record.identityAliases ?? [])]);
+  return [role.dedupKey, ...(role.identityAliases ?? [])].some((key) => recordKeys.has(key));
 }
 
 // Keep only the identity fields of a role, never its scoring payload.
@@ -176,6 +179,7 @@ function retryRoleFields(row) {
   return {
     dedupKey: row.dedupKey ?? candidateDedupKey(row),
     requisitionKey: candidateRequisitionKey(row) ?? null,
+    identityAliases: candidateIdentityKeys(row),
     canonicalUrl: row.canonicalUrl ?? null,
     company: row.company ?? null,
     title: row.title ?? null,
@@ -227,7 +231,7 @@ export function nextScoringRetryState({ prior = null, result = {}, runAt }) {
     if (replaced.has(previous)) continue;
     // A settled record is shown for one more run, then dropped.
     if (previous.outcome !== 'pending') {
-      if (!previous.carried) records.push({ ...previous, carried: true });
+      if (!previous.carried) records.push({ ...previous, carried: true, outcomeReason: PREVIOUS_RUN_REASON[previous.outcomeReason] ?? previous.outcomeReason });
       continue;
     }
     if (scoredNow.some((role) => sameRetryRole(previous, role))) {

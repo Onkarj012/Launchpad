@@ -30,7 +30,7 @@ The isolated P05 implementation resumes due held leads from the existing observa
 
 ## P06 scoring retry, 2026-10-22
 
-A role whose match scoring failed now keeps a retry record in the crawler run telemetry. A later run retries it when it reappears, counts each attempt, and shows the outcome in the Scoring recovery section of the daily report. Three failed attempts end in a terminal record. Local-verified by the fixture tests in the mode-scoring, daily-runner and local-lead-report test files. Not yet done: `nextEligibleAt` is recorded and shown but does not hold back scoring, and the carry-once rule and the 200-record cap have no dedicated test. Local fixture evidence only; no live scorer run.
+A role whose match scoring failed now keeps a retry record in the crawler run telemetry. A later run retries it when it reappears, counts each attempt, and shows the outcome in the Scoring recovery section of the daily report. Three failed attempts end in a terminal record. Local-verified by the fixture tests in the mode-scoring, daily-runner and local-lead-report test files. Not yet done: `nextEligibleAt` is recorded and shown as the earliest retry but does not hold back scoring, and the 200-record cap has no dedicated test. Local fixture evidence only; no live scorer run.
 
 ## Checkout identity and warning
 

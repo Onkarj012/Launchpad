@@ -124,6 +124,7 @@ test('A: a scoring-failed role gets a pending retry record, then terminal after 
   assert.deepEqual(first.records, [{
     dedupKey: candidateDedupKey(failedRow('acme-1')),
     requisitionKey: candidateRequisitionKey(failedRow('acme-1')),
+    identityAliases: ['greenhouse|acme 1'],
     canonicalUrl: 'https://jobs.example.test/acme-1',
     company: 'Acme', title: 'AI Engineer', reason: 'SCORER_TIMEOUT',
     attemptCount: 1, firstFailedAt: RUN_AT, attemptedAt: RUN_AT,
@@ -176,4 +177,57 @@ test('B: absent pending roles wait or go stale, gate-stopped roles end terminal,
   assert.equal(waiting.attemptCount, 1);
   assert.equal(fresh.attemptCount, 1);
   assert.equal(fresh.firstFailedAt, RUN_AT);
+});
+
+test('a role that gains a requisition ID keeps its retry record by canonical URL', () => {
+  const unidentified = { company: 'Acme', title: 'AI Engineer', canonicalUrl: 'https://jobs.example.test/acme-1', scoringStatus: 'scoring-failed', scoringFailureReason: 'SCORER_TIMEOUT' };
+  const identified = { company: 'Acme', title: 'AI Engineer', canonicalUrl: 'https://jobs.example.test/acme-1', provider: 'greenhouse', providerJobId: 'acme-1' };
+  const first = nextScoringRetryState({ prior: null, result: { scoringQueue: [unidentified] }, runAt: RUN_AT });
+
+  const selected = nextScoringRetryState({ prior: first, result: { shortlist: [identified] }, runAt: '2026-10-22T09:00:00.000Z' });
+  assert.deepEqual(selected.records.map((record) => [record.outcome, record.attemptCount]), [['selected', 2]]);
+
+  const recovered = nextScoringRetryState({ prior: first, result: { results: [identified] }, runAt: '2026-10-22T09:00:00.000Z' });
+  assert.deepEqual(recovered.records.map((record) => record.outcome), ['recovered']);
+});
+
+test('a retained identity alias keeps the retry record when the canonical URL changed', () => {
+  const old = { company: 'Acme', title: 'AI Engineer', canonicalUrl: 'https://jobs.example.test/old', identityAliases: ['greenhouse|acme-1'], scoringStatus: 'scoring-failed', scoringFailureReason: 'SCORER_TIMEOUT' };
+  const moved = { company: 'Acme', title: 'AI Engineer', canonicalUrl: 'https://jobs.example.test/new', provider: 'greenhouse', providerJobId: 'acme-1' };
+  const first = nextScoringRetryState({ prior: null, result: { scoringQueue: [old] }, runAt: RUN_AT });
+
+  const second = nextScoringRetryState({ prior: first, result: { shortlist: [moved] }, runAt: '2026-10-22T09:00:00.000Z' });
+  assert.deepEqual(second.records.map((record) => [record.outcome, record.attemptCount]), [['selected', 2]]);
+});
+
+test('two requisitions of one provider that share a URL alias never merge', () => {
+  const sharedUrl = 'https://jobs.example.test/shared';
+  const sharedAliases = [`url|${sharedUrl}`];
+  const first = nextScoringRetryState({
+    prior: null,
+    result: { scoringQueue: [{ ...failedRow('req-1'), canonicalUrl: sharedUrl, identityAliases: sharedAliases }] },
+    runAt: RUN_AT,
+  });
+  const second = nextScoringRetryState({
+    prior: first,
+    result: { scoringQueue: [{ ...failedRow('req-2'), canonicalUrl: sharedUrl, identityAliases: sharedAliases }] },
+    runAt: '2026-10-22T07:00:00.000Z',
+  });
+  assert.deepEqual(second.records.map((record) => [record.attemptCount, record.outcomeReason]).sort(), [[1, 'awaiting-current-evidence'], [1, 'scoring-failed']]);
+});
+
+test('a settled record is shown once in a later run with a previous-run reason, then dropped', () => {
+  const settled = (id, outcome, outcomeReason) => ({
+    dedupKey: `greenhouse|${id}`, requisitionKey: `greenhouse|${id}`, identityAliases: [`greenhouse|${id}`],
+    canonicalUrl: `https://jobs.example.test/${id}`, company: 'Acme', title: 'AI Engineer', reason: 'SCORER_TIMEOUT',
+    attemptCount: 2, firstFailedAt: '2026-10-21T06:00:00.000Z', attemptedAt: '2026-10-21T09:00:00.000Z',
+    nextEligibleAt: null, outcome, outcomeReason, carried: false,
+  });
+  const prior = { schemaVersion: 1, records: [settled('acme-1', 'selected', 'shortlisted-this-run'), settled('acme-2', 'recovered', 'scored-this-run')] };
+
+  const carried = nextScoringRetryState({ prior, result: {}, runAt: RUN_AT });
+  assert.deepEqual(carried.records.map((record) => [record.outcomeReason, record.carried]), [['shortlisted-previous-run', true], ['scored-previous-run', true]]);
+
+  const dropped = nextScoringRetryState({ prior: carried, result: {}, runAt: '2026-10-23T06:00:00.000Z' });
+  assert.deepEqual(dropped.records, []);
 });

@@ -745,13 +745,10 @@ export function persistScoringRetryState(store, runId, state) {
 
 // Read the newest retained scoring retry state from an earlier run, skipping the excluded run.
 export function readScoringRetryState(store, { excludeRunId = null } = {}) {
-  const rows = store.prepare("SELECT run_id, telemetry_json FROM crawl_runs WHERE telemetry_json LIKE '%\"scoringRetry\"%' ORDER BY started_at DESC").all();
-  for (const row of rows) {
-    if (row.run_id === excludeRunId) continue;
-    const state = json(row.telemetry_json, {})?.workflow?.scoringRetry;
-    if (state) return state;
-  }
-  return null;
+  const row = store.prepare(`SELECT json_extract(telemetry_json, '$.workflow.scoringRetry') AS state FROM crawl_runs
+    WHERE run_id IS NOT ? AND json_extract(telemetry_json, '$.workflow.scoringRetry') IS NOT NULL
+    ORDER BY started_at DESC LIMIT 1`).get(excludeRunId);
+  return json(row?.state, null);
 }
 
 export function failCrawlRun(store, runId, error, { clock } = {}) {

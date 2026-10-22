@@ -11,7 +11,7 @@ import { buildFocusedModeFixtures, createDailyExecution, crawlerLaneFixtures, re
 import { computeCanaryVersion } from '../../crawler/canary-evaluator.mjs';
 import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELIVERY_CANARY_SIDECAR_SCHEMA } from '../../crawler/delivery-canary.mjs';
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
-import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState } from '../../crawler/run.mjs';
+import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState, readScoringRetryState } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { candidateDedupKey, candidateRequisitionKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
@@ -4047,4 +4047,37 @@ test('D: a re-score missing componentScores keeps the role pending on a second a
   const second = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-invalid-second', scorer: missingComponents }));
   assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.attemptCount, record.reason]), [['pending', 2, 'SCORER_INVALID_COMPONENTS']]);
   assert.equal(second.shortlist.length, 0);
+});
+
+test('a retried role that now fails a history gate ends terminal and never reaches the scorer', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-gate-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].outcome, 'pending');
+
+  const scoredRows = [];
+  const second = await runDailyNormalActual(runOptions(config, transport, {
+    runId: 'scoring-retry-gate-second',
+    historicalV4Rows: [{ company: 'Retry Company', title: 'AI Engineer', location: 'Pune, India', state: 'applied' }],
+    scorer: async (rows) => {
+      scoredRows.push(...rows);
+      return { scored: [], failures: [], chunks: 1 };
+    },
+  }));
+  assert.deepEqual(scoredRows, []);
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason]), [['terminal', 'current-gate-rejected:SUPPRESSED_HISTORICAL']]);
+});
+
+test('readScoringRetryState returns the newest earlier run state and skips the excluded run', () => {
+  const store = openCrawlerStore();
+  const insertRun = (runId, startedAt, workflow) => store.prepare('INSERT INTO crawl_runs(run_id, status, stage, started_at, telemetry_json) VALUES (?, ?, ?, ?, ?)')
+    .run(runId, 'completed', 'complete', startedAt, JSON.stringify({ workflow }));
+  const stateFor = (runId) => ({ schemaVersion: 1, records: [{ dedupKey: runId }] });
+  insertRun('older', '2026-10-20T06:00:00.000Z', { scoringRetry: stateFor('older') });
+  insertRun('newer', '2026-10-21T06:00:00.000Z', { scoringRetry: stateFor('newer') });
+  insertRun('current', '2026-10-22T06:00:00.000Z', { scoringRetry: stateFor('current') });
+  insertRun('no-state', '2026-10-22T07:00:00.000Z', { dailyReceipt: {} });
+
+  assert.deepEqual(readScoringRetryState(store), stateFor('current'));
+  assert.deepEqual(readScoringRetryState(store, { excludeRunId: 'current' }), stateFor('newer'));
+  store.close();
 });
