@@ -44,6 +44,8 @@ Local-verified: the private daily report has a "Useful yield by source" section.
 
 Already satisfied with no code change: the crawler-v2 twenty-minute budget split (1200000, 720000, 300000, 180000 ms). A new test pins those values. No budget, priority, host limit, or cooldown changed.
 
+Open after two review rounds: held-lead recovery provenance still misses some identities after employer resolution, so the recovered-route count can undercount (fixture: 2 of 4); EOR and contract-terms verification reasons still count as hard-eligible; and per-identity deduplication keeps the first reference's stage flags instead of combining them. Each returned daily result also carries the crawler observations (about 10.7 KB per role in one probe); no large-run size bound is verified.
+
 Local fixture evidence only; no live yield claimed.
 
 ## Checkout identity and warning
