@@ -4329,6 +4329,96 @@ test('direct ATS held leads retain closed and expired outcomes without reporting
   });
 });
 
+test('held-lead recovery bounds Retry-After waits to seven days', async (t) => {
+  const now = '2026-07-24T06:30:00.000Z';
+  for (const [retryAfter, expectedDeadline] of [
+    ['315360000', '2026-07-24T07:30:00.000Z'],
+    ['120', '2026-07-24T07:30:00.000Z'],
+    ['604800', '2026-07-31T06:30:00.000Z'],
+    ['604801', '2026-07-24T07:30:00.000Z'],
+    ['Thu, 24 Jul 2036 06:30:00 GMT', '2026-07-24T07:30:00.000Z'],
+  ]) await t.test(retryAfter, async () => {
+    const { config } = testConfig();
+    config.sources.portals = { enabled: false };
+    const url = 'https://www.glassdoor.com/job-listing/retry-ceiling';
+    const lead = { provider: 'glassdoor', jobId: 'retry-ceiling', providerJobId: 'retry-ceiling',
+      discoveryUrl: url, canonicalUrl: url, company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India' };
+    const store = openCrawlerStore(config.databasePath);
+    try {
+      let requests = 0;
+      const result = await runDailyNormalActual(runOptions(config, async () => {
+        requests += 1;
+        return { status: 429, headers: { 'Retry-After': retryAfter }, body: 'rate limited' };
+      }, { runId: 'retry-ceiling', store, heldPortalLeads: [lead], clock: { now: () => now, sleep: async () => {} } }));
+      assert.equal(requests, 1);
+      const recovery = result.dailyReceipt.recovery.heldLeads.outcomes[0];
+      assert.equal(recovery.recoveryState, 'pending');
+      assert.equal(recovery.nextEligibleAt, expectedDeadline);
+      const saved = readCrawlerRunData(store, 'retry-ceiling-crawler-v2').observations
+        .find(({ raw }) => raw.evidence?.recovery?.kind === 'held-lead-recovery').raw;
+      assert.equal(saved.evidence.recovery.nextEligibleAt, expectedDeadline);
+      if (retryAfter === '120') assert.equal(saved.evidence.retryAfterAt, '2026-07-24T06:32:00.000Z');
+    } finally { store.close(); }
+  });
+});
+
+test('held-lead recovery keeps its stored URL identity after gaining ATS IDs', async (t) => {
+  for (const outcome of ['recovered', 'pending']) await t.test(outcome, async () => {
+    const { config } = testConfig();
+    const url = 'https://example.org/jobs/stable-held-identity';
+    const identity = `url:${url}`;
+    const pending = { sourceRecordKey: 'url-only-held', discoveryUrl: url, canonicalUrl: url,
+      company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India',
+      evidence: { recovery: { kind: 'held-lead-recovery', identityUrl: identity, providerRequisitionKey: null,
+        originalDiscoveryUrl: url, outcome: 'pending', attemptCount: 1,
+        evaluatedAt: '2026-10-20T08:00:00.000Z', nextEligibleAt: '2026-10-20T09:00:00.000Z' } } };
+    const resolved = { ...pending, sourceRecordKey: 'ats-resolved-held', provider: 'greenhouse', jobId: 'ats-123',
+      providerJobId: 'ats-123', classification: 'direct', originalApplicationUrl: url,
+      applicationResolution: { status: 'Resolved Original' },
+      evidence: { fieldSources: { company: 'original-employer-detail' }, recovery: {
+        ...pending.evidence.recovery, outcome, attemptCount: 2, evaluatedAt: '2026-10-20T09:00:00.000Z',
+        nextEligibleAt: outcome === 'pending' ? '2026-10-20T10:00:00.000Z' : null,
+        ...(outcome === 'pending' ? { providerRequisitionKey: 'greenhouse|ats 123' } : {}),
+      } } };
+    const store = openCrawlerStore(config.databasePath);
+    try {
+      for (const [runId, candidate, at] of [
+        ['url-pending', pending, '2026-10-20T08:00:00.000Z'],
+        ['ats-resolved', resolved, '2026-10-20T09:00:00.000Z'],
+      ]) await crawlRun({ store, runId, clock: { now: () => at },
+        sourcePlans: [{ id: 'held-identity-fixture', fetch: async () => ({ observations: [candidate] }) }] });
+    } finally { store.close(); }
+
+    const reopened = openCrawlerStore(config.databasePath);
+    try {
+      const state = readHeldLeadRecoveryState(reopened, { now: '2026-10-20T10:00:00.000Z' });
+      assert.deepEqual(state.identities, [identity]);
+      assert.equal(state.waiting, 0);
+      assert.deepEqual(state.eligible.map(({ evidence }) => evidence.recovery.outcome), outcome === 'pending' ? ['pending'] : []);
+      assert.deepEqual(state.eligible.map(({ jobId }) => jobId), outcome === 'pending' ? ['ats-123'] : []);
+      assert.deepEqual(state.terminalIdentities, outcome === 'recovered' ? [identity] : []);
+      if (outcome === 'pending') await crawlRun({ store: reopened, runId: 'ordinary-url-success',
+        clock: { now: () => '2026-10-20T11:00:00.000Z' },
+        sourcePlans: [{ id: 'ordinary-discovery', fetch: async () => ({ observations: [{
+          ...resolved, sourceRecordKey: 'ordinary-url-success', jobId: 'ordinary-456', providerJobId: 'ordinary-456',
+          evidence: { fieldSources: { company: 'original-employer-detail' } },
+        }] }) }] });
+    } finally { reopened.close(); }
+
+    if (outcome === 'pending') {
+      const completedStore = openCrawlerStore(config.databasePath);
+      try {
+        const completed = readHeldLeadRecoveryState(completedStore, { now: '2026-10-20T12:00:00.000Z' });
+        assert.deepEqual(completed.identities, [identity]);
+        assert.deepEqual(completed.eligible, [], 'ordinary discovery retires the stored URL identity despite later ATS IDs');
+        assert.equal(completed.waiting, 0);
+        assert.deepEqual(completed.waitingCandidates, []);
+        assert.deepEqual(completed.terminalIdentities, [identity]);
+      } finally { completedStore.close(); }
+    }
+  });
+});
+
 test('held-lead recovery reads only recovery rows and their matching ordinary successes', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'held-recovery-read-'));
   const store = openCrawlerStore(path.join(root, 'crawler.sqlite'));
