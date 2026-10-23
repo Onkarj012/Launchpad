@@ -1527,8 +1527,8 @@ function mapJobRow(row) {
   };
 }
 
-// Latest complete scan per source. Only `succeeded` counts; truncated, interrupted, and failed scans are not snapshots.
-export function readLastSuccessfulSourceRuns(store, { excludeRunId = null } = {}) {
+// Read the latest successful source or portal lane scan; missing lane evidence stays unknown.
+export function readLastSuccessfulSourceRuns(store, { excludeRunId = null, portalLaneIds = [] } = {}) {
   const rows = store.prepare(`SELECT source_id, run_id, finished_at FROM (
     SELECT t.source_id, t.run_id, COALESCE(r.finished_at, r.started_at) AS finished_at,
       ROW_NUMBER() OVER (PARTITION BY t.source_id ORDER BY COALESCE(r.finished_at, r.started_at) DESC, t.run_id DESC) AS position
@@ -1536,7 +1536,27 @@ export function readLastSuccessfulSourceRuns(store, { excludeRunId = null } = {}
     JOIN crawl_runs r ON r.run_id = t.run_id
     WHERE t.status = 'succeeded' AND (? IS NULL OR t.run_id <> ?)
   ) WHERE position = 1`).all(excludeRunId, excludeRunId);
-  return Object.fromEntries(rows.map((row) => [row.source_id, { runId: row.run_id, finishedAt: row.finished_at }]));
+  const snapshots = Object.fromEntries(rows.map((row) => [row.source_id, { runId: row.run_id, finishedAt: row.finished_at }]));
+  if (portalLaneIds.length) {
+    const lastLaneSuccess = store.prepare(`SELECT t.run_id, COALESCE(r.finished_at, r.started_at) AS finished_at
+      FROM source_telemetry t
+      JOIN crawl_runs r ON r.run_id = t.run_id
+      WHERE t.source_id = 'portal-discovery' AND t.status = 'succeeded'
+        AND (? IS NULL OR t.run_id <> ?)
+        AND EXISTS (
+          SELECT 1 FROM json_each(t.details_json, '$.detail.telemetry.lanes') lane
+          WHERE json_extract(lane.value, '$.sourceId') = ?
+            AND json_extract(lane.value, '$.status') IN ('succeeded', 'ok', 'empty')
+            AND json_extract(lane.value, '$.attempted') IS NOT 0
+        )
+      ORDER BY COALESCE(r.finished_at, r.started_at) DESC, t.run_id DESC
+      LIMIT 1`);
+    for (const laneId of portalLaneIds) {
+      const row = lastLaneSuccess.get(excludeRunId, excludeRunId, laneId);
+      if (row) snapshots[laneId] = { runId: row.run_id, finishedAt: row.finished_at };
+    }
+  }
+  return snapshots;
 }
 
 export function readCrawlerRunData(store, runId) {

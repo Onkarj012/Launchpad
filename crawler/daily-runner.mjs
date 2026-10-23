@@ -1548,7 +1548,10 @@ async function runDailyNormalImpl({
 function sourceSnapshotAgesFor(store, endStates, { runAt, runId }) {
   try {
     // The crawler run for this daily run is excluded; its own scans are current, not snapshots.
-    const last = readLastSuccessfulSourceRuns(store, { excludeRunId: runId ? `${runId}-crawler-v2` : null });
+    const last = readLastSuccessfulSourceRuns(store, {
+      excludeRunId: runId ? `${runId}-crawler-v2` : null,
+      portalLaneIds: Object.keys(endStates).filter((id) => PORTAL_OBSERVATION_LANES.has(id)),
+    });
     return Object.fromEntries(Object.entries(endStates)
       .filter(([, endState]) => !['ok', 'empty', 'disabled'].includes(endState.state))
       .map(([id, endState]) => {
