@@ -38,6 +38,16 @@ Sources that never ran now end as `not_started` instead of `empty`. This covers 
 
 Already satisfied with no code change: failed, truncated, and interrupted absence never closes a job, and a reopened store keeps the earlier `last_seen_at` for a job the failed run did not see. Explicit employer closure sets `closed_at`, while a transport failure does not. New tests pin these rules. A source that is not current in the private daily report now shows its last successful snapshot time and age, marked not current. Open after two review rounds: the snapshot lookup trusts the stored `succeeded` telemetry status, which a warm-source transport failure can also carry, so a failed scan can be reported as the last successful snapshot; and it dates the snapshot by run completion rather than the source attempt, which understates age after a resume. Local fixture evidence only; no live source run.
 
+## P10 useful source yield, 2026-10-22
+
+Local-verified: the private daily report has a "Useful yield by source" section. Each source and query row counts requisitions that reached JD completeness, hard eligibility, valid scoring, scoring failure, history suppression, verification, final selection, and a recovered held-lead route. A requisition counts once per row and once overall, even when discovery and held-lead recovery both find it. Requests, duration, failures, and truncation sit beside each row. A row takes its source's cost only when the source ran one query, or has no query split and one row; otherwise its cost stays Not Verified. The section says no allocation is recommended from fetched counts.
+
+Already satisfied with no code change: the crawler-v2 twenty-minute budget split (1200000, 720000, 300000, 180000 ms). A new test pins those values. No budget, priority, host limit, or cooldown changed.
+
+Open after two review rounds: held-lead recovery provenance still misses some identities after employer resolution, so the recovered-route count can undercount (fixture: 2 of 4); EOR and contract-terms verification reasons still count as hard-eligible; and per-identity deduplication keeps the first reference's stage flags instead of combining them. Each returned daily result also carries the crawler observations (about 10.7 KB per role in one probe); no large-run size bound is verified.
+
+Local fixture evidence only; no live yield claimed.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

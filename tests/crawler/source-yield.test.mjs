@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates } from '../../crawler/source-yield.mjs';
+import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates, buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
 import { runCrawlerOperator } from '../../crawler/operator.mjs';
 import { main } from '../../crawler/cli.mjs';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { discoverTheirStack } from '../../crawler/theirstack.mjs';
+import { discoverBraveSearch } from '../../crawler/brave-search.mjs';
+import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
+import { candidateDedupKey } from '../../job-pull/candidate.mjs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -196,4 +201,327 @@ test('local trial report command reads retained public crawler output without li
     { sourceId: 'hn-discovery', daysObserved: 1, requests: 1, decision: 'insufficient-evidence' },
     { sourceId: 'yc-discovery', daysObserved: 1, requests: 1, decision: 'insufficient-evidence' },
   ]);
+});
+
+// Build a retained identity row with the fields the daily receipt keeps per requisition.
+function identityRow(identityHash, overrides = {}) {
+  return {
+    identityHash, stage: 'eligible', reason: 'Not Verified', selected: false, historicalSuppressed: false,
+    jdHash: 'sha256:jd', score: 80, scoringStatus: 'scored', scoreComponents: { skillMatch: 30 }, provenance: [], ...overrides,
+  };
+}
+
+test('per-source and per-query rows count JD, eligibility, scoring, suppression and selection', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:selected', { stage: 'finalSelection', selected: true, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:hard', { stage: 'hardRejection', jdHash: null, score: null, scoreComponents: null, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:suppressed', { stage: 'historySuppression', historicalSuppressed: true, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:scored-out', { stage: 'scoringFailure', score: null, scoreComponents: null, provenance: [{ sourceId: 'ats-warm' }] }),
+      identityRow('sha256:held', { stage: 'verification', provenance: [{ sourceId: 'ats-warm' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: { theirstack: { state: 'ok' }, 'ats-warm': { state: 'truncated', reason: 'source-truncated' } },
+  });
+  const theirstack = report.sources.find(({ sourceId, queryId }) => sourceId === 'theirstack' && queryId === 'q-ai');
+  assert.equal(theirstack.kind, 'discovery');
+  assert.equal(theirstack.uniqueRequisitions, 3);
+  assert.deepEqual(theirstack.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 2, scoringFailed: 0, historySuppressed: 1, verification: 0, selected: 1, routeRecovered: 0 });
+  assert.equal(theirstack.endState, 'ok');
+  const warm = report.sources.find(({ sourceId }) => sourceId === 'ats-warm');
+  assert.equal(warm.queryId, 'Not Verified');
+  assert.deepEqual(warm.stages, { jdPresent: 2, hardEligibilityPassed: 1, validScore: 1, scoringFailed: 1, historySuppressed: 0, verification: 1, selected: 0, routeRecovered: 0 });
+  assert.equal(warm.endState, 'truncated');
+  assert.equal(warm.endReason, 'source-truncated');
+  assert.equal(report.schemaVersion, 'LaunchpadUsefulSourceYieldV1');
+  assert.equal(report.scope, 'final-selection');
+  assert.equal(buildSourceYieldReport([]).schemaVersion, 'LaunchpadSourceYieldV1', 'the discovery-only report keeps its label');
+});
+
+test('a requisition found by discovery and by recovery appears in both groups but counts once', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:shared', { stage: 'finalSelection', selected: true, provenance: [
+        { sourceId: 'theirstack', queryId: 'q-ai' },
+        { sourceId: 'portal-discovery', recovery: true },
+      ] }),
+      identityRow('sha256:recovery-only', { provenance: [{ sourceId: 'held-lead-recovery' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  assert.equal(report.identityCount, 2);
+  const discovery = report.sources.find(({ sourceId }) => sourceId === 'theirstack');
+  const recovery = report.sources.find(({ sourceId }) => sourceId === 'portal-discovery');
+  assert.equal(discovery.kind, 'discovery');
+  assert.equal(recovery.kind, 'recovery');
+  assert.equal(discovery.uniqueRequisitions, 1);
+  assert.equal(recovery.uniqueRequisitions, 1);
+  assert.equal(report.sources.find(({ sourceId }) => sourceId === 'held-lead-recovery').kind, 'recovery');
+});
+
+test('request, duration, truncation and failure cost accompany each row, and shared-query cost stays Not Verified', () => {
+  const sourceTelemetry = {
+    theirstack: { requests: 4, durationMs: 1200, truncated: true, failures: ['HTTP 429'], detail: { telemetry: { queryDiagnostics: [{ queryId: 'q-ai', queryIndex: 0 }] } } },
+    'ats-warm': { detail: { telemetry: { requests: 2 } }, durationMs: 300 },
+  };
+  const shared = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:b', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ml' }] }),
+      identityRow('sha256:c', { provenance: [{ sourceId: 'ats-warm' }] }),
+    ],
+    sourceTelemetry,
+    sourceEndStates: {},
+  });
+  assert.deepEqual(shared.sources.find(({ sourceId }) => sourceId === 'ats-warm').cost, { requests: 2, durationMs: 300, failures: 'Not Verified', truncated: 'Not Verified' });
+  for (const row of shared.sources.filter(({ sourceId }) => sourceId === 'theirstack')) {
+    assert.deepEqual(row.cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
+  }
+  const single = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
+    sourceTelemetry,
+    sourceEndStates: {},
+  });
+  assert.deepEqual(single.sources.find(({ sourceId }) => sourceId === 'theirstack').cost, { requests: 4, durationMs: 1200, failures: 1, truncated: true });
+  const recovery = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:r', { provenance: [{ sourceId: 'portal-discovery', recovery: true }] })],
+    sourceTelemetry,
+    sourceEndStates: {},
+    heldLeadRecovery: { outcomes: [{ requests: 2 }, { requests: 1 }] },
+  });
+  const recoveryRow = recovery.sources.find(({ sourceId }) => sourceId === 'portal-discovery');
+  assert.equal(recoveryRow.kind, 'recovery');
+  assert.equal(recoveryRow.cost.requests, 3, 'recovery requests come from held-lead outcomes, not the shared portal source');
+});
+
+test('a source with no useful rows keeps its row, end state and cost in the output', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'ats-warm' }] })],
+    sourceTelemetry: { 'ats-batch-1': { status: 'succeeded', fetched: 0, requests: 3, durationMs: 900 } },
+    sourceEndStates: { 'ats-batch-1': { state: 'empty', reason: 'no-records-returned' }, 'career-sites': { state: 'not_started', reason: 'source-not-planned' } },
+  });
+  const batch = report.sources.find(({ sourceId }) => sourceId === 'ats-batch-1');
+  assert.deepEqual([batch.referenceCount, batch.uniqueRequisitions, batch.endState, batch.endReason, batch.cost.requests], [0, 0, 'empty', 'no-records-returned', 3]);
+  const careers = report.sources.find(({ sourceId }) => sourceId === 'career-sites');
+  assert.deepEqual([careers.uniqueRequisitions, careers.endState, careers.cost.requests], [0, 'not_started', 'Not Verified']);
+  assert.equal(report.identityCount, 1);
+});
+
+test('a verification row is hard-eligible only when its reason is a known non-gate reason', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:employment', { stage: 'verification', reason: 'EMPLOYMENT_NOT_VERIFIED', provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:review', { stage: 'verification', reason: 'SOURCE_CONFLICT_REVIEW', provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      identityRow('sha256:unknown', { stage: 'verification', reason: 'Not Verified', provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  const theirstack = report.sources.find(({ sourceId }) => sourceId === 'theirstack');
+  assert.equal(theirstack.stages.verification, 3);
+  assert.equal(theirstack.stages.hardEligibilityPassed, 1);
+});
+
+test('validScore stays fail-closed without a recorded valid scoring result', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:explicit', { scoreComponents: null, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      ...[null, 'unscored', 'scoring-failed'].map((scoringStatus) => identityRow(`sha256:${scoringStatus}`, {
+        stage: 'finalSelection', selected: true, scoringStatus, componentScores: { skillMatch: 30 },
+        provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }],
+      })),
+    ],
+  });
+  assert.equal(report.sources[0].stages.selected, 3);
+  assert.equal(report.sources[0].stages.validScore, 1);
+});
+
+test('recorded valid scores count independently of the final receipt stage', () => {
+  for (const stage of ['unknown', 'verification', 'historySuppression', 'hardRejection', 'scoringFailure']) {
+    const report = buildUsefulSourceYield({ identityRows: [
+      identityRow('sha256:scored', { stage, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      ...[null, NaN, Infinity, '80'].map((score, index) => identityRow(`sha256:invalid-${index}`, {
+        stage, score, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }],
+      })),
+    ] });
+    assert.equal(report.sources[0].stages.validScore, 1, stage);
+    assert.equal(report.sources[0].stages.selected, 0, stage);
+  }
+});
+
+test('a source with productive and empty recorded queries keeps both rows and no shared cost', async () => {
+  let requests = 0;
+  const result = await discoverTheirStack({
+    apiKey: 'fixture-key', runAt: '2026-10-22T06:30:00.000Z', maxQueriesPerRun: 2,
+    queries: ['q-ai', 'q-ml', 'q-never-run'].map((id) => ({ id, filters: { posted_at_max_age_days: 7 } })),
+    transport: async () => ({ status: 200, body: {
+      metadata: { total_results: requests === 0 ? 1 : 0, total_companies: requests === 0 ? 1 : 0, truncated_results: 0, truncated_companies: 0 },
+      data: requests++ === 0 ? [{
+        id: 101, job_title: 'AI Engineer', company: 'Acme', location: 'Pune, India',
+        description: 'Build reliable AI systems.', date_posted: '2026-10-21',
+        url: 'https://www.linkedin.com/jobs/view/101',
+      }] : [],
+    } }),
+  });
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: result.observations[0].provenance.queryId }] })],
+    sourceTelemetry: { theirstack: { requests, durationMs: 100, detail: result.manifest } },
+    sourceEndStates: {},
+  });
+  assert.equal(requests, 2);
+  assert.deepEqual(report.sources.map((row) => row.queryId), ['q-ai', 'q-ml']);
+  assert.equal(report.sources[0].uniqueRequisitions, 1);
+  const empty = report.sources[1];
+  assert.equal(empty.referenceCount, 0);
+  assert.equal(empty.uniqueRequisitions, 0);
+  assert.deepEqual(empty.stages, { jdPresent: 0, hardEligibilityPassed: 0, validScore: 0, scoringFailed: 0, historySuppressed: 0, verification: 0, selected: 0, routeRecovered: 0 });
+  for (const row of report.sources) {
+    assert.deepEqual(row.cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
+  }
+});
+
+test('overlapping query references reach useful yield through the receipt and count once per source', () => {
+  const observed = {
+    provider: 'theirstack', source: 'theirstack', sourceId: 'theirstack',
+    jobId: '101', company: 'Acme', title: 'AI Engineer', location: 'Pune, India',
+    canonicalUrl: 'https://www.linkedin.com/jobs/view/101', description: 'Build reliable AI systems.',
+    provenance: { queryId: 'q-ai', queryIndex: 0, queryRefs: [
+      { queryId: 'q-ai', queryIndex: 0 }, { queryId: 'q-ml', queryIndex: 1 },
+    ] },
+  };
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(observed)).digest('hex')}`;
+  const receipt = buildDailyReceipt({
+    observations: [observed], modes: {}, counts: { fetched: 1 },
+    funnel: { identityRows: [{
+      identity, bucket: 'notSelected', reason: 'NOT_SELECTED',
+      provider: 'theirstack', source: 'theirstack', jdHash: 'sha256:jd',
+    }] },
+  });
+  const report = buildUsefulSourceYield({
+    identityRows: receipt.retained.identityRows,
+    sourceTelemetry: { theirstack: { detail: { telemetry: { queryDiagnostics: [
+      { queryId: 'q-ai', queryIndex: 0, pagesFetched: 1 },
+      { queryId: 'q-ml', queryIndex: 1, pagesFetched: 1 },
+    ] } } } },
+  });
+
+  assert.deepEqual(report.sources.map(({ queryId, uniqueRequisitions }) => [queryId, uniqueRequisitions]), [
+    ['q-ai', 1], ['q-ml', 1],
+  ]);
+  assert.ok(report.sources.every((row) => row.stages.jdPresent === 1));
+  assert.ok(report.sources.every((row) => row.cost.requests === 'Not Verified'));
+  assert.equal(report.identityCount, 1);
+  assert.equal(receipt.scopes.uniqueRequisitions.count, 1);
+  const sourceReport = buildSourceYieldReport([observed]);
+  assert.equal(sourceReport.sources.length, 1);
+  assert.equal(sourceReport.sources[0].fetched, 1);
+  assert.equal(sourceReport.totals.fetched, 1);
+});
+
+for (const [provider, sourceId] of [['brave-search', 'brave-search'], ['searxng', 'searxng-search']]) {
+  test(`${provider} overlapping queries reach useful yield and count once per source`, async () => {
+    const queries = ['AI Engineer Pune', 'ML Engineer India'];
+    const result = await discoverBraveSearch({
+      provider, queries, dailyBudget: 2, runAt: '2026-10-23T06:30:00.000Z',
+      transport: async () => {
+        const results = [{
+          title: 'AI Engineer', company: 'Acme', location: 'Pune, India',
+          url: 'https://boards.greenhouse.io/acme/jobs/101', description: 'Build reliable AI systems.',
+        }];
+        return { status: 200, body: provider === 'searxng' ? { results, unresponsive_engines: [] } : { web: { results } } };
+      },
+    });
+    assert.equal(result.observations.length, 1);
+    const observed = { ...result.observations[0], sourceId };
+    const identity = `sha256:${createHash('sha256').update(candidateDedupKey(observed)).digest('hex')}`;
+    const receipt = buildDailyReceipt({
+      observations: [observed], modes: {}, counts: { fetched: 1 },
+      funnel: { identityRows: [{
+        identity, bucket: 'notSelected', reason: 'NOT_SELECTED',
+        provider, source: observed.source, jdHash: 'sha256:jd',
+      }] },
+    });
+    const report = buildUsefulSourceYield({
+      identityRows: receipt.retained.identityRows,
+      sourceTelemetry: { [sourceId]: { detail: result.manifest } },
+    });
+    assert.deepEqual(report.sources.map((row) => [row.sourceId, row.queryId, row.uniqueRequisitions, row.stages.jdPresent]), [
+      [sourceId, queries[0], 1, 1], [sourceId, queries[1], 1, 1],
+    ]);
+    assert.ok(report.sources.every((row) => row.cost.requests === 'Not Verified'));
+    assert.equal(report.identityCount, 1);
+    assert.equal(receipt.scopes.uniqueRequisitions.count, 1);
+    const sourceReport = buildSourceYieldReport([observed]);
+    assert.equal(sourceReport.sources.length, 1);
+    assert.equal(sourceReport.sources[0].fetched, 1);
+    assert.equal(sourceReport.totals.fetched, 1);
+  });
+}
+
+test('recorded query indexes and search text keep empty rows while skipped queries stay absent', () => {
+  const report = buildUsefulSourceYield({
+    sourceTelemetry: {
+      theirstack: { requests: 2, detail: { telemetry: { queryDiagnostics: [
+        { queryIndex: 0, pagesFetched: 1 }, { queryIndex: 1, pagesFetched: 1 },
+        { queryId: 'budget-exhausted', queryIndex: 2, pagesFetched: 0, interrupted: false },
+      ] } } },
+      'brave-search': { detail: { telemetry: { queryDiagnostics: [
+        { query: 'AI Engineer Pune', status: 'success' },
+        { query: 'Backend Engineer India', status: 'skipped' },
+        { queryId: 'not-started', status: 'not_started' },
+      ] } } },
+    },
+  });
+  assert.deepEqual(report.sources.map(({ sourceId, queryId }) => [sourceId, queryId]), [
+    ['brave-search', 'AI Engineer Pune'], ['theirstack', 'query-index:0'], ['theirstack', 'query-index:1'],
+  ]);
+  assert.ok(report.sources.every((row) => row.uniqueRequisitions === 0));
+  assert.ok(report.sources.every((row) => Object.values(row.stages).every((count) => count === 0)));
+  assert.ok(report.sources.every((row) => row.cost.requests === 'Not Verified'));
+});
+
+test('a query row with no query telemetry keeps its cost Not Verified', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
+    sourceTelemetry: { theirstack: { requests: 4, durationMs: 1200 } },
+    sourceEndStates: {},
+  });
+  assert.equal(report.sources[0].cost.requests, 'Not Verified');
+});
+
+test('route recovered counts only recovered attempts, never blocked or pending ones', () => {
+  const report = buildUsefulSourceYield({
+    identityRows: [
+      identityRow('sha256:won', { provenance: [{ sourceId: 'portal-discovery', recovery: true, recoveryOutcome: 'recovered' }] }),
+      identityRow('sha256:blocked', { provenance: [{ sourceId: 'portal-discovery', recovery: true, recoveryOutcome: 'blocked' }] }),
+      identityRow('sha256:pending', { provenance: [{ sourceId: 'portal-discovery', recovery: true, recoveryOutcome: 'pending' }] }),
+    ],
+    sourceTelemetry: {},
+    sourceEndStates: {},
+  });
+  const recovery = report.sources.find(({ sourceId, kind }) => sourceId === 'portal-discovery' && kind === 'recovery');
+  assert.equal(recovery.uniqueRequisitions, 3);
+  assert.equal(recovery.stages.routeRecovered, 1);
+});
+
+test('the crawler-v2 budget split stays at its twenty-minute contract', () => {
+  const { execution } = JSON.parse(readFileSync(new URL('../../config/crawler-v2.json', import.meta.url), 'utf8'));
+  assert.deepEqual(
+    [execution.wholeRunDeadlineMs, execution.discoveryBudgetMs, execution.downstreamReserveMs, execution.handoffReserveMs],
+    [1200000, 720000, 300000, 180000],
+  );
+});
+
+test('skipped queries do not hide the cost of the one query that ran', () => {
+  const report = buildUsefulSourceYield({
+    sourceTelemetry: { 'brave-search': { requests: 1, durationMs: 300, failures: [], truncated: false, detail: { telemetry: { queryDiagnostics: [
+      { query: 'AI Engineer Pune', queryIndex: 0, pagesFetched: 1 },
+      { query: 'ML Engineer India', queryIndex: 1, status: 'skipped', pagesFetched: 0 },
+      { query: 'Data Engineer Pune', queryIndex: 2, status: 'skipped', pagesFetched: 0 },
+    ] } } } },
+  });
+
+  assert.deepEqual(report.sources.map(({ queryId }) => queryId), ['AI Engineer Pune']);
+  assert.deepEqual(report.sources[0].cost, { requests: 1, durationMs: 300, failures: 0, truncated: false });
 });

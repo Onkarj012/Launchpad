@@ -15,7 +15,7 @@ import { loadWarmSet, warmEntries, WARM_ATS } from '../job-pull/warm-set.mjs';
 import { boardIdentityKey, projectTrackedBoards, resolveBoardRegistry } from './board-registry.mjs';
 import { runNormalMode } from '../job-pull/normal-mode.mjs';
 import { PORTAL_SOURCE_LANES } from '../job-pull/normal-sources.mjs';
-import { buildSourceEndStates } from './source-yield.mjs';
+import { buildSourceEndStates, buildUsefulSourceYield } from './source-yield.mjs';
 import { runStartupMode } from '../job-pull/startup-mode.mjs';
 import { runRemoteMode } from '../job-pull/remote-mode.mjs';
 import { candidateDedupKey, candidateRequisitionKey } from '../job-pull/candidate.mjs';
@@ -1351,6 +1351,7 @@ async function runDailyNormalImpl({
     const finalEnvelope = { ...envelope, deliveryReconciliation };
     return {
       ...result,
+      crawlerObservations: crawlerResult.observations,
       heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
       terminalEnvelope: finalEnvelope,
       deliveryReconciliation,
@@ -1523,6 +1524,7 @@ async function runDailyNormalImpl({
   const finalEnvelope = { ...envelope, deliveryReconciliation };
   return {
     ...result,
+    crawlerObservations: crawlerResult.observations,
     heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
     terminalEnvelope: finalEnvelope,
     deliveryReconciliation,
@@ -1608,7 +1610,14 @@ export async function runDailyNormal(options = {}) {
     const priorRetry = readPriorScoringRetry(options, `${ownRunId}-crawler-v2`);
     const result = await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
     const completed = { ...result, hiringEvents };
-    const dailyReceipt = buildDailyReceipt(completed);
+    // Crawler observations name their real source and query, so the receipt needs them beside the lane rows.
+    const dailyReceipt = buildDailyReceipt({ ...completed, observations: [...(completed.observations ?? []), ...(completed.crawlerObservations ?? [])] });
+    const usefulSourceYield = buildUsefulSourceYield({
+      identityRows: dailyReceipt.retained.identityRows,
+      sourceTelemetry: completed.crawlerV2Telemetry ?? completed.sourceTelemetry ?? {},
+      sourceEndStates: completed.terminalEnvelope?.sourceEndStates ?? completed.sourceEndStates ?? {},
+      heldLeadRecovery: completed.heldLeadRecovery ?? null,
+    });
     let receiptPersistence = 'Not Verified';
     let receiptPersistenceError = null;
     let sourceSnapshotAges;
@@ -1644,7 +1653,7 @@ export async function runDailyNormal(options = {}) {
         retryPersistence.scoringRetryPersistenceError = error instanceof Error ? error.message : String(error);
       }
     }
-    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError, sourceSnapshotAges, scoringRetry, ...retryPersistence };
+    return { ...completed, dailyReceipt, usefulSourceYield, receiptPersistence, receiptPersistenceError, sourceSnapshotAges, scoringRetry, ...retryPersistence };
   } finally {
     execution.cleanup();
   }

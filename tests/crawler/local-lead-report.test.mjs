@@ -213,6 +213,46 @@ test('source yield uses the matching board request evidence and keeps unknown bo
   assert.match(report, /Discovery counts precede final enrichment and scoring/);
 });
 
+const ALLOCATION_SENTENCE = 'Not provided; fetched row volume does not establish marginal useful yield.';
+const ZERO_STAGES = { jdPresent: 0, hardEligibilityPassed: 0, validScore: 0, scoringFailed: 0, historySuppressed: 0, verification: 0, selected: 0 };
+const NOT_VERIFIED_COST = { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' };
+const COUNT_LANGUAGE = /\b(increase|pause|drop|prioritize|allocate more|recommend)\w*/i;
+
+// Build a useful-yield payload shaped like buildUsefulSourceYield output.
+function usefulYield(sources) {
+  return { schemaVersion: 'LaunchpadUsefulSourceYieldV1', scope: 'final-selection', identityCount: 2, sources, allocationRecommendation: ALLOCATION_SENTENCE };
+}
+
+test('useful yield renders per source in Markdown and HTML, with Not Verified for missing cost and no count-based recommendation', () => {
+  const result = {
+    runAt: NOW,
+    usefulSourceYield: usefulYield([
+      { sourceId: 'theirstack', queryId: 'q-ai', kind: 'discovery', referenceCount: 2, uniqueRequisitions: 2,
+        stages: { ...ZERO_STAGES, jdPresent: 2, hardEligibilityPassed: 1, validScore: 1, selected: 1 },
+        endState: 'ok', endReason: 'Not Verified', cost: { requests: 3, durationMs: 900, failures: 0, truncated: false } },
+      { sourceId: 'ats-warm', queryId: 'Not Verified', kind: 'discovery', referenceCount: 5, uniqueRequisitions: 5,
+        stages: { ...ZERO_STAGES, jdPresent: 5, hardEligibilityPassed: 5, validScore: 5 },
+        endState: 'degraded', endReason: 'source-degraded', cost: NOT_VERIFIED_COST },
+    ]),
+  };
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  const markdownSection = markdown.slice(markdown.indexOf('## Useful yield by source'), markdown.indexOf('\n## ', markdown.indexOf('## Useful yield by source') + 1));
+  assert.match(markdownSection, /theirstack \| q-ai \| discovery \| 2 \| 2 \|/);
+  assert.match(markdownSection, /ats-warm \| Not Verified \| discovery \| 5 \| 5 \| .*Not Verified \|/);
+  assert.match(markdownSection, new RegExp(ALLOCATION_SENTENCE.replace(/[.]/g, '\\.')));
+  assert.doesNotMatch(markdownSection, COUNT_LANGUAGE);
+  // Source coverage bullets stay under Run status, before the yield heading.
+  const runStatusSection = markdown.slice(markdown.indexOf('## Run status'), markdown.indexOf('## Useful yield by source'));
+  assert.match(runStatusSection, /- completed: /);
+  assert.doesNotMatch(markdown.slice(markdown.indexOf('## Useful yield by source')), /^- completed: /m);
+
+  const html = renderLocalDailyHtmlReport(result);
+  const htmlSection = html.slice(html.indexOf('<section data-section="useful-yield">'), html.indexOf('</section>', html.indexOf('<section data-section="useful-yield">')));
+  assert.match(htmlSection, /<td>ats-warm<\/td><td>Not Verified<\/td><td>discovery<\/td>/);
+  assert.match(htmlSection, new RegExp(ALLOCATION_SENTENCE.replace(/[.]/g, '\\.')));
+  assert.doesNotMatch(htmlSection, COUNT_LANGUAGE);
+});
+
 test('E: the scoring recovery section shows counts, retry rows, and Not Verified for a missing attempt time', () => {
   const result = {
     runAt: NOW,

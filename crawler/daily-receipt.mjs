@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { candidateDedupKey, canonicalizeUrl, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { normalizeText } from './identity.mjs';
+import { scoreState } from '../job-pull/mode-scoring.mjs';
 
 const IMPLEMENTATION_FILES = [
   'crawler/daily-runner.mjs', 'crawler/local-lead-report.mjs', 'crawler/daily-receipt.mjs',
@@ -117,7 +118,7 @@ function companyTitleLocation(raw) {
 function addOverlay(overlays, keyHash, update) {
   if (!keyHash) return;
   const previous = overlays.get(keyHash) ?? {
-    modes: [], score: null, scoreComponents: null, selectionTier: null,
+    modes: [], score: null, scoreComponents: null, scoringStatus: null, selectionTier: null,
     selected: false, selectionKnown: false, historicalSuppressed: false,
   };
   update(previous);
@@ -128,6 +129,38 @@ function addOverlay(overlays, keyHash, update) {
 function hasFinalSelectionEvidence(result) {
   const modes = result.modes ?? {};
   return ['startup', 'normal', 'remote'].every((mode) => Array.isArray(modes[mode]?.shortlist));
+}
+
+// A lane row mirrors an observation of the same posting when it names no source or the same source; a distinct source stays.
+function mergeProvenance(laneItems, observationItems = []) {
+  const posting = (item) => JSON.stringify([item.provider ?? null, item.source ?? null, item.observedAt ?? null, item.postedAt ?? null]);
+  const observedPostings = new Set(observationItems.map(posting));
+  const observedSources = new Set(observationItems.map((item) => JSON.stringify([posting(item), item.sourceId ?? null])));
+  const mirrored = (item) => item.sourceId == null ? observedPostings.has(posting(item)) : observedSources.has(JSON.stringify([posting(item), item.sourceId]));
+  const items = [...laneItems.filter((item) => !mirrored(item)), ...observationItems];
+  return [...new Map(items.map((item) => [JSON.stringify([item.provider ?? null, item.source ?? null, item.sourceId ?? null, item.observedAt ?? null, item.postedAt ?? null, item.queryId ?? null, item.recovery ?? null, item.recoveryOutcome ?? null]), item])).values()];
+}
+
+// A recovered lead keeps its original requisition, URL, and aliases, because employer resolution changes its provider identity.
+function observationKeyHashes(raw) {
+  const observed = raw?.candidate ?? raw;
+  const keys = [candidateIdentity(raw)];
+  if (observed?.evidence?.recovery?.kind !== 'held-lead-recovery') return keys.filter(Boolean);
+  const identityUrl = observed.evidence.recovery.identityUrl;
+  const aliases = [observed.evidence.recovery.providerRequisitionKey, ...(Array.isArray(observed.identityAliases) ? observed.identityAliases : [])];
+  for (const alias of aliases) if (typeof alias === 'string' && alias) keys.push(hash(alias));
+  if (typeof identityUrl === 'string' && identityUrl.startsWith('requisition:')) keys.push(hash(identityUrl.slice('requisition:'.length)));
+  const url = canonicalizeUrl(typeof identityUrl === 'string' && identityUrl.startsWith('url:') ? identityUrl.slice('url:'.length) : identityUrl);
+  if (url) keys.push(hash(`url|${url}`));
+  return [...new Set(keys.filter(Boolean))];
+}
+
+// Recovered needs a resolved employer route; without one, a recovered outcome is unknown and other outcomes stay as recorded.
+function recoveryOutcome(observed) {
+  const outcome = observed.evidence?.recovery?.outcome ?? null;
+  const routed = Boolean(observed.originalApplicationUrl);
+  if (outcome === 'recovered') return routed ? 'recovered' : null;
+  return outcome ?? (routed ? 'recovered' : null);
 }
 
 // Keep per-requisition stage and final selection details compact and safe.
@@ -171,18 +204,29 @@ function receiptIdentityRows(result) {
     if (historyKey && keyHash) historyIdentities.set(historyKey, keyHash);
   }
   for (const candidate of result.observations ?? []) {
-    const keyHash = candidateIdentity(candidate);
-    if (keyHash) {
+    const observed = candidate?.candidate ?? candidate;
+    const entry = {
+      provider: observed?.provider ?? null,
+      source: observed?.source ?? null,
+      sourceId: observed?.sourceId ?? observed?.discoverySource ?? null,
+      observedAt: observed?.observedAt ?? null,
+      postedAt: observed?.postedAt ?? null,
+      dateEvidence: observed?.dateEvidence ?? observed?.evidence?.dateEvidence ?? null,
+      ...(observed?.provenance?.queryId != null ? { queryId: observed.provenance.queryId }
+        : Number.isInteger(observed?.provenance?.queryIndex) ? { queryId: `query-index:${observed.provenance.queryIndex}` }
+          : observed?.evidence?.sourceQuery ? { queryId: observed.evidence.sourceQuery } : {}),
+      ...(observed?.evidence?.recovery?.kind === 'held-lead-recovery' ? { recovery: true, recoveryOutcome: recoveryOutcome(observed) } : {}),
+    };
+    const queryEntries = [entry];
+    for (const ref of Array.isArray(observed?.provenance?.queryRefs) ? observed.provenance.queryRefs : []) {
+      const queryId = ref?.queryId ?? (Number.isInteger(ref?.queryIndex) ? `query-index:${ref.queryIndex}` : null);
+      if (queryId != null) queryEntries.push({ ...entry, queryId });
+    }
+    for (const keyHash of observationKeyHashes(candidate)) {
       const entries = observationProvenance.get(keyHash) ?? [];
-      const entry = {
-        provider: (candidate?.candidate ?? candidate)?.provider ?? null,
-        source: (candidate?.candidate ?? candidate)?.source ?? null,
-        sourceId: (candidate?.candidate ?? candidate)?.sourceId ?? (candidate?.candidate ?? candidate)?.discoverySource ?? null,
-        observedAt: (candidate?.candidate ?? candidate)?.observedAt ?? null,
-        postedAt: (candidate?.candidate ?? candidate)?.postedAt ?? null,
-        dateEvidence: (candidate?.candidate ?? candidate)?.dateEvidence ?? (candidate?.candidate ?? candidate)?.evidence?.dateEvidence ?? null,
-      };
-      if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(entry))) entries.push(entry);
+      for (const queryEntry of queryEntries) {
+        if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(queryEntry))) entries.push(queryEntry);
+      }
       observationProvenance.set(keyHash, entries);
     }
   }
@@ -195,7 +239,8 @@ function receiptIdentityRows(result) {
       addOverlay(overlays, keyHash, (previous) => {
         previous.modes.push(mode);
         previous.score = role.matchScore ?? role.score ?? previous.score;
-        previous.scoreComponents = role.scoreComponents ?? role.components ?? previous.scoreComponents;
+        previous.scoringStatus = scoreState(role).status;
+        previous.scoreComponents = role.scoreComponents ?? role.components ?? role.componentScores ?? previous.scoreComponents;
         previous.selectionTier = role.selectionTier ?? previous.selectionTier;
         previous.historicalSuppressed ||= role.historicalSuppressed === true;
       });
@@ -205,6 +250,16 @@ function receiptIdentityRows(result) {
       if (keyHash) finalSelection.add(keyHash);
     }
   }
+  const scoreEvidence = [
+    ...(result.scoringOutcomes ?? []),
+    ...Object.values(modes).flatMap((value) => value.scoringOutcomes ?? []),
+    ...(result.stretch ?? []),
+  ];
+  // Only valid scores are added here, so an unscored stretch row cannot downgrade a scored role.
+  for (const role of scoreEvidence.filter((item) => scoreState(item).status === 'scored')) addOverlay(overlays, candidateIdentity(role), (previous) => {
+    previous.score = role.matchScore ?? role.score ?? previous.score;
+    previous.scoringStatus = 'scored';
+  });
   for (const keyHash of finalSelection) addOverlay(overlays, keyHash, (previous) => {
     previous.selected = true;
     previous.selectionKnown = finalSelectionKnown;
@@ -291,18 +346,16 @@ function receiptIdentityRows(result) {
       selected,
       score: overlay?.score ?? row.score,
       scoreComponents: overlay?.scoreComponents ?? null,
+      scoringStatus: overlay?.scoringStatus ?? null,
       selectionTier: overlay?.selectionTier ?? null,
       modes: overlay?.modes ?? [],
       historicalSuppressed: overlay?.historicalSuppressed === true || row.historicalSuppressed,
-      provenance: [...new Map([
-        ...(Array.isArray(row.provenance) && row.provenance.length
+      provenance: mergeProvenance(
+        Array.isArray(row.provenance) && row.provenance.length
           ? row.provenance.map((item) => ({ ...item }))
-          : [{ provider: row.provider, source: row.source, observedAt: row.observedAt, postedAt: row.postedAt, dateEvidence: row.dateEvidence ?? null, jdHash: row.jdHash, evidenceHash: row.evidenceHash }]),
-        ...(observationProvenance.get(row.identity) ?? []),
-      ].map((item) => [JSON.stringify({
-        provider: item.provider ?? null, source: item.source ?? null, sourceId: item.sourceId ?? null,
-        observedAt: item.observedAt ?? null, postedAt: item.postedAt ?? null,
-      }), item])).values()],
+          : [{ provider: row.provider, source: row.source, observedAt: row.observedAt, postedAt: row.postedAt, dateEvidence: row.dateEvidence ?? null, jdHash: row.jdHash, evidenceHash: row.evidenceHash }],
+        observationProvenance.get(row.identity) ?? [],
+      ),
     };
   });
   const rank = { finalSelection: 8, hardRejection: 7, verification: 6, historySuppression: 5, scoringFailure: 4, eligible: 3, unknown: 0 };
@@ -311,11 +364,7 @@ function receiptIdentityRows(result) {
     const previous = unique.get(row.identityHash);
     if (!previous) unique.set(row.identityHash, row);
     else {
-      previous.provenance.push(...row.provenance);
-      previous.provenance = [...new Map(previous.provenance.map((item) => [JSON.stringify({
-        provider: item.provider ?? null, source: item.source ?? null, sourceId: item.sourceId ?? null,
-        observedAt: item.observedAt ?? null, postedAt: item.postedAt ?? null,
-      }), item])).values()];
+      previous.provenance = mergeProvenance([...previous.provenance, ...row.provenance]);
       if ((rank[row.stage] ?? 0) > (rank[previous.stage] ?? 0)) {
         previous.stage = row.stage;
         previous.reason = row.reason;
@@ -326,6 +375,7 @@ function receiptIdentityRows(result) {
       previous.historicalSuppressed ||= row.historicalSuppressed;
       previous.modes = [...new Set([...previous.modes, ...row.modes])];
       previous.score ??= row.score;
+      previous.scoringStatus ??= row.scoringStatus;
       previous.selectionTier ??= row.selectionTier;
     }
   }

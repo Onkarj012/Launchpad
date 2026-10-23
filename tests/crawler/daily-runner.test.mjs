@@ -13,6 +13,8 @@ import { computeDeliveryInventoryIdentity, DELIVERY_CANARY_EVIDENCE_SCHEMA, DELI
 import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/board-rotation-state.mjs';
 import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState, readScoringRetryState } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
+import { buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
+import { mergeScoreRow } from '../../job-pull/match-scorer.mjs';
 import { candidateDedupKey, candidateRequisitionKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
@@ -846,6 +848,188 @@ test('crawlerV2Telemetry is diagnostic-only and leaves the shortlist unchanged',
     beforeInspection,
   );
 });
+
+test('a bounded run with one deadline-cut source gives every source an end state and a useful-yield row', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'yield-board', company: 'Yield Company' }] });
+  config.sources.enterprise = {
+    boards: [{ provider: 'workday', company: 'Deadline Enterprise', url: 'https://deadline.wd1.myworkdayjobs.com/jobs' }],
+    maxPages: 1,
+    maxJobsPerBoard: 10,
+    enrichDetails: false,
+  };
+  config.execution = {
+    wholeRunDeadlineMs: 1_000,
+    discoveryBudgetMs: 600,
+    handoffReserveMs: 100,
+    downstreamReserveMs: 100,
+    perSourceMaxDurationMs: 600,
+    minimumSourceStartAllocationMs: 1,
+  };
+  const greenhouse = fakeTransport({ 'yield-board': [greenhouseJob(601, 'yield-board')] });
+  const transport = async (url) => {
+    if (String(url).includes('myworkdayjobs')) {
+      const error = new Error('injected daily discovery deadline');
+      error.code = 'DAILY_DEADLINE_EXCEEDED';
+      throw error;
+    }
+    return greenhouse(url);
+  };
+  const result = await runDailyNormal(runOptions(config, transport, { runId: 'daily-useful-yield-deadline' }));
+  const TERMINAL_STATES = new Set(['ok', 'empty', 'failed', 'interrupted', 'truncated', 'degraded', 'disabled', 'not_started']);
+  const endStates = result.terminalEnvelope.sourceEndStates;
+  assert.equal(endStates['ats-enterprise'].state, 'interrupted');
+  for (const [sourceId, endState] of Object.entries(endStates)) {
+    assert.ok(TERMINAL_STATES.has(endState.state), `${sourceId} has terminal state ${endState.state}`);
+  }
+  assert.ok(result.usefulSourceYield, 'usefulSourceYield is attached to the run result');
+  for (const sourceId of Object.keys(endStates)) {
+    assert.ok(result.usefulSourceYield.sources.some((row) => row.sourceId === sourceId), `${sourceId} keeps its useful-yield row`);
+  }
+  assert.equal(result.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-enterprise').endState, 'interrupted');
+  const warmRows = result.usefulSourceYield.sources.filter((row) => row.sourceId === 'ats-warm');
+  assert.equal(warmRows.length, 1, 'one requisition is not counted under both the crawler source and its normal lane');
+  assert.equal(warmRows[0].uniqueRequisitions, 1);
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  assert.match(markdown, /## Useful yield by source/);
+  assert.match(markdown, /Not provided; fetched row volume does not establish marginal useful yield\./);
+  assert.match(renderLocalDailyHtmlReport(result), /data-section="useful-yield"/);
+});
+
+test('the receipt keeps query and recovery marks per observation and the useful yield counts the requisition once', () => {
+  const job = normalizeCandidate(rawPortalJob(1301, { provider: 'theirstack', source: 'theirstack' }));
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+  const observed = (queryId) => ({ candidate: { ...job, sourceId: 'theirstack', provenance: { queryId } } });
+  const recovered = { candidate: { ...job, source: 'portal-naukri', sourceId: 'portal-discovery', observedAt: '2026-07-24T07:00:00.000Z', evidence: { recovery: { kind: 'held-lead-recovery' } } } };
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 3 }, requestedCount: 3, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: 'theirstack', source: 'theirstack', postedAt: job.postedAt, evidenceHash: 'sha256:a' },
+    ] },
+    observations: [observed('q-ai'), { candidate: { ...job, sourceId: 'theirstack', evidence: { sourceQuery: 'q-ml' } } }, recovered],
+    modes: {},
+  });
+  assert.equal(receipt.retained.identityRows.length, 1);
+  const provenance = receipt.retained.identityRows[0].provenance;
+  assert.deepEqual(provenance.filter((item) => item.sourceId === 'theirstack').map((item) => item.queryId).sort(), ['q-ai', 'q-ml']);
+  assert.equal(provenance.some((item) => item.sourceId == null), false, 'the bare lane row yields to the crawler observation');
+  assert.equal(provenance.find((item) => item.recovery === true).sourceId, 'portal-discovery');
+
+  const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows, sourceTelemetry: {}, sourceEndStates: {} });
+  assert.equal(usefulYield.identityCount, 1);
+  const groups = usefulYield.sources.map(({ sourceId, queryId, kind, uniqueRequisitions }) => ({ sourceId, queryId, kind, uniqueRequisitions }));
+  assert.deepEqual(groups, [
+    { sourceId: 'portal-discovery', queryId: 'Not Verified', kind: 'recovery', uniqueRequisitions: 1 },
+    { sourceId: 'theirstack', queryId: 'q-ai', kind: 'discovery', uniqueRequisitions: 1 },
+    { sourceId: 'theirstack', queryId: 'q-ml', kind: 'discovery', uniqueRequisitions: 1 },
+  ]);
+});
+
+test('a selected role with an explicit score and no componentScores counts as validly scored', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'crawler-board', company: 'Crawler Company' }] });
+  const result = await runDailyNormal(runOptions(
+    config,
+    fakeTransport({ 'crawler-board': [greenhouseJob(101, 'crawler-board')] }),
+    { scores: { scores: [{ canonicalUrl: 'https://job-boards.greenhouse.io/crawler-board/jobs/101', matchScore: 80, responseLikelihood: 14 }] } },
+  ));
+  assert.equal(result.shortlist.length, 1, 'the warm role is selected, so the lane row alone would hide the crawler source');
+  const warm = result.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-warm');
+  assert.equal(warm?.uniqueRequisitions, 1);
+  assert.equal(warm?.stages.selected, 1);
+  assert.equal(result.shortlist[0].componentScores, null);
+  assert.equal(warm?.stages.validScore, 1);
+  assert.equal(result.dailyReceipt.retained.identityRows[0].scoringStatus, 'scored');
+});
+
+test('lane provenance with distinct source ids survives next to a crawler observation of the same posting', () => {
+  const job = normalizeCandidate(rawPortalJob(1303, { provider: 'greenhouse', source: 'https://boards.greenhouse.io/acme' }));
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+  const lane = (sourceId) => ({ provider: job.provider, source: job.source, sourceId, observedAt: null, postedAt: job.postedAt });
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 2 }, requestedCount: 2, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: job.provider, source: job.source, postedAt: job.postedAt, provenance: [lane('reverse-ats-warm'), lane('tracked-ats')] },
+    ] },
+    observations: [{ candidate: { ...job, sourceId: 'ats-warm' } }],
+    modes: {},
+  });
+  const sourceIds = receipt.retained.identityRows[0].provenance.map((item) => item.sourceId).sort();
+  assert.deepEqual(sourceIds, ['ats-warm', 'reverse-ats-warm', 'tracked-ats']);
+});
+
+test('a recovered held lead keeps its recovery mark after employer resolution changes its identity', () => {
+  const lead = normalizeCandidate(rawPortalJob(1302, { provider: 'glassdoor', source: 'portal-glassdoor', jobId: '1302' }));
+  const leadIdentity = `sha256:${createHash('sha256').update(candidateDedupKey(lead)).digest('hex')}`;
+  const resolved = normalizeCandidate(rawPortalJob(4302, { provider: 'greenhouse', source: 'https://boards.greenhouse.io/acme', jobId: '4302' }));
+  const requisition = candidateRequisitionKey(lead);
+  const recovered = { candidate: { ...resolved, sourceId: 'portal-discovery', originalApplicationUrl: resolved.canonicalUrl, identityAliases: [requisition], evidence: { recovery: { kind: 'held-lead-recovery', outcome: 'recovered', providerRequisitionKey: requisition } } } };
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 1 }, requestedCount: 1, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity: leadIdentity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: lead.provider, source: lead.source, postedAt: lead.postedAt, provenance: [{ provider: lead.provider, source: lead.source, sourceId: 'portal-glassdoor', observedAt: null, postedAt: lead.postedAt }] },
+    ] },
+    observations: [recovered],
+    modes: {},
+  });
+  const provenance = receipt.retained.identityRows[0].provenance;
+  assert.deepEqual(provenance.filter((item) => item.recovery === true).map((item) => item.recoveryOutcome), ['recovered']);
+  const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows, sourceTelemetry: {}, sourceEndStates: {} });
+  assert.equal(usefulYield.sources.find((row) => row.kind === 'recovery').stages.routeRecovered, 1);
+});
+
+test('a selected role with a valid score and component scores counts as validly scored in the useful yield', () => {
+  const job = normalizeCandidate(rawPortalJob(1304, { provider: 'theirstack', source: 'theirstack' }));
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+  const role = mergeScoreRow(job, { matchScore: 80, responseLikelihood: 15, componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } }).candidate;
+  const receipt = buildDailyReceipt({
+    counts: { fetched: 1 }, requestedCount: 1, outcome: { status: 'completed' },
+    funnel: { lifecycle: { normalized: 1 }, identityRows: [
+      { identity, bucket: 'selected', reason: 'SELECTED', provider: job.provider, source: job.source, postedAt: job.postedAt, provenance: [{ provider: job.provider, source: job.source, sourceId: 'theirstack', observedAt: null, postedAt: job.postedAt }] },
+    ] },
+    observations: [],
+    modes: { startup: { shortlist: [] }, normal: { results: [role], shortlist: [role] }, remote: { shortlist: [] } },
+  });
+  const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows, sourceTelemetry: {}, sourceEndStates: {} });
+  const theirstack = usefulYield.sources.find((row) => row.sourceId === 'theirstack');
+  assert.equal(theirstack.stages.selected, 1);
+  assert.equal(theirstack.stages.validScore, 1);
+});
+
+for (const evidence of ['scoringOutcomes', 'modeScoringOutcomes', 'stretch', 'scoringFailure']) {
+  test(`${evidence} retains score evidence without changing receipt stage or selection`, () => {
+    const job = normalizeCandidate(rawPortalJob(1305, { provider: 'theirstack', source: 'theirstack' }));
+    const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+    const failed = evidence === 'scoringFailure';
+    const role = failed ? { ...job, scoringStatus: 'scoring-failed' }
+      : mergeScoreRow(job, { matchScore: 80, responseLikelihood: 15 }).candidate;
+    const result = {
+      counts: { fetched: 1 }, requestedCount: 1,
+      outcome: { status: evidence === 'scoringOutcomes' ? 'fatal' : 'completed' },
+      results: [], shortlist: [],
+      funnel: { lifecycle: { normalized: 1 }, identityRows: [{
+        identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: job.provider, source: job.source,
+        provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }],
+      }] },
+      modes: { startup: { results: [], shortlist: [] }, normal: { results: [], shortlist: [] }, remote: { results: [], shortlist: [] } },
+      ...(evidence === 'scoringOutcomes' ? { scoringOutcomes: [role] } : {}),
+      ...(evidence === 'stretch' ? { stretch: [role] } : {}),
+      ...(failed ? { scoringQueue: [role] } : {}),
+    };
+    if (evidence === 'modeScoringOutcomes') result.modes.normal.scoringOutcomes = [role];
+    const receipt = buildDailyReceipt(result);
+    const row = receipt.retained.identityRows[0];
+    assert.equal(row.stage, failed ? 'scoringFailure' : 'unknown');
+    assert.equal(row.reason, failed ? 'SCORING_FAILED' : 'Not Verified');
+    assert.deepEqual(row.modes, []);
+    assert.equal(row.selected, false);
+    assert.equal(row.scoreComponents, null);
+    assert.equal(row.selectionTier, null);
+    const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows });
+    const source = usefulYield.sources.find((item) => item.sourceId === 'theirstack' && item.queryId === 'q-ai');
+    assert.equal(source.stages.validScore, failed ? 0 : 1);
+    assert.equal(source.stages.selected, 0);
+    assert.equal(source.stages.scoringFailed, failed ? 1 : 0);
+  });
+}
 
 test('historicalV4Rows suppress crawler-fed duplicates before Normal shortlist planning', async () => {
   const { config } = testConfig({
@@ -4402,6 +4586,14 @@ test('a successful retry counts as scored when two other scorer failures make th
   assert.deepEqual(second.results, []);
   assert.deepEqual(second.shortlist, []);
   assert.deepEqual(second.plannedNotionOperations, []);
+  assert.equal(second.scoringOutcomes.length, 1);
+  const warm = second.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-warm');
+  assert.equal(warm.stages.validScore, 1);
+  assert.equal(warm.stages.selected, 0);
+  const scored = second.dailyReceipt.retained.identityRows.find((row) => row.scoringStatus === 'scored');
+  assert.equal(scored.score, 80);
+  assert.equal(scored.selected, false);
+  assert.deepEqual(scored.modes, []);
   const recovered = second.scoringRetry.records.find((record) => record.canonicalUrl === first.scoringRetry.records[0].canonicalUrl);
   assert.deepEqual([recovered.outcome, recovered.outcomeReason, recovered.attemptCount, recovered.nextEligibleAt], [
     'recovered', 'scored-this-run', 2, null,

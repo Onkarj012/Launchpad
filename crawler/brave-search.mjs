@@ -175,7 +175,7 @@ export async function discoverBraveSearch({
   const country = clean(options.country ?? options.searchConfig?.country) || 'IN';
   const cache = options.cache instanceof Map ? options.cache : new Map();
   const enableCache = options.enableCache !== false;
-  const receipts = []; const observations = []; const seen = new Set(); const verificationQueue = [];
+  const receipts = []; const observations = []; const seen = new Set(); const keptByUrl = new Map(); const verificationQueue = [];
   const discoveredCompanies = []; const discoveredBoards = []; const companyKeys = new Set(); const boardKeys = new Set();
   const telemetry = {
     queriesGenerated: queries.length, duplicateQueries: 0, budgetRequested: budget, budgetUsed: 0,
@@ -271,7 +271,17 @@ export async function discoverBraveSearch({
       telemetry.resultCount += Math.min(pageRows.length, perQueryResultCap);
       for (const row of pageRows.slice(0, perQueryResultCap)) {
         try { throwIfNetworkWorkDisallowed(signal, deadline); } catch { outcome = 'interrupted'; break; }
-        const url = canonical(row?.url); if (!url || seen.has(url)) { if (url) telemetry.duplicateResults += 1; continue; }
+        const url = canonical(row?.url);
+        if (!url) continue;
+        if (seen.has(url)) {
+          // seen is set before the awaited resolver, so the kept row can be missing if that resolver failed.
+          const queryRefs = keptByUrl.get(url)?.provenance?.queryRefs;
+          if (queryRefs && !queryRefs.some((ref) => ref.queryIndex === queryIndex)) {
+            queryRefs.push({ queryId: query, queryIndex });
+          }
+          telemetry.duplicateResults += 1;
+          continue;
+        }
         let observation = observationFrom({ ...row, url }, query, runAt, provider); if (!observation) continue; seen.add(url);
         const resolver = options.resolveOriginalListing || options.resolver;
         if (typeof resolver === 'function') {
@@ -293,6 +303,8 @@ export async function discoverBraveSearch({
           if (resolution?.company) observation.company = resolution.company;
           if (observation.applicationResolution?.status === 'Resolved Original') telemetry.resolverPromotions += 1;
         }
+        observation.provenance = { ...observation.provenance, queryRefs: [{ queryId: query, queryIndex }] };
+        keptByUrl.set(url, observation);
         observations.push(observation); telemetry[observation.classification === 'direct' ? 'direct' : observation.classification === 'lead' ? 'leads' : 'unresolved'] += 1;
         if (observation.classification !== 'direct') verificationQueue.push({ url: observation.canonicalUrl, company: observation.company, reason: observation.classification === 'unresolved' ? 'unresolved-lead' : 'original-listing', evidence: observation.evidence });
         if (typeof options.enrichCompany === 'function') { throwIfNetworkWorkDisallowed(signal, deadline); const company = await options.enrichCompany(observation, { signal, deadline }); if (company && !companyKeys.has(JSON.stringify(company))) { companyKeys.add(JSON.stringify(company)); discoveredCompanies.push(company); } }

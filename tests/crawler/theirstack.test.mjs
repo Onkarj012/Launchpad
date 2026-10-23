@@ -252,6 +252,34 @@ test('deduplicates by id, proven final URL, then discovery URL while charging ev
   assert.equal(result.manifest.telemetry.duplicates, 3);
 });
 
+test('overlapping queries retain both query references without changing the kept observation', async () => {
+  const queries = ['q-ai', 'q-ml'].map((id) => ({ id, filters: query }));
+  const options = {
+    apiKey: API_KEY, runAt: RUN_AT,
+    transport: async () => response([job(11)]),
+  };
+  const baseline = await discoverTheirStack({ ...options, queries: queries.slice(0, 1) });
+  const result = await discoverTheirStack({ ...options, queries });
+
+  assert.equal(result.observations.length, 1);
+  const { queryRefs, ...keptProvenance } = result.observations[0].provenance;
+  const { queryRefs: baselineRefs, ...baselineProvenance } = baseline.observations[0].provenance;
+  assert.deepEqual(
+    { ...result.observations[0], provenance: keptProvenance },
+    { ...baseline.observations[0], provenance: baselineProvenance },
+  );
+  assert.deepEqual(baselineRefs, [{ queryId: 'q-ai', queryIndex: 0 }]);
+  assert.deepEqual(queryRefs, [
+    { queryId: 'q-ai', queryIndex: 0 },
+    { queryId: 'q-ml', queryIndex: 1 },
+  ]);
+  assert.equal(result.manifest.fetched, 2);
+  assert.equal(result.manifest.telemetry.creditsConsumed, 2);
+  assert.equal(result.manifest.telemetry.duplicates, 1);
+  assert.equal(result.manifest.naturalTerminal, true);
+  assert.equal(result.cursor, undefined);
+});
+
 test('reduces request limits to item and credit budgets and returns a continuation cursor on caps', async () => {
   const calls = [];
   const result = await discoverTheirStack({
