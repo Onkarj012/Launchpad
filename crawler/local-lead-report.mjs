@@ -207,42 +207,50 @@ const LOCATION_GROUPS = [['pune', 'Pune and Pune-metro'], ['remote', 'India-elig
 
 // The gates classifyCandidate records on role.eligibility, in evaluation order.
 const ELIGIBILITY_GATES = ['company', 'geo', 'employment', 'salary', 'experience', 'title', 'liveness'];
+// runPipeline admits only this rejection to the normal-mode Stretch readiness pool.
+const STRETCH_EXPERIENCE_CODE = 'EXPERIENCE_HARD_MIN_3_PLUS';
 
 // Read the retained gate outcome: 'rejected' after a hard failure, 'review' while only checks remain, 'passed' when every gate passed, null when no gate ran.
-function gateOutcome(role, inVerificationQueue = false) {
+function gateOutcome(role, inVerificationQueue = false, isStretch = false) {
   if (inVerificationQueue) return 'review';
   const { eligibility, freshness } = role;
   if (typeof eligibility?.eligible !== 'boolean' && typeof freshness?.eligible !== 'boolean') return null;
-  const failedGates = ELIGIBILITY_GATES.map((key) => eligibility?.[key]).filter((gate) => gate?.pass === false);
+  const stretchExperienceAccepted = isStretch && eligibility?.experience?.pass === false
+    && eligibility.experience.code === STRETCH_EXPERIENCE_CODE;
+  const failedGates = ELIGIBILITY_GATES.filter((key) => key !== 'experience' || !stretchExperienceAccepted)
+    .map((key) => eligibility?.[key]).filter((gate) => gate?.pass === false);
+  const eligibilityFailed = eligibility?.eligible === false && !(stretchExperienceAccepted && failedGates.length === 0
+    && eligibility.reasons?.every((code) => code === STRETCH_EXPERIENCE_CODE));
   const freshnessOpen = freshness?.verifyQueue === true || freshness?.window === 'VerifyQueue';
   const hardFailure = failedGates.some((gate) => gate.verificationRequired !== true)
-    || (eligibility?.eligible === false && failedGates.length === 0 && !freshnessOpen)
+    || (eligibilityFailed && failedGates.length === 0 && !freshnessOpen)
     || (freshness?.eligible === false && !freshnessOpen);
   if (hardFailure) return 'rejected';
-  return eligibility?.eligible === false || freshness?.eligible === false ? 'review' : 'passed';
+  return eligibilityFailed || freshness?.eligible === false ? 'review' : 'passed';
 }
 
 // Name a role's reason codes, missing evidence and card state. The gate outcome decides first; reason codes are the fallback.
-function assessRole(role, { inVerificationQueue = false, sharedRoute = false } = {}) {
+function assessRole(role, { inVerificationQueue = false, sharedRoute = false, isStretch = role.selectionTier === 'Stretch' } = {}) {
   const freshnessCode = role.freshness?.eligible === false ? (role.freshness.code ?? 'FRESHNESS_NOT_VERIFIED') : null;
   const codes = [...new Set([...(role.reasons ?? []), ...(role.eligibility?.reasons ?? []), freshnessCode, sharedRoute ? 'SHARED_APPLY_ROUTE' : null]
     .filter((code) => typeof code === 'string'))];
-  const gate = gateOutcome(role, inVerificationQueue);
+  const blockingCodes = codes.filter((code) => !isStretch || code !== STRETCH_EXPERIENCE_CODE);
+  const gate = gateOutcome(role, inVerificationQueue, isStretch);
   // An open check makes every reason it carries a missing item.
-  const missing = gate === 'review' ? codes : codes.filter((code) => MISSING_EVIDENCE.test(code));
-  const rejected = gate === 'rejected' || (gate === null && codes.some((code) => !MISSING_EVIDENCE.test(code)));
-  const ready = !rejected && codes.length === 0
+  const missing = gate === 'review' ? blockingCodes : blockingCodes.filter((code) => MISSING_EVIDENCE.test(code));
+  const rejected = gate === 'rejected' || (gate === null && blockingCodes.some((code) => !MISSING_EVIDENCE.test(code)));
+  const ready = !rejected && blockingCodes.length === 0
     && (role.applicationReady === true || role.applicationReadiness === 'Ready' || role.readiness?.ready === true);
   const scored = hasUsableMatchScore(role);
   const state = rejected ? 'Rejected' : ready && scored ? 'Ready and scored' : 'Promising, needs verification';
-  return { state, codes, missing, ready, scored };
+  return { state, codes, blockingCodes, missing, ready, scored };
 }
 
 // List what keeps a role from being application-ready. No blockers means ready, scored and history-backed.
 function applicationBlockers(assessment, historyLoaded) {
-  if (assessment.state === 'Rejected') return assessment.codes.length ? assessment.codes : ['READINESS_NOT_VERIFIED'];
+  if (assessment.state === 'Rejected') return assessment.blockingCodes.length ? assessment.blockingCodes : ['READINESS_NOT_VERIFIED'];
   return [...new Set([
-    ...(assessment.ready ? [] : assessment.codes.length ? assessment.codes : ['READINESS_NOT_VERIFIED']),
+    ...(assessment.ready ? [] : assessment.blockingCodes.length ? assessment.blockingCodes : ['READINESS_NOT_VERIFIED']),
     ...(assessment.scored ? [] : ['SCORE_NOT_VERIFIED']),
     ...(historyLoaded ? [] : ['HISTORY_NOT_VERIFIED']),
   ])];
@@ -552,7 +560,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     ['Strict', strictCount],
   ];
   // Render one role card with its evidence, labels, and employer apply link.
-  const roleCard = (role, isShortlist, inVerificationQueue = false) => {
+  const roleCard = (role, isShortlist, inVerificationQueue = false, isStretch = role.selectionTier === 'Stretch') => {
     const labels = [...new Set([...(role.labels ?? []), ...(role.eligibility?.labels ?? [])])];
     const experienceDecision = role.evidence?.experienceDecision ?? role.eligibility?.experience;
     const experienceEvidence = experienceDecision
@@ -562,7 +570,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     const sharedRoute = applyUrl != null && sharedRoutes.has(canonicalizeUrl(applyUrl));
     const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
-    const assessment = assessRole(role, { inVerificationQueue, sharedRoute });
+    const assessment = assessRole(role, { inVerificationQueue, sharedRoute, isStretch });
     const blockers = applicationBlockers(assessment, historyLoaded);
     const geo = role.eligibility?.geo;
     const geoCodes = [...new Set([geo?.code, ...(role.eligibility?.reasons ?? [])].filter((code) => /GEO|RESIDEN/i.test(code ?? '')))];
@@ -607,7 +615,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
     return `<tr><td>${html(day.date)}</td>${cells}<td>${day.strict ?? 'Not Verified'}</td><td>${day.historyVerified === true ? 'Verified' : 'Not Verified'}</td></tr>`;
   }).join('');
   const phaseTargets = phaseRollup ? `<section data-section="phase-target-rollup"><h2>Phase target, 5 of 7 consecutive IST days</h2><p>Seven-day window ending ${html(phaseRollup.endDate)}. Each day's counts combine completed allocations. Target attainment requires two Strict roles across modes and verified historical suppression evidence.</p><table><thead><tr><th>Mode</th><th>Days met / 7</th><th>Phase status</th></tr></thead><tbody>${phaseSummaryRows}</tbody></table><table><thead><tr><th>IST date</th><th>Pune</th><th>Startup</th><th>Remote</th><th>Strict across modes</th><th>Historical suppression evidence</th></tr></thead><tbody>${phaseDayRows}</tbody></table></section>` : '';
-  const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true)).join('') || '<p>None.</p>'}</section>`;
+  const stretch = `<section data-section="stretch"><h2>Stretch</h2>${(result.stretch ?? []).map((role) => roleCard(role, true, false, true)).join('') || '<p>None.</p>'}</section>`;
   const separate = `<section data-section="separate-lanes"><h2>Separate lanes outside daily role targets</h2><p>This-run Stretch: ${units.separate.stretch}. EOR / Contract: ${units.separate.eorContract}. VerifyQueue: ${units.separate.verification}.</p></section>`;
   const verification = `<section data-section="verification"><h2>VerifyQueue</h2><p>These roles do not count toward daily targets.</p>${(result.verificationQueue ?? []).map((role) => roleCard(role, false, true)).join('') || '<p>None.</p>'}</section>`;
   const experienceDecisions = `<section data-section="experience-decisions"><h2>Experience decisions</h2>${(result.experienceDecisions ?? []).map(({ candidate, eligibility }) => {

@@ -391,6 +391,53 @@ test('rejected cards use only rejection reasons and keep a manual-review fallbac
   assert.match(noCodesCard, /Application readiness: Not application-ready: READINESS_NOT_VERIFIED<\/p>/);
 });
 
+// Keep the retained failed gate on a scored role that Stretch readiness accepted.
+function stretchRole(id, overrides = {}) {
+  return role(id, 'Stretch Labs', { selectionTier: 'Stretch', applicationReady: true, applicationReadiness: 'Ready', ...scored(85),
+    eligibility: { eligible: false, hardMinimumExactly3Years: true, reasons: ['EXPERIENCE_HARD_MIN_3_PLUS'],
+      experience: { pass: false, code: 'EXPERIENCE_HARD_MIN_3_PLUS', evidence: 'Requires at least 3 years' } },
+    freshness: { eligible: true, window: '0-72h' }, ...overrides });
+}
+
+test('Stretch experience warning stays visible without rejecting a ready scored card or blocking its next action', () => {
+  for (const placement of ['tier', 'stretch-list']) {
+    const item = stretchRole(placement, placement === 'stretch-list' ? { selectionTier: undefined } : {});
+    for (const historyLoaded of [true, false]) {
+      const result = { runAt: NOW, modes: {}, ...(historyLoaded ? { v4HistorySnapshot: LOADED_HISTORY } : {}),
+        ...(placement === 'tier' ? { modes: { normal: { results: [item], shortlist: [] } } } : { stretch: [item] }) };
+      const card = cardFor(renderLocalDailyHtmlReport(result), placement);
+      assert.match(card, /State: Ready and scored<\/p>/);
+      assert.doesNotMatch(card, /State: Rejected/);
+      assert.match(card, /Reasons: EXPERIENCE_HARD_MIN_3_PLUS<\/p>/);
+      assert.match(card, /Experience: EXPERIENCE_HARD_MIN_3_PLUS[^<]*Requires at least 3 years/);
+      assert.doesNotMatch(card, /Read the full JD requirement|Not application-ready: EXPERIENCE_|<li>EXPERIENCE_/);
+      assert.match(card, historyLoaded ? /Next safe action: Review the employer listing<\/p>/ : /Next safe action: Check the history snapshot<\/p>/);
+      assert.match(card, historyLoaded ? /Application readiness: Application-ready<\/p>/ : /Application readiness: Not application-ready: HISTORY_NOT_VERIFIED<\/p>/);
+    }
+  }
+});
+
+test('Stretch roles with a GEO hard rejection stay Rejected and act only on the remaining blocker', () => {
+  const item = stretchRole('stretch-geo');
+  item.eligibility.reasons.push('GEO_REMOTE_REGION_RESTRICTED');
+  item.eligibility.geo = { pass: false, code: 'GEO_REMOTE_REGION_RESTRICTED' };
+  const card = cardFor(renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: {}, stretch: [item] }), 'stretch-geo');
+  assert.match(card, /State: Rejected<\/p>/);
+  assert.match(card, /Reasons: EXPERIENCE_HARD_MIN_3_PLUS, GEO_REMOTE_REGION_RESTRICTED<\/p>/);
+  assert.match(card, /Application readiness: Not application-ready: GEO_REMOTE_REGION_RESTRICTED<\/p>/);
+  assert.match(card, /Next safe action: Manual review<\/p>/);
+  assert.doesNotMatch(card, /Read the full JD requirement/);
+});
+
+test('non-stretch roles with the same experience gate stay Rejected', () => {
+  const item = stretchRole('ordinary', { selectionTier: 'Strict' });
+  const card = cardFor(renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY,
+    modes: { normal: { results: [item], shortlist: [] } } }), 'ordinary');
+  assert.match(card, /State: Rejected<\/p>/);
+  assert.match(card, /Application readiness: Not application-ready: EXPERIENCE_HARD_MIN_3_PLUS<\/p>/);
+  assert.match(card, /Next safe action: Read the full JD requirement<\/p>/);
+});
+
 test('P11 item 4: each card shows exactly one novelty label, and New-market verified needs loaded history', () => {
   const recovered = role('recovered', 'Held Labs', { evidence: { recovery: { kind: 'held-lead-recovery' } } });
   const surfaced = role('surfaced', 'Ledger Labs', { ledgerSurfaced: true });
