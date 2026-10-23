@@ -250,6 +250,16 @@ function receiptIdentityRows(result) {
       if (keyHash) finalSelection.add(keyHash);
     }
   }
+  const scoreEvidence = [
+    ...(result.scoringOutcomes ?? []),
+    ...Object.values(modes).flatMap((value) => value.scoringOutcomes ?? []),
+    ...(result.stretch ?? []),
+  ];
+  // Only valid scores are added here, so an unscored stretch row cannot downgrade a scored role.
+  for (const role of scoreEvidence.filter((item) => scoreState(item).status === 'scored')) addOverlay(overlays, candidateIdentity(role), (previous) => {
+    previous.score = role.matchScore ?? role.score ?? previous.score;
+    previous.scoringStatus = 'scored';
+  });
   for (const keyHash of finalSelection) addOverlay(overlays, keyHash, (previous) => {
     previous.selected = true;
     previous.selectionKnown = finalSelectionKnown;

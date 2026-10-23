@@ -228,7 +228,7 @@ function identityStages(row) {
   return {
     jdPresent: row.jdHash != null,
     hardEligibilityPassed: passedHardGates(row),
-    validScore: ['finalSelection', 'eligible'].includes(row.stage) && Number.isFinite(row.score) && row.scoringStatus === 'scored',
+    validScore: Number.isFinite(row.score) && row.scoringStatus === 'scored',
     scoringFailed: row.stage === 'scoringFailure',
     historySuppressed: row.stage === 'historySuppression',
     verification: row.stage === 'verification',
