@@ -1,4 +1,4 @@
-import { candidateDedupKey, candidateIdentityKeys, candidateRequisitionKey } from './candidate.mjs';
+import { candidateDedupKey, candidateIdentityKeys, candidateRequisitionKey, normalizedKey } from './candidate.mjs';
 import { integerInRange, mergeScoreRow } from './match-scorer.mjs';
 
 export const BROKEN_SCORER_REASON_CODES = new Set([
@@ -166,12 +166,36 @@ const RETRY_STALE_MS = 7 * 86_400_000;
 const RETRY_RECORD_LIMIT = 200;
 const PREVIOUS_RUN_REASON = { 'shortlisted-this-run': 'shortlisted-previous-run', 'scored-this-run': 'scored-previous-run' };
 
-// Match a role by any shared identity, but never across two different requisitions.
+// Accept retained identity records only when their aliases can be read safely.
+function hasRetryIdentity(record) {
+  return record !== null && typeof record === 'object' && !Array.isArray(record)
+    && (record.identityAliases == null || Array.isArray(record.identityAliases));
+}
+
+// Match proven identities while keeping conflicting requisitions and weak aliases fail-closed.
 function sameRetryRole(record, role) {
-  if (record.requisitionKey && role.requisitionKey && record.requisitionKey !== role.requisitionKey) return false;
-  if (record.canonicalUrl && record.canonicalUrl === role.canonicalUrl) return true;
-  const recordKeys = new Set([record.dedupKey, ...(record.identityAliases ?? [])]);
-  return [role.dedupKey, ...(role.identityAliases ?? [])].some((key) => recordKeys.has(key));
+  if (!hasRetryIdentity(record) || !hasRetryIdentity(role)) return false;
+  const recordAliases = record.identityAliases ?? [];
+  const roleAliases = role.identityAliases ?? [];
+  const sameRequisition = record.requisitionKey && record.requisitionKey === role.requisitionKey;
+  if (record.requisitionKey && role.requisitionKey && !sameRequisition) {
+    const sameProvider = record.requisitionKey.split('|')[0] === role.requisitionKey.split('|')[0];
+    const provenAlias = recordAliases.includes(role.requisitionKey) || roleAliases.includes(record.requisitionKey);
+    if (sameProvider || !provenAlias) return false;
+  }
+  const sameEmployerTitle = normalizedKey(record.company) && normalizedKey(record.title)
+    && normalizedKey(record.company) === normalizedKey(role.company)
+    && normalizedKey(record.title) === normalizedKey(role.title);
+  const sameUrl = record.canonicalUrl && record.canonicalUrl === role.canonicalUrl;
+  if (sameUrl && (sameRequisition || sameEmployerTitle)) return true;
+  const differentUrls = record.canonicalUrl && role.canonicalUrl && !sameUrl;
+  const recordKeys = new Set([record.dedupKey, ...recordAliases]);
+  return [role.dedupKey, ...roleAliases].some((key) => {
+    if (typeof key !== 'string' || !key || !recordKeys.has(key)) return false;
+    // URL keys must not bypass the employer/title check for a shared careers page.
+    if (key.startsWith('url|')) return !sameUrl || Boolean(sameRequisition || sameEmployerTitle);
+    return !differentUrls || key.split('|').length === 2;
+  });
 }
 
 // Keep only the identity fields of a role, never its scoring payload.
@@ -193,7 +217,7 @@ function gateReasonFor(row) {
 
 // Advance the retry records for one run. Failed scoring counts an attempt, and so does a retry that scores.
 export function nextScoringRetryState({ prior = null, result = {}, runAt }) {
-  const priorRecords = Array.isArray(prior?.records) ? prior.records : [];
+  const priorRecords = Array.isArray(prior?.records) ? prior.records.filter(hasRetryIdentity) : [];
   const queue = result.scoringQueue ?? [];
   const failedNow = queue.filter((row) => row.scoringStatus === 'scoring-failed');
   const queuedNow = queue.map(retryRoleFields);

@@ -1640,10 +1640,16 @@ export async function runDailyNormal(options = {}) {
         if (ownsStore) store.close();
       }
     }
-    const scoringRetry = priorRetry.error ? null : nextScoringRetryState({ prior: priorRetry.state, result: completed, runAt });
-    const retryPersistence = scoringRetry
-      ? persistScoringRetry(options, completed, scoringRetry)
-      : { scoringRetryPersistence: 'failed', scoringRetryPersistenceError: priorRetry.error };
+    let scoringRetry = null;
+    let retryPersistence = { scoringRetryPersistence: 'failed', scoringRetryPersistenceError: priorRetry.error };
+    if (!priorRetry.error) {
+      try {
+        scoringRetry = nextScoringRetryState({ prior: priorRetry.state, result: completed, runAt });
+        retryPersistence = persistScoringRetry(options, completed, scoringRetry);
+      } catch (error) {
+        retryPersistence.scoringRetryPersistenceError = error instanceof Error ? error.message : String(error);
+      }
+    }
     return { ...completed, dailyReceipt, usefulSourceYield, receiptPersistence, receiptPersistenceError, sourceSnapshotAges, scoringRetry, ...retryPersistence };
   } finally {
     execution.cleanup();
