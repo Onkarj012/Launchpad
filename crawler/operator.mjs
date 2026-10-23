@@ -22,7 +22,7 @@ import { discoverHnJobs } from './hn-discovery.mjs';
 import { isSourceTrialActive } from './source-yield.mjs';
 import { buildVcWatchlistRequests, loadVcPortfolioWatchlist } from './vc-portfolio-watchlist.mjs';
 import { runCommercialRescue } from './commercial-rescue.mjs';
-import { openCrawlerStore, readCrawlerRunSnapshot, readHeldLeadRecoveryState } from './run.mjs';
+import { heldLeadRecoveryIdentity, openCrawlerStore, readCrawlerRunSnapshot, readHeldLeadRecoveryState } from './run.mjs';
 import { selectDailyReserve } from './reserve.mjs';
 import { buildSchedulePlans } from './schedules.mjs';
 import { crawlWorkflow } from './workflow.mjs';
@@ -341,32 +341,6 @@ function checkpointResolutionObservation(candidate, resolved) {
   return { ...resolved, sourceRecordKey: identity };
 }
 
-// Use a provider requisition or its source URL as stable recovery identity.
-function heldLeadRecoveryIdentity(candidate) {
-  const recovery = candidate.evidence?.recovery;
-  if (recovery?.providerRequisitionKey) return `requisition:${recovery.providerRequisitionKey}`;
-  if (recovery?.identityUrl?.startsWith('url:') || recovery?.identityUrl?.startsWith('requisition:')) return recovery.identityUrl;
-  try {
-    const identityUrl = new URL(recovery?.identityUrl);
-    if (identityUrl.protocol === 'https:') {
-      identityUrl.hash = '';
-      return `url:${identityUrl.toString()}`;
-    }
-  } catch {}
-  const requisition = candidateRequisitionKey(candidate);
-  if (requisition) return `requisition:${requisition}`;
-  for (const value of [recovery?.originalDiscoveryUrl, candidate.discoveryUrl, candidate.canonicalUrl, candidate.url]) {
-    try {
-      const url = new URL(value);
-      if (url.protocol === 'https:') {
-        url.hash = '';
-        return `url:${url.toString()}`;
-      }
-    } catch {}
-  }
-  return null;
-}
-
 // Remove stale liveness before a held candidate waits for a retry deadline.
 function waitingHeldRecoveryCandidate(candidate) {
   const { liveness: _staleLiveness, ...current } = candidate;
@@ -399,6 +373,7 @@ function currentRecoveryTime(clock) {
 // Failures that leave a held lead pending: retry later, never give up on it.
 const TRANSIENT_HELD_REASONS = ['aborted', 'candidate-cap-exceeded', 'deadline-exceeded', 'recovery-deferred',
   'request-budget-exhausted', 'request-budget-exceeded', 'transport-error'];
+const MAX_HELD_RETRY_AFTER_WAIT_MS = 7 * 24 * 60 * 60_000;
 
 // Keep temporary transport failures pending and give rate limits their stated delay.
 function recoveryAttemptState(candidate, resolved, now, requested) {
@@ -420,9 +395,11 @@ function recoveryAttemptState(candidate, resolved, now, requested) {
                 : transient ? 'pending' : 'unresolved';
   const attemptCount = Number(prior.attemptCount ?? 0) + (requested ? 1 : 0);
   const retryDelayMs = Math.min(24 * 60 * 60_000, 60 * 60_000 * (2 ** Math.min(attemptCount - 1, 5)));
-  const backoffDeadline = Date.parse(now) + retryDelayMs;
+  const nowMs = Date.parse(now);
+  const backoffDeadline = nowMs + retryDelayMs;
   const serverDeadline = Date.parse(resolved.evidence?.retryAfterAt);
-  const nextEligibleAt = Number.isFinite(serverDeadline) && serverDeadline > Date.parse(now)
+  const nextEligibleAt = Number.isFinite(serverDeadline) && serverDeadline > nowMs
+    && serverDeadline - nowMs <= MAX_HELD_RETRY_AFTER_WAIT_MS
     ? Math.max(backoffDeadline, serverDeadline) : backoffDeadline;
   return {
     ...prior,
