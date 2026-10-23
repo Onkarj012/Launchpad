@@ -239,6 +239,7 @@ function assessRole(role, { inVerificationQueue = false, sharedRoute = false } =
 
 // List what keeps a role from being application-ready. No blockers means ready, scored and history-backed.
 function applicationBlockers(assessment, historyLoaded) {
+  if (assessment.state === 'Rejected') return assessment.codes.length ? assessment.codes : ['READINESS_NOT_VERIFIED'];
   return [...new Set([
     ...(assessment.ready ? [] : assessment.codes.length ? assessment.codes : ['READINESS_NOT_VERIFIED']),
     ...(assessment.scored ? [] : ['SCORE_NOT_VERIFIED']),
@@ -271,14 +272,14 @@ function receiptRead(row) {
 
 // Build the counts line. Each count stays separate, and a missing count stays Not Verified.
 function dailyCounts(result, selected) {
-  const requested = result.requestedShortlistLimit ?? 20;
+  const requested = result.requestedShortlistLimit ?? 'Not Verified';
   const eligible = [result.counts?.eligible, result.funnel?.lifecycle?.eligible].find((value) => Number.isFinite(value));
   return {
     requested,
     eligible: eligible ?? 'Not Verified',
     selected,
     delivered: result.deliveryReconciliation?.counts?.deliveredKeys ?? 'Not Verified',
-    shortfall: Math.max(0, requested - selected),
+    shortfall: requested === 'Not Verified' ? 'Not Verified' : Math.max(0, requested - selected),
   };
 }
 

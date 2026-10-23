@@ -62,6 +62,8 @@ test('missing retained daily evidence stays unverified rather than relabeling th
   const result = { runAt: NOW, mode: 'normal', shortlist: [normal], modes: { normal: { results: [normal], shortlist: [normal] } } };
   for (const report of [renderLocalLeadReport(result, { now: NOW }), renderLocalDailyHtmlReport(result)]) {
     assert.match(report, /This-run all-mode allocation: 1 roles\./);
+    assert.match(report, /Requested: Not Verified/);
+    assert.match(report, /Shortfall this run: Not Verified/);
     assert.match(report, /Cumulative all-mode roles today: Not Verified\/20 maximum/);
     assert.match(report, /Not Verified\/10/);
   }
@@ -367,6 +369,27 @@ test('P11 item 3: each card names its state, exact reasons, missing fields and n
   assert.match(html, /Next safe action: Re-check the employer page; Find the employer apply route/);
 });
 
+test('rejected cards use only rejection reasons and keep a manual-review fallback without codes', () => {
+  const rejected = role('rejected', 'Rejected Labs', {
+    eligibility: { eligible: false, reasons: ['EXPERIENCE_MIN_YEARS_EXCEEDED'] },
+  });
+  const withoutCodes = role('no-codes', 'No Codes Labs', { eligibility: { eligible: false, reasons: [] } });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW,
+    modes: { normal: { results: [rejected, withoutCodes], shortlist: [] } },
+  });
+  const rejectedCard = cardFor(html, 'rejected');
+  const noCodesCard = cardFor(html, 'no-codes');
+  for (const card of [rejectedCard, noCodesCard]) {
+    assert.match(card, /State: Rejected<\/p>/);
+    assert.doesNotMatch(card, /SCORE_NOT_VERIFIED|HISTORY_NOT_VERIFIED|Re-run scoring|Check the history snapshot/);
+  }
+  assert.match(rejectedCard, /Next safe action: Read the full JD requirement<\/p>/);
+  assert.match(rejectedCard, /Application readiness: Not application-ready: EXPERIENCE_MIN_YEARS_EXCEEDED<\/p>/);
+  assert.match(noCodesCard, /Reasons: None recorded<\/p>/);
+  assert.match(noCodesCard, /Next safe action: Manual review<\/p>/);
+  assert.match(noCodesCard, /Application readiness: Not application-ready: READINESS_NOT_VERIFIED<\/p>/);
+});
+
 test('P11 item 4: each card shows exactly one novelty label, and New-market verified needs loaded history', () => {
   const recovered = role('recovered', 'Held Labs', { evidence: { recovery: { kind: 'held-lead-recovery' } } });
   const surfaced = role('surfaced', 'Ledger Labs', { ledgerSurfaced: true });
@@ -398,7 +421,7 @@ test('P11 item 5: counts show requested, eligible, selected, confirmed delivered
   assert.match(renderLocalLeadReport(result, { now: NOW }), /Requested: 5\. Eligible: 14\. Selected: 2\. Confirmed delivered: 2\. Shortfall this run: 3\./);
 
   const empty = renderLocalDailyHtmlReport({ runAt: NOW, modes: {} });
-  assert.match(empty, /<li>Requested: 20<\/li><li>Eligible: Not Verified<\/li><li>Selected: 0<\/li><li>Confirmed delivered: Not Verified<\/li><li>Shortfall this run: 20<\/li>/);
+  assert.match(empty, /<li>Requested: Not Verified<\/li><li>Eligible: Not Verified<\/li><li>Selected: 0<\/li><li>Confirmed delivered: Not Verified<\/li><li>Shortfall this run: Not Verified<\/li>/);
 });
 
 test('P11 item 5: a card is Application-ready only with ready status, a valid score and loaded history', () => {
