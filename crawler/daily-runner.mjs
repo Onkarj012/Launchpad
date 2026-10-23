@@ -31,7 +31,7 @@ import { pickDailyEntries } from '../job-pull/select.mjs';
 import { isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { readHiringEvents } from './hiring-events.mjs';
 import { buildDailyReceipt } from './daily-receipt.mjs';
-import { openCrawlerStore, persistDailyReceipt, persistScoringRetryState, readScoringRetryState } from './run.mjs';
+import { openCrawlerStore, persistDailyReceipt, persistScoringRetryState, readLastSuccessfulSourceRuns, readScoringRetryState } from './run.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
 export function dailyShortlistBudget(budgetPath, runAt, runId) {
@@ -621,7 +621,7 @@ function trackedFixture(result) {
     candidates: result.observations,
     manifest: {
       ...result.manifest,
-      status: fixtureStatus(result.observations, result.failures),
+      status: result.manifest.status === 'not_started' ? 'not_started' : fixtureStatus(result.observations, result.failures),
       errors: failureMessages(result.failures),
     },
   };
@@ -1538,6 +1538,27 @@ async function runDailyNormalImpl({
   };
 }
 
+// Age of each incomplete source's last successful snapshot. Unreadable history returns undefined.
+function sourceSnapshotAgesFor(store, endStates, { runAt, runId }) {
+  try {
+    // The crawler run for this daily run is excluded; its own scans are current, not snapshots.
+    const last = readLastSuccessfulSourceRuns(store, {
+      excludeRunId: runId ? `${runId}-crawler-v2` : null,
+      portalLaneIds: Object.keys(endStates).filter((id) => PORTAL_OBSERVATION_LANES.has(id)),
+    });
+    return Object.fromEntries(Object.entries(endStates)
+      .filter(([, endState]) => !['ok', 'empty', 'disabled'].includes(endState.state))
+      .map(([id, endState]) => {
+        const finished = Date.parse(last[id]?.finishedAt ?? '');
+        const known = Number.isFinite(finished);
+        const ageHours = known ? Math.round(((Date.parse(runAt) - finished) / 3600000) * 10) / 10 : null;
+        return [id, { state: endState.state, lastSuccessfulAt: known ? new Date(finished).toISOString() : null, ageHours: Number.isFinite(ageHours) ? ageHours : null }];
+      }));
+  } catch {
+    return undefined;
+  }
+}
+
 // Run one store call on the caller's store, or on a database this call opens and closes.
 function withDailyStore(options, use) {
   const databasePath = options.config?.databasePath;
@@ -1590,6 +1611,7 @@ export async function runDailyNormal(options = {}) {
     const dailyReceipt = buildDailyReceipt(completed);
     let receiptPersistence = 'Not Verified';
     let receiptPersistenceError = null;
+    let sourceSnapshotAges;
     const databasePath = options.config?.databasePath;
     if (options.store || (typeof databasePath === 'string' && databasePath)) {
       let store = options.store;
@@ -1604,6 +1626,7 @@ export async function runDailyNormal(options = {}) {
         receiptPersistence = typeof runId === 'string'
           && (persistDailyReceipt(store, `${runId}-crawler-v2`, dailyReceipt) || persistDailyReceipt(store, runId, dailyReceipt))
           ? 'persisted' : 'run_missing';
+        sourceSnapshotAges = sourceSnapshotAgesFor(store, { ...completed.terminalEnvelope?.sourceEndStates, ...completed.sourceEndStates }, { runAt, runId: completed.terminalEnvelope?.runId });
       } catch (error) {
         receiptPersistence = 'failed';
         receiptPersistenceError = error instanceof Error ? error.message : String(error);
@@ -1621,7 +1644,7 @@ export async function runDailyNormal(options = {}) {
         retryPersistence.scoringRetryPersistenceError = error instanceof Error ? error.message : String(error);
       }
     }
-    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError, scoringRetry, ...retryPersistence };
+    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError, sourceSnapshotAges, scoringRetry, ...retryPersistence };
   } finally {
     execution.cleanup();
   }

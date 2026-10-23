@@ -6,6 +6,9 @@ const SOURCE_IDS = {
   brave: 'brave-search', careerSites: 'career-sites', commercialRescue: 'commercial-rescue', trackedAts: 'tracked-ats',
 };
 
+// Statuses for sources that were planned or configured but never fetched.
+const NOT_STARTED_STATUSES = new Set(['pending', 'notStarted', 'not_started', 'unattempted', 'omitted_by_planner', 'omitted_by_runtime']);
+
 // Preserve explicit failure and incomplete-scan evidence even when records were fetched.
 function sourceHealth(value) {
   const detail = value.detail ?? value.manifest ?? value;
@@ -31,27 +34,30 @@ export function buildSourceEndStates(sourceTelemetry = {}, sources = {}) {
   // Include each provider's result from grouped source manifests.
   const add = (id, value) => {
     const detail = value.detail ?? value;
+    const notStarted = NOT_STARTED_STATUSES.has(value.status);
     const reason = detail.reason ?? detail.reasonCode ?? value.error ?? detail.errors?.[0]
-      ?? (['succeeded', 'ok', 'empty', 'degraded'].includes(value.status) ? 'no-records-returned'
-        : value.status ? `source-${value.status}` : 'no-records-returned');
+      ?? (notStarted ? 'source-not-started'
+        : ['succeeded', 'ok', 'empty', 'degraded'].includes(value.status) ? 'no-records-returned'
+          : value.status ? `source-${value.status}` : 'no-records-returned');
     states[id] = sourceHealth(value)
-      ?? (number(value.fetched ?? detail.fetched ?? value.observations) > 0
-        ? { state: 'ok' } : { state: 'empty', reason });
+      ?? (notStarted ? { state: 'not_started', reason }
+        : number(value.fetched ?? detail.fetched ?? value.observations) > 0 ? { state: 'ok' } : { state: 'empty', reason });
     for (const lane of detail.telemetry?.lanes ?? []) add(lane.sourceId, lane);
   };
   for (const [id, value] of Object.entries(sourceTelemetry)) add(id, value);
   for (const [key, id] of Object.entries(SOURCE_IDS)) {
     if (!Object.hasOwn(sources, key)) continue;
     if (sources[key]?.enabled === false) states[id] = { state: 'disabled', reason: 'disabled-in-config' };
-    else states[id] ??= { state: 'empty', reason: key === 'careerSites' && !sources[key]?.length
-      ? 'no-career-sites-configured' : 'source-not-planned' };
+    else states[id] ??= key === 'careerSites' && !sources[key]?.length
+      ? { state: 'empty', reason: 'no-career-sites-configured' }
+      : { state: 'not_started', reason: 'source-not-planned' };
   }
   for (const [key, provider] of Object.entries({ linkedin: 'linkedin-jobs', glassdoor: 'glassdoor', instahyre: 'instahyre', wellfound: 'wellfound' })) {
     const portal = sources.portals?.[key];
     if (!portal) continue;
     const id = `portal-${provider}`;
     if (sources.portals.enabled === false || portal.enabled === false) states[id] = { state: 'disabled', reason: 'disabled-in-config' };
-    else states[id] ??= { state: 'empty', reason: 'portal-not-run' };
+    else states[id] ??= { state: 'not_started', reason: 'portal-not-run' };
   }
   return states;
 }

@@ -32,6 +32,12 @@ The isolated P05 implementation resumes due held leads from the existing observa
 
 A role whose match scoring failed now keeps a retry record in the crawler run telemetry. A later run retries it when it reappears, counts each attempt, and shows the outcome in the Scoring recovery section of the daily report. Three failed attempts end in a terminal record. Local-verified by the fixture tests in the mode-scoring, daily-runner and local-lead-report test files. Not yet done: `nextEligibleAt` is recorded and shown as the earliest retry but does not hold back scoring, and the 200-record cap has no dedicated test. Open after two review rounds: a shared generic careers URL or a company/title/location alias can let a different role settle a retry record as recovered or selected, and a proven cross-provider alias is still vetoed by the requisition check. Readiness gating is unaffected; the error is in the retry record and report. Local fixture evidence only; no live scorer run.
 
+## P09 source states, 2026-10-22
+
+Sources that never ran now end as `not_started` instead of `empty`. This covers pending, not-started, unattempted, and omitted statuses, configured sources that were not planned, and portal lanes that did not run. A failed child lane stays `failed` even when a sibling lane is pending. The daily partial path no longer turns a never-run `tracked-ats` into a completed `empty` scan, and a new daily test pins that a partial run with a not-started source emits no delivery.
+
+Already satisfied with no code change: failed, truncated, and interrupted absence never closes a job, and a reopened store keeps the earlier `last_seen_at` for a job the failed run did not see. Explicit employer closure sets `closed_at`, while a transport failure does not. New tests pin these rules. A source that is not current in the private daily report now shows its last successful snapshot time and age, marked not current. Open after two review rounds: the snapshot lookup trusts the stored `succeeded` telemetry status, which a warm-source transport failure can also carry, so a failed scan can be reported as the last successful snapshot; and it dates the snapshot by run completion rather than the source attempt, which understates age after a resume. Local fixture evidence only; no live source run.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

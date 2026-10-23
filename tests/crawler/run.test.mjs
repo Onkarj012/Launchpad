@@ -10,6 +10,7 @@ import {
   crawlRun,
   backfillOriginalPostedAt,
   readCrawlerState,
+  readLastSuccessfulSourceRuns,
 } from '../../crawler/run.mjs';
 import { discoverEnterpriseAts } from '../../crawler/ats-enterprise.mjs';
 import { crawlWorkflow } from '../../crawler/workflow.mjs';
@@ -127,6 +128,38 @@ test('a source manifest telemetry block survives crawlRun SQLite persistence', a
     workdayDetail,
   );
   reopened.close();
+});
+
+test('snapshot history is fail-closed for missing times and contradictory stored success evidence after reopen', async (t) => {
+  for (const scenario of [
+    { name: 'missing attempt time', sql: 'UPDATE source_attempts SET finished_at = NULL' },
+    { name: 'invalid attempt time', sql: "UPDATE source_attempts SET finished_at = 'unknown'" },
+    { name: 'missing attempt', sql: 'DELETE FROM source_attempts' },
+    { name: 'latest failed attempt', sql: "UPDATE source_attempts SET status = 'failed'" },
+    { name: 'attempt error', sql: "UPDATE source_attempts SET error = 'transport failed'" },
+    { name: 'source error', sql: "UPDATE source_telemetry SET error = 'transport failed'" },
+    { name: 'nested errors', details: { detail: { errors: ['transport failed'] } } },
+    { name: 'nested failed count', details: { detail: { telemetry: { failed: 1 } } } },
+    { name: 'interrupted details', details: { interrupted: true } },
+    { name: 'unfinished scan', details: { naturalTerminal: false } },
+  ]) await t.test(scenario.name, async () => {
+    const databasePath = tempDatabase();
+    let store = openCrawlerStore(databasePath);
+    try {
+      for (const [runId, at] of [
+        ['history-first', '2026-07-23T06:00:00.000Z'],
+        ['history-second', '2026-07-23T08:00:00.000Z'],
+        ['history-third', '2026-07-23T10:00:00.000Z'],
+      ]) await crawlRun({ store, runId, clock: { now: () => at },
+        sourcePlans: [{ id: 'snapshot-source', fetch: async () => ({ observations: [] }) }],
+      });
+      if (scenario.sql) store.exec(scenario.sql);
+      else store.prepare('UPDATE source_telemetry SET details_json = ?').run(JSON.stringify(scenario.details));
+      store.close();
+      store = openCrawlerStore(databasePath);
+      assert.deepEqual(readLastSuccessfulSourceRuns(store, { excludeRunId: 'history-third' }), {});
+    } finally { store.close(); }
+  });
 });
 
 test('checkpoint persistence is idempotent, merges manifests, and final replay is not retained twice', async () => {
