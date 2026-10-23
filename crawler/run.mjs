@@ -1527,29 +1527,59 @@ function mapJobRow(row) {
   };
 }
 
-// Read the latest successful source or portal lane scan; missing lane evidence stays unknown.
+// Read validated source snapshots at attempt completion; missing times stay Not Verified.
 export function readLastSuccessfulSourceRuns(store, { excludeRunId = null, portalLaneIds = [] } = {}) {
-  const rows = store.prepare(`SELECT source_id, run_id, finished_at FROM (
-    SELECT t.source_id, t.run_id, COALESCE(r.finished_at, r.started_at) AS finished_at,
-      ROW_NUMBER() OVER (PARTITION BY t.source_id ORDER BY COALESCE(r.finished_at, r.started_at) DESC, t.run_id DESC) AS position
+  // Historical warm scans can say succeeded while workflow details retain transport failures.
+  const successfulScans = `WITH successful_scans AS (
+    SELECT t.source_id, t.run_id, a.finished_at, t.details_json
     FROM source_telemetry t
     JOIN crawl_runs r ON r.run_id = t.run_id
-    WHERE t.status = 'succeeded' AND (? IS NULL OR t.run_id <> ?)
-  ) WHERE position = 1`).all(excludeRunId, excludeRunId);
+    JOIN source_attempts a ON a.run_id = t.run_id AND a.source_id = t.source_id
+      AND a.attempt = (SELECT MAX(latest.attempt) FROM source_attempts latest
+        WHERE latest.run_id = t.run_id AND latest.source_id = t.source_id)
+    LEFT JOIN json_each(r.telemetry_json, '$.workflow.sourceTelemetry') workflow ON workflow.key = t.source_id
+    WHERE t.status = 'succeeded' AND a.status = 'succeeded'
+      AND t.error IS NULL AND a.error IS NULL AND julianday(a.finished_at) IS NOT NULL
+      AND (? IS NULL OR t.run_id <> ?)
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(json_array(
+          t.details_json, json_extract(t.details_json, '$.detail'),
+          json_extract(t.details_json, '$.detail.telemetry'),
+          json_extract(t.details_json, '$.manifest'), json_extract(t.details_json, '$.manifest.telemetry'),
+          a.details_json, workflow.value, json_extract(workflow.value, '$.detail'),
+          json_extract(workflow.value, '$.detail.telemetry')
+        )) evidence
+        WHERE json_extract(evidence.value, '$.status') NOT IN ('succeeded', 'ok', 'empty', 'completed')
+          OR json_extract(evidence.value, '$.scanStatus') NOT IN ('succeeded', 'ok', 'empty', 'completed')
+          OR COALESCE(json_extract(evidence.value, '$.error'), '') <> ''
+          OR json_array_length(json_extract(evidence.value, '$.errors')) > 0
+          OR json_array_length(json_extract(evidence.value, '$.failures')) > 0
+          OR json_extract(evidence.value, '$.failed') > 0
+          OR json_extract(evidence.value, '$.boardsFailed') > 0
+          OR json_extract(evidence.value, '$.interrupted') = 1
+          OR json_extract(evidence.value, '$.truncated') = 1
+          OR json_extract(evidence.value, '$.naturalTerminal') = 0
+          OR json_extract(evidence.value, '$.deadline.exhausted') = 1
+      )
+  )`;
+  const rows = store.prepare(`${successfulScans}
+    SELECT source_id, run_id, finished_at FROM (
+      SELECT source_id, run_id, finished_at,
+        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY julianday(finished_at) DESC, run_id DESC) AS position
+      FROM successful_scans
+    ) WHERE position = 1`).all(excludeRunId, excludeRunId);
   const snapshots = Object.fromEntries(rows.map((row) => [row.source_id, { runId: row.run_id, finishedAt: row.finished_at }]));
   if (portalLaneIds.length) {
-    const lastLaneSuccess = store.prepare(`SELECT t.run_id, COALESCE(r.finished_at, r.started_at) AS finished_at
-      FROM source_telemetry t
-      JOIN crawl_runs r ON r.run_id = t.run_id
-      WHERE t.source_id = 'portal-discovery' AND t.status = 'succeeded'
-        AND (? IS NULL OR t.run_id <> ?)
+    const lastLaneSuccess = store.prepare(`${successfulScans}
+      SELECT run_id, finished_at FROM successful_scans
+      WHERE source_id = 'portal-discovery'
         AND EXISTS (
-          SELECT 1 FROM json_each(t.details_json, '$.detail.telemetry.lanes') lane
+          SELECT 1 FROM json_each(details_json, '$.detail.telemetry.lanes') lane
           WHERE json_extract(lane.value, '$.sourceId') = ?
             AND json_extract(lane.value, '$.status') IN ('succeeded', 'ok', 'empty')
             AND json_extract(lane.value, '$.attempted') IS NOT 0
         )
-      ORDER BY COALESCE(r.finished_at, r.started_at) DESC, t.run_id DESC
+      ORDER BY julianday(finished_at) DESC, run_id DESC
       LIMIT 1`);
     for (const laneId of portalLaneIds) {
       const row = lastLaneSuccess.get(excludeRunId, excludeRunId, laneId);
