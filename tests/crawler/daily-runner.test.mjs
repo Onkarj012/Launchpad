@@ -4041,6 +4041,63 @@ test('C: a scorer timeout leaves a retry record that a later run on the reopened
   assert.equal(second.shortlist.length, 1);
 });
 
+test('a same-run scoring retry recovers after a timeout and persists across SQLite reopen', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const runId = 'scoring-retry-same-run-success';
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId, scorer: timedOutScorer }));
+  assert.equal(first.scoringRetryPersistence, 'persisted', first.scoringRetryPersistenceError);
+  assert.deepEqual(first.scoringRetry.records.map((record) => [record.outcome, record.attemptCount]), [['pending', 1]]);
+
+  let scoredRows = 0;
+  const second = await runDailyNormalActual(runOptions(config, transport, {
+    runId,
+    shortlistLimit: 0,
+    // Score the role again while leaving it outside the shortlist to exercise recovery.
+    scorer: async (rows) => {
+      scoredRows += rows.length;
+      return validScorer(rows);
+    },
+  }));
+  assert.equal(scoredRows, 1, 'the rerun must score the role again');
+  assert.equal(second.outcome.fatal, false);
+  assert.deepEqual(second.shortlist, []);
+  assert.equal(second.scoringRetryPersistence, 'persisted', second.scoringRetryPersistenceError);
+  const reopened = openCrawlerStore(config.databasePath);
+  try {
+    const telemetry = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?')
+      .get(`${runId}-crawler-v2`).telemetry_json);
+    assert.deepEqual(telemetry.workflow.scoringRetry.records.map((record) => [record.canonicalUrl, record.outcome, record.outcomeReason, record.attemptCount, record.nextEligibleAt]), [
+      [first.scoringRetry.records[0].canonicalUrl, 'recovered', 'scored-this-run', 2, null],
+    ]);
+  } finally { reopened.close(); }
+});
+
+test('a same-run scoring retry increments the persisted attempt count after another timeout', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const runId = 'scoring-retry-same-run-timeout';
+  let scorerCalls = 0;
+  // Count each timeout to prove the rerun invokes the scorer again.
+  const scorer = async () => {
+    scorerCalls += 1;
+    return timedOutScorer();
+  };
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId, scorer }));
+  assert.equal(first.scoringRetryPersistence, 'persisted', first.scoringRetryPersistenceError);
+  assert.deepEqual(first.scoringRetry.records.map((record) => [record.outcome, record.attemptCount]), [['pending', 1]]);
+
+  const second = await runDailyNormalActual(runOptions(config, transport, { runId, scorer }));
+  assert.equal(scorerCalls, 2);
+  assert.equal(second.scoringRetryPersistence, 'persisted', second.scoringRetryPersistenceError);
+  const reopened = openCrawlerStore(config.databasePath);
+  try {
+    const telemetry = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?')
+      .get(`${runId}-crawler-v2`).telemetry_json);
+    assert.deepEqual(telemetry.workflow.scoringRetry.records.map((record) => [record.canonicalUrl, record.outcome, record.reason, record.attemptCount]), [
+      [first.scoringRetry.records[0].canonicalUrl, 'pending', 'SCORER_TIMEOUT', 2],
+    ]);
+  } finally { reopened.close(); }
+});
+
 test('D: a re-score missing componentScores keeps the role pending on a second attempt, outside the shortlist', async () => {
   const { config, transport } = retryConfigAndTransport();
   await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-invalid-first', scorer: timedOutScorer }));
@@ -4154,6 +4211,9 @@ test('readScoringRetryState returns the newest earlier run state and skips the e
 
   assert.deepEqual(readScoringRetryState(store), stateFor('current'));
   assert.deepEqual(readScoringRetryState(store, { excludeRunId: 'current' }), stateFor('newer'));
+  assert.deepEqual(readScoringRetryState(store, { preferRunId: 'older' }), stateFor('older'));
+  assert.deepEqual(readScoringRetryState(store, { preferRunId: 'no-state' }), stateFor('current'));
+  assert.deepEqual(readScoringRetryState(store, { preferRunId: 'missing' }), stateFor('current'));
   store.close();
 });
 
