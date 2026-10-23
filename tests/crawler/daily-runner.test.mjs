@@ -4282,6 +4282,79 @@ test('a retried role that now fails a history gate ends terminal and never reach
   assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason]), [['terminal', 'current-gate-rejected:SUPPRESSED_HISTORICAL']]);
 });
 
+test('a retried role rejected by current freshness settles with the rejection code', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-freshness-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].outcome, 'pending');
+
+  const second = await runDailyNormalActual(runOptions(config, transport, {
+    runId: 'scoring-retry-freshness-second',
+    clock: { now: () => '2026-08-08T06:30:00.000Z', sleep: async () => {} },
+    scorer: async () => { assert.fail('a freshness-rejected role must not reach scoring'); },
+  }));
+  assert.deepEqual(second.scoringQueue, []);
+  assert.deepEqual(second.verificationQueue, []);
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason, record.attemptCount, record.nextEligibleAt]), [
+    ['terminal', 'current-gate-rejected:FRESHNESS_OLDER_THAN_14D', 1, null],
+  ]);
+});
+
+test('a retried role rejected by current eligibility settles with the rejection code', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-eligibility-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].outcome, 'pending');
+
+  const second = await runDailyNormalActual(runOptions(config, fakeTransport({
+    'retry-board': [greenhouseJob(1902, 'retry-board', { location: { name: 'Bengaluru, India' } })],
+  }), {
+    runId: 'scoring-retry-eligibility-second',
+    scorer: async () => { assert.fail('an eligibility-rejected role must not reach scoring'); },
+  }));
+  assert.deepEqual(second.scoringQueue, []);
+  assert.deepEqual(second.verificationQueue, []);
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason, record.attemptCount, record.nextEligibleAt]), [
+    ['terminal', 'current-gate-rejected:GEO_ONSITE_NOT_PUNE', 1, null],
+  ]);
+});
+
+test('a successful retry counts as scored when two other scorer failures make the run fatal', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-fatal-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].attemptCount, 1);
+
+  const second = await runDailyNormalActual(runOptions(config, fakeTransport({
+    'retry-board': [1902, 1903, 1904].map((id) => greenhouseJob(id, 'retry-board')),
+  }), {
+    runId: 'scoring-retry-fatal-second',
+    scorer: async (rows) => ({
+      ...await validScorer(rows.filter((row) => row.canonicalUrl.endsWith('/1902'))),
+      failures: rows.filter((row) => !row.canonicalUrl.endsWith('/1902'))
+        .map((row) => ({ canonicalUrl: row.canonicalUrl, reason: 'SCORER_EXEC_FAILED' })),
+    }),
+  }));
+  assert.equal(second.outcome.fatal, true);
+  assert.equal(second.scoring.scorer.attempted, 3);
+  assert.equal(second.scoring.scorer.failures.length, 2);
+  assert.equal(second.counts.scored, 1);
+  assert.equal(second.scoringQueue.length, 2);
+  assert.deepEqual(second.results, []);
+  assert.deepEqual(second.shortlist, []);
+  assert.deepEqual(second.plannedNotionOperations, []);
+  const recovered = second.scoringRetry.records.find((record) => record.canonicalUrl === first.scoringRetry.records[0].canonicalUrl);
+  assert.deepEqual([recovered.outcome, recovered.outcomeReason, recovered.attemptCount, recovered.nextEligibleAt], [
+    'recovered', 'scored-this-run', 2, null,
+  ]);
+  const store = openCrawlerStore(config.databasePath);
+  try {
+    const telemetry = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?')
+      .get('scoring-retry-fatal-second-crawler-v2').telemetry_json);
+    const persisted = telemetry.workflow.scoringRetry;
+    assert.equal(second.scoringRetryPersistence, 'persisted', second.scoringRetryPersistenceError);
+    assert.deepEqual(persisted.records, second.scoringRetry.records);
+    assert.doesNotMatch(JSON.stringify(persisted), /matchScore|componentScores|rationale|"score"/);
+  } finally { store.close(); }
+});
+
 test('readScoringRetryState returns the newest earlier run state and skips the excluded run', () => {
   const store = openCrawlerStore();
   const insertRun = (runId, startedAt, workflow) => store.prepare('INSERT INTO crawl_runs(run_id, status, stage, started_at, telemetry_json) VALUES (?, ?, ?, ?, ?)')
@@ -4295,6 +4368,52 @@ test('readScoringRetryState returns the newest earlier run state and skips the e
   assert.deepEqual(readScoringRetryState(store), stateFor('current'));
   assert.deepEqual(readScoringRetryState(store, { excludeRunId: 'current' }), stateFor('newer'));
   store.close();
+});
+
+test('direct ATS held leads retain closed and expired outcomes without reporting recovery', async (t) => {
+  for (const [outcome, closing, reason] of [
+    ['confirmed-closed', { isClosed: true }, 'source-closed-flag'],
+    ['expired', { validThrough: '2000-01-01' }, 'valid-through-past'],
+  ]) await t.test(outcome, async () => {
+    const { config } = testConfig();
+    config.sources.portals = { enabled: false };
+    const id = `direct-ats-${outcome}`;
+    const url = `https://boards.greenhouse.io/acme/jobs/${id}`;
+    const lead = { provider: 'greenhouse', providerJobId: id, jobId: id,
+      discoveryUrl: url, canonicalUrl: url, sourceKind: 'ats-direct',
+      company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India' };
+    const requests = [];
+    const result = await runDailyNormalActual(runOptions(config, async (requestedUrl) => {
+      requests.push(requestedUrl);
+      assert.equal(requestedUrl, url);
+      const posting = {
+        '@context': 'https://schema.org', '@type': 'JobPosting', title: lead.title,
+        hiringOrganization: { name: lead.company }, identifier: { name: lead.company, value: id },
+        description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        datePosted: '2026-07-23', employmentType: 'FULL_TIME', ...closing,
+      };
+      return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+    }, { runId: id, heldPortalLeads: [lead] }));
+    assert.deepEqual(requests, [url]);
+    const reopened = openCrawlerStore(config.databasePath);
+    let saved;
+    try {
+      saved = readCrawlerRunData(reopened, `${id}-crawler-v2`).observations
+        .find(({ raw }) => raw.jobId === id).raw;
+    } finally { reopened.close(); }
+    assert.equal(saved.evidence.recovery.outcome, outcome);
+    assert.notEqual(saved.evidence.recovery.outcome, 'recovered');
+    assert.equal(saved.evidence.closingState.reason, reason);
+    assert.equal(saved.evidence.recovery.nextEligibleAt, null);
+    assert.equal(result.heldLeadRecovery.recovered, 0);
+    assert.equal(result.dailyReceipt.recovery.heldLeads.recovered, 0);
+    assert.equal(result.heldLeadRecovery.outcomes[0].recoveryState, outcome);
+    assert.notEqual(result.heldLeadRecovery.outcomes[0].outcome, 'recovered');
+    const report = renderLocalLeadReport(result, { now: NOW });
+    assert.match(report, /Recovered: 0\./);
+    assert.ok(report.includes(`retained ${outcome}`));
+  });
 });
 
 test('held-lead recovery reads only recovery rows and their matching ordinary successes', async () => {
