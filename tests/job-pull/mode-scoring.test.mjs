@@ -231,3 +231,49 @@ test('a settled record is shown once in a later run with a previous-run reason, 
   const dropped = nextScoringRetryState({ prior: carried, result: {}, runAt: '2026-10-23T06:00:00.000Z' });
   assert.deepEqual(dropped.records, []);
 });
+
+
+test('cross-provider requisition aliases settle retries without weakening the same-provider veto', async (t) => {
+  for (const [name, provider, retainedAliases, currentAliases, expected] of [
+    ['retained alias', 'lever', ['lever|new 2'], [], 'selected'],
+    ['current alias', 'lever', [], ['greenhouse|old 1'], 'selected'],
+    ['no proven alias', 'lever', [], [], 'pending'],
+    ['same-provider alias', 'greenhouse', ['greenhouse|new 2'], ['greenhouse|old 1'], 'pending'],
+  ]) await t.test(name, () => {
+    const old = { ...failedRow('old-1'), identityAliases: retainedAliases };
+    const current = { ...failedRow('new-2'), provider, identityAliases: currentAliases };
+    const prior = nextScoringRetryState({ result: { scoringQueue: [old] }, runAt: RUN_AT });
+    const next = nextScoringRetryState({ prior, result: { shortlist: [current] }, runAt: '2026-10-22T09:00:00.000Z' });
+    assert.equal(next.records[0].outcome, expected);
+    assert.equal(next.records[0].attemptCount, expected === 'selected' ? 2 : 1);
+  });
+});
+
+test('a generic careers URL cannot settle another employer or title without requisition evidence', async (t) => {
+  const old = { ...failedRow('old'), provider: null, providerJobId: null, canonicalUrl: 'https://jobs.example.test/careers' };
+  const prior = nextScoringRetryState({ result: { scoringQueue: [old] }, runAt: RUN_AT });
+  for (const [name, overrides] of [
+    ['another employer', { company: 'Other Employer' }],
+    ['another title', { title: 'Backend Engineer' }],
+    ['missing employer', { company: null }],
+  ]) await t.test(name, () => {
+    const current = { ...old, ...overrides };
+    const next = nextScoringRetryState({ prior, result: { shortlist: [current] }, runAt: '2026-10-22T09:00:00.000Z' });
+    assert.equal(next.records[0].outcome, 'pending');
+    assert.equal(next.records[0].outcomeReason, 'awaiting-current-evidence');
+    assert.equal(next.records[0].attemptCount, 1);
+  });
+});
+
+test('different canonical URLs ignore fallback aliases but retain proven URL aliases', async (t) => {
+  const old = { ...failedRow('old'), provider: null, providerJobId: null, identityAliases: ['acme|ai engineer|pune'] };
+  const prior = nextScoringRetryState({ result: { scoringQueue: [old] }, runAt: RUN_AT });
+  for (const [name, aliases, expected] of [
+    ['company title location fallback', old.identityAliases, 'pending'],
+    ['proven URL alias', [`url|${old.canonicalUrl}`], 'selected'],
+  ]) await t.test(name, () => {
+    const current = { ...old, canonicalUrl: 'https://jobs.example.test/new', identityAliases: aliases };
+    const next = nextScoringRetryState({ prior, result: { shortlist: [current] }, runAt: '2026-10-22T09:00:00.000Z' });
+    assert.equal(next.records[0].outcome, expected);
+  });
+});

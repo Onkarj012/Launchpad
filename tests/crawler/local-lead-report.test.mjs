@@ -228,11 +228,12 @@ test('E: the scoring recovery section shows counts, retry rows, and Not Verified
   const markdown = renderLocalLeadReport(result, { now: NOW });
   assert.match(markdown, /## Scoring recovery/);
   assert.match(markdown, /Recovered: 0\. Selected: 1\. Scoring failed: 1\. Failed again: 1\. Waiting for current evidence: 1\. Terminal: 1\./);
-  assert.match(markdown, /\| Acme \| AI Engineer \| selected \| scored-on-retry-and-shortlisted \| 2 \| 2026-10-12T20:00:00\.000Z \| Not Verified \|/);
+  assert.match(markdown, /\| Acme \| AI Engineer \| selected \| scored-on-retry-and-shortlisted \| 2 \| 2026-10-12T20:00:00\.000Z \| Not scheduled \|/);
   assert.match(markdown, /\| Gamma Works \| Backend Engineer \| pending \| awaiting-current-evidence \| 1 \| Not Verified \| 2026-10-12T22:00:00\.000Z \|/);
 
   const html = renderLocalDailyHtmlReport(result);
   assert.match(html, /data-section="scoring-recovery"/);
+  assert.match(html, /<td>Acme<\/td><td>AI Engineer<\/td><td>selected<\/td><td>scored-on-retry-and-shortlisted<\/td><td>2<\/td><td>2026-10-12T20:00:00\.000Z<\/td><td>Not scheduled<\/td>/);
   assert.match(html, /Selected: 1\. Scoring failed: 1\. Failed again: 1\. Waiting for current evidence: 1\. Terminal: 1\./);
   assert.match(html, /<td>Gamma Works<\/td><td>Backend Engineer<\/td><td>pending<\/td><td>awaiting-current-evidence<\/td><td>1<\/td><td>Not Verified<\/td>/);
 });

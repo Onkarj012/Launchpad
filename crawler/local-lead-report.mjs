@@ -161,7 +161,7 @@ function recoveryReason(record) {
 // Render the scoring recovery counts and one row per retry record, or nothing without records.
 function scoringRecoveryHtml(records) {
   if (!records.length) return '';
-  const rows = records.map((record) => `<tr><td>${html(record.company)}</td><td>${html(record.title)}</td><td>${html(record.outcome)}</td><td>${html(recoveryReason(record))}</td><td>${html(record.attemptCount)}</td><td>${html(record.attemptedAt)}</td><td>${html(record.nextEligibleAt)}</td></tr>`).join('');
+  const rows = records.map((record) => `<tr><td>${html(record.company)}</td><td>${html(record.title)}</td><td>${html(record.outcome)}</td><td>${html(recoveryReason(record))}</td><td>${html(record.attemptCount)}</td><td>${html(record.attemptedAt)}</td><td>${html(record.nextEligibleAt ?? 'Not scheduled')}</td></tr>`).join('');
   return `<section data-section="scoring-recovery"><h2>Scoring recovery</h2><p>${html(scoringRecoverySummary(records))}</p><table><thead><tr><th>Company</th><th>Title</th><th>Outcome</th><th>Reason</th><th>Attempts</th><th>Attempted</th><th>Earliest retry (not enforced)</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
@@ -246,7 +246,7 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     lines.push('## Scoring recovery', '', scoringRecoverySummary(scoringRecords), '',
       '| Company | Title | Outcome | Reason | Attempts | Attempted | Earliest retry (not enforced) |',
       '| --- | --- | --- | --- | ---: | --- | --- |');
-    for (const record of scoringRecords) lines.push(`| ${cell(record.company)} | ${cell(record.title)} | ${cell(record.outcome)} | ${cell(recoveryReason(record))} | ${cell(record.attemptCount)} | ${cell(record.attemptedAt)} | ${cell(record.nextEligibleAt)} |`);
+    for (const record of scoringRecords) lines.push(`| ${cell(record.company)} | ${cell(record.title)} | ${cell(record.outcome)} | ${cell(recoveryReason(record))} | ${cell(record.attemptCount)} | ${cell(record.attemptedAt)} | ${cell(record.nextEligibleAt ?? 'Not scheduled')} |`);
     lines.push('');
   }
   if (result.modes && typeof result.modes === 'object') {
