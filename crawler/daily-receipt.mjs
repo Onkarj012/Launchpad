@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { candidateDedupKey, canonicalizeUrl, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { normalizeText } from './identity.mjs';
+import { scoreState } from '../job-pull/mode-scoring.mjs';
 
 const IMPLEMENTATION_FILES = [
   'crawler/daily-runner.mjs', 'crawler/local-lead-report.mjs', 'crawler/daily-receipt.mjs',
@@ -117,7 +118,7 @@ function companyTitleLocation(raw) {
 function addOverlay(overlays, keyHash, update) {
   if (!keyHash) return;
   const previous = overlays.get(keyHash) ?? {
-    modes: [], score: null, scoreComponents: null, selectionTier: null,
+    modes: [], score: null, scoreComponents: null, scoringStatus: null, selectionTier: null,
     selected: false, selectionKnown: false, historicalSuppressed: false,
   };
   update(previous);
@@ -211,7 +212,9 @@ function receiptIdentityRows(result) {
       observedAt: observed?.observedAt ?? null,
       postedAt: observed?.postedAt ?? null,
       dateEvidence: observed?.dateEvidence ?? observed?.evidence?.dateEvidence ?? null,
-      ...(observed?.provenance?.queryId ? { queryId: observed.provenance.queryId } : {}),
+      ...(observed?.provenance?.queryId != null ? { queryId: observed.provenance.queryId }
+        : Number.isInteger(observed?.provenance?.queryIndex) ? { queryId: `query-index:${observed.provenance.queryIndex}` }
+          : observed?.evidence?.sourceQuery ? { queryId: observed.evidence.sourceQuery } : {}),
       ...(observed?.evidence?.recovery?.kind === 'held-lead-recovery' ? { recovery: true, recoveryOutcome: recoveryOutcome(observed) } : {}),
     };
     for (const keyHash of observationKeyHashes(candidate)) {
@@ -229,6 +232,7 @@ function receiptIdentityRows(result) {
       addOverlay(overlays, keyHash, (previous) => {
         previous.modes.push(mode);
         previous.score = role.matchScore ?? role.score ?? previous.score;
+        previous.scoringStatus = scoreState(role).status;
         previous.scoreComponents = role.scoreComponents ?? role.components ?? role.componentScores ?? previous.scoreComponents;
         previous.selectionTier = role.selectionTier ?? previous.selectionTier;
         previous.historicalSuppressed ||= role.historicalSuppressed === true;
@@ -325,6 +329,7 @@ function receiptIdentityRows(result) {
       selected,
       score: overlay?.score ?? row.score,
       scoreComponents: overlay?.scoreComponents ?? null,
+      scoringStatus: overlay?.scoringStatus ?? null,
       selectionTier: overlay?.selectionTier ?? null,
       modes: overlay?.modes ?? [],
       historicalSuppressed: overlay?.historicalSuppressed === true || row.historicalSuppressed,
@@ -353,6 +358,7 @@ function receiptIdentityRows(result) {
       previous.historicalSuppressed ||= row.historicalSuppressed;
       previous.modes = [...new Set([...previous.modes, ...row.modes])];
       previous.score ??= row.score;
+      previous.scoringStatus ??= row.scoringStatus;
       previous.selectionTier ??= row.selectionTier;
     }
   }

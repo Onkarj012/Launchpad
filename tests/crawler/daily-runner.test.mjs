@@ -14,6 +14,7 @@ import { loadBoardRotationState, saveBoardRotationState } from '../../crawler/bo
 import { openCrawlerStore, crawlRun, readCrawlerRunData, readHeldLeadRecoveryState, readScoringRetryState } from '../../crawler/run.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
+import { mergeScoreRow } from '../../job-pull/match-scorer.mjs';
 import { candidateDedupKey, candidateRequisitionKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { classifyCandidate } from '../../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../../job-pull/freshness.mjs';
@@ -752,7 +753,7 @@ test('the receipt keeps query and recovery marks per observation and the useful 
     funnel: { lifecycle: { normalized: 1 }, identityRows: [
       { identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: 'theirstack', source: 'theirstack', postedAt: job.postedAt, evidenceHash: 'sha256:a' },
     ] },
-    observations: [observed('q-ai'), observed('q-ml'), recovered],
+    observations: [observed('q-ai'), { candidate: { ...job, sourceId: 'theirstack', evidence: { sourceQuery: 'q-ml' } } }, recovered],
     modes: {},
   });
   assert.equal(receipt.retained.identityRows.length, 1);
@@ -771,7 +772,7 @@ test('the receipt keeps query and recovery marks per observation and the useful 
   ]);
 });
 
-test('a completed run credits the crawler source with the requisition it observed', async () => {
+test('a selected role with an explicit score and no componentScores counts as validly scored', async () => {
   const { config } = testConfig({ warmBoards: [{ slug: 'crawler-board', company: 'Crawler Company' }] });
   const result = await runDailyNormal(runOptions(
     config,
@@ -782,6 +783,9 @@ test('a completed run credits the crawler source with the requisition it observe
   const warm = result.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-warm');
   assert.equal(warm?.uniqueRequisitions, 1);
   assert.equal(warm?.stages.selected, 1);
+  assert.equal(result.shortlist[0].componentScores, null);
+  assert.equal(warm?.stages.validScore, 1);
+  assert.equal(result.dailyReceipt.retained.identityRows[0].scoringStatus, 'scored');
 });
 
 test('lane provenance with distinct source ids survives next to a crawler observation of the same posting', () => {
@@ -823,7 +827,7 @@ test('a recovered held lead keeps its recovery mark after employer resolution ch
 test('a selected role with a valid score and component scores counts as validly scored in the useful yield', () => {
   const job = normalizeCandidate(rawPortalJob(1304, { provider: 'theirstack', source: 'theirstack' }));
   const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
-  const role = { ...job, matchScore: 80, componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } };
+  const role = mergeScoreRow(job, { matchScore: 80, responseLikelihood: 15, componentScores: { skillMatch: 30, domainRelevance: 15, seniorityFit: 10, locationFit: 10, responseLikelihood: 15 } }).candidate;
   const receipt = buildDailyReceipt({
     counts: { fetched: 1 }, requestedCount: 1, outcome: { status: 'completed' },
     funnel: { lifecycle: { normalized: 1 }, identityRows: [

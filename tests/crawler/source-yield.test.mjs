@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates, buildUsefulSourceYield } from '../../crawler/source-yield.mjs';
 import { runCrawlerOperator } from '../../crawler/operator.mjs';
 import { main } from '../../crawler/cli.mjs';
+import { discoverTheirStack } from '../../crawler/theirstack.mjs';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -202,7 +203,7 @@ test('local trial report command reads retained public crawler output without li
 function identityRow(identityHash, overrides = {}) {
   return {
     identityHash, stage: 'eligible', reason: 'Not Verified', selected: false, historicalSuppressed: false,
-    jdHash: 'sha256:jd', score: 80, scoreComponents: { skillMatch: 30 }, provenance: [], ...overrides,
+    jdHash: 'sha256:jd', score: 80, scoringStatus: 'scored', scoreComponents: { skillMatch: 30 }, provenance: [], ...overrides,
   };
 }
 
@@ -257,7 +258,7 @@ test('a requisition found by discovery and by recovery appears in both groups bu
 
 test('request, duration, truncation and failure cost accompany each row, and shared-query cost stays Not Verified', () => {
   const sourceTelemetry = {
-    theirstack: { requests: 4, durationMs: 1200, truncated: true, failures: ['HTTP 429'], detail: { telemetry: { queryDiagnostics: [{ queryIndex: 0 }] } } },
+    theirstack: { requests: 4, durationMs: 1200, truncated: true, failures: ['HTTP 429'], detail: { telemetry: { queryDiagnostics: [{ queryId: 'q-ai', queryIndex: 0 }] } } },
     'ats-warm': { detail: { telemetry: { requests: 2 } }, durationMs: 300 },
   };
   const shared = buildUsefulSourceYield({
@@ -318,22 +319,71 @@ test('a verification row is hard-eligible only when its reason is a known non-ga
   assert.equal(theirstack.stages.hardEligibilityPassed, 1);
 });
 
-test('validScore reads componentScores as well as scoreComponents', () => {
+test('validScore stays fail-closed without a recorded valid scoring result', () => {
   const report = buildUsefulSourceYield({
-    identityRows: [identityRow('sha256:scored', { stage: 'finalSelection', selected: true, scoreComponents: null, componentScores: { skillMatch: 30 }, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
-    sourceTelemetry: {},
-    sourceEndStates: {},
+    identityRows: [
+      identityRow('sha256:explicit', { scoreComponents: null, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      ...[null, 'unscored', 'scoring-failed'].map((scoringStatus) => identityRow(`sha256:${scoringStatus}`, {
+        stage: 'finalSelection', selected: true, scoringStatus, componentScores: { skillMatch: 30 },
+        provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }],
+      })),
+    ],
   });
+  assert.equal(report.sources[0].stages.selected, 3);
   assert.equal(report.sources[0].stages.validScore, 1);
 });
 
-test('a source that ran two queries gives no query row its cost, even when one query returned the role', () => {
+test('a source with productive and empty recorded queries keeps both rows and no shared cost', async () => {
+  let requests = 0;
+  const result = await discoverTheirStack({
+    apiKey: 'fixture-key', runAt: '2026-10-22T06:30:00.000Z', maxQueriesPerRun: 2,
+    queries: ['q-ai', 'q-ml', 'q-never-run'].map((id) => ({ id, filters: { posted_at_max_age_days: 7 } })),
+    transport: async () => ({ status: 200, body: {
+      metadata: { total_results: requests === 0 ? 1 : 0, total_companies: requests === 0 ? 1 : 0, truncated_results: 0, truncated_companies: 0 },
+      data: requests++ === 0 ? [{
+        id: 101, job_title: 'AI Engineer', company: 'Acme', location: 'Pune, India',
+        description: 'Build reliable AI systems.', date_posted: '2026-10-21',
+        url: 'https://www.linkedin.com/jobs/view/101',
+      }] : [],
+    } }),
+  });
   const report = buildUsefulSourceYield({
-    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] })],
-    sourceTelemetry: { theirstack: { requests: 5, durationMs: 100, detail: { telemetry: { queryDiagnostics: [{ queryIndex: 0, rowsReturned: 1 }, { queryIndex: 1, rowsReturned: 0 }] } } } },
+    identityRows: [identityRow('sha256:a', { provenance: [{ sourceId: 'theirstack', queryId: result.observations[0].provenance.queryId }] })],
+    sourceTelemetry: { theirstack: { requests, durationMs: 100, detail: result.manifest } },
     sourceEndStates: {},
   });
-  assert.deepEqual(report.sources[0].cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
+  assert.equal(requests, 2);
+  assert.deepEqual(report.sources.map((row) => row.queryId), ['q-ai', 'q-ml']);
+  assert.equal(report.sources[0].uniqueRequisitions, 1);
+  const empty = report.sources[1];
+  assert.equal(empty.referenceCount, 0);
+  assert.equal(empty.uniqueRequisitions, 0);
+  assert.deepEqual(empty.stages, { jdPresent: 0, hardEligibilityPassed: 0, validScore: 0, scoringFailed: 0, historySuppressed: 0, verification: 0, selected: 0, routeRecovered: 0 });
+  for (const row of report.sources) {
+    assert.deepEqual(row.cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
+  }
+});
+
+test('recorded query indexes and search text keep empty rows while skipped queries stay absent', () => {
+  const report = buildUsefulSourceYield({
+    sourceTelemetry: {
+      theirstack: { requests: 2, detail: { telemetry: { queryDiagnostics: [
+        { queryIndex: 0, pagesFetched: 1 }, { queryIndex: 1, pagesFetched: 1 },
+        { queryId: 'budget-exhausted', queryIndex: 2, pagesFetched: 0, interrupted: false },
+      ] } } },
+      'brave-search': { detail: { telemetry: { queryDiagnostics: [
+        { query: 'AI Engineer Pune', status: 'success' },
+        { query: 'Backend Engineer India', status: 'skipped' },
+        { queryId: 'not-started', status: 'not_started' },
+      ] } } },
+    },
+  });
+  assert.deepEqual(report.sources.map(({ sourceId, queryId }) => [sourceId, queryId]), [
+    ['brave-search', 'AI Engineer Pune'], ['theirstack', 'query-index:0'], ['theirstack', 'query-index:1'],
+  ]);
+  assert.ok(report.sources.every((row) => row.uniqueRequisitions === 0));
+  assert.ok(report.sources.every((row) => Object.values(row.stages).every((count) => count === 0)));
+  assert.ok(report.sources.every((row) => row.cost.requests === 'Not Verified'));
 });
 
 test('a query row with no query telemetry keeps its cost Not Verified', () => {
