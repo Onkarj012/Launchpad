@@ -407,6 +407,19 @@ test('P11 item 4: each card shows exactly one novelty label, and New-market veri
   }
 });
 
+test('history ambiguity in VerifyQueue stays first seen locally even with loaded history', () => {
+  const ambiguous = role('ambiguous', 'Ambiguous Labs', { reasons: ['HISTORICAL_IDENTITY_AMBIGUOUS'] });
+  const clean = role('clean', 'Clean Labs');
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY,
+    modes: { normal: { results: [clean], shortlist: [] } }, verificationQueue: [ambiguous] });
+  const ambiguousCard = cardFor(html, 'ambiguous');
+  assert.match(ambiguousCard, /State: Promising, needs verification<\/p>/);
+  assert.match(ambiguousCard, /Reasons: HISTORICAL_IDENTITY_AMBIGUOUS<\/p>/);
+  assert.doesNotMatch(ambiguousCard, /New-market verified/);
+  assert.match(ambiguousCard, /Novelty: First seen locally<\/p>/);
+  assert.match(cardFor(html, 'clean'), /Novelty: New-market verified<\/p>/);
+});
+
 test('P11 item 5: counts show requested, eligible, selected, confirmed delivered and shortfall separately', () => {
   const picked = [
     role('a', 'A Labs', { applicationReady: true, applicationReadiness: 'Ready', matchScore: 80 }),
