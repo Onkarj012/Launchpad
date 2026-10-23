@@ -4814,6 +4814,68 @@ test('held-lead recovery reads only recovery rows and their matching ordinary su
   store.close();
 });
 
+test('P11 item 5: the requested shortlist limit reaches the counts line of a daily run', async () => {
+  const { config } = testConfig();
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+    shortlistLimit: 5,
+  }));
+  assert.match(renderLocalDailyHtmlReport(result), /<li>Requested: 5<\/li><li>Eligible: /);
+});
+
+test('P11 item 7: a daily run shows each reason and next safe action for contradictory, old, duplicate-route and incomplete roles', async () => {
+  const { config } = testConfig();
+  const sharedRoute = 'https://shared-route.example.test/careers/apply';
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: {
+      ...emptyLegacyFixtures(),
+      'portal-naukri': {
+        candidates: [
+          rawPortalJob(3001, { company: 'Conflict Labs', title: 'AI Engineer',
+            description: 'Full-time AI Engineer role. Requires 0-1 years or 2+ years depending on the level of experience.' }),
+          rawPortalJob(3002, { company: 'Old Labs', title: 'AI Engineer', postedAt: '2026-05-01T00:00:00.000Z' }),
+          rawPortalJob(3003, { company: 'Route Labs', title: 'ML Engineer', originalApplicationUrl: sharedRoute }),
+          rawPortalJob(3004, { company: 'Route Two Labs', title: 'ML Engineer', originalApplicationUrl: sharedRoute }),
+          rawPortalJob(3005, { company: 'Missing Labs', title: 'AI Engineer', liveness: { status: 'Not Verified', evidence: 'no employer check' } }),
+        ],
+        manifest: { status: 'ok' },
+      },
+    },
+  }));
+  const html = renderLocalDailyHtmlReport(result);
+  if (process.env.P11_RECEIPT_DIR) {
+    mkdirSync(process.env.P11_RECEIPT_DIR, { recursive: true });
+    writeFileSync(path.join(process.env.P11_RECEIPT_DIR, 'sample-report.html'), html, 'utf8');
+    writeFileSync(path.join(process.env.P11_RECEIPT_DIR, 'sample-report.md'), renderLocalLeadReport(result, { now: NOW }), 'utf8');
+  }
+
+  const receiptRow = (report, reason) => report.split('<tr>').find((row) => row.includes(reason)) ?? '';
+  assert.match(receiptRow(html, 'EXPERIENCE_NOT_VERIFIED_CONFLICT'), /Promising, needs verification.*Read the full JD requirement/);
+  assert.match(receiptRow(html, 'FRESHNESS_OLDER_THAN_14D'), /Rejected.*Find the original posting date/);
+  assert.match(receiptRow(html, 'LIVENESS_NOT_VERIFIED'), /Promising, needs verification.*Re-check the employer page/);
+  assert.match(html, /Route Labs/, 'both roles on the shared apply route stay visible');
+  assert.match(html, /Route Two Labs/, 'both roles on the shared apply route stay visible');
+
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  assert.match(markdown, /EXPERIENCE_NOT_VERIFIED_CONFLICT.*Read the full JD requirement/);
+  assert.match(markdown, /LIVENESS_NOT_VERIFIED.*Re-check the employer page/);
+  assert.match(markdown, /FRESHNESS_OLDER_THAN_14D.*Find the original posting date/);
+  assert.doesNotMatch(markdown, /Applied\?/);
+});
+
+test('P11 r1 finding 7: the requested count is the limit the run used after the remaining daily budget clamp', async () => {
+  const { config } = testConfig();
+  const earlier = Array.from({ length: 18 }, (_, index) => ({ key: `earlier-${index}`, company: `Earlier ${index}`, family: 'adjacent-engineering', tier: 'Fallback', primaryMode: 'normal' }));
+  writeFileSync(`${config.databasePath}.daily-shortlist.json`, `${JSON.stringify({ schemaVersion: 'DailyShortlistBudgetV1', days: { '2026-07-24': { 'earlier-run': earlier } } })}\n`);
+  const result = await runDailyNormal(runOptions(config, fakeTransport({}), {
+    sourceFixtures: emptyLegacyFixtures(),
+    shortlistLimit: 5,
+  }));
+  assert.equal(result.requestedShortlistLimit, 2);
+  const html = renderLocalDailyHtmlReport(result);
+  assert.match(html, /<li>Requested: 2<\/li>/);
+  assert.match(html, /<li>Shortfall this run: 2<\/li>/);
+});
 
 test('malformed scoring retry records preserve the daily receipt and delivery result', async (t) => {
   for (const [name, corrupt] of [

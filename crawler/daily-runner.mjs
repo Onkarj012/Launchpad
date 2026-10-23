@@ -1158,7 +1158,7 @@ async function runDailyNormalImpl({
       surfaced: 0,
       outcome: { status: 'fatal', fatal: true, degraded: false, errors: [{ stage: error.stage || 'crawler', name: error.name || 'Error', message: error.message || String(error) }] },
     };
-    return { ...failed, terminalEnvelope: terminalEnvelope({ result: failed, runId: effectiveRunId, schedule, mode: selectedMode, locationPreset, status: 'failed', fatalReason: error.message || String(error), lastDurableSourceState: error.lastDurableSourceState?.telemetry?.sources ?? null }) };
+    return { ...failed, requestedShortlistLimit: dailyShortlistLimit, terminalEnvelope: terminalEnvelope({ result: failed, runId: effectiveRunId, schedule, mode: selectedMode, locationPreset, status: 'failed', fatalReason: error.message || String(error), lastDurableSourceState: error.lastDurableSourceState?.telemetry?.sources ?? null }) };
   }
   const defaultRotationStatePath = config.databasePath ? path.join(path.dirname(config.databasePath), 'board-rotation-state.json') : DEFAULT_BOARD_ROTATION_STATE_PATH;
   const rotationStatePath = config.sources?.trackedAts?.rotationStatePath ?? defaultRotationStatePath;
@@ -1202,6 +1202,7 @@ async function runDailyNormalImpl({
     ]);
     return {
       ...result,
+      requestedShortlistLimit: dailyShortlistLimit,
       manifest: {
         ...result.manifest,
         firstPassOwner: 'tracked-ats',
@@ -1300,6 +1301,7 @@ async function runDailyNormalImpl({
     const finalEnvelope = { ...envelope, deliveryReconciliation };
     return {
       ...result,
+      requestedShortlistLimit: dailyShortlistLimit,
       heldLeadRecovery: heldPortalRecoveryTelemetry(crawlerResult),
       terminalEnvelope: finalEnvelope,
       deliveryReconciliation,
@@ -1351,6 +1353,7 @@ async function runDailyNormalImpl({
     const finalEnvelope = { ...envelope, deliveryReconciliation };
     return {
       ...result,
+      requestedShortlistLimit: dailyShortlistLimit,
       crawlerObservations: crawlerResult.observations,
       heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
       terminalEnvelope: finalEnvelope,
@@ -1524,6 +1527,7 @@ async function runDailyNormalImpl({
   const finalEnvelope = { ...envelope, deliveryReconciliation };
   return {
     ...result,
+    requestedShortlistLimit: dailyShortlistLimit,
     crawlerObservations: crawlerResult.observations,
     heldLeadRecovery: heldPortalRecoveryTelemetry({ sourceTelemetry: crawlerV2Telemetry }),
     terminalEnvelope: finalEnvelope,
