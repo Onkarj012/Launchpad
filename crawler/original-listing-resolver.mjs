@@ -899,6 +899,7 @@ function mergePatch(observation, details, finalUrl, provider, runAt, fingerprint
       originalApplication: `original-listing:${provider}-detail`,
       originalApplicationProvider: provider,
       originalApplicationLiveness: details.liveness,
+      ...(details.closingState ? { closingState: details.closingState } : {}),
       providerFingerprint: fingerprint,
       fieldSources: details.fieldSources || {},
       dateEvidence: mergedDateEvidence,
