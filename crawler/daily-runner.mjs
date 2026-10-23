@@ -18,7 +18,7 @@ import { PORTAL_SOURCE_LANES } from '../job-pull/normal-sources.mjs';
 import { buildSourceEndStates } from './source-yield.mjs';
 import { runStartupMode } from '../job-pull/startup-mode.mjs';
 import { runRemoteMode } from '../job-pull/remote-mode.mjs';
-import { candidateDedupKey } from '../job-pull/candidate.mjs';
+import { candidateDedupKey, candidateRequisitionKey } from '../job-pull/candidate.mjs';
 import { readOpportunityLedger, validateOpportunityLedger, OPPORTUNITY_COLUMNS, recordSurfaced, repairMissingSurfaced, withOpportunityLedgerLock } from '../job-pull/opportunity-ledger.mjs';
 import { createCodexScorer } from '../job-pull/match-scorer.mjs';
 import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
@@ -327,6 +327,8 @@ function crawlerClock(clock, runAt) {
   return {
     ...(clock && typeof clock === 'object' ? clock : {}),
     now: () => runAt,
+    currentTime: () => typeof clock?.currentTime === 'function' ? clock.currentTime()
+      : typeof clock?.now === 'function' ? clock.now() : Date.now(),
   };
 }
 
@@ -941,6 +943,23 @@ function isIdentityIncompleteHeldRecovery(candidate) {
     && (!candidate.company || !candidate.title);
 }
 
+// Match recovery observations without collapsing bare requisition IDs across providers.
+function heldRecoveryObservationKeys(candidate) {
+  const requisition = candidateRequisitionKey(candidate);
+  if (requisition) return [`requisition:${requisition}`];
+  const keys = [];
+  for (const value of [candidate?.discoveryUrl, candidate?.canonicalUrl, candidate?.url]) {
+    try {
+      const url = new URL(value);
+      if (url.protocol === 'https:') {
+        url.hash = '';
+        keys.push(`url:${url.toString()}`);
+      }
+    } catch {}
+  }
+  return [...new Set(keys)];
+}
+
 // Preserve incomplete employer identity as an explicit verification row.
 function heldRecoveryIdentityVerification(candidate) {
   const identityMissingFields = [!candidate.company ? 'employer' : null, !candidate.title ? 'role' : null].filter(Boolean);
@@ -1244,10 +1263,9 @@ async function runDailyNormalImpl({
     candidate?.evidence?.recovery?.kind === 'held-lead-recovery');
   const incompleteHeldRecovery = heldRecoveryObservations.filter(isIdentityIncompleteHeldRecovery);
   if (heldRecoveryObservations.length) {
-    const recoveryKeys = new Set(heldRecoveryObservations.flatMap((candidate) =>
-      [candidate.providerJobId, candidate.canonicalUrl, candidate.discoveryUrl].filter(Boolean)));
+    const recoveryKeys = new Set(heldRecoveryObservations.flatMap(heldRecoveryObservationKeys));
     const existing = (result.observations ?? []).filter((candidate) =>
-      ![candidate.providerJobId, candidate.canonicalUrl, candidate.discoveryUrl].some((key) => key && recoveryKeys.has(key)));
+      !heldRecoveryObservationKeys(candidate).some((key) => recoveryKeys.has(key)));
     result.observations = [...existing, ...heldRecoveryObservations];
   }
   if (incompleteHeldRecovery.length) {
