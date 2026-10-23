@@ -4157,6 +4157,52 @@ test('readScoringRetryState returns the newest earlier run state and skips the e
   store.close();
 });
 
+test('direct ATS held leads retain closed and expired outcomes without reporting recovery', async (t) => {
+  for (const [outcome, closing, reason] of [
+    ['confirmed-closed', { isClosed: true }, 'source-closed-flag'],
+    ['expired', { validThrough: '2000-01-01' }, 'valid-through-past'],
+  ]) await t.test(outcome, async () => {
+    const { config } = testConfig();
+    config.sources.portals = { enabled: false };
+    const id = `direct-ats-${outcome}`;
+    const url = `https://boards.greenhouse.io/acme/jobs/${id}`;
+    const lead = { provider: 'greenhouse', providerJobId: id, jobId: id,
+      discoveryUrl: url, canonicalUrl: url, sourceKind: 'ats-direct',
+      company: 'Acme Labs', title: 'AI Engineer', location: 'Pune, India' };
+    const requests = [];
+    const result = await runDailyNormalActual(runOptions(config, async (requestedUrl) => {
+      requests.push(requestedUrl);
+      assert.equal(requestedUrl, url);
+      const posting = {
+        '@context': 'https://schema.org', '@type': 'JobPosting', title: lead.title,
+        hiringOrganization: { name: lead.company }, identifier: { name: lead.company, value: id },
+        description: 'Full-time AI Engineer in Pune, India. Build Python services. 0-1 years experience.',
+        jobLocation: { address: { addressLocality: 'Pune', addressCountry: 'India' } },
+        datePosted: '2026-07-23', employmentType: 'FULL_TIME', ...closing,
+      };
+      return { status: 200, body: `<script type="application/ld+json">${JSON.stringify(posting)}</script>` };
+    }, { runId: id, heldPortalLeads: [lead] }));
+    assert.deepEqual(requests, [url]);
+    const reopened = openCrawlerStore(config.databasePath);
+    let saved;
+    try {
+      saved = readCrawlerRunData(reopened, `${id}-crawler-v2`).observations
+        .find(({ raw }) => raw.jobId === id).raw;
+    } finally { reopened.close(); }
+    assert.equal(saved.evidence.recovery.outcome, outcome);
+    assert.notEqual(saved.evidence.recovery.outcome, 'recovered');
+    assert.equal(saved.evidence.closingState.reason, reason);
+    assert.equal(saved.evidence.recovery.nextEligibleAt, null);
+    assert.equal(result.heldLeadRecovery.recovered, 0);
+    assert.equal(result.dailyReceipt.recovery.heldLeads.recovered, 0);
+    assert.equal(result.heldLeadRecovery.outcomes[0].recoveryState, outcome);
+    assert.notEqual(result.heldLeadRecovery.outcomes[0].outcome, 'recovered');
+    const report = renderLocalLeadReport(result, { now: NOW });
+    assert.match(report, /Recovered: 0\./);
+    assert.ok(report.includes(`retained ${outcome}`));
+  });
+});
+
 test('held-lead recovery reads only recovery rows and their matching ordinary successes', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'held-recovery-read-'));
   const store = openCrawlerStore(path.join(root, 'crawler.sqlite'));

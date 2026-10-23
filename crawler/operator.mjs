@@ -1448,7 +1448,7 @@ export function buildSourcePlans({ config, transport, runAt, clock, schedule, re
         const resolved = observationsByCandidate.get(candidate) ?? candidate;
         const reason = index >= portalLimits.maxCandidates ? 'candidate-cap-exceeded'
             : resolved?.evidence?.resolution?.reason ?? (resolved?.originalApplicationUrl ? 'original-employer-detail' : 'candidate-cap-exceeded');
-        const outcome = resolved?.classification === 'direct' && resolved.originalApplicationUrl ? 'recovered'
+        const outcome = resolved?.evidence?.recovery?.outcome === 'recovered' ? 'recovered'
           : /mismatch|identity/.test(reason) ? 'mismatched'
             : /not-found|missing|http-404/.test(reason) ? 'missing'
               : /unsupported|blocked|budget|deadline|deferred|cap-exceeded|aborted/.test(reason) ? 'blocked' : 'failed';
