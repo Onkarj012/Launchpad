@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { candidateDedupKey, normalizeCandidate } from '../job-pull/candidate.mjs';
+import { candidateDedupKey, canonicalizeUrl, normalizeCandidate } from '../job-pull/candidate.mjs';
 import { loadConfig, loadConversionPlan } from '../job-pull/config.mjs';
 import { classifyCandidate, isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { classifyFreshness } from '../job-pull/freshness.mjs';
 import { applicationReadiness } from '../job-pull/normal-readiness.mjs';
 import { hasUsableMatchScore } from '../job-pull/mode-scoring.mjs';
+import { integerInRange } from '../job-pull/match-scorer.mjs';
 
 const cell = (value) => String(value ?? 'Not Verified').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
 // Escape text before placing it in the HTML report.
@@ -264,7 +265,9 @@ function historyLoadedFor(result) {
 function receiptRead(row) {
   const codes = [...new Set(String(row.reason ?? '').match(/\b[A-Z]{2,}(?:_[A-Z0-9]+)*\b/g) ?? [])].filter((code) => code !== 'SELECTED');
   const selected = row.selected === true;
+  const readyUnselected = row.stage === 'eligible' && row.scoringStatus === 'scored' && integerInRange(row.score, 0, 100) !== null;
   const state = selected ? 'Ready and scored'
+    : readyUnselected ? 'Ready and scored, not selected'
     : row.stage === 'hardRejection' || row.stage === 'historySuppression' ? 'Rejected' : 'Promising, needs verification';
   const action = selected ? 'Review the employer listing' : codes.length ? nextSafeAction(codes) : 'Manual review';
   return { state, codes, action };
@@ -309,7 +312,7 @@ function locationGroup(role, policy) {
 function sharedApplyRoutes(roles) {
   const requisitionsByRoute = new Map();
   for (const role of roles) {
-    const route = role.originalApplicationUrl;
+    const route = canonicalizeUrl(role.originalApplicationUrl);
     if (typeof route !== 'string' || !/^https?:\/\//i.test(route)) continue;
     requisitionsByRoute.set(route, (requisitionsByRoute.get(route) ?? new Set()).add(role.key ?? role.dedupKey ?? candidateDedupKey(role)));
   }
@@ -556,7 +559,7 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
       ? `<p>Experience: ${html(experienceDecision.code)}; selected track ${html(experienceDecision.selectedTrack || 'Not Verified')}. ${html(experienceDecision.evidence || '')} ${html((experienceDecision.requirements || []).map((item) => item.excerpt).filter(Boolean).join(' | '))}</p>`
       : '';
     const applyUrl = typeof role.originalApplicationUrl === 'string' && /^https?:\/\//i.test(role.originalApplicationUrl) ? role.originalApplicationUrl : null;
-    const sharedRoute = applyUrl != null && sharedRoutes.has(applyUrl);
+    const sharedRoute = applyUrl != null && sharedRoutes.has(canonicalizeUrl(applyUrl));
     const extraModes = (role.otherModes ?? []).map((mode) => MODE_LABELS[mode]?.label ?? mode);
     const why = role.rationale ?? role.strongestHook ?? role.eligibility?.evidence ?? '';
     const assessment = assessRole(role, { inVerificationQueue, sharedRoute });

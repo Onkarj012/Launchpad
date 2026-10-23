@@ -588,3 +588,55 @@ test('P11 r1 finding 8: a ready card shows the requirement excerpt from the reta
   const html = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY, modes: { normal: { results: [ready], shortlist: [] } } });
   assert.match(cardFor(html, 'excerpt'), /Experience: EXPERIENCE_EARLY_CAREER[^<]*Requires 0-1 years of experience/);
 });
+
+
+test('P11 receipt: eligible scored roles are ready and scored, not selected; missing evidence stays fail-closed', () => {
+  const rows = [
+    { identityHash: 'ready-unselected', stage: 'eligible', selected: false, score: 82, scoringStatus: 'scored', reason: 'SELECTION_RULES' },
+    ...[
+      {}, { score: null, scoringStatus: 'scored' }, { score: '', scoringStatus: 'scored' },
+      { score: -1, scoringStatus: 'scored' }, { score: 101, scoringStatus: 'scored' },
+      { score: 82.5, scoringStatus: 'scored' }, { score: 'Not Verified', scoringStatus: 'scored' },
+      { score: 82 }, { score: 82, scoringStatus: 'unscored' }, { score: 82, scoringStatus: 'scoring-failed' },
+      { score: 82, scoringStatus: 'scored', stage: 'verification' },
+    ].map((evidence, index) => ({ identityHash: `unchecked-${index}`, stage: 'eligible', selected: false, ...evidence })),
+  ];
+  const result = { runAt: NOW, modes: {}, dailyReceipt: {
+    scopes: Object.fromEntries(['rawObservations', 'uniqueRequisitions', 'verification', 'hardRejection', 'scoringFailure',
+      'historySuppression', 'finalSelection', 'confirmedDelivery'].map((name) => [name, { count: 0 }])),
+    provenance: {}, retained: { identityRows: rows }, run: {},
+  } };
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  const html = renderLocalDailyHtmlReport(result);
+  for (const row of rows) {
+    const markdownRow = markdown.split('\n').find((line) => line.startsWith(`| ${row.identityHash} |`));
+    const htmlRow = html.split('<tr>').find((line) => line.startsWith(`<td>${row.identityHash}</td>`)).split('</tr>')[0];
+    for (const renderedRow of [markdownRow, htmlRow]) {
+      if (row.identityHash === 'ready-unselected') {
+        assert.match(renderedRow, /Ready and scored, not selected/);
+        assert.doesNotMatch(renderedRow, /needs verification/);
+      } else {
+        assert.match(renderedRow, /Promising, needs verification/, row.identityHash);
+        assert.doesNotMatch(renderedRow, /Ready and scored/, row.identityHash);
+      }
+    }
+  }
+});
+
+test('P11 shared apply routes: tracking parameters and trailing slashes match across distinct dedupKeys', () => {
+  const shared = [
+    role('tracked-route', 'Route Labs', { dedupKey: 'requisition-a', originalApplicationUrl: 'https://x.example.test/apply?utm_source=a' }),
+    role('slash-route', 'Route Labs', { dedupKey: 'requisition-b', originalApplicationUrl: 'https://x.example.test/apply/' }),
+  ];
+  for (const result of [
+    { modes: { normal: { results: shared, shortlist: [] } } },
+    { modes: {}, verificationQueue: shared },
+  ]) {
+    const html = renderLocalDailyHtmlReport({ runAt: NOW, ...result });
+    assert.equal(html.match(/<article>/g)?.length, 2, 'distinct requisitions keep both cards');
+    for (const id of ['tracked-route', 'slash-route']) {
+      assert.match(cardFor(html, id), /SHARED_APPLY_ROUTE/, id);
+      assert.match(cardFor(html, id), /Verify each role&#39;s own employer listing/, id);
+    }
+  }
+});
