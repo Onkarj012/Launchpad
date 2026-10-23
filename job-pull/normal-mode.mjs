@@ -233,11 +233,9 @@ export async function runNormalMode({
       deferSelection: true,
       ...(opportunityLedgerPath ? { opportunityLedgerPath } : {}),
     });
-    const sourceCandidatesByUrl = new Map(sourceResults.flatMap((source) => source.candidates)
-      .map((candidate) => [candidate.canonicalUrl, candidate]));
-    // Keep current gate decisions with role identity for scoring-retry reconciliation.
-    gateRejections = pipeline.exclusionAudit.gate.map((row) => ({
-      ...sourceCandidatesByUrl.get(row.url), canonicalUrl: row.url, code: row.code,
+    // Use the exact rejected identity; missing identity stays fail-closed.
+    gateRejections = pipeline.exclusionAudit.gate.filter((row) => row.candidate).map((row) => ({
+      ...row.candidate, code: row.code,
     }));
     const experienceDecisions = sourceResults.flatMap((source) => source.candidates)
       .map((candidate) => ({ candidate, eligibility: classifyCandidate(candidate, { ...normalConfig, salaryFloorLpa: baseConversionPlan.salaryFloorLpa }) }))
