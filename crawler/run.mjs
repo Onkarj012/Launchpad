@@ -1560,6 +1560,31 @@ export function readCrawlerRunData(store, runId) {
   };
 }
 
+// Preserve the stored recovery identity before considering newly resolved requisition IDs.
+export function heldLeadRecoveryIdentity(candidate) {
+  const recovery = candidate.evidence?.recovery;
+  if (recovery?.identityUrl?.startsWith('url:') || recovery?.identityUrl?.startsWith('requisition:')) return recovery.identityUrl;
+  try {
+    const identityUrl = new URL(recovery?.identityUrl);
+    if (identityUrl.protocol === 'https:') {
+      identityUrl.hash = '';
+      return `url:${identityUrl.toString()}`;
+    }
+  } catch {}
+  const requisition = recovery?.providerRequisitionKey ?? candidateRequisitionKey(candidate);
+  if (requisition) return `requisition:${requisition}`;
+  for (const value of [recovery?.originalDiscoveryUrl, candidate.discoveryUrl, candidate.canonicalUrl, candidate.url]) {
+    try {
+      const url = new URL(value);
+      if (url.protocol === 'https:') {
+        url.hash = '';
+        return `url:${url.toString()}`;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 // Return only canonical HTTPS URLs that can prove a held lead's original identity.
 function recoveryUrlKeys(candidate, { includeApplicationUrl = false } = {}) {
   const recovery = candidate.evidence?.recovery;
@@ -1624,16 +1649,7 @@ export function readHeldLeadRecoveryState(store, { now = new Date().toISOString(
     const candidate = stored.evidence?.recovery?.kind === 'held-lead-recovery' ? stored
       : { ...stored, evidence: { ...stored.evidence, recovery: stored.evidence.heldAttempt } };
     const recovery = candidate.evidence.recovery;
-    const requisitionKey = recovery.providerRequisitionKey ?? candidateRequisitionKey(candidate);
-    const identity = requisitionKey ? `requisition:${requisitionKey}`
-      : recovery.identityUrl ?? (() => {
-          try {
-            const url = new URL(recovery.originalDiscoveryUrl ?? candidate.discoveryUrl ?? candidate.canonicalUrl);
-            if (url.protocol !== 'https:') return null;
-            url.hash = '';
-            return `url:${url.toString()}`;
-          } catch { return null; }
-        })();
+    const identity = heldLeadRecoveryIdentity(candidate);
     if (!identity) continue;
     const previous = latest.get(identity);
     const latestEvaluation = String(recovery.evaluatedAt ?? recovery.attemptedAt ?? row.observed_at);
@@ -1647,12 +1663,14 @@ export function readHeldLeadRecoveryState(store, { now = new Date().toISOString(
       && candidate.applicationResolution?.status === 'Resolved Original'
       && candidate.evidence?.fieldSources?.company === 'original-employer-detail');
   const completedByOrdinaryDiscovery = (record) => {
-    const requisitionKey = record.recovery.providerRequisitionKey ?? candidateRequisitionKey(record.candidate);
-    const successTimes = requisitionKey
-      ? [ordinarySuccesses.get(requisitionKey)]
-      : !record.recovery.providerRequisitionKey && !candidateRequisitionKey(record.candidate)
-        ? recoveryUrlKeys(record.candidate).map((key) => ordinaryUrlSuccesses.get(key))
-        : [];
+    const identity = heldLeadRecoveryIdentity(record.candidate);
+    // A URL-identity lead can still carry a known requisition; ordinary discovery of either completes it.
+    const requisitionKey = identity?.startsWith('requisition:') ? identity.slice('requisition:'.length)
+      : record.recovery.providerRequisitionKey ?? candidateRequisitionKey(record.candidate);
+    const successTimes = [
+      ...(requisitionKey ? [ordinarySuccesses.get(requisitionKey)] : []),
+      ...(identity?.startsWith('url:') || !requisitionKey ? recoveryUrlKeys(record.candidate).map((key) => ordinaryUrlSuccesses.get(key)) : []),
+    ];
     const latestSuccessAt = successTimes.map((value) => Date.parse(value))
       .filter(Number.isFinite).reduce((latestAt, value) => Math.max(latestAt, value), Number.NEGATIVE_INFINITY);
     const evaluatedAt = String(record.recovery.evaluatedAt ?? record.recovery.attemptedAt ?? record.observedAt);
