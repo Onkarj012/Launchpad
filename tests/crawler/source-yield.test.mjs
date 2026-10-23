@@ -4,6 +4,9 @@ import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates, b
 import { runCrawlerOperator } from '../../crawler/operator.mjs';
 import { main } from '../../crawler/cli.mjs';
 import { discoverTheirStack } from '../../crawler/theirstack.mjs';
+import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
+import { candidateDedupKey } from '../../job-pull/candidate.mjs';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -362,6 +365,44 @@ test('a source with productive and empty recorded queries keeps both rows and no
   for (const row of report.sources) {
     assert.deepEqual(row.cost, { requests: 'Not Verified', durationMs: 'Not Verified', failures: 'Not Verified', truncated: 'Not Verified' });
   }
+});
+
+test('overlapping query references reach useful yield through the receipt and count once per source', () => {
+  const observed = {
+    provider: 'theirstack', source: 'theirstack', sourceId: 'theirstack',
+    jobId: '101', company: 'Acme', title: 'AI Engineer', location: 'Pune, India',
+    canonicalUrl: 'https://www.linkedin.com/jobs/view/101', description: 'Build reliable AI systems.',
+    provenance: { queryId: 'q-ai', queryIndex: 0, queryRefs: [
+      { queryId: 'q-ai', queryIndex: 0 }, { queryId: 'q-ml', queryIndex: 1 },
+    ] },
+  };
+  const identity = `sha256:${createHash('sha256').update(candidateDedupKey(observed)).digest('hex')}`;
+  const receipt = buildDailyReceipt({
+    observations: [observed], modes: {}, counts: { fetched: 1 },
+    funnel: { identityRows: [{
+      identity, bucket: 'notSelected', reason: 'NOT_SELECTED',
+      provider: 'theirstack', source: 'theirstack', jdHash: 'sha256:jd',
+    }] },
+  });
+  const report = buildUsefulSourceYield({
+    identityRows: receipt.retained.identityRows,
+    sourceTelemetry: { theirstack: { detail: { telemetry: { queryDiagnostics: [
+      { queryId: 'q-ai', queryIndex: 0, pagesFetched: 1 },
+      { queryId: 'q-ml', queryIndex: 1, pagesFetched: 1 },
+    ] } } } },
+  });
+
+  assert.deepEqual(report.sources.map(({ queryId, uniqueRequisitions }) => [queryId, uniqueRequisitions]), [
+    ['q-ai', 1], ['q-ml', 1],
+  ]);
+  assert.ok(report.sources.every((row) => row.stages.jdPresent === 1));
+  assert.ok(report.sources.every((row) => row.cost.requests === 'Not Verified'));
+  assert.equal(report.identityCount, 1);
+  assert.equal(receipt.scopes.uniqueRequisitions.count, 1);
+  const sourceReport = buildSourceYieldReport([observed]);
+  assert.equal(sourceReport.sources.length, 1);
+  assert.equal(sourceReport.sources[0].fetched, 1);
+  assert.equal(sourceReport.totals.fetched, 1);
 });
 
 test('recorded query indexes and search text keep empty rows while skipped queries stay absent', () => {

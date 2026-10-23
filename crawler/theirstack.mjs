@@ -256,6 +256,7 @@ function candidateFrom(job, runAt, keys, context) {
     endpointUrl: THEIRSTACK_JOB_SEARCH_URL,
     queryId: context.queryId,
     queryIndex: context.queryIndex,
+    queryRefs: [{ queryId: context.queryId, queryIndex: context.queryIndex }],
     page: context.page,
     offset: context.offset,
     fetchedAt: runAt,
@@ -321,6 +322,7 @@ export async function discoverTheirStack({
   const observations = [];
   const verificationQueue = [];
   const seen = { ids: new Set(), finals: new Set(), discovery: new Set() };
+  const keptByKey = new Map();
   const telemetry = {
     creditsConsumed: 0,
     rowsReturned: 0,
@@ -455,7 +457,12 @@ export async function discoverTheirStack({
 
       for (const job of rows) {
         const keys = rowKeys(job);
-        if (duplicateKey(keys, seen)) {
+        const duplicate = duplicateKey(keys, seen);
+        if (duplicate) {
+          const queryRefs = keptByKey.get(duplicate).provenance.queryRefs;
+          if (!queryRefs.some((ref) => ref.queryIndex === queryIndex)) {
+            queryRefs.push({ queryId: query.queryId, queryIndex });
+          }
           telemetry.duplicates += 1;
           diagnostic.duplicates += 1;
           continue;
@@ -468,6 +475,8 @@ export async function discoverTheirStack({
             offset,
           });
           rememberKeys(keys, seen);
+          // Index only the kept row's keys so duplicate aliases do not change deduplication.
+          for (const key of [keys.id, keys.final, keys.discovery]) if (key) keptByKey.set(key, candidate);
           observations.push(candidate);
           telemetry.observationsNormalized += 1;
           diagnostic.observationsNormalized += 1;
