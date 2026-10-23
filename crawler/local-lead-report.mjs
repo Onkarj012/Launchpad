@@ -311,7 +311,7 @@ function sharedApplyRoutes(roles) {
   for (const role of roles) {
     const route = role.originalApplicationUrl;
     if (typeof route !== 'string' || !/^https?:\/\//i.test(route)) continue;
-    requisitionsByRoute.set(route, (requisitionsByRoute.get(route) ?? new Set()).add(role.key ?? candidateDedupKey(role)));
+    requisitionsByRoute.set(route, (requisitionsByRoute.get(route) ?? new Set()).add(role.key ?? role.dedupKey ?? candidateDedupKey(role)));
   }
   return new Set([...requisitionsByRoute].filter(([, requisitions]) => requisitions.size > 1).map(([route]) => route));
 }
