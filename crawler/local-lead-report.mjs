@@ -288,12 +288,12 @@ function countsLine({ requested, eligible, selected, delivered, shortfall }) {
   return `Requested: ${requested}. Eligible: ${eligible}. Selected: ${selected}. Confirmed delivered: ${delivered}. Shortfall this run: ${shortfall}.`;
 }
 
-// Pick one novelty label; ambiguous historical identity stays fail-closed.
+// Pick one novelty label; missing per-role history evidence stays fail-closed.
 function noveltyLabel(role, historyLoaded) {
   if (role.ledgerSurfaced === true) return 'Already surfaced';
   if (role.evidence?.recovery?.kind === 'held-lead-recovery') return 'Recovered existing lead';
   if ((role.reasons ?? []).includes('HISTORICAL_IDENTITY_AMBIGUOUS')) return 'First seen locally';
-  return historyLoaded ? 'New-market verified' : 'First seen locally';
+  return historyLoaded && role.historicalCheck === 'NO_HISTORICAL_MATCH' ? 'New-market verified' : 'First seen locally';
 }
 
 // Sort a role under its location heading. Pune-metro is checked first. Remote needs a passing geography gate.

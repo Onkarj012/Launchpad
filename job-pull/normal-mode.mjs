@@ -138,6 +138,7 @@ function verificationRecord(candidate, eligibility, evaluatedReadiness = null) {
     applicationResolution: readiness.evidence.resolution,
     liveness: readiness.evidence.liveness,
     reasons: readiness.reasons,
+    ...(candidate.historicalCheck === 'NO_HISTORICAL_MATCH' ? { historicalCheck: candidate.historicalCheck } : {}),
     evidence: {
       ...readiness.evidence,
       experienceDecision: eligibility?.experience ? {
@@ -250,13 +251,17 @@ export async function runNormalMode({
       kept: nonHistoricalCandidates,
       suppressed: rawHistoricalSuppressions,
       ambiguous: historicalAmbiguities,
+      index: historicalIndex,
     } = filterHistoricalCandidates(pipeline.postSuppressionCandidates, historicalV4Rows);
     const candidateByCanonicalUrl = new Map(pipeline.postSuppressionCandidates.map((candidate) => [candidate.canonicalUrl, candidate]));
     const historicalSuppressions = rawHistoricalSuppressions.map((row) => {
       const candidate = candidateByCanonicalUrl.get(row.canonicalUrl);
       return candidate ? { ...row, dedupKey: candidateDedupKey(candidate) } : row;
     });
-    const readinessEntries = nonHistoricalCandidates.filter((candidate) => !dailyExcludedKeys.includes(candidateDedupKey(candidate))).map((candidate) => ({
+    // Only a nonempty history check can supply per-role no-match evidence.
+    const historyCheckedCandidates = nonHistoricalCandidates.map((candidate) => historicalIndex
+      ? { ...candidate, historicalCheck: 'NO_HISTORICAL_MATCH' } : candidate);
+    const readinessEntries = historyCheckedCandidates.filter((candidate) => !dailyExcludedKeys.includes(candidateDedupKey(candidate))).map((candidate) => ({
       candidate,
       eligibility: candidate.eligibility,
       freshness: candidate.freshness,

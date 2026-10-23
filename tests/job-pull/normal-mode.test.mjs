@@ -225,6 +225,38 @@ test('v4 historical identity match is suppressed before the shortlist/Notion-pla
   });
   assert.equal(unsuppressed.shortlist.length, 1);
   assert.equal(unsuppressed.historicalSuppressions.length, 0);
+  assert.equal(Object.hasOwn(unsuppressed.shortlist[0], 'historicalCheck'), false);
+});
+
+test('Normal retains no-match history evidence only for roles that reached the history check', async () => {
+  const undated = raw(1, { postedAt: null });
+  const ready = raw(2, {
+    originalApplicationUrl: 'https://acme.example/careers/2',
+    originalApplicationEvidence: 'Acme ATS resolved from employer careers page',
+    applicationResolution: { status: 'Resolved Original', evidence: 'Acme ATS resolved from employer careers page' },
+  });
+  const unresolved = raw(3);
+  const past = raw(4);
+  const result = await runNormalMode({
+    clock: () => NOW, ledgerRows: [], opportunityLedgerRows: [],
+    sourceFunctions: allFunctions({ 'portal-naukri': [undated, ready, unresolved, past] }),
+    historicalV4Rows: [{ canonicalUrl: undated.url }, { canonicalUrl: past.url }],
+  });
+  assert.equal(result.outcome.fatal, false);
+  assert.deepEqual(result.results.map((candidate) => candidate.company), [ready.company]);
+  assert.deepEqual(result.shortlist.map((candidate) => candidate.company), [ready.company]);
+  assert.equal(result.historicalSuppressions.length, 1);
+  assert.equal(result.historicalSuppressions[0].company, past.company);
+  const unchecked = result.verificationQueue.find((candidate) => candidate.company === undated.company);
+  assert.ok(unchecked);
+  assert.ok(unchecked.reasons.includes('FRESHNESS_NOT_VERIFIED'));
+  assert.equal(unchecked.reasons.some((reason) => /HISTOR/.test(reason)), false);
+  assert.equal(Object.hasOwn(unchecked, 'historicalCheck'), false);
+  assert.equal(result.results[0].historicalCheck, 'NO_HISTORICAL_MATCH');
+  assert.equal(result.shortlist[0].historicalCheck, 'NO_HISTORICAL_MATCH');
+  const checked = result.verificationQueue.find((candidate) => candidate.company === unresolved.company);
+  assert.ok(checked);
+  assert.equal(checked.historicalCheck, 'NO_HISTORICAL_MATCH');
 });
 
 test('normal mode records surfaced candidates and suppresses a repeat within seven days', async () => {

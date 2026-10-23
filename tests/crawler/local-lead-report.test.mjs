@@ -393,7 +393,7 @@ test('rejected cards use only rejection reasons and keep a manual-review fallbac
 test('P11 item 4: each card shows exactly one novelty label, and New-market verified needs loaded history', () => {
   const recovered = role('recovered', 'Held Labs', { evidence: { recovery: { kind: 'held-lead-recovery' } } });
   const surfaced = role('surfaced', 'Ledger Labs', { ledgerSurfaced: true });
-  const fresh = role('fresh', 'Verified Labs', {});
+  const fresh = role('fresh', 'Verified Labs', { historicalCheck: 'NO_HISTORICAL_MATCH' });
   const labels = ['New-market verified', 'First seen locally', 'Recovered existing lead', 'Already surfaced'];
   const labelsPerCard = (html) => (html.match(/<article>[\s\S]*?<\/article>/g) ?? [])
     .map((card) => labels.filter((label) => card.includes(`Novelty: ${label}`)));
@@ -407,9 +407,26 @@ test('P11 item 4: each card shows exactly one novelty label, and New-market veri
   }
 });
 
+test('VerifyQueue without a per-role history result stays first seen locally with loaded history', () => {
+  const unchecked = role('unchecked', 'Past Labs', { reasons: [] });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY,
+    modes: {}, verificationQueue: [unchecked] });
+  const card = cardFor(html, 'unchecked');
+  assert.match(card, /State: Promising, needs verification<\/p>/);
+  assert.match(card, /Novelty: First seen locally<\/p>/);
+  assert.doesNotMatch(card, /Novelty: New-market verified/);
+});
+
+test('a retained no-match history result allows New-market verified with loaded history', () => {
+  const checked = role('checked', 'Checked Labs', { historicalCheck: 'NO_HISTORICAL_MATCH' });
+  const html = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY,
+    modes: { normal: { results: [checked], shortlist: [] } } });
+  assert.match(cardFor(html, 'checked'), /Novelty: New-market verified<\/p>/);
+});
+
 test('history ambiguity in VerifyQueue stays first seen locally even with loaded history', () => {
   const ambiguous = role('ambiguous', 'Ambiguous Labs', { reasons: ['HISTORICAL_IDENTITY_AMBIGUOUS'] });
-  const clean = role('clean', 'Clean Labs');
+  const clean = role('clean', 'Clean Labs', { historicalCheck: 'NO_HISTORICAL_MATCH' });
   const html = renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot: LOADED_HISTORY,
     modes: { normal: { results: [clean], shortlist: [] } }, verificationQueue: [ambiguous] });
   const ambiguousCard = cardFor(html, 'ambiguous');
@@ -517,7 +534,7 @@ test('P11 r1 finding 2: only a usable match score makes a card Ready and scored'
 });
 
 test('P11 r1 finding 3: history counts as loaded only with a valid generation time and retained rows', () => {
-  const ready = role('history', 'History Labs', { applicationReady: true, applicationReadiness: 'Ready', ...scored(82) });
+  const ready = role('history', 'History Labs', { applicationReady: true, applicationReadiness: 'Ready', historicalCheck: 'NO_HISTORICAL_MATCH', ...scored(82) });
   const render = (v4HistorySnapshot) => cardFor(renderLocalDailyHtmlReport({ runAt: NOW, v4HistorySnapshot,
     modes: { normal: { results: [ready], shortlist: [] } } }), 'history');
   assert.match(render(LOADED_HISTORY), /Novelty: New-market verified/);
