@@ -109,6 +109,83 @@ test('a failed source reports its last successful snapshot age after the store i
   }
 });
 
+test('portal snapshot ages retain each lane last success after SQLite reopen', async (t) => {
+  for (const status of ['ok', 'empty', 'succeeded']) await t.test(status, async () => {
+    const { config } = testConfig();
+    config.sources.portals = { enabled: true, linkedin: { enabled: true }, glassdoor: { enabled: true } };
+    const store = openCrawlerStore(config.databasePath);
+    try {
+      for (const [runId, at, lanes] of [
+        ['portal-snapshot-first', NOW, [
+          { sourceId: 'portal-linkedin-jobs', attempted: true, status },
+          { sourceId: 'portal-glassdoor', attempted: true, status: 'failed' },
+        ]],
+        ['portal-snapshot-newer', '2026-07-24T08:00:00.000Z', [
+          { sourceId: 'portal-linkedin-jobs', attempted: true, status: 'failed' },
+          { sourceId: 'portal-glassdoor', attempted: true, status },
+        ]],
+      ]) {
+        const prior = await crawlRun({ store, runId, clock: { now: () => at },
+          sourcePlans: [{ id: 'portal-discovery', fetch: async () => ({ observations: [],
+            manifest: { status: 'ok', telemetry: { lanes } },
+          }) }],
+        });
+        assert.equal(prior.telemetry.sources['portal-discovery'].status, 'succeeded');
+      }
+    } finally { store.close(); }
+
+    const reopened = openCrawlerStore(config.databasePath);
+    try {
+      const next = await runDailyNormalActual(runOptions(config, () => { throw new Error('no transport expected'); }, {
+        runId: 'portal-snapshot-next', store: reopened,
+        clock: { now: () => '2026-07-24T12:00:00.000Z', sleep: async () => {} },
+      }));
+      assert.equal(next.sourceSnapshotAges['portal-linkedin-jobs'].lastSuccessfulAt, NOW);
+      assert.equal(next.sourceSnapshotAges['portal-linkedin-jobs'].ageHours, 5.5);
+      assert.equal(next.sourceSnapshotAges['portal-glassdoor'].lastSuccessfulAt, '2026-07-24T08:00:00.000Z');
+      assert.equal(next.sourceSnapshotAges['portal-glassdoor'].ageHours, 4);
+      const snapshot = /portal-linkedin-jobs: failed.*last successful snapshot 2026-07-24 12:00:00 IST \(5\.5 h old\), not current/;
+      assert.match(renderLocalLeadReport(next, { now: next.runAt }), snapshot);
+      assert.match(renderLocalDailyHtmlReport(next), snapshot);
+    } finally { reopened.close(); }
+  });
+});
+
+test('portal snapshot ages stay Not Verified for unsuccessful or missing lane details after SQLite reopen', async () => {
+  const { config } = testConfig();
+  config.sources.portals = { enabled: true, linkedin: { enabled: true }, glassdoor: { enabled: true },
+    instahyre: { enabled: true }, wellfound: { enabled: true } };
+  const store = openCrawlerStore(config.databasePath);
+  try {
+    const prior = await crawlRun({ store, runId: 'portal-snapshot-mixed', clock: { now: () => NOW },
+      sourcePlans: [{ id: 'portal-discovery', fetch: async () => ({ observations: [],
+        manifest: { status: 'ok', telemetry: { lanes: [
+          { sourceId: 'portal-linkedin-jobs', attempted: true, status: 'empty' },
+          { sourceId: 'portal-glassdoor', attempted: true, status: 'failed' },
+          { sourceId: 'portal-instahyre', attempted: false, status: 'not_started' },
+        ] } },
+      }) }],
+    });
+    assert.equal(prior.telemetry.sources['portal-discovery'].status, 'succeeded');
+  } finally { store.close(); }
+
+  const reopened = openCrawlerStore(config.databasePath);
+  try {
+    const next = await runDailyNormalActual(runOptions(config, () => { throw new Error('no transport expected'); }, {
+      runId: 'portal-snapshot-unknown-next', store: reopened,
+      clock: { now: () => '2026-07-24T12:00:00.000Z', sleep: async () => {} },
+    }));
+    for (const id of ['portal-glassdoor', 'portal-instahyre', 'portal-wellfound']) {
+      assert.equal(next.sourceSnapshotAges[id].lastSuccessfulAt, null);
+      assert.equal(next.sourceSnapshotAges[id].ageHours, null);
+      const snapshot = new RegExp(`${id}: failed.*last successful snapshot Not Verified`);
+      assert.match(renderLocalLeadReport(next, { now: next.runAt }), snapshot);
+      assert.match(renderLocalDailyHtmlReport(next), snapshot);
+    }
+    assert.equal(next.sourceSnapshotAges['portal-linkedin-jobs'].lastSuccessfulAt, NOW);
+  } finally { reopened.close(); }
+});
+
 test('one daily crawl routes a Pune startup once and tags its other mode', async () => {
   const { config } = testConfig({ warmBoards: [{ slug: 'routing-startup', company: 'Routing Startup' }] });
   Object.assign(config.sources.atsWarm.boards[0], { startupTagged: true, evidenceRef: 'https://portfolio.example.test/routing-startup' });
