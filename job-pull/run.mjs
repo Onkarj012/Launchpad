@@ -344,6 +344,15 @@ export function runPipeline({
   const gateExclusions = classified
     .filter((entry) => !entry.freshness.verifyQueue && (!entry.eligibility.eligible || !entry.freshness.eligible))
     .map((entry) => ({
+      candidate: {
+        dedupKey: candidateDedupKey(entry.candidate),
+        provider: entry.candidate.provider,
+        jobId: entry.candidate.jobId,
+        identityAliases: entry.candidate.identityAliases,
+        canonicalUrl: entry.candidate.canonicalUrl,
+        company: entry.candidate.company,
+        title: entry.candidate.title,
+      },
       url: entry.candidate.canonicalUrl,
       code: !entry.freshness.eligible ? entry.freshness.code : entry.eligibility.reasons[0] || 'GATE_REJECTED',
       evidence: !entry.freshness.eligible ? entry.freshness.evidence : entry.eligibility.evidenceCodes,

@@ -28,6 +28,10 @@ The isolated P04 implementation adds an explicit retained-lead input to the exis
 
 The isolated P05 implementation resumes due held leads from the existing observation store and keeps retry timing and terminal outcomes. Existing workflow fixtures cover reopen/retry, rate limits, fresh-versus-stale HTTP status, transport failure, success deduplication, identity preservation and terminal outcomes. Open after two review rounds: recovery's half share of the resolver deadline ignores a short parent allowance, so ordinary discovery can still be starved; the recovery-state read still parses every historical ordinary success; and a held lead retried through ordinary discovery is missing from the recovery receipt and continuation. This is local fixture evidence only; no live yield or operational verification is claimed.
 
+## P06 scoring retry, 2026-10-22
+
+A role whose match scoring failed now keeps a retry record in the crawler run telemetry. A later run retries it when it reappears, counts each attempt, and shows the outcome in the Scoring recovery section of the daily report. Three failed attempts end in a terminal record. Local-verified by the fixture tests in the mode-scoring, daily-runner and local-lead-report test files. Not yet done: `nextEligibleAt` is recorded and shown as the earliest retry but does not hold back scoring, and the 200-record cap has no dedicated test. Open after two review rounds: a shared generic careers URL or a company/title/location alias can let a different role settle a retry record as recovered or selected, and a proven cross-provider alias is still vetoed by the requisition check. Readiness gating is unaffected; the error is in the retry record and report. Local fixture evidence only; no live scorer run.
+
 ## Checkout identity and warning
 
 - Branch: `dco/yield-00-reliability-baseline`

@@ -25,13 +25,13 @@ import { readV4HistorySnapshot } from './v4-history-snapshot.mjs';
 import { computeDeliveryInventoryIdentity, prepareDeliveryCanary } from './delivery-canary.mjs';
 import { computeCanaryVersion } from './canary-evaluator.mjs';
 import { dailyRunIdentity } from './scheduler.mjs';
-import { buildDeliveryReconciliation } from '../job-pull/mode-scoring.mjs';
+import { buildDeliveryReconciliation, nextScoringRetryState } from '../job-pull/mode-scoring.mjs';
 import { selectNormalApplications, WATERFALL } from '../job-pull/normal-selection.mjs';
 import { pickDailyEntries } from '../job-pull/select.mjs';
 import { isPuneMetroLocation } from '../job-pull/eligibility.mjs';
 import { readHiringEvents } from './hiring-events.mjs';
 import { buildDailyReceipt } from './daily-receipt.mjs';
-import { openCrawlerStore, persistDailyReceipt } from './run.mjs';
+import { openCrawlerStore, persistDailyReceipt, persistScoringRetryState, readScoringRetryState } from './run.mjs';
 
 // Read retained allocations for the shared IST-day shortlist ceiling.
 export function dailyShortlistBudget(budgetPath, runAt, runId) {
@@ -1538,12 +1538,53 @@ async function runDailyNormalImpl({
   };
 }
 
+// Run one store call on the caller's store, or on a database this call opens and closes.
+function withDailyStore(options, use) {
+  const databasePath = options.config?.databasePath;
+  if (!options.store && !(typeof databasePath === 'string' && databasePath)) return null;
+  const store = options.store ?? openCrawlerStore(databasePath);
+  try {
+    return use(store);
+  } finally {
+    if (!options.store) store.close();
+  }
+}
+
+// Read this run's saved retry state or the newest other state; fail-closed on read errors.
+function readPriorScoringRetry(options, runId) {
+  const databasePath = options.config?.databasePath;
+  if (!options.store && !(typeof databasePath === 'string' && existsSync(databasePath))) return { state: null, error: null };
+  try {
+    const state = withDailyStore(options, (store) => readScoringRetryState(store, { preferRunId: runId }));
+    if (state && !Array.isArray(state.records)) throw new Error('invalid scoring retry state');
+    return { state, error: null };
+  } catch (error) {
+    return { state: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Write this run's retry state beside its daily receipt. Never throws.
+function persistScoringRetry(options, completed, scoringRetry) {
+  const runId = completed.runId ?? completed.crawlerV2Telemetry?.run?.runId
+    ?? completed.terminalEnvelope?.runId ?? completed.run?.runId;
+  try {
+    const persisted = withDailyStore(options, (store) => typeof runId === 'string'
+      && (persistScoringRetryState(store, `${runId}-crawler-v2`, scoringRetry) || persistScoringRetryState(store, runId, scoringRetry)));
+    return { scoringRetryPersistence: persisted == null ? 'Not Verified' : persisted ? 'persisted' : 'run_missing', scoringRetryPersistenceError: null };
+  } catch (error) {
+    return { scoringRetryPersistence: 'failed', scoringRetryPersistenceError: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function runDailyNormal(options = {}) {
   const selectedMode = normalizeDailyMode(options.mode);
   const hiringEvents = readHiringEvents(options.config?.hiringEventsPath);
   const runAt = runAtFrom(options.clock);
   const execution = createDailyExecution(options.config ?? {}, runAt);
   try {
+    // Match runDailyNormalImpl's default identity so reruns retain their saved retry history.
+    const ownRunId = options.runId ?? dailyRunIdentity({ schedule: options.schedule ?? 'morning', mode: selectedMode, locationPreset: options.locationPreset ?? 'india', at: runAt });
+    const priorRetry = readPriorScoringRetry(options, `${ownRunId}-crawler-v2`);
     const result = await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
     const completed = { ...result, hiringEvents };
     const dailyReceipt = buildDailyReceipt(completed);
@@ -1570,7 +1611,17 @@ export async function runDailyNormal(options = {}) {
         if (ownsStore) store.close();
       }
     }
-    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError };
+    let scoringRetry = null;
+    let retryPersistence = { scoringRetryPersistence: 'failed', scoringRetryPersistenceError: priorRetry.error };
+    if (!priorRetry.error) {
+      try {
+        scoringRetry = nextScoringRetryState({ prior: priorRetry.state, result: completed, runAt });
+        retryPersistence = persistScoringRetry(options, completed, scoringRetry);
+      } catch (error) {
+        retryPersistence.scoringRetryPersistenceError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    return { ...completed, dailyReceipt, receiptPersistence, receiptPersistenceError, scoringRetry, ...retryPersistence };
   } finally {
     execution.cleanup();
   }

@@ -201,3 +201,66 @@ test('source yield uses the matching board request evidence and keeps unknown bo
   assert.match(report, /greenhouse:missing<\/td><td>0<\/td><td>1<\/td><td>Not Verified/);
   assert.match(report, /Discovery counts precede final enrichment and scoring/);
 });
+
+test('E: the scoring recovery section shows counts, retry rows, and Not Verified for a missing attempt time', () => {
+  const result = {
+    runAt: NOW,
+    outcome: { status: 'completed' },
+    scoringRetry: { schemaVersion: 1, records: [
+      { company: 'Acme', title: 'AI Engineer', outcome: 'selected', outcomeReason: 'scored-on-retry-and-shortlisted', attemptCount: 2, attemptedAt: NOW, nextEligibleAt: null },
+      { company: 'Beta Labs', title: 'ML Engineer', outcome: 'pending', outcomeReason: 'scoring-failed', attemptCount: 1, attemptedAt: NOW, nextEligibleAt: '2026-10-12T22:00:00.000Z' },
+      { company: 'Gamma Works', title: 'Backend Engineer', outcome: 'pending', outcomeReason: 'awaiting-current-evidence', attemptCount: 1, attemptedAt: null, nextEligibleAt: '2026-10-12T22:00:00.000Z' },
+      { company: 'Delta Co', title: 'Full Stack Engineer', outcome: 'terminal', outcomeReason: 'scoring-retry-exhausted', attemptCount: 3, attemptedAt: NOW, nextEligibleAt: null },
+    ] },
+  };
+
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  assert.match(markdown, /## Scoring recovery/);
+  assert.match(markdown, /Recovered: 0\. Selected: 1\. Scoring failed: 1\. Failed again: 1\. Waiting for current evidence: 1\. Terminal: 1\./);
+  assert.match(markdown, /\| Acme \| AI Engineer \| selected \| scored-on-retry-and-shortlisted \| 2 \| 2026-10-12T20:00:00\.000Z \| Not scheduled \|/);
+  assert.match(markdown, /\| Gamma Works \| Backend Engineer \| pending \| awaiting-current-evidence \| 1 \| Not Verified \| 2026-10-12T22:00:00\.000Z \|/);
+
+  const html = renderLocalDailyHtmlReport(result);
+  assert.match(html, /data-section="scoring-recovery"/);
+  assert.match(html, /<td>Acme<\/td><td>AI Engineer<\/td><td>selected<\/td><td>scored-on-retry-and-shortlisted<\/td><td>2<\/td><td>2026-10-12T20:00:00\.000Z<\/td><td>Not scheduled<\/td>/);
+  assert.match(html, /Selected: 1\. Scoring failed: 1\. Failed again: 1\. Waiting for current evidence: 1\. Terminal: 1\./);
+  assert.match(html, /<td>Gamma Works<\/td><td>Backend Engineer<\/td><td>pending<\/td><td>awaiting-current-evidence<\/td><td>1<\/td><td>Not Verified<\/td>/);
+});
+
+test('F: scoring recovery splits first failures from repeat failures and marks the retry column as not enforced', () => {
+  const result = {
+    runAt: NOW,
+    outcome: { status: 'completed' },
+    scoringRetry: { schemaVersion: 1, records: [
+      { company: 'Acme', title: 'AI Engineer', outcome: 'pending', outcomeReason: 'scoring-failed', attemptCount: 1, attemptedAt: NOW, nextEligibleAt: '2026-10-12T22:00:00.000Z' },
+      { company: 'Beta Labs', title: 'ML Engineer', outcome: 'pending', outcomeReason: 'scoring-failed', attemptCount: 2, attemptedAt: NOW, nextEligibleAt: '2026-10-13T00:00:00.000Z' },
+    ] },
+  };
+
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  assert.match(markdown, /Scoring failed: 1\. Failed again: 1\./);
+  assert.match(markdown, /\| Earliest retry \(not enforced\) \|/);
+
+  const html = renderLocalDailyHtmlReport(result);
+  assert.match(html, /Scoring failed: 1\. Failed again: 1\./);
+  assert.match(html, /<th>Earliest retry \(not enforced\)<\/th>/);
+});
+
+test('G: a selection carried from an earlier run is not counted as this run selection', () => {
+  const result = {
+    runAt: NOW,
+    outcome: { status: 'completed' },
+    shortlist: [],
+    scoringRetry: { schemaVersion: 1, records: [
+      { company: 'Acme', title: 'AI Engineer', outcome: 'selected', outcomeReason: 'shortlisted-previous-run', attemptCount: 2, attemptedAt: NOW, nextEligibleAt: null, carried: true },
+    ] },
+  };
+
+  const markdown = renderLocalLeadReport(result, { now: NOW });
+  assert.match(markdown, /Recovered: 0\. Selected: 0\./);
+  assert.match(markdown, /\| Acme \| AI Engineer \| selected \| previous run: shortlisted \|/);
+
+  const html = renderLocalDailyHtmlReport(result);
+  assert.match(html, /Recovered: 0\. Selected: 0\./);
+  assert.match(html, /<td>previous run: shortlisted<\/td>/);
+});

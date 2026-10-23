@@ -1,3 +1,4 @@
+import { candidateDedupKey, candidateIdentityKeys, candidateRequisitionKey, normalizedKey } from './candidate.mjs';
 import { integerInRange, mergeScoreRow } from './match-scorer.mjs';
 
 export const BROKEN_SCORER_REASON_CODES = new Set([
@@ -156,6 +157,141 @@ export function scoringGateError(ErrorClass, selection, scorerTelemetry = null) 
     `complete scoring required before selection: unscored=${selection.unscoredCount}, scoring-failed=${selection.scoringFailedCount}${scorerCause}${causes.length ? `; ${causes.join('; ')}` : ''}`,
     'scoring',
   );
+}
+
+const RETRY_ATTEMPT_LIMIT = 3;
+const RETRY_BACKOFF_BASE_MS = 2 * 3_600_000;
+const RETRY_BACKOFF_CAP_MS = 24 * 3_600_000;
+const RETRY_STALE_MS = 7 * 86_400_000;
+const RETRY_RECORD_LIMIT = 200;
+const PREVIOUS_RUN_REASON = { 'shortlisted-this-run': 'shortlisted-previous-run', 'scored-this-run': 'scored-previous-run' };
+
+// Accept retained identity records only when their aliases can be read safely.
+function hasRetryIdentity(record) {
+  return record !== null && typeof record === 'object' && !Array.isArray(record)
+    && (record.identityAliases == null || Array.isArray(record.identityAliases));
+}
+
+// Match proven identities while keeping conflicting requisitions and weak aliases fail-closed.
+function sameRetryRole(record, role) {
+  if (!hasRetryIdentity(record) || !hasRetryIdentity(role)) return false;
+  const recordAliases = record.identityAliases ?? [];
+  const roleAliases = role.identityAliases ?? [];
+  const sameRequisition = record.requisitionKey && record.requisitionKey === role.requisitionKey;
+  if (record.requisitionKey && role.requisitionKey && !sameRequisition) {
+    const sameProvider = record.requisitionKey.split('|')[0] === role.requisitionKey.split('|')[0];
+    const provenAlias = recordAliases.includes(role.requisitionKey) || roleAliases.includes(record.requisitionKey);
+    if (sameProvider || !provenAlias) return false;
+  }
+  const sameEmployerTitle = normalizedKey(record.company) && normalizedKey(record.title)
+    && normalizedKey(record.company) === normalizedKey(role.company)
+    && normalizedKey(record.title) === normalizedKey(role.title);
+  const sameUrl = record.canonicalUrl && record.canonicalUrl === role.canonicalUrl;
+  if (sameUrl && (sameRequisition || sameEmployerTitle)) return true;
+  const differentUrls = record.canonicalUrl && role.canonicalUrl && !sameUrl;
+  const recordKeys = new Set([record.dedupKey, ...recordAliases]);
+  return [role.dedupKey, ...roleAliases].some((key) => {
+    if (typeof key !== 'string' || !key || !recordKeys.has(key)) return false;
+    // URL keys must not bypass the employer/title check for a shared careers page.
+    if (key.startsWith('url|')) return !sameUrl || Boolean(sameRequisition || sameEmployerTitle);
+    return !differentUrls || key.split('|').length === 2;
+  });
+}
+
+// Keep only the identity fields of a role, never its scoring payload.
+function retryRoleFields(row) {
+  return {
+    dedupKey: row.dedupKey ?? candidateDedupKey(row),
+    requisitionKey: candidateRequisitionKey(row) ?? null,
+    identityAliases: candidateIdentityKeys(row),
+    canonicalUrl: row.canonicalUrl ?? null,
+    company: row.company ?? null,
+    title: row.title ?? null,
+  };
+}
+
+// Name the first gate reason on a rejection, verification or suppression row.
+function gateReasonFor(row) {
+  return row.reasons?.[0] ?? row.code ?? row.reason ?? 'Not Verified';
+}
+
+// Advance the retry records for one run. Failed scoring counts an attempt, and so does a retry that scores.
+export function nextScoringRetryState({ prior = null, result = {}, runAt }) {
+  const priorRecords = Array.isArray(prior?.records) ? prior.records.filter(hasRetryIdentity) : [];
+  const queue = result.scoringQueue ?? [];
+  const failedNow = queue.filter((row) => row.scoringStatus === 'scoring-failed');
+  const queuedNow = queue.map(retryRoleFields);
+  const modes = Object.values(result.modes ?? {});
+  const scoredNow = [...(result.scoringOutcomes ?? []), ...(result.results ?? []), ...(result.stretch ?? []), ...(result.shortlist ?? []), ...modes.flatMap((mode) => [...(mode.results ?? []), ...(mode.shortlist ?? [])])].map(retryRoleFields);
+  const selectedNow = [...(result.shortlist ?? []), ...modes.flatMap((mode) => mode.shortlist ?? [])].map(retryRoleFields);
+  const gatedNow = [...(result.gateRejections ?? []), ...(result.historicalSuppressions ?? []), ...(result.verificationQueue ?? [])]
+    .map((row) => ({ role: retryRoleFields(row), reason: gateReasonFor(row) }));
+  const runMs = Date.parse(runAt);
+  const records = [];
+  const replaced = new Set();
+
+  for (const row of failedNow) {
+    const role = retryRoleFields(row);
+    const matched = priorRecords.find((record) => sameRetryRole(record, role));
+    if (matched) replaced.add(matched);
+    // Only a pending record continues its count; a settled one starts a new retry cycle.
+    const continuing = matched?.outcome === 'pending' ? matched : null;
+    const attemptCount = (continuing?.attemptCount ?? 0) + 1;
+    const exhausted = attemptCount >= RETRY_ATTEMPT_LIMIT;
+    records.push({
+      ...role,
+      reason: row.scoringFailureReason ?? 'Not Verified',
+      attemptCount,
+      firstFailedAt: continuing?.firstFailedAt ?? runAt,
+      attemptedAt: runAt,
+      nextEligibleAt: exhausted ? null : new Date(runMs + Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_BASE_MS * 2 ** (attemptCount - 1))).toISOString(),
+      outcome: exhausted ? 'terminal' : 'pending',
+      outcomeReason: exhausted ? 'scoring-retry-exhausted' : 'scoring-failed',
+      carried: false,
+    });
+  }
+
+  for (const previous of priorRecords) {
+    if (replaced.has(previous)) continue;
+    // A settled record is shown for one more run, then dropped.
+    if (previous.outcome !== 'pending') {
+      if (!previous.carried) records.push({ ...previous, carried: true, outcomeReason: PREVIOUS_RUN_REASON[previous.outcomeReason] ?? previous.outcomeReason });
+      continue;
+    }
+    if (scoredNow.some((role) => sameRetryRole(previous, role))) {
+      const selected = selectedNow.some((role) => sameRetryRole(previous, role));
+      records.push({
+        ...previous,
+        attemptCount: previous.attemptCount + 1,
+        attemptedAt: runAt,
+        nextEligibleAt: null,
+        outcome: selected ? 'selected' : 'recovered',
+        outcomeReason: selected ? 'shortlisted-this-run' : 'scored-this-run',
+        carried: false,
+      });
+      continue;
+    }
+    const waiting = { ...previous, outcomeReason: 'awaiting-current-evidence' };
+    if (queuedNow.some((role) => sameRetryRole(previous, role))) {
+      records.push(waiting);
+      continue;
+    }
+    const gate = gatedNow.find((item) => sameRetryRole(previous, item.role));
+    if (gate) {
+      records.push({ ...previous, outcome: 'terminal', outcomeReason: `current-gate-rejected:${gate.reason}`, nextEligibleAt: null, carried: false });
+      continue;
+    }
+    if (runMs - Date.parse(previous.firstFailedAt) > RETRY_STALE_MS) {
+      records.push({ ...previous, outcome: 'terminal', outcomeReason: 'stale-without-current-evidence', nextEligibleAt: null, carried: false });
+      continue;
+    }
+    records.push(waiting);
+  }
+
+  const kept = records
+    .sort((left, right) => String(left.attemptedAt).localeCompare(String(right.attemptedAt)))
+    .slice(-RETRY_RECORD_LIMIT);
+  return { schemaVersion: 1, records: kept };
 }
 
 function reconciliationLine({ fetched, dated, eligible, scored, ready, selected, causes }) {

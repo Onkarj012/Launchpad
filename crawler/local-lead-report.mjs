@@ -130,6 +130,41 @@ function dailyDriftSignals(result) {
   return [...new Set(signals)];
 }
 
+const FAILED_SCORING_REASONS = new Set(['scoring-failed', 'scoring-retry-exhausted']);
+
+// Count scoring retry records by the outcome the report names. Carried rows came from an earlier run.
+function scoringRecoveryCounts(records) {
+  const current = records.filter((record) => !record.carried);
+  const count = (test) => current.filter(test).length;
+  const failed = (record) => FAILED_SCORING_REASONS.has(record.outcomeReason);
+  return {
+    recovered: count((record) => record.outcome === 'recovered'),
+    selected: count((record) => record.outcome === 'selected'),
+    scoringFailed: count((record) => failed(record) && record.attemptCount === 1),
+    failedAgain: count((record) => failed(record) && record.attemptCount > 1),
+    waiting: count((record) => record.outcome === 'pending' && record.outcomeReason === 'awaiting-current-evidence'),
+    terminal: count((record) => record.outcome === 'terminal'),
+  };
+}
+
+// Write the scoring recovery counts as one sentence.
+function scoringRecoverySummary(records) {
+  const counts = scoringRecoveryCounts(records);
+  return `Recovered: ${counts.recovered}. Selected: ${counts.selected}. Scoring failed: ${counts.scoringFailed}. Failed again: ${counts.failedAgain}. Waiting for current evidence: ${counts.waiting}. Terminal: ${counts.terminal}.`;
+}
+
+// Name a retry row's reason, and say so when the row came from an earlier run.
+function recoveryReason(record) {
+  return record.carried ? `previous run: ${record.outcomeReason.replace(/-previous-run$/, '')}` : record.outcomeReason;
+}
+
+// Render the scoring recovery counts and one row per retry record, or nothing without records.
+function scoringRecoveryHtml(records) {
+  if (!records.length) return '';
+  const rows = records.map((record) => `<tr><td>${html(record.company)}</td><td>${html(record.title)}</td><td>${html(record.outcome)}</td><td>${html(recoveryReason(record))}</td><td>${html(record.attemptCount)}</td><td>${html(record.attemptedAt)}</td><td>${html(record.nextEligibleAt ?? 'Not scheduled')}</td></tr>`).join('');
+  return `<section data-section="scoring-recovery"><h2>Scoring recovery</h2><p>${html(scoringRecoverySummary(records))}</p><table><thead><tr><th>Company</th><th>Title</th><th>Outcome</th><th>Reason</th><th>Attempts</th><th>Attempted</th><th>Earliest retry (not enforced)</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
 // Display timezone-backed timestamps in IST and preserve date-only precision.
 function eventDate(value) {
   if (value == null) return 'Not Verified';
@@ -197,6 +232,14 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
       'These outcomes describe retained leads. They do not count as new discovery or new market supply.', '');
     for (const outcome of heldRecovery.outcomes ?? []) lines.push(`- ${cell(outcome.lead)}: ${cell(outcome.outcome)} / ${cell(outcome.reason)}; retained ${cell(outcome.recoveryState ?? 'Not Verified')}, attempts ${outcome.attemptCount ?? 0}, attempted ${cell(outcome.attemptedAt ?? 'Not attempted')}, retry ${cell(outcome.nextEligibleAt ?? 'Not scheduled')}; requests ${outcome.requests ?? 0}; discovery ${cell(outcome.originalDiscoverySource ?? 'Not Verified')} ${cell(outcome.originalDiscoveryUrl ?? 'Not Verified')}; employer route ${cell(outcome.employerDetailUrl ?? 'Not Verified')}; missing facts ${cell(outcome.missingFields?.join(', ') || 'None recorded')}.`);
     if (!heldRecovery.outcomes?.length) lines.push('- No held lead recovery was attempted.');
+    lines.push('');
+  }
+  const scoringRecords = result.scoringRetry?.records ?? [];
+  if (scoringRecords.length) {
+    lines.push('## Scoring recovery', '', scoringRecoverySummary(scoringRecords), '',
+      '| Company | Title | Outcome | Reason | Attempts | Attempted | Earliest retry (not enforced) |',
+      '| --- | --- | --- | --- | ---: | --- | --- |');
+    for (const record of scoringRecords) lines.push(`| ${cell(record.company)} | ${cell(record.title)} | ${cell(record.outcome)} | ${cell(recoveryReason(record))} | ${cell(record.attemptCount)} | ${cell(record.attemptedAt)} | ${cell(record.nextEligibleAt ?? 'Not scheduled')} |`);
     lines.push('');
   }
   if (result.modes && typeof result.modes === 'object') {
@@ -400,13 +443,14 @@ export function renderLocalDailyHtmlReport(result, { now = result.runAt ?? resul
   }).join('');
   const sourceYield = `<section data-section="source-yield"><h2>Source yield per request</h2>${result.sourceYieldScope === 'crawler-discovery' ? '<p>Discovery counts precede final enrichment and scoring. They exclude later tracked-source reads and do not measure delivered roles.</p>' : ''}${yieldRows ? `<table><thead><tr><th>Source</th><th>Fetched</th><th>Application-ready</th><th>Requests</th><th>Yield</th></tr></thead><tbody>${yieldRows}</tbody></table>` : '<p>Not Verified</p>'}</section>`;
   const driftSignals = dailyDriftSignals(result);
+  const scoringRecovery = scoringRecoveryHtml(result.scoringRetry?.records ?? []);
   const drift = `<section data-section="drift"><h2>Drift signals</h2>${driftSignals.length ? `<ul>${driftSignals.map((signal) => `<li>${html(signal)}</li>`).join('')}</ul>` : '<p>None recorded.</p>'}</section>`;
   const receipt = result.dailyReceipt;
   const receiptSection = receipt ? `<section data-section="daily-stage-loss-receipt"><h2>Daily stage-loss receipt</h2><p>Raw observations: ${html(receipt.scopes.rawObservations.count)}. Unique requisitions: ${html(receipt.scopes.uniqueRequisitions.count)}. Verification: ${html(receipt.scopes.verification.count)}. Hard rejection: ${html(receipt.scopes.hardRejection.count)}. Scoring failure: ${html(receipt.scopes.scoringFailure.count)}. History suppression: ${html(receipt.scopes.historySuppression.count)}. Final selection: ${html(receipt.scopes.finalSelection.count)}. Confirmed delivery: ${html(receipt.scopes.confirmedDelivery.count)}.</p><p>Implementation state: ${html(receipt.provenance.implementationState)}. Implementation hash: ${html(receipt.provenance.implementationHash)}. Retained input hash: ${html(receipt.provenance.retainedInputHash)}. Release claim: none.</p><table><thead><tr><th>Requisition hash</th><th>Stage</th><th>Reason</th><th>Provider</th><th>Source provenance</th><th>Selected</th></tr></thead><tbody>${(Array.isArray(receipt.retained.identityRows) ? receipt.retained.identityRows : []).map((row) => {
     const provenance = row.provenance?.map((item) => [item.source, item.sourceId].filter(Boolean).join(' / ')).filter(Boolean).join(', ') || row.source;
     return `<tr><td>${html(row.identityHash)}</td><td>${html(row.stage)}</td><td>${html(row.reason)}</td><td>${html(row.provider)}</td><td>${html(provenance)}</td><td>${row.selected ? 'Yes' : 'No'}</td></tr>`;
   }).join('') || '<tr><td colspan="6">Not Verified</td></tr>'}</tbody></table></section>` : '';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Launchpad daily report</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212f}section{border-top:1px solid #ccd3dc;padding:1rem 0}article{padding:.5rem 1rem;margin:.5rem 0;background:#f5f7fa}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ccd3dc}h1,h2{margin-bottom:.3rem}@media(max-width:640px){body{margin:1rem auto;padding:0 .75rem}table{display:block;overflow-x:auto;white-space:nowrap}article{padding:.5rem .75rem}}</style></head><body><h1>Launchpad daily report</h1><p>Run time: ${html(eventDate(now))}</p>${errors}${['failed', 'partial'].includes(runStatus) ? sourceFailures : ''}<section data-section="focus-delivery"><h2>This-run allocation and focus delivery</h2><p>Requested-mode delivery focus: ${html(units.focus)}. This-run focus delivery: ${units.focusCount ?? 'Not Verified'} roles. This-run all-mode allocation: ${units.runRoles.length} roles.</p></section><section><h2>This-run funnel counts</h2><ul>${funnel.map(([label, value]) => `<li>${label}: ${value ?? 'Not Verified'}</li>`).join('')}</ul></section>${receiptSection}${scoringRecovery}${targets}${phaseTargets}${separate}${sections}${stretch}${verification}${experienceDecisions}${sourceYield}${['failed', 'partial'].includes(runStatus) ? '' : sourceFailures}${events}${drift}</body></html>`;
 }
 
 // Write the rendered daily report to the caller-selected local file.
