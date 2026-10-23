@@ -217,9 +217,16 @@ function receiptIdentityRows(result) {
           : observed?.evidence?.sourceQuery ? { queryId: observed.evidence.sourceQuery } : {}),
       ...(observed?.evidence?.recovery?.kind === 'held-lead-recovery' ? { recovery: true, recoveryOutcome: recoveryOutcome(observed) } : {}),
     };
+    const queryEntries = [entry];
+    for (const ref of Array.isArray(observed?.provenance?.queryRefs) ? observed.provenance.queryRefs : []) {
+      const queryId = ref?.queryId ?? (Number.isInteger(ref?.queryIndex) ? `query-index:${ref.queryIndex}` : null);
+      if (queryId != null) queryEntries.push({ ...entry, queryId });
+    }
     for (const keyHash of observationKeyHashes(candidate)) {
       const entries = observationProvenance.get(keyHash) ?? [];
-      if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(entry))) entries.push(entry);
+      for (const queryEntry of queryEntries) {
+        if (!entries.some((item) => JSON.stringify(item) === JSON.stringify(queryEntry))) entries.push(queryEntry);
+      }
       observationProvenance.set(keyHash, entries);
     }
   }
