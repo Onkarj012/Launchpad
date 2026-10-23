@@ -254,6 +254,10 @@ test('useful yield renders per source in Markdown and HTML, with Not Verified fo
   assert.match(markdownSection, /ats-warm \| Not Verified \| discovery \| 5 \| 5 \| .*Not Verified \|/);
   assert.match(markdownSection, new RegExp(ALLOCATION_SENTENCE.replace(/[.]/g, '\\.')));
   assert.doesNotMatch(markdownSection, COUNT_LANGUAGE);
+  // Source coverage bullets stay under Run status, before the yield heading.
+  const runStatusSection = markdown.slice(markdown.indexOf('## Run status'), markdown.indexOf('## Useful yield by source'));
+  assert.match(runStatusSection, /- completed: /);
+  assert.doesNotMatch(markdown.slice(markdown.indexOf('## Useful yield by source')), /^- completed: /m);
 
   const html = renderLocalDailyHtmlReport(result);
   const htmlSection = html.slice(html.indexOf('<section data-section="useful-yield">'), html.indexOf('</section>', html.indexOf('<section data-section="useful-yield">')));

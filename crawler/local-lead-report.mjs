@@ -500,6 +500,13 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
   const runCause = terminal.fatalReason ?? result.outcome?.fatalReason ?? (errors.map((error) => error?.message ?? error).filter(Boolean).join('; ') || 'Not Verified');
   lines.push('', '## Run status', '', `Status: ${cell(runStatus)}.`, `Cause: ${cell(runCause)}.`);
   for (const error of errors) lines.push(`- ${cell(error?.message ?? error)}`);
+  const coverage = terminal.sourceCoverage ?? result.sourceCoverage ?? {};
+  const durable = terminal.lastDurableSourceState ?? result.lastDurableSourceState ?? {};
+  for (const group of ['completed', 'interrupted', 'failed', 'not_started']) {
+    const sources = coverage[group] ?? durable[group];
+    lines.push(`- ${group.replace('_', ' ')}: ${Array.isArray(sources) ? sources.map(cell).join(', ') || 'None recorded' : 'Not Verified'}`);
+  }
+  lines.push('');
   if (result.usefulSourceYield) {
     lines.push('', '## Useful yield by source', '', `Allocation: ${cell(result.usefulSourceYield.allocationRecommendation)}`, '',
       '| Source | Query | Kind | References | Requisitions | Stages | End state | End reason | Requests | Duration ms | Failures | Truncated |',
@@ -509,13 +516,6 @@ export function renderLocalLeadReport(result, { now = result.run?.startedAt ?? n
     }
     lines.push('');
   }
-  const coverage = terminal.sourceCoverage ?? result.sourceCoverage ?? {};
-  const durable = terminal.lastDurableSourceState ?? result.lastDurableSourceState ?? {};
-  for (const group of ['completed', 'interrupted', 'failed', 'not_started']) {
-    const sources = coverage[group] ?? durable[group];
-    lines.push(`- ${group.replace('_', ' ')}: ${Array.isArray(sources) ? sources.map(cell).join(', ') || 'None recorded' : 'Not Verified'}`);
-  }
-  lines.push('');
   if (result.dailyReceipt) {
     const receipt = result.dailyReceipt;
     lines.push('## Daily stage-loss receipt', '',
