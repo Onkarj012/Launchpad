@@ -1570,12 +1570,12 @@ function withDailyStore(options, use) {
   }
 }
 
-// Read the newest earlier retry state. A missing database has none; a read error stops this run from writing state over it.
-function readPriorScoringRetry(options, excludeRunId) {
+// Read this run's saved retry state or the newest other state; fail-closed on read errors.
+function readPriorScoringRetry(options, runId) {
   const databasePath = options.config?.databasePath;
   if (!options.store && !(typeof databasePath === 'string' && existsSync(databasePath))) return { state: null, error: null };
   try {
-    const state = withDailyStore(options, (store) => readScoringRetryState(store, { excludeRunId }));
+    const state = withDailyStore(options, (store) => readScoringRetryState(store, { preferRunId: runId }));
     if (state && !Array.isArray(state.records)) throw new Error('invalid scoring retry state');
     return { state, error: null };
   } catch (error) {
@@ -1602,7 +1602,7 @@ export async function runDailyNormal(options = {}) {
   const runAt = runAtFrom(options.clock);
   const execution = createDailyExecution(options.config ?? {}, runAt);
   try {
-    // Same run id default as runDailyNormalImpl, so this run's own envelope is skipped on a rerun.
+    // Match runDailyNormalImpl's default identity so reruns retain their saved retry history.
     const ownRunId = options.runId ?? dailyRunIdentity({ schedule: options.schedule ?? 'morning', mode: selectedMode, locationPreset: options.locationPreset ?? 'india', at: runAt });
     const priorRetry = readPriorScoringRetry(options, `${ownRunId}-crawler-v2`);
     const result = await runDailyNormalImpl({ ...options, mode: selectedMode, execution });
