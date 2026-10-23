@@ -4,6 +4,7 @@ import { buildSourceYieldReport, buildAvenueTrialReport, buildSourceEndStates, b
 import { runCrawlerOperator } from '../../crawler/operator.mjs';
 import { main } from '../../crawler/cli.mjs';
 import { discoverTheirStack } from '../../crawler/theirstack.mjs';
+import { discoverBraveSearch } from '../../crawler/brave-search.mjs';
 import { buildDailyReceipt } from '../../crawler/daily-receipt.mjs';
 import { candidateDedupKey } from '../../job-pull/candidate.mjs';
 import { createHash } from 'node:crypto';
@@ -417,6 +418,46 @@ test('overlapping query references reach useful yield through the receipt and co
   assert.equal(sourceReport.sources[0].fetched, 1);
   assert.equal(sourceReport.totals.fetched, 1);
 });
+
+for (const [provider, sourceId] of [['brave-search', 'brave-search'], ['searxng', 'searxng-search']]) {
+  test(`${provider} overlapping queries reach useful yield and count once per source`, async () => {
+    const queries = ['AI Engineer Pune', 'ML Engineer India'];
+    const result = await discoverBraveSearch({
+      provider, queries, dailyBudget: 2, runAt: '2026-10-23T06:30:00.000Z',
+      transport: async () => {
+        const results = [{
+          title: 'AI Engineer', company: 'Acme', location: 'Pune, India',
+          url: 'https://boards.greenhouse.io/acme/jobs/101', description: 'Build reliable AI systems.',
+        }];
+        return { status: 200, body: provider === 'searxng' ? { results, unresponsive_engines: [] } : { web: { results } } };
+      },
+    });
+    assert.equal(result.observations.length, 1);
+    const observed = { ...result.observations[0], sourceId };
+    const identity = `sha256:${createHash('sha256').update(candidateDedupKey(observed)).digest('hex')}`;
+    const receipt = buildDailyReceipt({
+      observations: [observed], modes: {}, counts: { fetched: 1 },
+      funnel: { identityRows: [{
+        identity, bucket: 'notSelected', reason: 'NOT_SELECTED',
+        provider, source: observed.source, jdHash: 'sha256:jd',
+      }] },
+    });
+    const report = buildUsefulSourceYield({
+      identityRows: receipt.retained.identityRows,
+      sourceTelemetry: { [sourceId]: { detail: result.manifest } },
+    });
+    assert.deepEqual(report.sources.map((row) => [row.sourceId, row.queryId, row.uniqueRequisitions, row.stages.jdPresent]), [
+      [sourceId, queries[0], 1, 1], [sourceId, queries[1], 1, 1],
+    ]);
+    assert.ok(report.sources.every((row) => row.cost.requests === 'Not Verified'));
+    assert.equal(report.identityCount, 1);
+    assert.equal(receipt.scopes.uniqueRequisitions.count, 1);
+    const sourceReport = buildSourceYieldReport([observed]);
+    assert.equal(sourceReport.sources.length, 1);
+    assert.equal(sourceReport.sources[0].fetched, 1);
+    assert.equal(sourceReport.totals.fetched, 1);
+  });
+}
 
 test('recorded query indexes and search text keep empty rows while skipped queries stay absent', () => {
   const report = buildUsefulSourceYield({

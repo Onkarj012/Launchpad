@@ -48,6 +48,33 @@ test('deduplicates queries/results and classifies direct, LinkedIn, and unresolv
   assert.equal(result.observations.find((row) => row.canonicalUrl.includes('unknown')).evidence.verified, false);
 });
 
+for (const [provider, response] of [['brave-search', brave], ['searxng', searxng]]) {
+  test(`${provider} retains both query refs without changing the kept observation`, async () => {
+    const queries = ['AI Engineer Pune', 'ML Engineer India'];
+    const calls = [];
+    const options = {
+      provider, runAt: '2026-10-23T06:30:00.000Z', dailyBudget: 2,
+      transport: async (query) => {
+        calls.push(query);
+        return response(query === queries[0] ? results.slice(0, 2) : [{
+          ...results[0], title: 'Later duplicate title', description: 'Later duplicate snippet',
+        }]);
+      },
+    };
+    const single = await discoverBraveSearch({ ...options, queries: queries.slice(0, 1) });
+    calls.length = 0;
+    const result = await discoverBraveSearch({ ...options, queries });
+    assert.deepEqual(calls, queries);
+    assert.equal(result.observations.length, 1);
+    const { provenance, ...observed } = result.observations[0];
+    const { provenance: singleProvenance, ...original } = single.observations[0];
+    assert.deepEqual(observed, original);
+    assert.equal(result.manifest.telemetry.duplicateResults, 2);
+    assert.deepEqual(result.receipts.map((receipt) => receipt.observations), [1, 0]);
+    assert.deepEqual(provenance?.queryRefs, queries.map((queryId, queryIndex) => ({ queryId, queryIndex })));
+  });
+}
+
 test('promotes a lead only when the injected resolver verifies an original listing and enriches entities', async () => {
   const result = await discoverBraveSearch({
     transport: async () => brave([{ title: 'Backend Engineer', url: 'https://search.example/r', description: 'snippet' }]),
