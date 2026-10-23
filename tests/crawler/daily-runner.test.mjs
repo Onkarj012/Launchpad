@@ -842,6 +842,43 @@ test('a selected role with a valid score and component scores counts as validly 
   assert.equal(theirstack.stages.validScore, 1);
 });
 
+for (const evidence of ['scoringOutcomes', 'modeScoringOutcomes', 'stretch', 'scoringFailure']) {
+  test(`${evidence} retains score evidence without changing receipt stage or selection`, () => {
+    const job = normalizeCandidate(rawPortalJob(1305, { provider: 'theirstack', source: 'theirstack' }));
+    const identity = `sha256:${createHash('sha256').update(candidateDedupKey(job)).digest('hex')}`;
+    const failed = evidence === 'scoringFailure';
+    const role = failed ? { ...job, scoringStatus: 'scoring-failed' }
+      : mergeScoreRow(job, { matchScore: 80, responseLikelihood: 15 }).candidate;
+    const result = {
+      counts: { fetched: 1 }, requestedCount: 1,
+      outcome: { status: evidence === 'scoringOutcomes' ? 'fatal' : 'completed' },
+      results: [], shortlist: [],
+      funnel: { lifecycle: { normalized: 1 }, identityRows: [{
+        identity, bucket: 'notSelected', reason: 'NOT_SELECTED', provider: job.provider, source: job.source,
+        provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }],
+      }] },
+      modes: { startup: { results: [], shortlist: [] }, normal: { results: [], shortlist: [] }, remote: { results: [], shortlist: [] } },
+      ...(evidence === 'scoringOutcomes' ? { scoringOutcomes: [role] } : {}),
+      ...(evidence === 'stretch' ? { stretch: [role] } : {}),
+      ...(failed ? { scoringQueue: [role] } : {}),
+    };
+    if (evidence === 'modeScoringOutcomes') result.modes.normal.scoringOutcomes = [role];
+    const receipt = buildDailyReceipt(result);
+    const row = receipt.retained.identityRows[0];
+    assert.equal(row.stage, failed ? 'scoringFailure' : 'unknown');
+    assert.equal(row.reason, failed ? 'SCORING_FAILED' : 'Not Verified');
+    assert.deepEqual(row.modes, []);
+    assert.equal(row.selected, false);
+    assert.equal(row.scoreComponents, null);
+    assert.equal(row.selectionTier, null);
+    const usefulYield = buildUsefulSourceYield({ identityRows: receipt.retained.identityRows });
+    const source = usefulYield.sources.find((item) => item.sourceId === 'theirstack' && item.queryId === 'q-ai');
+    assert.equal(source.stages.validScore, failed ? 0 : 1);
+    assert.equal(source.stages.selected, 0);
+    assert.equal(source.stages.scoringFailed, failed ? 1 : 0);
+  });
+}
+
 test('historicalV4Rows suppress crawler-fed duplicates before Normal shortlist planning', async () => {
   const { config } = testConfig({
     warmBoards: [{ slug: 'historical-board', company: 'Historical Company' }],
@@ -4397,6 +4434,14 @@ test('a successful retry counts as scored when two other scorer failures make th
   assert.deepEqual(second.results, []);
   assert.deepEqual(second.shortlist, []);
   assert.deepEqual(second.plannedNotionOperations, []);
+  assert.equal(second.scoringOutcomes.length, 1);
+  const warm = second.usefulSourceYield.sources.find((row) => row.sourceId === 'ats-warm');
+  assert.equal(warm.stages.validScore, 1);
+  assert.equal(warm.stages.selected, 0);
+  const scored = second.dailyReceipt.retained.identityRows.find((row) => row.scoringStatus === 'scored');
+  assert.equal(scored.score, 80);
+  assert.equal(scored.selected, false);
+  assert.deepEqual(scored.modes, []);
   const recovered = second.scoringRetry.records.find((record) => record.canonicalUrl === first.scoringRetry.records[0].canonicalUrl);
   assert.deepEqual([recovered.outcome, recovered.outcomeReason, recovered.attemptCount, recovered.nextEligibleAt], [
     'recovered', 'scored-this-run', 2, null,

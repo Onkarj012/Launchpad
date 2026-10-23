@@ -225,11 +225,11 @@ test('per-source and per-query rows count JD, eligibility, scoring, suppression 
   const theirstack = report.sources.find(({ sourceId, queryId }) => sourceId === 'theirstack' && queryId === 'q-ai');
   assert.equal(theirstack.kind, 'discovery');
   assert.equal(theirstack.uniqueRequisitions, 3);
-  assert.deepEqual(theirstack.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 1, scoringFailed: 0, historySuppressed: 1, verification: 0, selected: 1, routeRecovered: 0 });
+  assert.deepEqual(theirstack.stages, { jdPresent: 2, hardEligibilityPassed: 2, validScore: 2, scoringFailed: 0, historySuppressed: 1, verification: 0, selected: 1, routeRecovered: 0 });
   assert.equal(theirstack.endState, 'ok');
   const warm = report.sources.find(({ sourceId }) => sourceId === 'ats-warm');
   assert.equal(warm.queryId, 'Not Verified');
-  assert.deepEqual(warm.stages, { jdPresent: 2, hardEligibilityPassed: 1, validScore: 0, scoringFailed: 1, historySuppressed: 0, verification: 1, selected: 0, routeRecovered: 0 });
+  assert.deepEqual(warm.stages, { jdPresent: 2, hardEligibilityPassed: 1, validScore: 1, scoringFailed: 1, historySuppressed: 0, verification: 1, selected: 0, routeRecovered: 0 });
   assert.equal(warm.endState, 'truncated');
   assert.equal(warm.endReason, 'source-truncated');
   assert.equal(report.schemaVersion, 'LaunchpadUsefulSourceYieldV1');
@@ -334,6 +334,19 @@ test('validScore stays fail-closed without a recorded valid scoring result', () 
   });
   assert.equal(report.sources[0].stages.selected, 3);
   assert.equal(report.sources[0].stages.validScore, 1);
+});
+
+test('recorded valid scores count independently of the final receipt stage', () => {
+  for (const stage of ['unknown', 'verification', 'historySuppression', 'hardRejection', 'scoringFailure']) {
+    const report = buildUsefulSourceYield({ identityRows: [
+      identityRow('sha256:scored', { stage, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }] }),
+      ...[null, NaN, Infinity, '80'].map((score, index) => identityRow(`sha256:invalid-${index}`, {
+        stage, score, provenance: [{ sourceId: 'theirstack', queryId: 'q-ai' }],
+      })),
+    ] });
+    assert.equal(report.sources[0].stages.validScore, 1, stage);
+    assert.equal(report.sources[0].stages.selected, 0, stage);
+  }
 });
 
 test('a source with productive and empty recorded queries keeps both rows and no shared cost', async () => {
