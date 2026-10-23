@@ -109,6 +109,81 @@ test('a failed source reports its last successful snapshot age after the store i
   }
 });
 
+test('snapshot ages use source attempt completion across three runs after a resumed run and SQLite reopen', async () => {
+  const { config } = testConfig();
+  config.sources.portals = { enabled: true, linkedin: { enabled: true } };
+  let at = NOW;
+  const clock = { now: () => at, sleep: async () => {} };
+  let interrupted = true;
+  let sourceCalls = 0;
+  const sourcePlans = [
+    { id: 'ats-warm', fetch: async () => { sourceCalls += 1; return { observations: [] }; } },
+    { id: 'portal-discovery', fetch: async () => ({ observations: [], manifest: {
+      telemetry: { lanes: [{ sourceId: 'portal-linkedin-jobs', attempted: true, status: 'ok' }] },
+    } }) },
+    { id: 'later-source', fetch: async () => ({ observations: [], interrupted }) },
+  ];
+  let store = openCrawlerStore(config.databasePath);
+  try {
+    const first = await crawlRun({ store, runId: 'attempt-time-first', sourcePlans, clock });
+    assert.equal(first.run.status, 'partial');
+    store.close();
+    store = openCrawlerStore(config.databasePath);
+    at = '2026-07-24T10:00:00.000Z';
+    interrupted = false;
+    const resumed = await crawlRun({ store, runId: 'attempt-time-first', sourcePlans, clock });
+    assert.equal(resumed.run.status, 'completed');
+    assert.equal(resumed.run.finishedAt, at);
+    assert.equal(sourceCalls, 1, 'resume reuses the early successful scan');
+    for (const [runId, runAt] of [
+      ['attempt-time-second', '2026-07-24T12:00:00.000Z'],
+      ['attempt-time-third', '2026-07-24T14:00:00.000Z'],
+    ]) {
+      store.close();
+      store = openCrawlerStore(config.databasePath);
+      const next = await runDailyNormalActual(runOptions(config, () => { throw new Error('no transport expected'); }, {
+        store, runId, clock: { now: () => runAt, sleep: async () => {} },
+      }));
+      for (const sourceId of ['ats-warm', 'portal-linkedin-jobs']) {
+        assert.equal(next.sourceSnapshotAges[sourceId].lastSuccessfulAt, NOW);
+        assert.equal(next.sourceSnapshotAges[sourceId].ageHours, runId.endsWith('second') ? 5.5 : 7.5);
+      }
+    }
+  } finally { store.close(); }
+});
+
+test('a third run skips a failed warm snapshot whose stored status is succeeded after SQLite reopen', async () => {
+  const { config } = testConfig({ warmBoards: [{ slug: 'snapshot-board', company: 'Snapshot Company' }] });
+  let store = openCrawlerStore(config.databasePath);
+  try {
+    await runDailyNormalActual(runOptions(config, fakeTransport({ 'snapshot-board': [] }), {
+      runId: 'warm-history-first', store,
+    }));
+    store.close();
+    store = openCrawlerStore(config.databasePath);
+    await runDailyNormalActual(runOptions(config, async () => { throw new Error('warm transport failed'); }, {
+      runId: 'warm-history-second', store,
+      clock: { now: () => '2026-07-24T12:00:00.000Z', sleep: async () => {} },
+    }));
+    store.close();
+    store = openCrawlerStore(config.databasePath);
+    const failed = store.prepare('SELECT status, details_json FROM source_telemetry WHERE run_id = ? AND source_id = ?')
+      .get('warm-history-second-crawler-v2', 'ats-warm');
+    assert.equal(failed.status, 'succeeded');
+    const workflow = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?')
+      .get('warm-history-second-crawler-v2').telemetry_json).workflow;
+    assert.equal(workflow.sourceTelemetry['ats-warm'].detail.boardsFailed, 1);
+    assert.equal(store.prepare('SELECT status FROM source_attempts WHERE run_id = ? AND source_id = ?')
+      .get('warm-history-second-crawler-v2', 'ats-warm').status, 'succeeded');
+    const third = await runDailyNormalActual(runOptions(config, async () => { throw new Error('warm transport failed again'); }, {
+      runId: 'warm-history-third', store,
+      clock: { now: () => '2026-07-24T14:00:00.000Z', sleep: async () => {} },
+    }));
+    assert.deepEqual(third.sourceSnapshotAges['ats-warm'], { state: 'failed', lastSuccessfulAt: NOW, ageHours: 7.5 });
+    assert.match(renderLocalLeadReport(third, { now: third.runAt }), /last successful snapshot 2026-07-24 12:00:00 IST \(7\.5 h old\), not current/);
+  } finally { store.close(); }
+});
+
 test('portal snapshot ages retain each lane last success after SQLite reopen', async (t) => {
   for (const status of ['ok', 'empty', 'succeeded']) await t.test(status, async () => {
     const { config } = testConfig();
