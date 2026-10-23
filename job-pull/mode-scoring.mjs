@@ -186,7 +186,7 @@ function retryRoleFields(row) {
   };
 }
 
-// Name the first gate reason on a verification or suppression row.
+// Name the first gate reason on a rejection, verification or suppression row.
 function gateReasonFor(row) {
   return row.reasons?.[0] ?? row.code ?? row.reason ?? 'Not Verified';
 }
@@ -198,9 +198,9 @@ export function nextScoringRetryState({ prior = null, result = {}, runAt }) {
   const failedNow = queue.filter((row) => row.scoringStatus === 'scoring-failed');
   const queuedNow = queue.map(retryRoleFields);
   const modes = Object.values(result.modes ?? {});
-  const scoredNow = [...(result.results ?? []), ...(result.stretch ?? []), ...(result.shortlist ?? []), ...modes.flatMap((mode) => [...(mode.results ?? []), ...(mode.shortlist ?? [])])].map(retryRoleFields);
+  const scoredNow = [...(result.scoringOutcomes ?? []), ...(result.results ?? []), ...(result.stretch ?? []), ...(result.shortlist ?? []), ...modes.flatMap((mode) => [...(mode.results ?? []), ...(mode.shortlist ?? [])])].map(retryRoleFields);
   const selectedNow = [...(result.shortlist ?? []), ...modes.flatMap((mode) => mode.shortlist ?? [])].map(retryRoleFields);
-  const gatedNow = [...(result.historicalSuppressions ?? []), ...(result.verificationQueue ?? [])]
+  const gatedNow = [...(result.gateRejections ?? []), ...(result.historicalSuppressions ?? []), ...(result.verificationQueue ?? [])]
     .map((row) => ({ role: retryRoleFields(row), reason: gateReasonFor(row) }));
   const runMs = Date.parse(runAt);
   const records = [];

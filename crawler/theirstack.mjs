@@ -358,6 +358,7 @@ export async function discoverTheirStack({
   while (queryIndex < normalizedQueries.length && queriesProcessed < limits.maxQueriesPerRun) {
     const query = normalizedQueries[queryIndex];
     const diagnostic = {
+      queryId: query.queryId,
       queryIndex,
       startingOffset: offset,
       endingOffset: offset,

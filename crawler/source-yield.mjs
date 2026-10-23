@@ -228,7 +228,7 @@ function identityStages(row) {
   return {
     jdPresent: row.jdHash != null,
     hardEligibilityPassed: passedHardGates(row),
-    validScore: ['finalSelection', 'eligible'].includes(row.stage) && Number.isFinite(row.score) && (row.scoreComponents ?? row.componentScores) != null,
+    validScore: ['finalSelection', 'eligible'].includes(row.stage) && Number.isFinite(row.score) && row.scoringStatus === 'scored',
     scoringFailed: row.stage === 'scoringFailure',
     historySuppressed: row.stage === 'historySuppression',
     verification: row.stage === 'verification',
@@ -260,6 +260,19 @@ export function buildUsefulSourceYield({ identityRows = [], sourceTelemetry = {}
       group.identities.add(row.identityHash);
       const itemStages = { ...stages, routeRecovered: item.recoveryOutcome === 'recovered' };
       for (const field of STAGE_FIELDS) if (itemStages[field]) group.stages[field] += 1;
+    }
+  }
+  // Retain queries with execution evidence even when they returned no requisitions.
+  for (const [sourceId, telemetry] of Object.entries(sourceTelemetry)) {
+    const diagnostics = telemetry?.detail?.telemetry?.queryDiagnostics;
+    for (const diagnostic of Array.isArray(diagnostics) ? diagnostics : []) {
+      if (!diagnostic || diagnostic.status === 'skipped' || NOT_STARTED_STATUSES.has(diagnostic.status)
+        || (diagnostic.pagesFetched === 0 && diagnostic.interrupted !== true)) continue;
+      const queryId = diagnostic.queryId ?? diagnostic.query
+        ?? (Number.isInteger(diagnostic.queryIndex) ? `query-index:${diagnostic.queryIndex}` : NOT_VERIFIED);
+      if (queryId === NOT_VERIFIED) continue;
+      const key = JSON.stringify([sourceId, queryId, 'discovery']);
+      if (!groups.has(key)) groups.set(key, { sourceId, queryId, kind: 'discovery', referenceCount: 0, identities: new Set(), stages: zeroStages() });
     }
   }
   const groupList = [...groups.values()];

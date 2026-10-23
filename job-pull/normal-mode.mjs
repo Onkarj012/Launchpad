@@ -14,7 +14,7 @@ import { classifyFreshness } from './freshness.mjs';
 import { classifyCandidate } from './eligibility.mjs';
 import {
   buildDeliveryPlan, buildDeliveryReconciliation, buildReconciliation, emptyDeliveryPlan,
-  partialSourceReasons, scorePoolInRun, scorerIsBroken,
+  hasUsableMatchScore, partialSourceReasons, scorePoolInRun, scorerIsBroken,
   scoringGateError, selectionRejectionReasons,
   sourceCoverageFromManifests,
 } from './mode-scoring.mjs';
@@ -182,6 +182,8 @@ function fatalResult(runId, runAt, mode, sourceManifests, error, details = {}) {
     results: [], shortlist: [], verificationQueue: details.verificationQueue || [], funnel: details.funnel || null, sourceManifests, sourceTelemetry: sourceManifests,
     plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'failed' }), writesPlanned: false, transaction: null, historicalSuppressions: [],
     scoringQueue: details.scoringQueue || [],
+    scoringOutcomes: details.scoringOutcomes || [],
+    gateRejections: details.gateRejections || [],
     scoring: details.scoring || null,
     reconciliation: details.reconciliation || null,
     shortfall: { minimum: 10, selected: 0, missing: 10, failedLanes: sourceManifests.filter((item) => item.status === 'failed').map((item) => item.sourceId), emptyLanes: [], linkedinRescueSuggestion: { suggested: true, command: 'linkedin-leads', invoked: false } },
@@ -204,6 +206,8 @@ export async function runNormalMode({
   const runAt = readClock(clock);
   const runId = suppliedRunId || `normal-${runAt}`;
   let sourceResults = [];
+  let gateRejections = [];
+  let scoringOutcomes = [];
   try {
     sourceResults = await runNormalSourcePlan({ sourceFunctions, sourceFixtures, laneInputs, runAt, runId, includeCrawlerLanes, signal, deadline });
     sourceResults = applyScores(sourceResults, scores);
@@ -229,6 +233,12 @@ export async function runNormalMode({
       deferSelection: true,
       ...(opportunityLedgerPath ? { opportunityLedgerPath } : {}),
     });
+    const sourceCandidatesByUrl = new Map(sourceResults.flatMap((source) => source.candidates)
+      .map((candidate) => [candidate.canonicalUrl, candidate]));
+    // Keep current gate decisions with role identity for scoring-retry reconciliation.
+    gateRejections = pipeline.exclusionAudit.gate.map((row) => ({
+      ...sourceCandidatesByUrl.get(row.url), canonicalUrl: row.url, code: row.code,
+    }));
     const experienceDecisions = sourceResults.flatMap((source) => source.candidates)
       .map((candidate) => ({ candidate, eligibility: classifyCandidate(candidate, { ...normalConfig, salaryFloorLpa: baseConversionPlan.salaryFloorLpa }) }))
       .filter(({ eligibility }) => /^EXPERIENCE_(?:HARD_MIN|ABOVE_RELAXED)/.test(eligibility.experience?.code || '')
@@ -265,6 +275,8 @@ export async function runNormalMode({
     const candidatesToScore = [...new Map([...readyCandidates, ...stretchReadinessEntries.map((entry) => entry.candidate)]
       .map((candidate) => [candidateKey(candidate), candidate])).values()];
     const { pool: scoredPool, telemetry: scorerTelemetry } = await scorePoolInRun(candidatesToScore, scorer, { runId, runAt, signal: scoringSignal, remainingMs: scoringRemainingMs });
+    // Scoring evidence survives a fatal delivery gate; it is never reused as a score cache.
+    scoringOutcomes = scoredPool.filter(hasUsableMatchScore);
     const readinessByKey = new Map([...readinessEntries, ...stretchReadinessEntries].map((entry) => [candidateKey(entry.candidate), entry.readiness]));
     const selectionEntries = scoredPool.map((candidate) => ({
       candidate,
@@ -335,7 +347,7 @@ export async function runNormalMode({
       ]);
       return {
         schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), stretch: selection.stretch ?? [], shortlist,
-        scoringQueue: selection.scoringQueue, funnel, verificationQueue, experienceDecisions,
+        scoringQueue: selection.scoringQueue, scoringOutcomes, gateRejections, funnel, verificationQueue, experienceDecisions,
         sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: [], deliveryPlan: emptyDeliveryPlan(), deliveryReconciliation: buildDeliveryReconciliation({ status: 'partial', sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons: [...rejectionReasons, ...partialSourceReasons(sourceManifests)] }), writesPlanned: false, transaction: null,
         historicalSuppressions, rejectionCounts, rejectionReasons: [...new Set([...rejectionReasons, ...partialSourceReasons(sourceManifests)])].sort(),
         shortfall: { minimum: 10, preferred: 12, maximum: 20, selected: shortlist.length, missing: Math.max(0, 10 - shortlist.length), failedLanes: sourceManifests.filter((manifest) => ['failed', 'unavailable'].includes(manifest.status)).map((manifest) => manifest.sourceId), emptyLanes: [], reasons: partialSourceReasons(sourceManifests), linkedinRescueSuggestion: { suggested: false, invoked: false } },
@@ -409,7 +421,7 @@ export async function runNormalMode({
     const missing = Math.max(0, 10 - shortlist.length);
     return {
       schemaVersion: 'LaunchpadV5NormalModeV1', runId, runAt, mode: 'normal', results: selection.results, ...(selection.modes ? { modes: selection.modes } : {}), stretch: selection.stretch ?? [], shortlist,
-      scoringQueue: selection.scoringQueue, funnel,
+      scoringQueue: selection.scoringQueue, scoringOutcomes, gateRejections, funnel,
       verificationQueue, experienceDecisions, sourceManifests, sourceTelemetry: sourceManifests, plannedNotionOperations: plannedOperations, deliveryPlan, deliveryReconciliation: buildDeliveryReconciliation({ status: 'completed', deliveryPlan, sourceCoverage: sourceCoverageFromManifests(sourceManifests), rejectionReasons, surfacedCount: surfaced?.rows?.length ?? null }), writesPlanned: plannedOperations.length > 0, transaction,
       historicalSuppressions,
       dedupInputs: {
@@ -448,6 +460,6 @@ export async function runNormalMode({
       },
     };
   } catch (error) {
-    return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error, error.details);
+    return fatalResult(runId, runAt, 'normal', sourceResults.map(({ manifest }) => manifest), error, { ...error.details, gateRejections, scoringOutcomes });
   }
 }
