@@ -112,6 +112,29 @@ test('direct ATS URL resolves immediately with provider fingerprint', async () =
   assert.ok(result.telemetry.budget.maxRequests >= 1);
 });
 
+test('ordinary direct ATS resolution carries closing evidence without changing resolution', async (t) => {
+  for (const [name, closing, outcome, reason] of [
+    ['open', {}, null, null],
+    ['closed', { isClosed: true }, 'confirmed-closed', 'source-closed-flag'],
+    ['expired', { validThrough: '2000-01-01' }, 'expired', 'valid-through-past'],
+  ]) await t.test(name, async () => {
+    const url = 'https://boards.greenhouse.io/acme/jobs/12345';
+    const resolve = createOriginalListingResolver({ transport: async () => jsonLdPage({
+      title: 'AI Engineer', description: 'Build Python services.', ...closing,
+    }) });
+    const result = await resolve(observation(url));
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.originalApplicationUrl, url);
+    assert.equal(result.shortlistEligible, true);
+    assert.equal(result.patch.liveness.status, outcome ? 'Expired' : 'Active');
+    if (outcome) {
+      assert.equal(result.evidence.closingState?.outcome, outcome);
+      assert.equal(result.evidence.closingState.reason, reason);
+      assert.deepEqual(result.patch.evidence.closingState, result.evidence.closingState);
+    } else assert.equal(result.evidence.closingState, undefined);
+  });
+});
+
 test('portal leads cross-match the registry board by employer, title, location, and requisition', async () => {
   const boardUrl = 'https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true';
   const detailUrl = 'https://boards.greenhouse.io/acme/jobs/123';
