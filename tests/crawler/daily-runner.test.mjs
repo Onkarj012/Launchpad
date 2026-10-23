@@ -4069,6 +4069,79 @@ test('a retried role that now fails a history gate ends terminal and never reach
   assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason]), [['terminal', 'current-gate-rejected:SUPPRESSED_HISTORICAL']]);
 });
 
+test('a retried role rejected by current freshness settles with the rejection code', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-freshness-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].outcome, 'pending');
+
+  const second = await runDailyNormalActual(runOptions(config, transport, {
+    runId: 'scoring-retry-freshness-second',
+    clock: { now: () => '2026-08-08T06:30:00.000Z', sleep: async () => {} },
+    scorer: async () => { assert.fail('a freshness-rejected role must not reach scoring'); },
+  }));
+  assert.deepEqual(second.scoringQueue, []);
+  assert.deepEqual(second.verificationQueue, []);
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason, record.attemptCount, record.nextEligibleAt]), [
+    ['terminal', 'current-gate-rejected:FRESHNESS_OLDER_THAN_14D', 1, null],
+  ]);
+});
+
+test('a retried role rejected by current eligibility settles with the rejection code', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-eligibility-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].outcome, 'pending');
+
+  const second = await runDailyNormalActual(runOptions(config, fakeTransport({
+    'retry-board': [greenhouseJob(1902, 'retry-board', { location: { name: 'Bengaluru, India' } })],
+  }), {
+    runId: 'scoring-retry-eligibility-second',
+    scorer: async () => { assert.fail('an eligibility-rejected role must not reach scoring'); },
+  }));
+  assert.deepEqual(second.scoringQueue, []);
+  assert.deepEqual(second.verificationQueue, []);
+  assert.deepEqual(second.scoringRetry.records.map((record) => [record.outcome, record.outcomeReason, record.attemptCount, record.nextEligibleAt]), [
+    ['terminal', 'current-gate-rejected:GEO_ONSITE_NOT_PUNE', 1, null],
+  ]);
+});
+
+test('a successful retry counts as scored when two other scorer failures make the run fatal', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'scoring-retry-fatal-first', scorer: timedOutScorer }));
+  assert.equal(first.scoringRetry.records[0].attemptCount, 1);
+
+  const second = await runDailyNormalActual(runOptions(config, fakeTransport({
+    'retry-board': [1902, 1903, 1904].map((id) => greenhouseJob(id, 'retry-board')),
+  }), {
+    runId: 'scoring-retry-fatal-second',
+    scorer: async (rows) => ({
+      ...await validScorer(rows.filter((row) => row.canonicalUrl.endsWith('/1902'))),
+      failures: rows.filter((row) => !row.canonicalUrl.endsWith('/1902'))
+        .map((row) => ({ canonicalUrl: row.canonicalUrl, reason: 'SCORER_EXEC_FAILED' })),
+    }),
+  }));
+  assert.equal(second.outcome.fatal, true);
+  assert.equal(second.scoring.scorer.attempted, 3);
+  assert.equal(second.scoring.scorer.failures.length, 2);
+  assert.equal(second.counts.scored, 1);
+  assert.equal(second.scoringQueue.length, 2);
+  assert.deepEqual(second.results, []);
+  assert.deepEqual(second.shortlist, []);
+  assert.deepEqual(second.plannedNotionOperations, []);
+  const recovered = second.scoringRetry.records.find((record) => record.canonicalUrl === first.scoringRetry.records[0].canonicalUrl);
+  assert.deepEqual([recovered.outcome, recovered.outcomeReason, recovered.attemptCount, recovered.nextEligibleAt], [
+    'recovered', 'scored-this-run', 2, null,
+  ]);
+  const store = openCrawlerStore(config.databasePath);
+  try {
+    const telemetry = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?')
+      .get('scoring-retry-fatal-second-crawler-v2').telemetry_json);
+    const persisted = telemetry.workflow.scoringRetry;
+    assert.equal(second.scoringRetryPersistence, 'persisted', second.scoringRetryPersistenceError);
+    assert.deepEqual(persisted.records, second.scoringRetry.records);
+    assert.doesNotMatch(JSON.stringify(persisted), /matchScore|componentScores|rationale|"score"/);
+  } finally { store.close(); }
+});
+
 test('readScoringRetryState returns the newest earlier run state and skips the excluded run', () => {
   const store = openCrawlerStore();
   const insertRun = (runId, startedAt, workflow) => store.prepare('INSERT INTO crawl_runs(run_id, status, stage, started_at, telemetry_json) VALUES (?, ?, ?, ?, ?)')
