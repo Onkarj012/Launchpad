@@ -512,3 +512,16 @@ test('the crawler-v2 budget split stays at its twenty-minute contract', () => {
     [1200000, 720000, 300000, 180000],
   );
 });
+
+test('skipped queries do not hide the cost of the one query that ran', () => {
+  const report = buildUsefulSourceYield({
+    sourceTelemetry: { 'brave-search': { requests: 1, durationMs: 300, failures: [], truncated: false, detail: { telemetry: { queryDiagnostics: [
+      { query: 'AI Engineer Pune', queryIndex: 0, pagesFetched: 1 },
+      { query: 'ML Engineer India', queryIndex: 1, status: 'skipped', pagesFetched: 0 },
+      { query: 'Data Engineer Pune', queryIndex: 2, status: 'skipped', pagesFetched: 0 },
+    ] } } } },
+  });
+
+  assert.deepEqual(report.sources.map(({ queryId }) => queryId), ['AI Engineer Pune']);
+  assert.deepEqual(report.sources[0].cost, { requests: 1, durationMs: 300, failures: 0, truncated: false });
+});

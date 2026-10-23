@@ -236,10 +236,16 @@ function identityStages(row) {
   };
 }
 
+// Tell whether a query diagnostic shows the query actually ran; skipped and unstarted queries did not.
+function queryRan(diagnostic) {
+  return Boolean(diagnostic) && diagnostic.status !== 'skipped' && !NOT_STARTED_STATUSES.has(diagnostic.status)
+    && !(diagnostic.pagesFetched === 0 && diagnostic.interrupted !== true);
+}
+
 // Count the queries a source ran from its execution telemetry, including zero-result queries; null when telemetry does not say.
 function queriesRun(telemetry) {
   const diagnostics = telemetry?.detail?.telemetry?.queryDiagnostics;
-  return Array.isArray(diagnostics) ? diagnostics.length : null;
+  return Array.isArray(diagnostics) ? diagnostics.filter(queryRan).length : null;
 }
 
 // Attribute useful outcomes to each source and query. A requisition counts once per group and once overall.
@@ -266,8 +272,7 @@ export function buildUsefulSourceYield({ identityRows = [], sourceTelemetry = {}
   for (const [sourceId, telemetry] of Object.entries(sourceTelemetry)) {
     const diagnostics = telemetry?.detail?.telemetry?.queryDiagnostics;
     for (const diagnostic of Array.isArray(diagnostics) ? diagnostics : []) {
-      if (!diagnostic || diagnostic.status === 'skipped' || NOT_STARTED_STATUSES.has(diagnostic.status)
-        || (diagnostic.pagesFetched === 0 && diagnostic.interrupted !== true)) continue;
+      if (!queryRan(diagnostic)) continue;
       const queryId = diagnostic.queryId ?? diagnostic.query
         ?? (Number.isInteger(diagnostic.queryIndex) ? `query-index:${diagnostic.queryIndex}` : NOT_VERIFIED);
       if (queryId === NOT_VERIFIED) continue;
