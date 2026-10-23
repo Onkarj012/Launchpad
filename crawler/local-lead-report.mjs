@@ -257,7 +257,7 @@ function nextSafeAction(blockers) {
 
 // Read whether the run had loaded, dated, non-empty v4 history. Stale or empty snapshots never back New-market or application-ready labels.
 function historyLoadedFor(result) {
-  const snapshot = result.v4HistorySnapshot;
+  const snapshot = result.v4HistorySnapshot ?? result.telemetry?.v4HistorySnapshot;
   return snapshot?.status === 'loaded' && Number.isFinite(Date.parse(snapshot.generatedAt)) && snapshot.rowCount > 0;
 }
 
