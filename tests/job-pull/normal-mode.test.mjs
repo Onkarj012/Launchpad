@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { candidateDedupKey, normalizeCandidate } from '../../job-pull/candidate.mjs';
 import { runNormalMode as runNormalModeAgainstRealLedger } from '../../job-pull/normal-mode.mjs';
+import { nextScoringRetryState } from '../../job-pull/mode-scoring.mjs';
 import { NORMAL_SOURCE_LANES } from '../../job-pull/normal-sources.mjs';
 import { selectNormalApplications } from '../../job-pull/normal-selection.mjs';
 import { createFakeTransactionalGateway } from '../../job-pull/normal-transaction.mjs';
@@ -434,4 +435,26 @@ test('without a scorer an unscored row is still fatal (legacy all-or-nothing gat
   assert.equal(result.shortlist.length, 0);
   assert.ok(result.scoring);
   assert.equal('scorer' in result.scoring, false);
+});
+
+
+test('gate rejections retain the failed candidate when a passing role shares its URL', async () => {
+  const url = 'https://employer.example.test/careers';
+  const failed = raw(1, { url, provider: 'greenhouse', jobId: 'gate-failed', location: 'London, UK' });
+  const passing = raw(2, { url, provider: 'greenhouse', jobId: 'gate-passed' });
+  const result = await runNormalMode({
+    clock: () => NOW, ledgerRows: [], opportunityLedgerRows: [],
+    sourceFunctions: { ...allFunctions(), 'tracked-ats': () => ({ records: [failed, passing] }) },
+  });
+  const passed = result.scoringOutcomes.find((row) => row.jobId === passing.jobId);
+  assert.ok(passed, 'B passes the gate and reaches scoring');
+  const prior = nextScoringRetryState({ result: { scoringQueue: [{ ...passed, scoringStatus: 'scoring-failed' }] }, runAt: NOW });
+  // Reconcile just the gate evidence to prove it cannot terminalize the passing role.
+  const gateOnly = nextScoringRetryState({ prior, result: { gateRejections: result.gateRejections }, runAt: NOW });
+  assert.equal(gateOnly.records[0].outcome, 'pending');
+  assert.equal(gateOnly.records[0].outcomeReason, 'awaiting-current-evidence');
+  assert.equal(result.gateRejections.length, 1);
+  assert.equal(result.gateRejections[0].jobId, failed.jobId);
+  const reconciled = nextScoringRetryState({ prior, result, runAt: NOW });
+  assert.ok(['selected', 'recovered'].includes(reconciled.records[0].outcome));
 });

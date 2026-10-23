@@ -4724,3 +4724,56 @@ test('P11 r1 finding 7: the requested count is the limit the run used after the 
   assert.match(html, /<li>Requested: 2<\/li>/);
   assert.match(html, /<li>Shortfall this run: 2<\/li>/);
 });
+
+test('malformed scoring retry records preserve the daily receipt and delivery result', async (t) => {
+  for (const [name, corrupt] of [
+    ['null record', () => null],
+    ['non-array identityAliases', (record) => ({ ...record, canonicalUrl: 'https://jobs.example.test/old', requisitionKey: null, identityAliases: {} })],
+  ]) await t.test(name, async () => {
+    const { config, transport } = retryConfigAndTransport();
+    const first = await runDailyNormalActual(runOptions(config, transport, { runId: 'malformed-retry-first', scorer: timedOutScorer }));
+    const store = openCrawlerStore(config.databasePath);
+    try {
+      const runId = 'malformed-retry-first-crawler-v2';
+      const telemetry = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get(runId).telemetry_json);
+      telemetry.workflow.scoringRetry.records = [corrupt(first.scoringRetry.records[0])];
+      store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), runId);
+    } finally {
+      store.close();
+    }
+    const result = await runDailyNormalActual(runOptions(config, transport, { runId: 'malformed-retry-second', scorer: validScorer }));
+    assert.ok(result.dailyReceipt);
+    assert.ok(result.deliveryReconciliation);
+    assert.equal(result.receiptPersistence, 'persisted');
+    assert.equal(result.shortlist.length, 1);
+    assert.ok(result.scoringRetryPersistenceError || result.scoringRetry.records.every((record) => record && Array.isArray(record.identityAliases)));
+  });
+});
+
+test('scoring retry computation errors preserve delivery and never persist replacement state', async () => {
+  const { config, transport } = retryConfigAndTransport();
+  await runDailyNormalActual(runOptions(config, transport, { runId: 'retry-computation-first', scorer: timedOutScorer }));
+  const store = openCrawlerStore(config.databasePath);
+  try {
+    const runId = 'retry-computation-first-crawler-v2';
+    const telemetry = JSON.parse(store.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get(runId).telemetry_json);
+    telemetry.workflow.scoringRetry.records[0].attemptCount = 'invalid';
+    store.prepare('UPDATE crawl_runs SET telemetry_json = ? WHERE run_id = ?').run(JSON.stringify(telemetry), runId);
+  } finally {
+    store.close();
+  }
+  const result = await runDailyNormalActual(runOptions(config, transport, { runId: 'retry-computation-second', scorer: timedOutScorer }));
+  assert.ok(result.dailyReceipt);
+  assert.ok(result.deliveryReconciliation);
+  assert.equal(result.receiptPersistence, 'persisted');
+  assert.equal(result.scoringRetry, null);
+  assert.equal(result.scoringRetryPersistence, 'failed');
+  assert.match(result.scoringRetryPersistenceError, /Invalid time value/);
+  const reopened = openCrawlerStore(config.databasePath);
+  try {
+    const telemetry = JSON.parse(reopened.prepare('SELECT telemetry_json FROM crawl_runs WHERE run_id = ?').get('retry-computation-second-crawler-v2').telemetry_json);
+    assert.equal(telemetry.workflow.scoringRetry, undefined);
+  } finally {
+    reopened.close();
+  }
+});
